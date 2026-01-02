@@ -1,14 +1,16 @@
 //! Matrix transformation benchmarks.
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use std::hint::black_box;
 use skia_rs_bench::{create_rng, random_matrices, random_points, random_rects, sizes};
 use skia_rs_core::{Matrix, Point, Rect};
-use std::hint::black_box;
 
 fn bench_matrix_creation(c: &mut Criterion) {
     let mut group = c.benchmark_group("Matrix/creation");
 
-    group.bench_function("identity", |b| b.iter(|| Matrix::IDENTITY));
+    group.bench_function("identity", |b| {
+        b.iter(|| Matrix::IDENTITY)
+    });
 
     group.bench_function("translate", |b| {
         b.iter(|| Matrix::translate(black_box(100.0), black_box(200.0)))
@@ -82,17 +84,11 @@ fn bench_matrix_concat(c: &mut Criterion) {
         let mut rng = create_rng();
         let matrices = random_matrices(&mut rng, count);
 
-        group.bench_with_input(
-            BenchmarkId::new("chain", count),
-            &matrices,
-            |b, matrices| {
-                b.iter(|| {
-                    matrices
-                        .iter()
-                        .fold(Matrix::IDENTITY, |acc, m| acc.concat(m))
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("chain", count), &matrices, |b, matrices| {
+            b.iter(|| {
+                matrices.iter().fold(Matrix::IDENTITY, |acc, m| acc.concat(m))
+            })
+        });
     }
 
     group.finish();
@@ -106,13 +102,21 @@ fn bench_matrix_invert(c: &mut Criterion) {
     let rotate = Matrix::rotate(0.785);
     let complex = translate.concat(&scale).concat(&rotate);
 
-    group.bench_function("translate", |b| b.iter(|| black_box(translate).invert()));
+    group.bench_function("translate", |b| {
+        b.iter(|| black_box(translate).invert())
+    });
 
-    group.bench_function("scale", |b| b.iter(|| black_box(scale).invert()));
+    group.bench_function("scale", |b| {
+        b.iter(|| black_box(scale).invert())
+    });
 
-    group.bench_function("rotate", |b| b.iter(|| black_box(rotate).invert()));
+    group.bench_function("rotate", |b| {
+        b.iter(|| black_box(rotate).invert())
+    });
 
-    group.bench_function("complex", |b| b.iter(|| black_box(complex).invert()));
+    group.bench_function("complex", |b| {
+        b.iter(|| black_box(complex).invert())
+    });
 
     // Batch inversions
     for size in [sizes::SMALL, sizes::MEDIUM] {
@@ -121,7 +125,9 @@ fn bench_matrix_invert(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(size as u64));
         group.bench_with_input(BenchmarkId::new("batch", size), &matrices, |b, matrices| {
-            b.iter(|| matrices.iter().filter_map(|m| m.invert()).count())
+            b.iter(|| {
+                matrices.iter().filter_map(|m| m.invert()).count()
+            })
         });
     }
 
@@ -166,18 +172,11 @@ fn bench_matrix_map_point(c: &mut Criterion) {
         let points = random_points(&mut rng, size, &bounds);
 
         group.throughput(Throughput::Elements(size as u64));
-        group.bench_with_input(
-            BenchmarkId::new("batch_complex", size),
-            &points,
-            |b, points| {
-                b.iter(|| {
-                    points
-                        .iter()
-                        .map(|p| complex.map_point(*p))
-                        .collect::<Vec<_>>()
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("batch_complex", size), &points, |b, points| {
+            b.iter(|| {
+                points.iter().map(|p| complex.map_point(*p)).collect::<Vec<_>>()
+            })
+        });
     }
 
     group.finish();
@@ -216,18 +215,11 @@ fn bench_matrix_map_rect(c: &mut Criterion) {
         let rects = random_rects(&mut rng, size, &bounds, 100.0);
 
         group.throughput(Throughput::Elements(size as u64));
-        group.bench_with_input(
-            BenchmarkId::new("batch_complex", size),
-            &rects,
-            |b, rects| {
-                b.iter(|| {
-                    rects
-                        .iter()
-                        .map(|r| complex.map_rect(r))
-                        .collect::<Vec<_>>()
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("batch_complex", size), &rects, |b, rects| {
+            b.iter(|| {
+                rects.iter().map(|r| complex.map_rect(r)).collect::<Vec<_>>()
+            })
+        });
     }
 
     group.finish();

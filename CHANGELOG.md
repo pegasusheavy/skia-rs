@@ -136,5 +136,5 @@ The first public release of skia-rs, a pure Rust implementation of the Skia 2D g
 - Extended codec support (BMP, ICO, HEIF)
 - Performance optimizations with SIMD
 
-[0.1.0]: https://github.com/PegasusHeavyIndustries/skia-rs/releases/tag/v0.1.0
-[Unreleased]: https://github.com/PegasusHeavyIndustries/skia-rs/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/pegasusheavy/skia-rs/releases/tag/v0.1.0
+[Unreleased]: https://github.com/pegasusheavy/skia-rs/compare/v0.1.0...HEAD
