@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main, develop]
 
+permissions:
+  contents: read
+  checks: write
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
