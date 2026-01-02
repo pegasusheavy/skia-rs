@@ -495,7 +495,7 @@ fn bench_picture(c: &mut Criterion) {
     group.bench_function("begin_recording", |b| {
         b.iter_batched(
             PictureRecorder::new,
-            |mut recorder| recorder.begin_recording(black_box(&bounds)),
+            |mut recorder| recorder.begin_recording(black_box(bounds)),
             criterion::BatchSize::SmallInput,
         )
     });
@@ -504,7 +504,7 @@ fn bench_picture(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let mut recorder = PictureRecorder::new();
-                recorder.begin_recording(&bounds);
+                recorder.begin_recording(bounds);
                 recorder
             },
             |mut recorder| recorder.finish_recording(),
