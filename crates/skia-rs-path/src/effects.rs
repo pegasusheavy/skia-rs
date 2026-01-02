@@ -511,9 +511,8 @@ impl PathEffect for DiscreteEffect {
                     current_pos = end;
                 }
                 PathElement::Cubic(ctrl1, ctrl2, end) => {
-                    let steps =
-                        (cubic_length(current_pos, ctrl1, ctrl2, end) / self.seg_length).ceil()
-                            as usize;
+                    let steps = (cubic_length(current_pos, ctrl1, ctrl2, end) / self.seg_length)
+                        .ceil() as usize;
                     let steps = steps.max(4);
 
                     for i in 1..=steps {
@@ -820,9 +819,7 @@ impl PathEffect for Path1DEffect {
 
             if let (Some(pos), Some(tangent)) = (pos, tangent) {
                 let transform = match self.style {
-                    Path1DStyle::Translate => {
-                        skia_rs_core::Matrix::translate(pos.x, pos.y)
-                    }
+                    Path1DStyle::Translate => skia_rs_core::Matrix::translate(pos.x, pos.y),
                     Path1DStyle::Rotate | Path1DStyle::Morph => {
                         let angle = tangent.y.atan2(tangent.x);
                         // First rotate, then translate

@@ -125,7 +125,11 @@ impl FontStyle {
 
     /// Create a new font style.
     pub const fn new(weight: FontWeight, width: FontWidth, slant: FontSlant) -> Self {
-        Self { weight, width, slant }
+        Self {
+            weight,
+            width,
+            slant,
+        }
     }
 }
 

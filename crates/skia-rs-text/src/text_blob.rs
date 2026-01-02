@@ -194,7 +194,12 @@ impl TextBlobBuilder {
     /// Add a pre-positioned run of glyphs.
     ///
     /// The positions should be absolute (already include the origin offset).
-    pub fn add_positioned_run(&mut self, font: &Font, glyphs: &[u16], positions: &[Point]) -> &mut Self {
+    pub fn add_positioned_run(
+        &mut self,
+        font: &Font,
+        glyphs: &[u16],
+        positions: &[Point],
+    ) -> &mut Self {
         self.flush_run();
 
         if glyphs.is_empty() || glyphs.len() != positions.len() {

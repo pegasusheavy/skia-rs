@@ -220,9 +220,7 @@ impl Path {
 
     /// Check if the path represents a line.
     pub fn is_line(&self) -> bool {
-        self.verbs.len() == 2
-            && self.verbs[0] == Verb::Move
-            && self.verbs[1] == Verb::Line
+        self.verbs.len() == 2 && self.verbs[0] == Verb::Move && self.verbs[1] == Verb::Line
     }
 
     /// Check if the path represents a rectangle.
@@ -484,8 +482,14 @@ impl Path {
                         let mt2 = mt * mt;
                         let t2 = t * t;
                         let p = Point::new(
-                            mt2 * mt * current.x + 3.0 * mt2 * t * c1.x + 3.0 * mt * t2 * c2.x + t2 * t * end.x,
-                            mt2 * mt * current.y + 3.0 * mt2 * t * c1.y + 3.0 * mt * t2 * c2.y + t2 * t * end.y,
+                            mt2 * mt * current.x
+                                + 3.0 * mt2 * t * c1.x
+                                + 3.0 * mt * t2 * c2.x
+                                + t2 * t * end.x,
+                            mt2 * mt * current.y
+                                + 3.0 * mt2 * t * c1.y
+                                + 3.0 * mt * t2 * c2.y
+                                + t2 * t * end.y,
                         );
                         if ray_crosses_segment(point, current, p) {
                             crossings += 1;

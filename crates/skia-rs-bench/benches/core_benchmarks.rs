@@ -1,9 +1,11 @@
 //! Core type benchmarks: geometry, color, and scalar operations.
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use skia_rs_bench::{
+    create_rng, random_colors, random_colors4f, random_points, random_rects, sizes,
+};
+use skia_rs_core::{Color, Color4f, Point, Rect, Scalar, premultiply_color};
 use std::hint::black_box;
-use skia_rs_bench::{create_rng, random_colors, random_colors4f, random_points, random_rects, sizes};
-use skia_rs_core::{premultiply_color, Color, Color4f, Point, Rect, Scalar};
 
 fn bench_point_operations(c: &mut Criterion) {
     let mut group = c.benchmark_group("Point");
@@ -16,39 +18,25 @@ fn bench_point_operations(c: &mut Criterion) {
     // Point addition
     let p1 = Point::new(100.0, 200.0);
     let p2 = Point::new(50.0, 75.0);
-    group.bench_function("add", |b| {
-        b.iter(|| black_box(p1) + black_box(p2))
-    });
+    group.bench_function("add", |b| b.iter(|| black_box(p1) + black_box(p2)));
 
     // Point subtraction
-    group.bench_function("sub", |b| {
-        b.iter(|| black_box(p1) - black_box(p2))
-    });
+    group.bench_function("sub", |b| b.iter(|| black_box(p1) - black_box(p2)));
 
     // Point scaling
-    group.bench_function("scale", |b| {
-        b.iter(|| black_box(p1) * black_box(2.5))
-    });
+    group.bench_function("scale", |b| b.iter(|| black_box(p1) * black_box(2.5)));
 
     // Length calculation
-    group.bench_function("length", |b| {
-        b.iter(|| black_box(p1).length())
-    });
+    group.bench_function("length", |b| b.iter(|| black_box(p1).length()));
 
     // Normalization
-    group.bench_function("normalize", |b| {
-        b.iter(|| black_box(p1).normalize())
-    });
+    group.bench_function("normalize", |b| b.iter(|| black_box(p1).normalize()));
 
     // Dot product
-    group.bench_function("dot", |b| {
-        b.iter(|| black_box(p1).dot(&black_box(p2)))
-    });
+    group.bench_function("dot", |b| b.iter(|| black_box(p1).dot(&black_box(p2))));
 
     // Cross product
-    group.bench_function("cross", |b| {
-        b.iter(|| black_box(p1).cross(&black_box(p2)))
-    });
+    group.bench_function("cross", |b| b.iter(|| black_box(p1).cross(&black_box(p2))));
 
     // Batch operations
     for size in [sizes::SMALL, sizes::MEDIUM, sizes::LARGE] {
@@ -57,17 +45,17 @@ fn bench_point_operations(c: &mut Criterion) {
         let points = random_points(&mut rng, size, &bounds);
 
         group.throughput(Throughput::Elements(size as u64));
-        group.bench_with_input(BenchmarkId::new("batch_normalize", size), &points, |b, points| {
-            b.iter(|| {
-                points.iter().map(|p| p.normalize()).collect::<Vec<_>>()
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("batch_normalize", size),
+            &points,
+            |b, points| b.iter(|| points.iter().map(|p| p.normalize()).collect::<Vec<_>>()),
+        );
 
-        group.bench_with_input(BenchmarkId::new("batch_length", size), &points, |b, points| {
-            b.iter(|| {
-                points.iter().map(|p| p.length()).fold(0.0, |a, b| a + b)
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("batch_length", size),
+            &points,
+            |b, points| b.iter(|| points.iter().map(|p| p.length()).fold(0.0, |a, b| a + b)),
+        );
     }
 
     group.finish();
@@ -78,11 +66,25 @@ fn bench_rect_operations(c: &mut Criterion) {
 
     // Rect creation
     group.bench_function("new_ltrb", |b| {
-        b.iter(|| Rect::new(black_box(10.0), black_box(20.0), black_box(100.0), black_box(200.0)))
+        b.iter(|| {
+            Rect::new(
+                black_box(10.0),
+                black_box(20.0),
+                black_box(100.0),
+                black_box(200.0),
+            )
+        })
     });
 
     group.bench_function("from_xywh", |b| {
-        b.iter(|| Rect::from_xywh(black_box(10.0), black_box(20.0), black_box(90.0), black_box(180.0)))
+        b.iter(|| {
+            Rect::from_xywh(
+                black_box(10.0),
+                black_box(20.0),
+                black_box(90.0),
+                black_box(180.0),
+            )
+        })
     });
 
     // Rect queries
@@ -90,17 +92,11 @@ fn bench_rect_operations(c: &mut Criterion) {
     let point_inside = Point::new(50.0, 100.0);
     let point_outside = Point::new(200.0, 300.0);
 
-    group.bench_function("width", |b| {
-        b.iter(|| black_box(rect).width())
-    });
+    group.bench_function("width", |b| b.iter(|| black_box(rect).width()));
 
-    group.bench_function("height", |b| {
-        b.iter(|| black_box(rect).height())
-    });
+    group.bench_function("height", |b| b.iter(|| black_box(rect).height()));
 
-    group.bench_function("is_empty", |b| {
-        b.iter(|| black_box(rect).is_empty())
-    });
+    group.bench_function("is_empty", |b| b.iter(|| black_box(rect).is_empty()));
 
     group.bench_function("contains_hit", |b| {
         b.iter(|| black_box(rect).contains(black_box(point_inside)))
@@ -137,9 +133,7 @@ fn bench_rect_operations(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(size as u64));
         group.bench_with_input(BenchmarkId::new("batch_union", size), &rects, |b, rects| {
-            b.iter(|| {
-                rects.iter().fold(Rect::EMPTY, |acc, r| acc.join(r))
-            })
+            b.iter(|| rects.iter().fold(Rect::EMPTY, |acc, r| acc.join(r)))
         });
     }
 
@@ -168,9 +162,7 @@ fn bench_color_operations(c: &mut Criterion) {
     });
 
     // Color conversion
-    group.bench_function("to_color4f", |b| {
-        b.iter(|| black_box(color).to_color4f())
-    });
+    group.bench_function("to_color4f", |b| b.iter(|| black_box(color).to_color4f()));
 
     // Premultiply
     group.bench_function("premultiply", |b| {
@@ -183,17 +175,24 @@ fn bench_color_operations(c: &mut Criterion) {
         let colors = random_colors(&mut rng, size);
 
         group.throughput(Throughput::Elements(size as u64));
-        group.bench_with_input(BenchmarkId::new("batch_premultiply", size), &colors, |b, colors| {
-            b.iter(|| {
-                colors.iter().map(|c| premultiply_color(*c)).collect::<Vec<_>>()
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("batch_premultiply", size),
+            &colors,
+            |b, colors| {
+                b.iter(|| {
+                    colors
+                        .iter()
+                        .map(|c| premultiply_color(*c))
+                        .collect::<Vec<_>>()
+                })
+            },
+        );
 
-        group.bench_with_input(BenchmarkId::new("batch_to_color4f", size), &colors, |b, colors| {
-            b.iter(|| {
-                colors.iter().map(|c| c.to_color4f()).collect::<Vec<_>>()
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("batch_to_color4f", size),
+            &colors,
+            |b, colors| b.iter(|| colors.iter().map(|c| c.to_color4f()).collect::<Vec<_>>()),
+        );
     }
 
     group.finish();
@@ -204,20 +203,23 @@ fn bench_color4f_operations(c: &mut Criterion) {
 
     // Color4f creation
     group.bench_function("new", |b| {
-        b.iter(|| Color4f::new(black_box(0.5), black_box(0.25), black_box(0.125), black_box(0.8)))
+        b.iter(|| {
+            Color4f::new(
+                black_box(0.5),
+                black_box(0.25),
+                black_box(0.125),
+                black_box(0.8),
+            )
+        })
     });
 
     // Color4f operations
     let c1 = Color4f::new(0.5, 0.25, 0.125, 0.8);
     let c2 = Color4f::new(0.8, 0.6, 0.4, 1.0);
 
-    group.bench_function("to_color", |b| {
-        b.iter(|| black_box(c1).to_color())
-    });
+    group.bench_function("to_color", |b| b.iter(|| black_box(c1).to_color()));
 
-    group.bench_function("premul", |b| {
-        b.iter(|| black_box(c1).premul())
-    });
+    group.bench_function("premul", |b| b.iter(|| black_box(c1).premul()));
 
     group.bench_function("lerp", |b| {
         b.iter(|| black_box(c1).lerp(black_box(&c2), black_box(0.5)))
@@ -229,17 +231,17 @@ fn bench_color4f_operations(c: &mut Criterion) {
         let colors = random_colors4f(&mut rng, size);
 
         group.throughput(Throughput::Elements(size as u64));
-        group.bench_with_input(BenchmarkId::new("batch_premul", size), &colors, |b, colors| {
-            b.iter(|| {
-                colors.iter().map(|c| c.premul()).collect::<Vec<_>>()
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("batch_premul", size),
+            &colors,
+            |b, colors| b.iter(|| colors.iter().map(|c| c.premul()).collect::<Vec<_>>()),
+        );
 
-        group.bench_with_input(BenchmarkId::new("batch_to_color", size), &colors, |b, colors| {
-            b.iter(|| {
-                colors.iter().map(|c| c.to_color()).collect::<Vec<_>>()
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("batch_to_color", size),
+            &colors,
+            |b, colors| b.iter(|| colors.iter().map(|c| c.to_color()).collect::<Vec<_>>()),
+        );
     }
 
     group.finish();
@@ -251,21 +253,20 @@ fn bench_scalar_operations(c: &mut Criterion) {
     let values: Vec<Scalar> = (0..1000).map(|i| i as Scalar * 0.001).collect();
 
     group.bench_function("nearly_zero", |b| {
-        b.iter(|| {
-            values.iter().filter(|&&x| x.abs() < 1e-6).count()
-        })
+        b.iter(|| values.iter().filter(|&&x| x.abs() < 1e-6).count())
     });
 
     group.bench_function("nearly_equal", |b| {
         b.iter(|| {
-            values.windows(2).filter(|w| (w[0] - w[1]).abs() < 1e-6).count()
+            values
+                .windows(2)
+                .filter(|w| (w[0] - w[1]).abs() < 1e-6)
+                .count()
         })
     });
 
     group.bench_function("is_finite", |b| {
-        b.iter(|| {
-            values.iter().filter(|&&x| x.is_finite()).count()
-        })
+        b.iter(|| values.iter().filter(|&&x| x.is_finite()).count())
     });
 
     group.bench_function("interp", |b| {

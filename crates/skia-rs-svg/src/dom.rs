@@ -148,18 +148,10 @@ impl SvgNode {
     pub fn bounds(&self) -> Rect {
         match &self.kind {
             SvgNodeKind::Rect(r) => Rect::from_xywh(r.x, r.y, r.width, r.height),
-            SvgNodeKind::Circle(c) => Rect::from_xywh(
-                c.cx - c.r,
-                c.cy - c.r,
-                c.r * 2.0,
-                c.r * 2.0,
-            ),
-            SvgNodeKind::Ellipse(e) => Rect::from_xywh(
-                e.cx - e.rx,
-                e.cy - e.ry,
-                e.rx * 2.0,
-                e.ry * 2.0,
-            ),
+            SvgNodeKind::Circle(c) => Rect::from_xywh(c.cx - c.r, c.cy - c.r, c.r * 2.0, c.r * 2.0),
+            SvgNodeKind::Ellipse(e) => {
+                Rect::from_xywh(e.cx - e.rx, e.cy - e.ry, e.rx * 2.0, e.ry * 2.0)
+            }
             SvgNodeKind::Line(l) => Rect::new(
                 l.x1.min(l.x2),
                 l.y1.min(l.y2),

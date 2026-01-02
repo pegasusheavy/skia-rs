@@ -870,7 +870,11 @@ pub struct ComposeShader {
 impl ComposeShader {
     /// Create a new compose shader.
     pub fn new(outer: ShaderRef, inner: ShaderRef, blend_mode: crate::BlendMode) -> Self {
-        Self { outer, inner, blend_mode }
+        Self {
+            outer,
+            inner,
+            blend_mode,
+        }
     }
 
     /// Get the outer shader.
@@ -948,7 +952,9 @@ pub mod shaders {
         positions: Option<Vec<Scalar>>,
         tile_mode: TileMode,
     ) -> ShaderRef {
-        Arc::new(LinearGradient::new(start, end, colors, positions, tile_mode))
+        Arc::new(LinearGradient::new(
+            start, end, colors, positions, tile_mode,
+        ))
     }
 
     /// Create a radial gradient shader.
@@ -959,7 +965,9 @@ pub mod shaders {
         positions: Option<Vec<Scalar>>,
         tile_mode: TileMode,
     ) -> ShaderRef {
-        Arc::new(RadialGradient::new(center, radius, colors, positions, tile_mode))
+        Arc::new(RadialGradient::new(
+            center, radius, colors, positions, tile_mode,
+        ))
     }
 
     /// Create a sweep gradient shader.
@@ -971,7 +979,14 @@ pub mod shaders {
         positions: Option<Vec<Scalar>>,
         tile_mode: TileMode,
     ) -> ShaderRef {
-        Arc::new(SweepGradient::new(center, start_angle, end_angle, colors, positions, tile_mode))
+        Arc::new(SweepGradient::new(
+            center,
+            start_angle,
+            end_angle,
+            colors,
+            positions,
+            tile_mode,
+        ))
     }
 
     /// Create a two-point conical gradient shader.

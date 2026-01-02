@@ -25,10 +25,8 @@ impl ColorMatrixFilter {
     /// Create an identity color matrix.
     pub fn identity() -> Self {
         Self::new([
-            1.0, 0.0, 0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0, 0.0, 0.0,
-            0.0, 0.0, 1.0, 0.0, 0.0,
-            0.0, 0.0, 0.0, 1.0, 0.0,
+            1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
         ])
     }
 
@@ -41,10 +39,26 @@ impl ColorMatrixFilter {
         let b = 0.0722 * ms;
 
         Self::new([
-            r + s, g, b, 0.0, 0.0,
-            r, g + s, b, 0.0, 0.0,
-            r, g, b + s, 0.0, 0.0,
-            0.0, 0.0, 0.0, 1.0, 0.0,
+            r + s,
+            g,
+            b,
+            0.0,
+            0.0,
+            r,
+            g + s,
+            b,
+            0.0,
+            0.0,
+            r,
+            g,
+            b + s,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
         ])
     }
 }
@@ -129,7 +143,11 @@ pub struct BlurImageFilter {
 impl BlurImageFilter {
     /// Create a new blur image filter.
     pub fn new(sigma_x: Scalar, sigma_y: Scalar, tile_mode: crate::shader::TileMode) -> Self {
-        Self { sigma_x, sigma_y, tile_mode }
+        Self {
+            sigma_x,
+            sigma_y,
+            tile_mode,
+        }
     }
 }
 
@@ -138,12 +156,7 @@ impl ImageFilter for BlurImageFilter {
         // Blur expands bounds by ~3 sigma
         let dx = self.sigma_x * 3.0;
         let dy = self.sigma_y * 3.0;
-        Rect::new(
-            src.left - dx,
-            src.top - dy,
-            src.right + dx,
-            src.bottom + dy,
-        )
+        Rect::new(src.left - dx, src.top - dy, src.right + dx, src.bottom + dy)
     }
 }
 
@@ -168,7 +181,14 @@ impl DropShadowImageFilter {
         color: Color4f,
         shadow_only: bool,
     ) -> Self {
-        Self { dx, dy, sigma_x, sigma_y, color, shadow_only }
+        Self {
+            dx,
+            dy,
+            sigma_x,
+            sigma_y,
+            color,
+            shadow_only,
+        }
     }
 }
 
@@ -254,7 +274,11 @@ impl TableMaskFilter {
         let mut table = [0u8; 256];
         for (i, v) in table.iter_mut().enumerate() {
             let i = i as u8;
-            *v = if i < min { 0 } else if i > max { 255 } else {
+            *v = if i < min {
+                0
+            } else if i > max {
+                255
+            } else {
                 ((i - min) as f32 / (max - min) as f32 * 255.0) as u8
             };
         }
@@ -357,7 +381,10 @@ pub struct ColorFilterImageFilter {
 impl ColorFilterImageFilter {
     /// Create a new color filter image filter.
     pub fn new(color_filter: ColorFilterRef, input: Option<ImageFilterRef>) -> Self {
-        Self { color_filter, input }
+        Self {
+            color_filter,
+            input,
+        }
     }
 
     /// Get the color filter.
@@ -663,7 +690,11 @@ pub struct TileImageFilter {
 impl TileImageFilter {
     /// Create a tile filter.
     pub fn new(src_rect: Rect, dst_rect: Rect, input: Option<ImageFilterRef>) -> Self {
-        Self { src_rect, dst_rect, input }
+        Self {
+            src_rect,
+            dst_rect,
+            input,
+        }
     }
 }
 
@@ -690,14 +721,26 @@ impl BlendImageFilter {
         background: Option<ImageFilterRef>,
         foreground: Option<ImageFilterRef>,
     ) -> Self {
-        Self { mode, background, foreground }
+        Self {
+            mode,
+            background,
+            foreground,
+        }
     }
 }
 
 impl ImageFilter for BlendImageFilter {
     fn filter_bounds(&self, src: &Rect) -> Rect {
-        let bg = self.background.as_ref().map(|f| f.filter_bounds(src)).unwrap_or(*src);
-        let fg = self.foreground.as_ref().map(|f| f.filter_bounds(src)).unwrap_or(*src);
+        let bg = self
+            .background
+            .as_ref()
+            .map(|f| f.filter_bounds(src))
+            .unwrap_or(*src);
+        let fg = self
+            .foreground
+            .as_ref()
+            .map(|f| f.filter_bounds(src))
+            .unwrap_or(*src);
         bg.union(&fg)
     }
 }
@@ -727,14 +770,30 @@ impl ArithmeticImageFilter {
         background: Option<ImageFilterRef>,
         foreground: Option<ImageFilterRef>,
     ) -> Self {
-        Self { k1, k2, k3, k4, enforce_pm_color, background, foreground }
+        Self {
+            k1,
+            k2,
+            k3,
+            k4,
+            enforce_pm_color,
+            background,
+            foreground,
+        }
     }
 }
 
 impl ImageFilter for ArithmeticImageFilter {
     fn filter_bounds(&self, src: &Rect) -> Rect {
-        let bg = self.background.as_ref().map(|f| f.filter_bounds(src)).unwrap_or(*src);
-        let fg = self.foreground.as_ref().map(|f| f.filter_bounds(src)).unwrap_or(*src);
+        let bg = self
+            .background
+            .as_ref()
+            .map(|f| f.filter_bounds(src))
+            .unwrap_or(*src);
+        let fg = self
+            .foreground
+            .as_ref()
+            .map(|f| f.filter_bounds(src))
+            .unwrap_or(*src);
         bg.union(&fg)
     }
 }

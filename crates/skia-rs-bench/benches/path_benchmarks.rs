@@ -1,20 +1,18 @@
 //! Path construction and operation benchmarks.
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use std::hint::black_box;
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use skia_rs_bench::{
     generate_complex_path, generate_multi_contour_path, generate_nested_rects,
     generate_simple_path, generate_star, sizes,
 };
 use skia_rs_core::Rect;
 use skia_rs_path::{FillType, Path, PathBuilder};
+use std::hint::black_box;
 
 fn bench_path_builder(c: &mut Criterion) {
     let mut group = c.benchmark_group("PathBuilder");
 
-    group.bench_function("new", |b| {
-        b.iter(|| PathBuilder::new())
-    });
+    group.bench_function("new", |b| b.iter(|| PathBuilder::new()));
 
     group.bench_function("move_to", |b| {
         b.iter_batched(
@@ -50,7 +48,12 @@ fn bench_path_builder(c: &mut Criterion) {
                 builder
             },
             |mut builder| {
-                builder.quad_to(black_box(50.0), black_box(100.0), black_box(100.0), black_box(0.0));
+                builder.quad_to(
+                    black_box(50.0),
+                    black_box(100.0),
+                    black_box(100.0),
+                    black_box(0.0),
+                );
                 builder
             },
             criterion::BatchSize::SmallInput,
@@ -66,9 +69,12 @@ fn bench_path_builder(c: &mut Criterion) {
             },
             |mut builder| {
                 builder.cubic_to(
-                    black_box(25.0), black_box(50.0),
-                    black_box(75.0), black_box(50.0),
-                    black_box(100.0), black_box(0.0),
+                    black_box(25.0),
+                    black_box(50.0),
+                    black_box(75.0),
+                    black_box(50.0),
+                    black_box(100.0),
+                    black_box(0.0),
                 );
                 builder
             },
@@ -85,8 +91,10 @@ fn bench_path_builder(c: &mut Criterion) {
             },
             |mut builder| {
                 builder.conic_to(
-                    black_box(50.0), black_box(100.0),
-                    black_box(100.0), black_box(0.0),
+                    black_box(50.0),
+                    black_box(100.0),
+                    black_box(100.0),
+                    black_box(0.0),
                     black_box(0.707),
                 );
                 builder
@@ -198,17 +206,17 @@ fn bench_path_construction(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("multi_contour", &label),
             &(contours, segments),
-            |b, &(contours, segments)| {
-                b.iter(|| generate_multi_contour_path(contours, segments))
-            },
+            |b, &(contours, segments)| b.iter(|| generate_multi_contour_path(contours, segments)),
         );
     }
 
     // Nested rectangles
     for count in [5, 10, 20, 50] {
-        group.bench_with_input(BenchmarkId::new("nested_rects", count), &count, |b, &count| {
-            b.iter(|| generate_nested_rects(count, 2.0))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("nested_rects", count),
+            &count,
+            |b, &count| b.iter(|| generate_nested_rects(count, 2.0)),
+        );
     }
 
     group.finish();
@@ -266,29 +274,29 @@ fn bench_path_iteration(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(size as u64));
 
-        group.bench_with_input(BenchmarkId::new("simple_iter", size), &simple_path, |b, path| {
-            b.iter(|| {
-                path.iter().count()
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("simple_iter", size),
+            &simple_path,
+            |b, path| b.iter(|| path.iter().count()),
+        );
 
-        group.bench_with_input(BenchmarkId::new("complex_iter", size), &complex_path, |b, path| {
-            b.iter(|| {
-                path.iter().count()
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("complex_iter", size),
+            &complex_path,
+            |b, path| b.iter(|| path.iter().count()),
+        );
 
-        group.bench_with_input(BenchmarkId::new("verbs_slice", size), &simple_path, |b, path| {
-            b.iter(|| {
-                black_box(path.verbs()).len()
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("verbs_slice", size),
+            &simple_path,
+            |b, path| b.iter(|| black_box(path.verbs()).len()),
+        );
 
-        group.bench_with_input(BenchmarkId::new("points_slice", size), &simple_path, |b, path| {
-            b.iter(|| {
-                black_box(path.points()).len()
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("points_slice", size),
+            &simple_path,
+            |b, path| b.iter(|| black_box(path.points()).len()),
+        );
     }
 
     group.finish();
@@ -299,9 +307,7 @@ fn bench_path_mutation(c: &mut Criterion) {
 
     let path = generate_simple_path(100);
 
-    group.bench_function("clone", |b| {
-        b.iter(|| black_box(&path).clone())
-    });
+    group.bench_function("clone", |b| b.iter(|| black_box(&path).clone()));
 
     group.bench_function("reset", |b| {
         b.iter_batched(

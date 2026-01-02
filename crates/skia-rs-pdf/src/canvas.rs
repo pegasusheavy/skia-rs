@@ -189,27 +189,39 @@ impl PdfCanvas {
         // Four quadrants
         self.write_op(&format!(
             "{} {} {} {} {} {} c\n",
-            center.x + radius, center.y + k,
-            center.x + k, center.y + radius,
-            center.x, center.y + radius
+            center.x + radius,
+            center.y + k,
+            center.x + k,
+            center.y + radius,
+            center.x,
+            center.y + radius
         ));
         self.write_op(&format!(
             "{} {} {} {} {} {} c\n",
-            center.x - k, center.y + radius,
-            center.x - radius, center.y + k,
-            center.x - radius, center.y
+            center.x - k,
+            center.y + radius,
+            center.x - radius,
+            center.y + k,
+            center.x - radius,
+            center.y
         ));
         self.write_op(&format!(
             "{} {} {} {} {} {} c\n",
-            center.x - radius, center.y - k,
-            center.x - k, center.y - radius,
-            center.x, center.y - radius
+            center.x - radius,
+            center.y - k,
+            center.x - k,
+            center.y - radius,
+            center.x,
+            center.y - radius
         ));
         self.write_op(&format!(
             "{} {} {} {} {} {} c\n",
-            center.x + k, center.y - radius,
-            center.x + radius, center.y - k,
-            center.x + radius, center.y
+            center.x + k,
+            center.y - radius,
+            center.x + radius,
+            center.y - k,
+            center.x + radius,
+            center.y
         ));
 
         self.stroke_or_fill(paint);
@@ -280,7 +292,14 @@ impl PdfCanvas {
     }
 
     /// Draw text (basic support).
-    pub fn draw_text(&mut self, text: &str, x: Scalar, y: Scalar, font_size: Scalar, paint: &Paint) {
+    pub fn draw_text(
+        &mut self,
+        text: &str,
+        x: Scalar,
+        y: Scalar,
+        font_size: Scalar,
+        paint: &Paint,
+    ) {
         self.apply_paint(paint);
         self.write_op("BT\n");
         self.write_op(&format!("/F1 {} Tf\n", font_size));

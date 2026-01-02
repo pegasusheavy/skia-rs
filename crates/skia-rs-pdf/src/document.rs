@@ -153,10 +153,7 @@ impl PdfDocument {
             object_offsets.push((page_id, offset));
             let page_obj = format!(
                 "{} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Contents {} 0 R /Resources << >> >>\nendobj\n",
-                page_id,
-                page.width,
-                page.height,
-                content_id
+                page_id, page.width, page.height, content_id
             );
             writer.write_all(page_obj.as_bytes())?;
             offset += page_obj.len() as u64;
@@ -247,11 +244,7 @@ impl PdfDocument {
 
         entries.push("/Producer (skia-rs)".to_string());
 
-        format!(
-            "{} 0 obj\n<< {} >>\nendobj\n",
-            id,
-            entries.join(" ")
-        )
+        format!("{} 0 obj\n<< {} >>\nendobj\n", id, entries.join(" "))
     }
 
     /// Generate PDF bytes.

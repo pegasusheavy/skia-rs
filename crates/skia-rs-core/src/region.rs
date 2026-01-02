@@ -240,21 +240,11 @@ impl Region {
     /// Combine this region with another region using the specified operation.
     pub fn op_region(&mut self, other: &Region, op: RegionOp) -> bool {
         match op {
-            RegionOp::Replace => {
-                self.set_region(other)
-            }
-            RegionOp::Intersect => {
-                self.intersect(other)
-            }
-            RegionOp::Union => {
-                self.union(other)
-            }
-            RegionOp::Xor => {
-                self.xor(other)
-            }
-            RegionOp::Difference => {
-                self.difference(other)
-            }
+            RegionOp::Replace => self.set_region(other),
+            RegionOp::Intersect => self.intersect(other),
+            RegionOp::Union => self.union(other),
+            RegionOp::Xor => self.xor(other),
+            RegionOp::Difference => self.difference(other),
             RegionOp::ReverseDifference => {
                 let mut temp = other.clone();
                 temp.difference(self);

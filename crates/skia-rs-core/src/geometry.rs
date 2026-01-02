@@ -1167,10 +1167,7 @@ impl Matrix {
         // Handle perspective
         if m[6] != 0.0 || m[7] != 0.0 || m[8] != 1.0 {
             let w = m[6] * point.x + m[7] * point.y + m[8];
-            Point {
-                x: x / w,
-                y: y / w,
-            }
+            Point { x: x / w, y: y / w }
         } else {
             Point { x, y }
         }

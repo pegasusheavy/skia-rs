@@ -464,9 +464,9 @@ impl Font {
         for y in 0..size {
             for x in 0..size {
                 let offset = ((y * size + x) * 4) as usize;
-                pixels[offset] = 255;     // R
+                pixels[offset] = 255; // R
                 pixels[offset + 1] = 200; // G
-                pixels[offset + 2] = 0;   // B (yellow-ish for emoji placeholder)
+                pixels[offset + 2] = 0; // B (yellow-ish for emoji placeholder)
                 pixels[offset + 3] = 255; // A
             }
         }
@@ -481,7 +481,11 @@ impl Font {
     }
 
     /// Get positioning information for a run of glyphs.
-    pub fn glyph_positions(&self, glyphs: &[u16], start: skia_rs_core::Point) -> Vec<skia_rs_core::Point> {
+    pub fn glyph_positions(
+        &self,
+        glyphs: &[u16],
+        start: skia_rs_core::Point,
+    ) -> Vec<skia_rs_core::Point> {
         let mut positions = Vec::with_capacity(glyphs.len());
         let mut x = start.x;
         let y = start.y;

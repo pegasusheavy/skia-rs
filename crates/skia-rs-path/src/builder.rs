@@ -66,7 +66,14 @@ impl PathBuilder {
 
     /// Conic curve (weighted quadratic).
     #[inline]
-    pub fn conic_to(&mut self, x1: Scalar, y1: Scalar, x2: Scalar, y2: Scalar, w: Scalar) -> &mut Self {
+    pub fn conic_to(
+        &mut self,
+        x1: Scalar,
+        y1: Scalar,
+        x2: Scalar,
+        y2: Scalar,
+        w: Scalar,
+    ) -> &mut Self {
         self.ensure_move();
         self.path.verbs.push(Verb::Conic);
         self.path.points.push(Point::new(x1, y1));
@@ -78,7 +85,15 @@ impl PathBuilder {
 
     /// Cubic bezier curve.
     #[inline]
-    pub fn cubic_to(&mut self, x1: Scalar, y1: Scalar, x2: Scalar, y2: Scalar, x3: Scalar, y3: Scalar) -> &mut Self {
+    pub fn cubic_to(
+        &mut self,
+        x1: Scalar,
+        y1: Scalar,
+        x2: Scalar,
+        y2: Scalar,
+        x3: Scalar,
+        y3: Scalar,
+    ) -> &mut Self {
         self.ensure_move();
         self.path.verbs.push(Verb::Cubic);
         self.path.points.push(Point::new(x1, y1));
@@ -128,7 +143,12 @@ impl PathBuilder {
 
     /// Add a circle.
     pub fn add_circle(&mut self, cx: Scalar, cy: Scalar, radius: Scalar) -> &mut Self {
-        self.add_oval(&Rect::new(cx - radius, cy - radius, cx + radius, cy + radius))
+        self.add_oval(&Rect::new(
+            cx - radius,
+            cy - radius,
+            cx + radius,
+            cy + radius,
+        ))
     }
 
     /// Add a rounded rectangle.
@@ -146,13 +166,41 @@ impl PathBuilder {
 
         self.move_to(rect.left + rx, rect.top)
             .line_to(rect.right - rx, rect.top)
-            .cubic_to(rect.right - rx + kx, rect.top, rect.right, rect.top + ry - ky, rect.right, rect.top + ry)
+            .cubic_to(
+                rect.right - rx + kx,
+                rect.top,
+                rect.right,
+                rect.top + ry - ky,
+                rect.right,
+                rect.top + ry,
+            )
             .line_to(rect.right, rect.bottom - ry)
-            .cubic_to(rect.right, rect.bottom - ry + ky, rect.right - rx + kx, rect.bottom, rect.right - rx, rect.bottom)
+            .cubic_to(
+                rect.right,
+                rect.bottom - ry + ky,
+                rect.right - rx + kx,
+                rect.bottom,
+                rect.right - rx,
+                rect.bottom,
+            )
             .line_to(rect.left + rx, rect.bottom)
-            .cubic_to(rect.left + rx - kx, rect.bottom, rect.left, rect.bottom - ry + ky, rect.left, rect.bottom - ry)
+            .cubic_to(
+                rect.left + rx - kx,
+                rect.bottom,
+                rect.left,
+                rect.bottom - ry + ky,
+                rect.left,
+                rect.bottom - ry,
+            )
             .line_to(rect.left, rect.top + ry)
-            .cubic_to(rect.left, rect.top + ry - ky, rect.left + rx - kx, rect.top, rect.left + rx, rect.top)
+            .cubic_to(
+                rect.left,
+                rect.top + ry - ky,
+                rect.left + rx - kx,
+                rect.top,
+                rect.left + rx,
+                rect.top,
+            )
             .close()
     }
 
@@ -213,7 +261,17 @@ impl PathBuilder {
         }
 
         // Convert to center parameterization and add cubics
-        self.svg_arc_to_cubics(current.x, current.y, rx.abs(), ry.abs(), x_axis_rotate, large_arc, sweep, x, y);
+        self.svg_arc_to_cubics(
+            current.x,
+            current.y,
+            rx.abs(),
+            ry.abs(),
+            x_axis_rotate,
+            large_arc,
+            sweep,
+            x,
+            y,
+        );
 
         self
     }
@@ -339,7 +397,8 @@ impl PathBuilder {
         sweep_angle: Scalar,
     ) {
         // Break arc into segments of at most 90 degrees
-        let num_segments = ((sweep_angle.abs() / (std::f32::consts::FRAC_PI_2)).ceil() as i32).max(1);
+        let num_segments =
+            ((sweep_angle.abs() / (std::f32::consts::FRAC_PI_2)).ceil() as i32).max(1);
         let segment_angle = sweep_angle / num_segments as Scalar;
 
         let mut angle = start_angle;

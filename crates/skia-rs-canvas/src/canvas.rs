@@ -239,7 +239,14 @@ impl Canvas {
     }
 
     /// Draw an arc.
-    pub fn draw_arc(&mut self, _oval: &Rect, _start_angle: Scalar, _sweep_angle: Scalar, _use_center: bool, _paint: &Paint) {
+    pub fn draw_arc(
+        &mut self,
+        _oval: &Rect,
+        _start_angle: Scalar,
+        _sweep_angle: Scalar,
+        _use_center: bool,
+        _paint: &Paint,
+    ) {
         // TODO: Implement draw_arc
     }
 
@@ -254,7 +261,12 @@ impl Canvas {
     }
 
     /// Draw a picture.
-    pub fn draw_picture(&mut self, picture: &crate::Picture, matrix: Option<&Matrix>, _paint: Option<&Paint>) {
+    pub fn draw_picture(
+        &mut self,
+        picture: &crate::Picture,
+        matrix: Option<&Matrix>,
+        _paint: Option<&Paint>,
+    ) {
         self.save();
         if let Some(m) = matrix {
             self.concat(m);
@@ -470,7 +482,14 @@ pub struct RSXform {
 
 impl RSXform {
     /// Create from rotation and scale.
-    pub fn from_radians(scale: Scalar, radians: Scalar, tx: Scalar, ty: Scalar, ax: Scalar, ay: Scalar) -> Self {
+    pub fn from_radians(
+        scale: Scalar,
+        radians: Scalar,
+        tx: Scalar,
+        ty: Scalar,
+        ax: Scalar,
+        ay: Scalar,
+    ) -> Self {
         let (sin, cos) = radians.sin_cos();
         Self {
             scos: scale * cos,

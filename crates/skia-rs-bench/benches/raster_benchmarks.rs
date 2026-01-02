@@ -1,14 +1,14 @@
 //! Rasterization benchmarks.
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use std::hint::black_box;
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use skia_rs_bench::{
-    canvas_sizes, create_rng, generate_complex_path, generate_simple_path,
-    generate_star, random_points, random_rects,
+    canvas_sizes, create_rng, generate_complex_path, generate_simple_path, generate_star,
+    random_points, random_rects,
 };
-use skia_rs_core::{Color, Point, Rect};
 use skia_rs_canvas::Surface;
+use skia_rs_core::{Color, Point, Rect};
 use skia_rs_paint::{Paint, Style};
+use std::hint::black_box;
 
 fn bench_raster_clear(c: &mut Criterion) {
     let mut group = c.benchmark_group("Raster/clear");
@@ -168,12 +168,16 @@ fn bench_raster_circles(c: &mut Criterion) {
 
     // Varying radius
     for radius in [10.0, 50.0, 100.0, 500.0] {
-        group.bench_with_input(BenchmarkId::new("fill/radius", radius as i32), &radius, |b, &radius| {
-            b.iter(|| {
-                let mut canvas = surface.raster_canvas();
-                canvas.draw_circle(center, black_box(radius), &fill_paint);
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("fill/radius", radius as i32),
+            &radius,
+            |b, &radius| {
+                b.iter(|| {
+                    let mut canvas = surface.raster_canvas();
+                    canvas.draw_circle(center, black_box(radius), &fill_paint);
+                })
+            },
+        );
     }
 
     group.finish();

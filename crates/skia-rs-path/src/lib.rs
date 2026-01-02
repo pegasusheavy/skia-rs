@@ -23,8 +23,6 @@ pub use builder::*;
 pub use effects::*;
 pub use measure::*;
 pub use ops::*;
-pub use path::{
-    FillType, Path, PathConvexity, PathDirection, PathElement, PathIter, Verb,
-};
-pub use path_utils::{stroke_to_fill, StrokeCap, StrokeJoin, StrokeParams};
-pub use svg::{parse_svg_path, SvgPathError};
+pub use path::{FillType, Path, PathConvexity, PathDirection, PathElement, PathIter, Verb};
+pub use path_utils::{StrokeCap, StrokeJoin, StrokeParams, stroke_to_fill};
+pub use svg::{SvgPathError, parse_svg_path};

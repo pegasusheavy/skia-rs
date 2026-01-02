@@ -351,12 +351,7 @@ pub struct ParagraphLine {
 
 impl ParagraphLayout {
     /// Lay out text within a given width.
-    pub fn layout(
-        text: &str,
-        font: &Font,
-        max_width: Scalar,
-        shaper: &Shaper,
-    ) -> Option<Self> {
+    pub fn layout(text: &str, font: &Font, max_width: Scalar, shaper: &Shaper) -> Option<Self> {
         let runs = shaper.shape_auto(text, font)?;
         let line_height = font.spacing();
         let ascent = font.ascent();

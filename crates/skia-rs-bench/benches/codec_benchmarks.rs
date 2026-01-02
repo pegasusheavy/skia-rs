@@ -1,9 +1,12 @@
 //! Image codec benchmarks.
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use std::hint::black_box;
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use skia_rs_codec::{
+    EncoderQuality, Image, ImageDecoder, ImageEncoder, ImageFormat, ImageInfo, JpegDecoder,
+    JpegEncoder, PngDecoder, PngEncoder,
+};
 use skia_rs_core::{AlphaType, ColorType};
-use skia_rs_codec::{Image, ImageInfo, ImageFormat, PngEncoder, PngDecoder, JpegEncoder, JpegDecoder, ImageEncoder, ImageDecoder, EncoderQuality};
+use std::hint::black_box;
 
 fn create_test_image(width: i32, height: i32) -> Image {
     let info = ImageInfo::new(width, height, ColorType::Rgba8888, AlphaType::Premul);
@@ -13,10 +16,10 @@ fn create_test_image(width: i32, height: i32) -> Image {
     for y in 0..height {
         for x in 0..width {
             let offset = ((y * width + x) * 4) as usize;
-            pixels[offset] = (x * 255 / width) as u8;     // R
+            pixels[offset] = (x * 255 / width) as u8; // R
             pixels[offset + 1] = (y * 255 / height) as u8; // G
-            pixels[offset + 2] = 128;                       // B
-            pixels[offset + 3] = 255;                       // A
+            pixels[offset + 2] = 128; // B
+            pixels[offset + 3] = 255; // A
         }
     }
 
@@ -32,27 +35,35 @@ fn bench_image_creation(c: &mut Criterion) {
         ("large", (1024, 1024)),
     ] {
         group.throughput(Throughput::Elements((w * h) as u64));
-        group.bench_with_input(BenchmarkId::new("from_raster", name), &(w, h), |b, &(w, h)| {
-            let info = ImageInfo::new(w, h, ColorType::Rgba8888, AlphaType::Premul);
-            let pixels = vec![0u8; (w * h * 4) as usize];
-            b.iter(|| {
-                Image::from_raster_data_owned(
-                    black_box(info.clone()),
-                    black_box(pixels.clone()),
-                    black_box(w as usize * 4),
-                )
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("from_raster", name),
+            &(w, h),
+            |b, &(w, h)| {
+                let info = ImageInfo::new(w, h, ColorType::Rgba8888, AlphaType::Premul);
+                let pixels = vec![0u8; (w * h * 4) as usize];
+                b.iter(|| {
+                    Image::from_raster_data_owned(
+                        black_box(info.clone()),
+                        black_box(pixels.clone()),
+                        black_box(w as usize * 4),
+                    )
+                })
+            },
+        );
 
-        group.bench_with_input(BenchmarkId::new("from_color", name), &(w, h), |b, &(w, h)| {
-            b.iter(|| {
-                Image::from_color(
-                    black_box(w),
-                    black_box(h),
-                    black_box(0xFF804020u32), // ARGB color as u32
-                )
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("from_color", name),
+            &(w, h),
+            |b, &(w, h)| {
+                b.iter(|| {
+                    Image::from_color(
+                        black_box(w),
+                        black_box(h),
+                        black_box(0xFF804020u32), // ARGB color as u32
+                    )
+                })
+            },
+        );
     }
 
     group.finish();
@@ -130,9 +141,7 @@ fn bench_png_decode(c: &mut Criterion) {
 
         group.throughput(Throughput::Bytes(encoded.len() as u64));
         group.bench_with_input(BenchmarkId::new("decode", name), &encoded, |b, encoded| {
-            b.iter(|| {
-                decoder.decode_bytes(black_box(encoded)).unwrap()
-            })
+            b.iter(|| decoder.decode_bytes(black_box(encoded)).unwrap())
         });
     }
 
@@ -189,9 +198,7 @@ fn bench_jpeg_decode(c: &mut Criterion) {
 
         group.throughput(Throughput::Bytes(encoded.len() as u64));
         group.bench_with_input(BenchmarkId::new("decode", name), &encoded, |b, encoded| {
-            b.iter(|| {
-                decoder.decode_bytes(black_box(encoded)).unwrap()
-            })
+            b.iter(|| decoder.decode_bytes(black_box(encoded)).unwrap())
         });
     }
 
@@ -203,25 +210,15 @@ fn bench_image_operations(c: &mut Criterion) {
 
     let image = create_test_image(1024, 1024);
 
-    group.bench_function("width", |b| {
-        b.iter(|| black_box(&image).width())
-    });
+    group.bench_function("width", |b| b.iter(|| black_box(&image).width()));
 
-    group.bench_function("height", |b| {
-        b.iter(|| black_box(&image).height())
-    });
+    group.bench_function("height", |b| b.iter(|| black_box(&image).height()));
 
-    group.bench_function("bounds", |b| {
-        b.iter(|| black_box(&image).bounds())
-    });
+    group.bench_function("bounds", |b| b.iter(|| black_box(&image).bounds()));
 
-    group.bench_function("color_type", |b| {
-        b.iter(|| black_box(&image).color_type())
-    });
+    group.bench_function("color_type", |b| b.iter(|| black_box(&image).color_type()));
 
-    group.bench_function("alpha_type", |b| {
-        b.iter(|| black_box(&image).alpha_type())
-    });
+    group.bench_function("alpha_type", |b| b.iter(|| black_box(&image).alpha_type()));
 
     // Scaling
     for scale in [0.5, 0.25, 0.125] {
@@ -230,9 +227,7 @@ fn bench_image_operations(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("scale", format!("{}x", scale)),
             &(new_w, new_h),
-            |b, &(w, h)| {
-                b.iter(|| image.make_scaled(black_box(w), black_box(h)))
-            },
+            |b, &(w, h)| b.iter(|| image.make_scaled(black_box(w), black_box(h))),
         );
     }
 

@@ -1,25 +1,21 @@
 //! Paint and shader benchmarks.
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use std::hint::black_box;
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use skia_rs_bench::{create_rng, random_colors4f, sizes};
 use skia_rs_core::{Color, Color4f, Point, Rect};
 use skia_rs_paint::{
-    BlendMode, BlurMaskFilter, BlurStyle, ColorMatrixFilter, ColorShader,
-    DropShadowImageFilter, LinearGradient, Paint, RadialGradient, Shader,
-    Style, StrokeCap, StrokeJoin, SweepGradient, TileMode,
+    BlendMode, BlurMaskFilter, BlurStyle, ColorMatrixFilter, ColorShader, DropShadowImageFilter,
+    LinearGradient, Paint, RadialGradient, Shader, StrokeCap, StrokeJoin, Style, SweepGradient,
+    TileMode,
 };
+use std::hint::black_box;
 
 fn bench_paint_creation(c: &mut Criterion) {
     let mut group = c.benchmark_group("Paint/creation");
 
-    group.bench_function("new", |b| {
-        b.iter(|| Paint::new())
-    });
+    group.bench_function("new", |b| b.iter(|| Paint::new()));
 
-    group.bench_function("default", |b| {
-        b.iter(|| Paint::default())
-    });
+    group.bench_function("default", |b| b.iter(|| Paint::default()));
 
     group.bench_function("clone", |b| {
         let paint = Paint::new();
@@ -152,25 +148,17 @@ fn bench_paint_getters(c: &mut Criterion) {
         .set_stroke_width(2.5)
         .set_blend_mode(BlendMode::Multiply);
 
-    group.bench_function("color", |b| {
-        b.iter(|| black_box(&paint).color())
-    });
+    group.bench_function("color", |b| b.iter(|| black_box(&paint).color()));
 
-    group.bench_function("alpha", |b| {
-        b.iter(|| black_box(&paint).alpha())
-    });
+    group.bench_function("alpha", |b| b.iter(|| black_box(&paint).alpha()));
 
-    group.bench_function("style", |b| {
-        b.iter(|| black_box(&paint).style())
-    });
+    group.bench_function("style", |b| b.iter(|| black_box(&paint).style()));
 
     group.bench_function("stroke_width", |b| {
         b.iter(|| black_box(&paint).stroke_width())
     });
 
-    group.bench_function("blend_mode", |b| {
-        b.iter(|| black_box(&paint).blend_mode())
-    });
+    group.bench_function("blend_mode", |b| b.iter(|| black_box(&paint).blend_mode()));
 
     group.bench_function("is_anti_alias", |b| {
         b.iter(|| black_box(&paint).is_anti_alias())
@@ -193,9 +181,7 @@ fn bench_blend_mode(c: &mut Criterion) {
     ];
 
     group.bench_function("name", |b| {
-        b.iter(|| {
-            modes.iter().map(|m| m.name()).collect::<Vec<_>>()
-        })
+        b.iter(|| modes.iter().map(|m| m.name()).collect::<Vec<_>>())
     });
 
     group.finish();
@@ -349,7 +335,10 @@ fn bench_color_filter(c: &mut Criterion) {
             &colors,
             |b, colors| {
                 b.iter(|| {
-                    colors.iter().map(|c| saturation.filter_color(*c)).collect::<Vec<_>>()
+                    colors
+                        .iter()
+                        .map(|c| saturation.filter_color(*c))
+                        .collect::<Vec<_>>()
                 })
             },
         );
@@ -367,18 +356,12 @@ fn bench_mask_filter(c: &mut Criterion) {
 
     let blur = BlurMaskFilter::new(BlurStyle::Normal, 5.0);
 
-    group.bench_function("blur_style", |b| {
-        b.iter(|| black_box(&blur).style())
-    });
+    group.bench_function("blur_style", |b| b.iter(|| black_box(&blur).style()));
 
-    group.bench_function("blur_sigma", |b| {
-        b.iter(|| black_box(&blur).sigma())
-    });
+    group.bench_function("blur_sigma", |b| b.iter(|| black_box(&blur).sigma()));
 
     use skia_rs_paint::MaskFilter;
-    group.bench_function("blur_radius", |b| {
-        b.iter(|| black_box(&blur).blur_radius())
-    });
+    group.bench_function("blur_radius", |b| b.iter(|| black_box(&blur).blur_radius()));
 
     group.finish();
 }
@@ -406,7 +389,8 @@ fn bench_image_filter(c: &mut Criterion) {
     });
 
     let blur = BlurImageFilter::new(5.0, 5.0, TileMode::Clamp);
-    let shadow = DropShadowImageFilter::new(3.0, 3.0, 2.0, 2.0, Color4f::new(0.0, 0.0, 0.0, 0.5), false);
+    let shadow =
+        DropShadowImageFilter::new(3.0, 3.0, 2.0, 2.0, Color4f::new(0.0, 0.0, 0.0, 0.5), false);
     let rect = Rect::from_xywh(10.0, 20.0, 100.0, 50.0);
 
     group.bench_function("blur_filter_bounds", |b| {

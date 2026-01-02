@@ -100,13 +100,21 @@ impl ImageInfo {
 
     /// Creates RGBA 8888 image info.
     #[inline]
-    pub fn new_rgba8888(width: i32, height: i32, alpha_type: AlphaType) -> Result<Self, PixelError> {
+    pub fn new_rgba8888(
+        width: i32,
+        height: i32,
+        alpha_type: AlphaType,
+    ) -> Result<Self, PixelError> {
         Self::new(width, height, ColorType::Rgba8888, alpha_type)
     }
 
     /// Creates BGRA 8888 image info (native on little-endian).
     #[inline]
-    pub fn new_bgra8888(width: i32, height: i32, alpha_type: AlphaType) -> Result<Self, PixelError> {
+    pub fn new_bgra8888(
+        width: i32,
+        height: i32,
+        alpha_type: AlphaType,
+    ) -> Result<Self, PixelError> {
         Self::new(width, height, ColorType::Bgra8888, alpha_type)
     }
 
@@ -630,9 +638,9 @@ fn convert_row(
         (Rgba8888, Bgra8888) | (Bgra8888, Rgba8888) => {
             for i in 0..width {
                 let si = i * 4;
-                dst[si] = src[si + 2];     // R <-> B
+                dst[si] = src[si + 2]; // R <-> B
                 dst[si + 1] = src[si + 1]; // G
-                dst[si + 2] = src[si];     // B <-> R
+                dst[si + 2] = src[si]; // B <-> R
                 dst[si + 3] = src[si + 3]; // A
             }
         }
@@ -666,9 +674,9 @@ fn convert_row(
                 let si = i * 2;
                 let di = i * 4;
                 let pixel = u16::from_le_bytes([src[si], src[si + 1]]);
-                dst[di] = ((pixel >> 11) as u8) << 3;     // R (5 bits -> 8 bits)
+                dst[di] = ((pixel >> 11) as u8) << 3; // R (5 bits -> 8 bits)
                 dst[di + 1] = ((pixel >> 5) as u8 & 0x3F) << 2; // G (6 bits -> 8 bits)
-                dst[di + 2] = (pixel as u8 & 0x1F) << 3;  // B (5 bits -> 8 bits)
+                dst[di + 2] = (pixel as u8 & 0x1F) << 3; // B (5 bits -> 8 bits)
                 dst[di + 3] = 255;
             }
         }
@@ -735,9 +743,9 @@ fn convert_row(
             for i in 0..width {
                 let si = i * 4;
                 let di = i * 3;
-                dst[di] = src[si + 2];     // R
+                dst[di] = src[si + 2]; // R
                 dst[di + 1] = src[si + 1]; // G
-                dst[di + 2] = src[si];     // B
+                dst[di + 2] = src[si]; // B
             }
         }
 
@@ -746,9 +754,9 @@ fn convert_row(
             for i in 0..width {
                 let si = i * 3;
                 let di = i * 4;
-                dst[di] = src[si + 2];     // B
+                dst[di] = src[si + 2]; // B
                 dst[di + 1] = src[si + 1]; // G
-                dst[di + 2] = src[si];     // R
+                dst[di + 2] = src[si]; // R
                 dst[di + 3] = 255;
             }
         }
@@ -845,7 +853,7 @@ mod tests {
 
         convert_pixels(&src, &src_info, 8, &mut dst, &dst_info, 8).unwrap();
 
-        assert_eq!(dst[0], 64);  // B from R position
+        assert_eq!(dst[0], 64); // B from R position
         assert_eq!(dst[1], 128); // G
         assert_eq!(dst[2], 255); // R from B position
         assert_eq!(dst[3], 255); // A
@@ -856,7 +864,7 @@ mod tests {
         let mut pixels = [255, 128, 64, 255, 100, 150, 200, 128];
         swizzle_rb_in_place(&mut pixels);
 
-        assert_eq!(pixels[0], 64);  // R <-> B swapped
+        assert_eq!(pixels[0], 64); // R <-> B swapped
         assert_eq!(pixels[2], 255); // R <-> B swapped
     }
 

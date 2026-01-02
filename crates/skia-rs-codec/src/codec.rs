@@ -200,10 +200,14 @@ impl ImageDecoder for PngDecoder {
     #[cfg(feature = "png")]
     fn decode<R: Read>(&self, reader: R) -> CodecResult<Image> {
         let decoder = png::Decoder::new(reader);
-        let mut png_reader = decoder.read_info().map_err(|e| CodecError::DecodingError(e.to_string()))?;
+        let mut png_reader = decoder
+            .read_info()
+            .map_err(|e| CodecError::DecodingError(e.to_string()))?;
 
         let mut buf = vec![0; png_reader.output_buffer_size()];
-        let info = png_reader.next_frame(&mut buf).map_err(|e| CodecError::DecodingError(e.to_string()))?;
+        let info = png_reader
+            .next_frame(&mut buf)
+            .map_err(|e| CodecError::DecodingError(e.to_string()))?;
 
         let width = info.width as i32;
         let height = info.height as i32;
@@ -260,7 +264,9 @@ impl ImageDecoder for PngDecoder {
 
     #[cfg(not(feature = "png"))]
     fn decode<R: Read>(&self, _reader: R) -> CodecResult<Image> {
-        Err(CodecError::Unsupported("PNG decoding requires the 'png' feature".into()))
+        Err(CodecError::Unsupported(
+            "PNG decoding requires the 'png' feature".into(),
+        ))
     }
 
     fn format(&self) -> ImageFormat {
@@ -286,9 +292,13 @@ impl ImageEncoder for PngEncoder {
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
 
-        let mut png_writer = encoder.write_header().map_err(|e| CodecError::EncodingError(e.to_string()))?;
+        let mut png_writer = encoder
+            .write_header()
+            .map_err(|e| CodecError::EncodingError(e.to_string()))?;
 
-        let pixels = image.peek_pixels().ok_or_else(|| CodecError::EncodingError("Cannot access pixels".into()))?;
+        let pixels = image
+            .peek_pixels()
+            .ok_or_else(|| CodecError::EncodingError("Cannot access pixels".into()))?;
 
         // Convert to RGBA if necessary based on color type
         let rgba_data = match image.color_type() {
@@ -303,17 +313,25 @@ impl ImageEncoder for PngEncoder {
                 }
                 rgba
             }
-            _ => return Err(CodecError::Unsupported("Unsupported color type for PNG encoding".into())),
+            _ => {
+                return Err(CodecError::Unsupported(
+                    "Unsupported color type for PNG encoding".into(),
+                ));
+            }
         };
 
-        png_writer.write_image_data(&rgba_data).map_err(|e| CodecError::EncodingError(e.to_string()))?;
+        png_writer
+            .write_image_data(&rgba_data)
+            .map_err(|e| CodecError::EncodingError(e.to_string()))?;
 
         Ok(())
     }
 
     #[cfg(not(feature = "png"))]
     fn encode<W: Write>(&self, _image: &Image, _writer: W) -> CodecResult<()> {
-        Err(CodecError::Unsupported("PNG encoding requires the 'png' feature".into()))
+        Err(CodecError::Unsupported(
+            "PNG encoding requires the 'png' feature".into(),
+        ))
     }
 
     fn format(&self) -> ImageFormat {
@@ -340,8 +358,12 @@ impl ImageDecoder for JpegDecoder {
     #[cfg(feature = "jpeg")]
     fn decode<R: Read>(&self, reader: R) -> CodecResult<Image> {
         let mut decoder = jpeg_decoder::Decoder::new(reader);
-        let pixels = decoder.decode().map_err(|e| CodecError::DecodingError(e.to_string()))?;
-        let info = decoder.info().ok_or_else(|| CodecError::DecodingError("No image info".into()))?;
+        let pixels = decoder
+            .decode()
+            .map_err(|e| CodecError::DecodingError(e.to_string()))?;
+        let info = decoder
+            .info()
+            .ok_or_else(|| CodecError::DecodingError("No image info".into()))?;
 
         let width = info.width as i32;
         let height = info.height as i32;
@@ -368,7 +390,11 @@ impl ImageDecoder for JpegDecoder {
                 }
                 rgba
             }
-            _ => return Err(CodecError::Unsupported("Unsupported JPEG pixel format".into())),
+            _ => {
+                return Err(CodecError::Unsupported(
+                    "Unsupported JPEG pixel format".into(),
+                ));
+            }
         };
 
         let img_info = crate::ImageInfo::new(
@@ -384,7 +410,9 @@ impl ImageDecoder for JpegDecoder {
 
     #[cfg(not(feature = "jpeg"))]
     fn decode<R: Read>(&self, _reader: R) -> CodecResult<Image> {
-        Err(CodecError::Unsupported("JPEG decoding requires the 'jpeg' feature".into()))
+        Err(CodecError::Unsupported(
+            "JPEG decoding requires the 'jpeg' feature".into(),
+        ))
     }
 
     fn format(&self) -> ImageFormat {
@@ -426,7 +454,9 @@ impl Default for JpegEncoder {
 impl ImageEncoder for JpegEncoder {
     #[cfg(feature = "jpeg")]
     fn encode<W: Write>(&self, image: &Image, mut writer: W) -> CodecResult<()> {
-        let pixels = image.peek_pixels().ok_or_else(|| CodecError::EncodingError("Cannot access pixels".into()))?;
+        let pixels = image
+            .peek_pixels()
+            .ok_or_else(|| CodecError::EncodingError("Cannot access pixels".into()))?;
 
         // Convert to RGB (JPEG doesn't support alpha)
         let rgb = match image.color_type() {
@@ -448,23 +478,31 @@ impl ImageEncoder for JpegEncoder {
                 }
                 rgb
             }
-            _ => return Err(CodecError::Unsupported("Unsupported color type for JPEG encoding".into())),
+            _ => {
+                return Err(CodecError::Unsupported(
+                    "Unsupported color type for JPEG encoding".into(),
+                ));
+            }
         };
 
         let encoder = jpeg_encoder::Encoder::new(&mut writer, self.quality.value());
-        encoder.encode(
-            &rgb,
-            image.width() as u16,
-            image.height() as u16,
-            jpeg_encoder::ColorType::Rgb,
-        ).map_err(|e| CodecError::EncodingError(e.to_string()))?;
+        encoder
+            .encode(
+                &rgb,
+                image.width() as u16,
+                image.height() as u16,
+                jpeg_encoder::ColorType::Rgb,
+            )
+            .map_err(|e| CodecError::EncodingError(e.to_string()))?;
 
         Ok(())
     }
 
     #[cfg(not(feature = "jpeg"))]
     fn encode<W: Write>(&self, _image: &Image, _writer: W) -> CodecResult<()> {
-        Err(CodecError::Unsupported("JPEG encoding requires the 'jpeg' feature".into()))
+        Err(CodecError::Unsupported(
+            "JPEG encoding requires the 'jpeg' feature".into(),
+        ))
     }
 
     fn format(&self) -> ImageFormat {
@@ -492,9 +530,12 @@ impl ImageDecoder for GifDecoder {
     fn decode<R: Read>(&self, reader: R) -> CodecResult<Image> {
         let mut decoder = gif::DecodeOptions::new();
         decoder.set_color_output(gif::ColorOutput::RGBA);
-        let mut decoder = decoder.read_info(reader).map_err(|e| CodecError::DecodingError(e.to_string()))?;
+        let mut decoder = decoder
+            .read_info(reader)
+            .map_err(|e| CodecError::DecodingError(e.to_string()))?;
 
-        let first_frame = decoder.read_next_frame()
+        let first_frame = decoder
+            .read_next_frame()
             .map_err(|e| CodecError::DecodingError(e.to_string()))?
             .ok_or_else(|| CodecError::DecodingError("No frames in GIF".into()))?;
 
@@ -515,7 +556,9 @@ impl ImageDecoder for GifDecoder {
 
     #[cfg(not(feature = "gif"))]
     fn decode<R: Read>(&self, _reader: R) -> CodecResult<Image> {
-        Err(CodecError::Unsupported("GIF decoding requires the 'gif' feature".into()))
+        Err(CodecError::Unsupported(
+            "GIF decoding requires the 'gif' feature".into(),
+        ))
     }
 
     fn format(&self) -> ImageFormat {
@@ -542,10 +585,13 @@ impl ImageDecoder for WebpDecoder {
     #[cfg(feature = "webp")]
     fn decode<R: Read>(&self, mut reader: R) -> CodecResult<Image> {
         let mut data = Vec::new();
-        reader.read_to_end(&mut data).map_err(|e| CodecError::Io(e))?;
+        reader
+            .read_to_end(&mut data)
+            .map_err(|e| CodecError::Io(e))?;
 
         let decoder = webp::Decoder::new(&data);
-        let webp_image = decoder.decode()
+        let webp_image = decoder
+            .decode()
             .ok_or_else(|| CodecError::DecodingError("Failed to decode WebP".into()))?;
 
         let width = webp_image.width() as i32;
@@ -567,7 +613,9 @@ impl ImageDecoder for WebpDecoder {
 
     #[cfg(not(feature = "webp"))]
     fn decode<R: Read>(&self, _reader: R) -> CodecResult<Image> {
-        Err(CodecError::Unsupported("WebP decoding requires the 'webp' feature".into()))
+        Err(CodecError::Unsupported(
+            "WebP decoding requires the 'webp' feature".into(),
+        ))
     }
 
     fn format(&self) -> ImageFormat {
@@ -593,7 +641,10 @@ impl WebpEncoder {
 
     /// Create a WebP encoder with specified quality.
     pub fn with_quality(quality: EncoderQuality) -> Self {
-        Self { quality, lossless: false }
+        Self {
+            quality,
+            lossless: false,
+        }
     }
 
     /// Create a lossless WebP encoder.
@@ -614,7 +665,9 @@ impl Default for WebpEncoder {
 impl ImageEncoder for WebpEncoder {
     #[cfg(feature = "webp")]
     fn encode<W: Write>(&self, image: &Image, mut writer: W) -> CodecResult<()> {
-        let pixels = image.peek_pixels().ok_or_else(|| CodecError::EncodingError("Cannot access pixels".into()))?;
+        let pixels = image
+            .peek_pixels()
+            .ok_or_else(|| CodecError::EncodingError("Cannot access pixels".into()))?;
         let width = image.width() as u32;
         let height = image.height() as u32;
 
@@ -631,7 +684,11 @@ impl ImageEncoder for WebpEncoder {
                 }
                 rgba
             }
-            _ => return Err(CodecError::Unsupported("Unsupported color type for WebP encoding".into())),
+            _ => {
+                return Err(CodecError::Unsupported(
+                    "Unsupported color type for WebP encoding".into(),
+                ));
+            }
         };
 
         let encoder = webp::Encoder::from_rgba(&rgba, width, height);
@@ -647,7 +704,9 @@ impl ImageEncoder for WebpEncoder {
 
     #[cfg(not(feature = "webp"))]
     fn encode<W: Write>(&self, _image: &Image, _writer: W) -> CodecResult<()> {
-        Err(CodecError::Unsupported("WebP encoding requires the 'webp' feature".into()))
+        Err(CodecError::Unsupported(
+            "WebP encoding requires the 'webp' feature".into(),
+        ))
     }
 
     fn format(&self) -> ImageFormat {
@@ -668,7 +727,10 @@ pub fn decode_image(data: &[u8]) -> CodecResult<Image> {
         ImageFormat::Jpeg => JpegDecoder::new().decode_bytes(data),
         ImageFormat::Gif => GifDecoder::new().decode_bytes(data),
         ImageFormat::WebP => WebpDecoder::new().decode_bytes(data),
-        _ => Err(CodecError::Unsupported(format!("Format {:?} not supported", format))),
+        _ => Err(CodecError::Unsupported(format!(
+            "Format {:?} not supported",
+            format
+        ))),
     }
 }
 
@@ -679,7 +741,10 @@ pub fn get_image_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
     match format {
         ImageFormat::Png => get_png_dimensions(data),
         ImageFormat::Jpeg => get_jpeg_dimensions(data),
-        _ => Err(CodecError::Unsupported(format!("Format {:?} not supported", format))),
+        _ => Err(CodecError::Unsupported(format!(
+            "Format {:?} not supported",
+            format
+        ))),
     }
 }
 
@@ -722,7 +787,9 @@ fn get_jpeg_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
         }
     }
 
-    Err(CodecError::InvalidData("Could not find JPEG dimensions".into()))
+    Err(CodecError::InvalidData(
+        "Could not find JPEG dimensions".into(),
+    ))
 }
 
 #[cfg(test)]

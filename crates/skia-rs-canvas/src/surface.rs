@@ -1,12 +1,12 @@
 //! Surface backing store for canvas.
 
-use crate::raster::PixelBuffer;
 use crate::Canvas;
+use crate::raster::PixelBuffer;
+use skia_rs_codec::Image;
 use skia_rs_core::pixel::{ImageInfo, SurfaceProps};
 use skia_rs_core::{Color, IRect, Matrix, Point, Rect, Region, Scalar};
 use skia_rs_paint::{BlendMode, Paint};
 use skia_rs_path::Path;
-use skia_rs_codec::Image;
 
 /// A surface is a backing store for a canvas.
 pub struct Surface {
@@ -116,8 +116,11 @@ impl Surface {
         use skia_rs_core::{AlphaType, ColorType};
 
         // Validate subset bounds
-        if subset.left < 0 || subset.top < 0 ||
-           subset.right > self.width() || subset.bottom > self.height() {
+        if subset.left < 0
+            || subset.top < 0
+            || subset.right > self.width()
+            || subset.bottom > self.height()
+        {
             return None;
         }
 
@@ -142,7 +145,8 @@ impl Surface {
             }
         }
 
-        let info = skia_rs_codec::ImageInfo::new(width, height, ColorType::Rgba8888, AlphaType::Premul);
+        let info =
+            skia_rs_codec::ImageInfo::new(width, height, ColorType::Rgba8888, AlphaType::Premul);
         Image::from_raster_data_owned(info, pixels, row_bytes)
     }
 }
@@ -192,7 +196,12 @@ pub trait GpuContext: Send + Sync {
     fn capabilities(&self) -> GpuSurfaceCapabilities;
 
     /// Create a GPU surface with the given dimensions.
-    fn create_surface(&self, width: i32, height: i32, info: &ImageInfo) -> Option<Box<dyn GpuSurface>>;
+    fn create_surface(
+        &self,
+        width: i32,
+        height: i32,
+        info: &ImageInfo,
+    ) -> Option<Box<dyn GpuSurface>>;
 
     /// Flush all pending GPU operations.
     fn flush(&self);
@@ -523,7 +532,8 @@ impl<'a> RasterCanvas<'a> {
     /// Draw an image at the specified position.
     pub fn draw_image(&mut self, image: &Image, left: Scalar, top: Scalar, paint: Option<&Paint>) {
         let src_rect = IRect::new(0, 0, image.width(), image.height());
-        let dst_rect = Rect::from_xywh(left, top, image.width() as Scalar, image.height() as Scalar);
+        let dst_rect =
+            Rect::from_xywh(left, top, image.width() as Scalar, image.height() as Scalar);
         self.draw_image_rect(image, Some(&src_rect), &dst_rect, paint);
     }
 
@@ -535,7 +545,9 @@ impl<'a> RasterCanvas<'a> {
         dst: &Rect,
         paint: Option<&Paint>,
     ) {
-        let src_rect = src.cloned().unwrap_or_else(|| IRect::new(0, 0, image.width(), image.height()));
+        let src_rect = src
+            .cloned()
+            .unwrap_or_else(|| IRect::new(0, 0, image.width(), image.height()));
 
         // Apply current transformation to destination
         let matrix = *self.total_matrix();
@@ -555,7 +567,9 @@ impl<'a> RasterCanvas<'a> {
         let scale_y = (src_rect.height() as Scalar) / dst.height();
 
         // Blend mode from paint
-        let blend_mode = paint.map(|p| p.blend_mode()).unwrap_or(skia_rs_paint::BlendMode::SrcOver);
+        let blend_mode = paint
+            .map(|p| p.blend_mode())
+            .unwrap_or(skia_rs_paint::BlendMode::SrcOver);
         let alpha = paint.map(|p| p.alpha()).unwrap_or(1.0);
 
         // Iterate over destination pixels
@@ -654,7 +668,12 @@ impl<'a> RasterCanvas<'a> {
         // Center (stretched both ways)
         self.draw_image_rect(
             image,
-            Some(&IRect::new(center.left, center.top, center.right, center.bottom)),
+            Some(&IRect::new(
+                center.left,
+                center.top,
+                center.right,
+                center.bottom,
+            )),
             &Rect::from_xywh(dst.left + left_w, dst.top + top_h, center_w, center_h),
             paint,
         );
@@ -687,7 +706,12 @@ impl<'a> RasterCanvas<'a> {
         self.draw_image_rect(
             image,
             Some(&IRect::new(center.right, center.bottom, img_w, img_h)),
-            &Rect::from_xywh(dst.right - right_w, dst.bottom - bottom_h, right_w, bottom_h),
+            &Rect::from_xywh(
+                dst.right - right_w,
+                dst.bottom - bottom_h,
+                right_w,
+                bottom_h,
+            ),
             paint,
         );
     }
@@ -842,7 +866,14 @@ impl<'a> RasterCanvas<'a> {
     }
 
     /// Draw text at the specified position.
-    pub fn draw_string(&mut self, text: &str, x: Scalar, y: Scalar, font: &skia_rs_text::Font, paint: &Paint) {
+    pub fn draw_string(
+        &mut self,
+        text: &str,
+        x: Scalar,
+        y: Scalar,
+        font: &skia_rs_text::Font,
+        paint: &Paint,
+    ) {
         // Simple text rendering - just draw each character as a rectangle placeholder
         // A real implementation would use glyph outlines from the font
         let color = paint.color32();
@@ -879,7 +910,13 @@ impl<'a> RasterCanvas<'a> {
     }
 
     /// Draw a text blob.
-    pub fn draw_text_blob(&mut self, blob: &skia_rs_text::TextBlob, x: Scalar, y: Scalar, paint: &Paint) {
+    pub fn draw_text_blob(
+        &mut self,
+        blob: &skia_rs_text::TextBlob,
+        x: Scalar,
+        y: Scalar,
+        paint: &Paint,
+    ) {
         let color = paint.color32();
         let blend_mode = paint.blend_mode();
         let matrix = *self.total_matrix();
@@ -971,8 +1008,8 @@ mod tests {
         // Check that pixels are red
         let pixels = surface.pixels();
         assert_eq!(pixels[0], 255); // R
-        assert_eq!(pixels[1], 0);   // G
-        assert_eq!(pixels[2], 0);   // B
+        assert_eq!(pixels[1], 0); // G
+        assert_eq!(pixels[2], 0); // B
         assert_eq!(pixels[3], 255); // A
     }
 

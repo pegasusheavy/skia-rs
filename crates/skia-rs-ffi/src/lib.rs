@@ -16,14 +16,13 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(non_camel_case_types)] // FFI types follow C naming conventions
 
-use std::ffi::{c_char, c_void, CStr};
+use std::ffi::{CStr, c_char, c_void};
 use std::ptr;
 
 // Re-export types for FFI
 use skia_rs_canvas::{PixelBuffer, RasterCanvas, Surface};
 use skia_rs_core::{
-    AlphaType, Color, ColorType, IPoint, IRect, ISize, ImageInfo, Matrix, Point, Rect, Scalar,
-    Size,
+    AlphaType, Color, ColorType, IPoint, IRect, ISize, ImageInfo, Matrix, Point, Rect, Scalar, Size,
 };
 use skia_rs_paint::{BlendMode, Paint, Style};
 use skia_rs_path::{FillType, Path, PathBuilder};
@@ -195,10 +194,7 @@ impl From<sk_matrix_t> for Matrix {
 
 /// Create a new raster surface.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_surface_new_raster(
-    width: i32,
-    height: i32,
-) -> *mut SkSurface {
+pub unsafe extern "C" fn sk_surface_new_raster(width: i32, height: i32) -> *mut SkSurface {
     match Surface::new_raster_n32_premul(width, height) {
         Some(surface) => Box::into_raw(Box::new(surface)),
         None => ptr::null_mut(),
@@ -542,7 +538,10 @@ pub unsafe extern "C" fn sk_pathbuilder_close(builder: *mut SkPathBuilder) {
 
 /// Add a rectangle.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_pathbuilder_add_rect(builder: *mut SkPathBuilder, rect: *const sk_rect_t) {
+pub unsafe extern "C" fn sk_pathbuilder_add_rect(
+    builder: *mut SkPathBuilder,
+    rect: *const sk_rect_t,
+) {
     if let (Some(b), Some(r)) = (builder.as_mut(), rect.as_ref()) {
         b.add_rect(&Rect::from(*r));
     }
@@ -550,7 +549,10 @@ pub unsafe extern "C" fn sk_pathbuilder_add_rect(builder: *mut SkPathBuilder, re
 
 /// Add an oval.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_pathbuilder_add_oval(builder: *mut SkPathBuilder, rect: *const sk_rect_t) {
+pub unsafe extern "C" fn sk_pathbuilder_add_oval(
+    builder: *mut SkPathBuilder,
+    rect: *const sk_rect_t,
+) {
     if let (Some(b), Some(r)) = (builder.as_mut(), rect.as_ref()) {
         b.add_oval(&Rect::from(*r));
     }

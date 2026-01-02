@@ -2,7 +2,7 @@
 
 use crate::dom::*;
 use skia_rs_core::{Color, Matrix, Point, Rect, Scalar};
-use skia_rs_path::{parse_svg_path, PathBuilder};
+use skia_rs_path::{PathBuilder, parse_svg_path};
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -273,8 +273,18 @@ fn create_node(
                 cx,
                 cy,
                 r: parse_length(attrs.get("r").map(|s| s.as_str()).unwrap_or("50%")),
-                fx: parse_length(attrs.get("fx").map(|s| s.as_str()).unwrap_or(&cx.to_string())),
-                fy: parse_length(attrs.get("fy").map(|s| s.as_str()).unwrap_or(&cy.to_string())),
+                fx: parse_length(
+                    attrs
+                        .get("fx")
+                        .map(|s| s.as_str())
+                        .unwrap_or(&cx.to_string()),
+                ),
+                fy: parse_length(
+                    attrs
+                        .get("fy")
+                        .map(|s| s.as_str())
+                        .unwrap_or(&cy.to_string()),
+                ),
                 stops: Vec::new(),
                 spread: SpreadMethod::Pad,
                 units: GradientUnits::ObjectBoundingBox,
@@ -390,7 +400,9 @@ fn parse_paint(s: &str) -> Option<SvgPaint> {
     if s == "none" {
         Some(SvgPaint::None)
     } else if s.starts_with("url(") {
-        let url = s[4..].trim_end_matches(')').trim_matches(|c| c == '"' || c == '\'');
+        let url = s[4..]
+            .trim_end_matches(')')
+            .trim_matches(|c| c == '"' || c == '\'');
         Some(SvgPaint::Url(url.to_string()))
     } else {
         parse_color(s).map(SvgPaint::Color)
@@ -565,7 +577,10 @@ mod tests {
     fn test_parse_color() {
         assert_eq!(parse_color("#ff0000"), Some(Color::from_rgb(255, 0, 0)));
         assert_eq!(parse_color("#f00"), Some(Color::from_rgb(255, 0, 0)));
-        assert_eq!(parse_color("rgb(255, 0, 0)"), Some(Color::from_rgb(255, 0, 0)));
+        assert_eq!(
+            parse_color("rgb(255, 0, 0)"),
+            Some(Color::from_rgb(255, 0, 0))
+        );
         assert_eq!(parse_color("red"), Some(Color::from_rgb(255, 0, 0)));
     }
 

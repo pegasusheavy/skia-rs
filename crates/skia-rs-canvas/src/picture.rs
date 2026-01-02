@@ -23,7 +23,10 @@ pub struct Picture {
 impl Picture {
     /// Create a new picture from recorded commands.
     pub(crate) fn new(commands: Vec<DrawCommand>, cull_rect: Rect) -> Self {
-        Self { commands, cull_rect }
+        Self {
+            commands,
+            cull_rect,
+        }
     }
 
     /// Get the cull rect (bounding box).
@@ -41,8 +44,7 @@ impl Picture {
 
     /// Get the approximate byte size of this picture.
     pub fn approximate_bytes_used(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.commands.len() * std::mem::size_of::<DrawCommand>()
+        std::mem::size_of::<Self>() + self.commands.len() * std::mem::size_of::<DrawCommand>()
     }
 
     /// Get the number of operations in this picture.
@@ -271,19 +273,38 @@ impl DrawCommand {
             DrawCommand::DrawOval { rect, paint } => {
                 canvas.draw_oval(rect, paint);
             }
-            DrawCommand::DrawCircle { center, radius, paint } => {
+            DrawCommand::DrawCircle {
+                center,
+                radius,
+                paint,
+            } => {
                 canvas.draw_circle(*center, *radius, paint);
             }
-            DrawCommand::DrawArc { oval, start_angle, sweep_angle, use_center, paint } => {
+            DrawCommand::DrawArc {
+                oval,
+                start_angle,
+                sweep_angle,
+                use_center,
+                paint,
+            } => {
                 canvas.draw_arc(oval, *start_angle, *sweep_angle, *use_center, paint);
             }
-            DrawCommand::DrawRoundRect { rect, rx, ry, paint } => {
+            DrawCommand::DrawRoundRect {
+                rect,
+                rx,
+                ry,
+                paint,
+            } => {
                 canvas.draw_round_rect(rect, *rx, *ry, paint);
             }
             DrawCommand::DrawPath { path, paint } => {
                 canvas.draw_path(path, paint);
             }
-            DrawCommand::DrawPicture { picture, matrix, paint } => {
+            DrawCommand::DrawPicture {
+                picture,
+                matrix,
+                paint,
+            } => {
                 canvas.save();
                 if let Some(m) = matrix {
                     canvas.concat(m);
@@ -398,12 +419,16 @@ impl RecordingCanvas {
 
     /// Record a concat command.
     pub fn concat(&mut self, matrix: &Matrix) {
-        self.inner.commands.push(DrawCommand::Concat { matrix: *matrix });
+        self.inner
+            .commands
+            .push(DrawCommand::Concat { matrix: *matrix });
     }
 
     /// Record a set matrix command.
     pub fn set_matrix(&mut self, matrix: &Matrix) {
-        self.inner.commands.push(DrawCommand::SetMatrix { matrix: *matrix });
+        self.inner
+            .commands
+            .push(DrawCommand::SetMatrix { matrix: *matrix });
     }
 
     /// Record a clip rect command.
@@ -429,7 +454,9 @@ impl RecordingCanvas {
 
     /// Record a draw color command.
     pub fn draw_color(&mut self, color: Color, blend_mode: BlendMode) {
-        self.inner.commands.push(DrawCommand::DrawColor { color, blend_mode });
+        self.inner
+            .commands
+            .push(DrawCommand::DrawColor { color, blend_mode });
     }
 
     /// Record a draw point command.
@@ -511,7 +538,12 @@ impl RecordingCanvas {
     }
 
     /// Record a draw picture command.
-    pub fn draw_picture(&mut self, picture: &PictureRef, matrix: Option<&Matrix>, paint: Option<&Paint>) {
+    pub fn draw_picture(
+        &mut self,
+        picture: &PictureRef,
+        matrix: Option<&Matrix>,
+        paint: Option<&Paint>,
+    ) {
         self.inner.commands.push(DrawCommand::DrawPicture {
             picture: picture.clone(),
             matrix: matrix.copied(),

@@ -3,8 +3,8 @@
 //! This module provides a 4x4 matrix type for 3D transformations,
 //! corresponding to Skia's `SkM44` / `SkMatrix44`.
 
-use crate::geometry::{Matrix, Point, Point3};
 use crate::Scalar;
+use crate::geometry::{Matrix, Point, Point3};
 
 /// A 4x4 transformation matrix for 3D transformations.
 ///
@@ -47,12 +47,7 @@ impl Matrix44 {
     }
 
     /// Creates a new matrix from row-major values.
-    pub fn from_rows(
-        r0: [Scalar; 4],
-        r1: [Scalar; 4],
-        r2: [Scalar; 4],
-        r3: [Scalar; 4],
-    ) -> Self {
+    pub fn from_rows(r0: [Scalar; 4], r1: [Scalar; 4], r2: [Scalar; 4], r3: [Scalar; 4]) -> Self {
         Self {
             values: [
                 r0[0], r1[0], r2[0], r3[0], // column 0
@@ -188,9 +183,18 @@ impl Matrix44 {
 
         Self {
             values: [
-                s.x, u.x, -f.x, 0.0, // column 0
-                s.y, u.y, -f.y, 0.0, // column 1
-                s.z, u.z, -f.z, 0.0, // column 2
+                s.x,
+                u.x,
+                -f.x,
+                0.0, // column 0
+                s.y,
+                u.y,
+                -f.y,
+                0.0, // column 1
+                s.z,
+                u.z,
+                -f.z,
+                0.0, // column 2
                 -s.dot(&Point3::new(eye.x, eye.y, eye.z)),
                 -u.dot(&Point3::new(eye.x, eye.y, eye.z)),
                 f.dot(&Point3::new(eye.x, eye.y, eye.z)),
@@ -206,10 +210,22 @@ impl Matrix44 {
 
         Self {
             values: [
-                f / aspect, 0.0, 0.0, 0.0, // column 0
-                0.0, f, 0.0, 0.0, // column 1
-                0.0, 0.0, (far + near) * nf, -1.0, // column 2
-                0.0, 0.0, 2.0 * far * near * nf, 0.0, // column 3
+                f / aspect,
+                0.0,
+                0.0,
+                0.0, // column 0
+                0.0,
+                f,
+                0.0,
+                0.0, // column 1
+                0.0,
+                0.0,
+                (far + near) * nf,
+                -1.0, // column 2
+                0.0,
+                0.0,
+                2.0 * far * near * nf,
+                0.0, // column 3
             ],
         }
     }
@@ -328,14 +344,22 @@ impl Matrix44 {
 
     /// Transforms a 3D point by this matrix.
     pub fn map_point3(&self, point: Point3) -> Point3 {
-        let x =
-            self.get(0, 0) * point.x + self.get(0, 1) * point.y + self.get(0, 2) * point.z + self.get(0, 3);
-        let y =
-            self.get(1, 0) * point.x + self.get(1, 1) * point.y + self.get(1, 2) * point.z + self.get(1, 3);
-        let z =
-            self.get(2, 0) * point.x + self.get(2, 1) * point.y + self.get(2, 2) * point.z + self.get(2, 3);
-        let w =
-            self.get(3, 0) * point.x + self.get(3, 1) * point.y + self.get(3, 2) * point.z + self.get(3, 3);
+        let x = self.get(0, 0) * point.x
+            + self.get(0, 1) * point.y
+            + self.get(0, 2) * point.z
+            + self.get(0, 3);
+        let y = self.get(1, 0) * point.x
+            + self.get(1, 1) * point.y
+            + self.get(1, 2) * point.z
+            + self.get(1, 3);
+        let z = self.get(2, 0) * point.x
+            + self.get(2, 1) * point.y
+            + self.get(2, 2) * point.z
+            + self.get(2, 3);
+        let w = self.get(3, 0) * point.x
+            + self.get(3, 1) * point.y
+            + self.get(3, 2) * point.z
+            + self.get(3, 3);
 
         if w != 0.0 && w != 1.0 {
             Point3::new(x / w, y / w, z / w)

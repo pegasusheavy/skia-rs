@@ -393,7 +393,11 @@ impl<'a> SvgPathParser<'a> {
                 (cx, cy)
             };
 
-            let (x, y) = if is_relative { (cx + x, cy + y) } else { (x, y) };
+            let (x, y) = if is_relative {
+                (cx + x, cy + y)
+            } else {
+                (x, y)
+            };
 
             self.builder.quad_to(x1, y1, x, y);
             self.last_control = Some((x1, y1));
@@ -423,13 +427,13 @@ impl<'a> SvgPathParser<'a> {
                 (x, y)
             };
 
-            self.builder.arc_to(rx, ry, x_rotation, large_arc, sweep, x, y);
+            self.builder
+                .arc_to(rx, ry, x_rotation, large_arc, sweep, x, y);
         }
         self.last_control = None;
         Ok(())
     }
 }
-
 
 #[cfg(test)]
 mod tests {

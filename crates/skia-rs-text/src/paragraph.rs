@@ -228,14 +228,25 @@ impl Paragraph {
         self.lines.clear();
 
         // Collect run data first to avoid borrow issues
-        let runs_data: Vec<_> = self.runs.iter().map(|run| {
-            let font = run.style.font.clone();
-            let metrics = font.metrics();
-            let line_height = metrics.line_height() * self.style.height;
-            let char_width = font.size() * 0.5;
-            let chars: Vec<char> = run.text.chars().collect();
-            (font, line_height, char_width, run.style.letter_spacing, run.style.word_spacing, chars)
-        }).collect();
+        let runs_data: Vec<_> = self
+            .runs
+            .iter()
+            .map(|run| {
+                let font = run.style.font.clone();
+                let metrics = font.metrics();
+                let line_height = metrics.line_height() * self.style.height;
+                let char_width = font.size() * 0.5;
+                let chars: Vec<char> = run.text.chars().collect();
+                (
+                    font,
+                    line_height,
+                    char_width,
+                    run.style.letter_spacing,
+                    run.style.word_spacing,
+                    chars,
+                )
+            })
+            .collect();
 
         let mut current_line_glyphs: Vec<(u16, Point)> = Vec::new();
         let mut current_x: Scalar = 0.0;
@@ -250,7 +261,12 @@ impl Paragraph {
             for c in chars {
                 // Handle newlines
                 if c == '\n' {
-                    self.add_line(&mut current_line_glyphs, &current_font, current_y, line_height);
+                    self.add_line(
+                        &mut current_line_glyphs,
+                        &current_font,
+                        current_y,
+                        line_height,
+                    );
                     current_x = 0.0;
                     current_y += line_height;
                     line_height = run_line_height;
@@ -261,7 +277,12 @@ impl Paragraph {
                 let advance = char_width + letter_spacing;
                 if current_x + advance > width && current_x > 0.0 {
                     // Word wrap
-                    self.add_line(&mut current_line_glyphs, &current_font, current_y, line_height);
+                    self.add_line(
+                        &mut current_line_glyphs,
+                        &current_font,
+                        current_y,
+                        line_height,
+                    );
                     current_x = 0.0;
                     current_y += line_height;
 
@@ -286,7 +307,12 @@ impl Paragraph {
 
         // Finish last line
         if !current_line_glyphs.is_empty() {
-            self.add_line(&mut current_line_glyphs, &current_font, current_y, line_height);
+            self.add_line(
+                &mut current_line_glyphs,
+                &current_font,
+                current_y,
+                line_height,
+            );
             current_y += line_height;
         }
 
@@ -303,7 +329,10 @@ impl Paragraph {
         let baseline = y - metrics.ascent;
 
         // Calculate line width
-        let line_width = glyphs.last().map(|(_, p)| p.x + font.size() * 0.5).unwrap_or(0.0);
+        let line_width = glyphs
+            .last()
+            .map(|(_, p)| p.x + font.size() * 0.5)
+            .unwrap_or(0.0);
 
         // Apply text alignment
         let x_offset = match self.style.text_align {
@@ -352,7 +381,10 @@ impl Paragraph {
     /// Get the width of a specific line.
     pub fn line_width(&self, line: usize) -> Option<Scalar> {
         self.lines.get(line).map(|l| {
-            l.glyphs.last().map(|(_, p)| p.x + l.font.size() * 0.5).unwrap_or(0.0)
+            l.glyphs
+                .last()
+                .map(|(_, p)| p.x + l.font.size() * 0.5)
+                .unwrap_or(0.0)
         })
     }
 
@@ -365,7 +397,8 @@ impl Paragraph {
         let mut builder = TextBlobBuilder::new();
 
         for line in &self.lines {
-            let positions: Vec<Point> = line.glyphs
+            let positions: Vec<Point> = line
+                .glyphs
                 .iter()
                 .map(|(_, p)| Point::new(p.x, line.baseline + p.y))
                 .collect();
@@ -457,7 +490,10 @@ impl Default for Hyphenator {
 impl Hyphenator {
     /// Create a new hyphenator.
     pub fn new(min_prefix: usize, min_suffix: usize) -> Self {
-        Self { min_prefix, min_suffix }
+        Self {
+            min_prefix,
+            min_suffix,
+        }
     }
 
     /// Find hyphenation points in a word.

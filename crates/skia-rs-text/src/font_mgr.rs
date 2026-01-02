@@ -89,7 +89,9 @@ pub struct TypefaceEntry {
 impl DefaultFontMgr {
     /// Create a new default font manager.
     pub fn new() -> Self {
-        let mut mgr = Self { families: Vec::new() };
+        let mut mgr = Self {
+            families: Vec::new(),
+        };
 
         // Add a default family with a placeholder typeface
         let default_typeface = Arc::new(Typeface::default_typeface());
@@ -111,7 +113,13 @@ impl DefaultFontMgr {
     }
 
     /// Register a typeface under a family name.
-    pub fn register_typeface(&mut self, family_name: &str, typeface: TypefaceRef, style_name: &str, style: FontStyle) {
+    pub fn register_typeface(
+        &mut self,
+        family_name: &str,
+        typeface: TypefaceRef,
+        style_name: &str,
+        style: FontStyle,
+    ) {
         // Find or create family
         let family = if let Some(f) = self.families.iter_mut().find(|f| f.name == family_name) {
             f
@@ -148,8 +156,7 @@ impl FontMgr for DefaultFontMgr {
     }
 
     fn match_family_style(&self, family_name: &str, style: FontStyle) -> Option<TypefaceRef> {
-        self.create_style_set(family_name)?
-            .match_style(style)
+        self.create_style_set(family_name)?.match_style(style)
     }
 
     fn match_family_style_character(
@@ -187,7 +194,10 @@ impl FontStyleSet for DefaultFontStyleSet {
     }
 
     fn style(&self, index: usize) -> Option<(FontStyle, String)> {
-        self.family.typefaces.get(index).map(|e| (e.style, e.style_name.clone()))
+        self.family
+            .typefaces
+            .get(index)
+            .map(|e| (e.style, e.style_name.clone()))
     }
 
     fn create_typeface(&self, index: usize) -> Option<TypefaceRef> {
@@ -196,7 +206,8 @@ impl FontStyleSet for DefaultFontStyleSet {
 
     fn match_style(&self, style: FontStyle) -> Option<TypefaceRef> {
         // Find best match based on style distance
-        self.family.typefaces
+        self.family
+            .typefaces
             .iter()
             .min_by_key(|e| style_distance(&e.style, &style))
             .map(|e| e.typeface.clone())

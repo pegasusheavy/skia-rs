@@ -27,7 +27,12 @@ pub fn random_points(rng: &mut impl Rng, count: usize, bounds: &Rect) -> Vec<Poi
 }
 
 /// Generate random rectangles within bounds.
-pub fn random_rects(rng: &mut impl Rng, count: usize, bounds: &Rect, max_size: Scalar) -> Vec<Rect> {
+pub fn random_rects(
+    rng: &mut impl Rng,
+    count: usize,
+    bounds: &Rect,
+    max_size: Scalar,
+) -> Vec<Rect> {
     (0..count)
         .map(|_| {
             let x = rng.gen_range(bounds.left..bounds.right - max_size);
@@ -158,7 +163,11 @@ pub fn generate_star(points: usize, outer_radius: Scalar, inner_radius: Scalar) 
     let angle_step = std::f32::consts::TAU / (points as Scalar * 2.0);
 
     for i in 0..(points * 2) {
-        let radius = if i % 2 == 0 { outer_radius } else { inner_radius };
+        let radius = if i % 2 == 0 {
+            outer_radius
+        } else {
+            inner_radius
+        };
         let angle = (i as Scalar) * angle_step - std::f32::consts::FRAC_PI_2;
         let x = radius * angle.cos();
         let y = radius * angle.sin();

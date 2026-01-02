@@ -8,10 +8,10 @@
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
-pub mod document;
 pub mod canvas;
+pub mod document;
 pub mod stream;
 
-pub use document::*;
 pub use canvas::*;
+pub use document::*;
 pub use stream::*;

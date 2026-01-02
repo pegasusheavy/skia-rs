@@ -62,9 +62,7 @@ impl<'a> PathOps<'a> {
 
         if self.path1.is_empty() {
             return match self.op {
-                PathOp::Union | PathOp::ReverseDifference | PathOp::Xor => {
-                    Some(self.path2.clone())
-                }
+                PathOp::Union | PathOp::ReverseDifference | PathOp::Xor => Some(self.path2.clone()),
                 PathOp::Difference | PathOp::Intersect => Some(Path::new()),
             };
         }
@@ -506,19 +504,14 @@ fn intersect_convex_polygons(subject: &Polygon, clip: &Polygon) -> Option<Polygo
                 output.push(current);
 
                 if !next_inside {
-                    if let Some(intersection) = line_intersection(
-                        current,
-                        next,
-                        edge_start,
-                        edge_end,
-                    ) {
+                    if let Some(intersection) =
+                        line_intersection(current, next, edge_start, edge_end)
+                    {
                         output.push(intersection);
                     }
                 }
             } else if next_inside {
-                if let Some(intersection) =
-                    line_intersection(current, next, edge_start, edge_end)
-                {
+                if let Some(intersection) = line_intersection(current, next, edge_start, edge_end) {
                     output.push(intersection);
                 }
             }

@@ -134,11 +134,7 @@ impl Image {
     /// Create an image from raw pixel data.
     ///
     /// The pixels are copied into the image.
-    pub fn from_raster_data(
-        info: &ImageInfo,
-        pixels: &[u8],
-        row_bytes: usize,
-    ) -> Option<Self> {
+    pub fn from_raster_data(info: &ImageInfo, pixels: &[u8], row_bytes: usize) -> Option<Self> {
         if info.is_empty() {
             return None;
         }
@@ -302,15 +298,14 @@ impl Image {
         }
 
         // Simple copy for matching formats
-        if dst_info.color_type() == self.color_type()
-            && dst_info.alpha_type() == self.alpha_type()
+        if dst_info.color_type() == self.color_type() && dst_info.alpha_type() == self.alpha_type()
         {
             let bytes_per_pixel = self.color_type().bytes_per_pixel();
             let src_row_bytes = self.inner.row_bytes;
 
             for y in 0..dst_info.height() as usize {
-                let src_offset = (src_y as usize + y) * src_row_bytes
-                    + src_x as usize * bytes_per_pixel;
+                let src_offset =
+                    (src_y as usize + y) * src_row_bytes + src_x as usize * bytes_per_pixel;
                 let dst_offset = y * dst_row_bytes;
                 let copy_len = dst_info.width() as usize * bytes_per_pixel;
 
@@ -386,8 +381,8 @@ impl Image {
         let mut new_pixels = vec![0u8; (h as usize) * new_row_bytes];
 
         for row in 0..h as usize {
-            let src_offset = (y as usize + row) * self.inner.row_bytes
-                + x as usize * bytes_per_pixel;
+            let src_offset =
+                (y as usize + row) * self.inner.row_bytes + x as usize * bytes_per_pixel;
             let dst_offset = row * new_row_bytes;
 
             new_pixels[dst_offset..dst_offset + new_row_bytes]
@@ -462,7 +457,9 @@ mod tests {
     #[test]
     fn test_image_subset() {
         let image = Image::from_color(100, 100, 0xFF_FF0000).unwrap();
-        let subset = image.make_subset(&Rect::from_xywh(25.0, 25.0, 50.0, 50.0)).unwrap();
+        let subset = image
+            .make_subset(&Rect::from_xywh(25.0, 25.0, 50.0, 50.0))
+            .unwrap();
         assert_eq!(subset.dimensions(), (50, 50));
     }
 

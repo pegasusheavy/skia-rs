@@ -427,7 +427,8 @@ impl<'a> Rasterizer<'a> {
     #[inline]
     fn plot_aa(&mut self, x: i32, y: i32, coverage: f32, color: Color, blend_mode: BlendMode) {
         if self.clip.contains(Point::new(x as Scalar, y as Scalar)) {
-            self.buffer.blend_pixel_aa(x, y, color, coverage, blend_mode);
+            self.buffer
+                .blend_pixel_aa(x, y, color, coverage, blend_mode);
         }
     }
 
@@ -442,8 +443,12 @@ impl<'a> Rasterizer<'a> {
         }
 
         // Batch optimization for opaque SrcOver (most common case)
-        if blend_mode == BlendMode::SrcOver && color.alpha() == 255
-            && start >= 0 && end < self.buffer.width && y >= 0 && y < self.buffer.height
+        if blend_mode == BlendMode::SrcOver
+            && color.alpha() == 255
+            && start >= 0
+            && end < self.buffer.width
+            && y >= 0
+            && y < self.buffer.height
         {
             let row_offset = (y as usize) * self.buffer.stride;
             let start_offset = row_offset + (start as usize) * 4;
@@ -735,14 +740,24 @@ impl<'a> Rasterizer<'a> {
                             mt * mt * current.x + 2.0 * mt * t * ctrl.x + t * t * end.x,
                             mt * mt * current.y + 2.0 * mt * t * ctrl.y + t * t * end.y,
                         );
-                        self.draw_line(if i == 1 { current } else {
-                            let pt = (i - 1) as f32 / steps as f32;
-                            let pmt = 1.0 - pt;
-                            Point::new(
-                                pmt * pmt * current.x + 2.0 * pmt * pt * ctrl.x + pt * pt * end.x,
-                                pmt * pmt * current.y + 2.0 * pmt * pt * ctrl.y + pt * pt * end.y,
-                            )
-                        }, p, paint);
+                        self.draw_line(
+                            if i == 1 {
+                                current
+                            } else {
+                                let pt = (i - 1) as f32 / steps as f32;
+                                let pmt = 1.0 - pt;
+                                Point::new(
+                                    pmt * pmt * current.x
+                                        + 2.0 * pmt * pt * ctrl.x
+                                        + pt * pt * end.x,
+                                    pmt * pmt * current.y
+                                        + 2.0 * pmt * pt * ctrl.y
+                                        + pt * pt * end.y,
+                                )
+                            },
+                            p,
+                            paint,
+                        );
                     }
                     current = end;
                 }
@@ -759,8 +774,12 @@ impl<'a> Rasterizer<'a> {
                         let prev_t = (i - 1) as f32 / steps as f32;
                         let prev_mt = 1.0 - prev_t;
                         let prev = Point::new(
-                            prev_mt * prev_mt * current.x + 2.0 * prev_mt * prev_t * ctrl.x + prev_t * prev_t * end.x,
-                            prev_mt * prev_mt * current.y + 2.0 * prev_mt * prev_t * ctrl.y + prev_t * prev_t * end.y,
+                            prev_mt * prev_mt * current.x
+                                + 2.0 * prev_mt * prev_t * ctrl.x
+                                + prev_t * prev_t * end.x,
+                            prev_mt * prev_mt * current.y
+                                + 2.0 * prev_mt * prev_t * ctrl.y
+                                + prev_t * prev_t * end.y,
                         );
                         self.draw_line(prev, p, paint);
                     }
@@ -776,8 +795,14 @@ impl<'a> Rasterizer<'a> {
                         let mt2 = mt * mt;
                         let t2 = t * t;
                         let p = Point::new(
-                            mt2 * mt * current.x + 3.0 * mt2 * t * c1.x + 3.0 * mt * t2 * c2.x + t2 * t * end.x,
-                            mt2 * mt * current.y + 3.0 * mt2 * t * c1.y + 3.0 * mt * t2 * c2.y + t2 * t * end.y,
+                            mt2 * mt * current.x
+                                + 3.0 * mt2 * t * c1.x
+                                + 3.0 * mt * t2 * c2.x
+                                + t2 * t * end.x,
+                            mt2 * mt * current.y
+                                + 3.0 * mt2 * t * c1.y
+                                + 3.0 * mt * t2 * c2.y
+                                + t2 * t * end.y,
                         );
                         self.draw_line(prev, p, paint);
                         prev = p;
@@ -941,8 +966,14 @@ fn collect_edges(path: &Path, matrix: &Matrix) -> Vec<Edge> {
                     let mt2 = mt * mt;
                     let t2 = t * t;
                     let p = Point::new(
-                        mt2 * mt * start.x + 3.0 * mt2 * t * c1.x + 3.0 * mt * t2 * c2.x + t2 * t * end.x,
-                        mt2 * mt * start.y + 3.0 * mt2 * t * c1.y + 3.0 * mt * t2 * c2.y + t2 * t * end.y,
+                        mt2 * mt * start.x
+                            + 3.0 * mt2 * t * c1.x
+                            + 3.0 * mt * t2 * c2.x
+                            + t2 * t * end.x,
+                        mt2 * mt * start.y
+                            + 3.0 * mt2 * t * c1.y
+                            + 3.0 * mt * t2 * c2.y
+                            + t2 * t * end.y,
                     );
                     if let Some(edge) = Edge::new(current, p) {
                         edges.push(edge);
@@ -977,30 +1008,42 @@ fn ellipse_to_path(center: Point, rx: Scalar, ry: Scalar) -> Path {
 
     // Top right quadrant
     builder.cubic_to(
-        center.x + rx, center.y - ky,
-        center.x + kx, center.y - ry,
-        center.x, center.y - ry,
+        center.x + rx,
+        center.y - ky,
+        center.x + kx,
+        center.y - ry,
+        center.x,
+        center.y - ry,
     );
 
     // Top left quadrant
     builder.cubic_to(
-        center.x - kx, center.y - ry,
-        center.x - rx, center.y - ky,
-        center.x - rx, center.y,
+        center.x - kx,
+        center.y - ry,
+        center.x - rx,
+        center.y - ky,
+        center.x - rx,
+        center.y,
     );
 
     // Bottom left quadrant
     builder.cubic_to(
-        center.x - rx, center.y + ky,
-        center.x - kx, center.y + ry,
-        center.x, center.y + ry,
+        center.x - rx,
+        center.y + ky,
+        center.x - kx,
+        center.y + ry,
+        center.x,
+        center.y + ry,
     );
 
     // Bottom right quadrant
     builder.cubic_to(
-        center.x + kx, center.y + ry,
-        center.x + rx, center.y + ky,
-        center.x + rx, center.y,
+        center.x + kx,
+        center.y + ry,
+        center.x + rx,
+        center.y + ky,
+        center.x + rx,
+        center.y,
     );
 
     builder.close();

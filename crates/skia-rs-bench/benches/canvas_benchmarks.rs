@@ -1,13 +1,13 @@
 //! Canvas and surface benchmarks.
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use std::hint::black_box;
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use skia_rs_bench::{
     canvas_sizes, create_rng, generate_complex_path, generate_simple_path, random_rects,
 };
-use skia_rs_core::{Color, ImageInfo, Matrix, Point, Rect};
 use skia_rs_canvas::{Canvas, ClipOp, PictureRecorder, SaveLayerRec, Surface};
+use skia_rs_core::{Color, ImageInfo, Matrix, Point, Rect};
 use skia_rs_paint::Paint;
+use std::hint::black_box;
 
 fn bench_canvas_creation(c: &mut Criterion) {
     let mut group = c.benchmark_group("Canvas/creation");
@@ -31,17 +31,11 @@ fn bench_canvas_queries(c: &mut Criterion) {
 
     let canvas = Canvas::new(1920, 1080);
 
-    group.bench_function("width", |b| {
-        b.iter(|| black_box(&canvas).width())
-    });
+    group.bench_function("width", |b| b.iter(|| black_box(&canvas).width()));
 
-    group.bench_function("height", |b| {
-        b.iter(|| black_box(&canvas).height())
-    });
+    group.bench_function("height", |b| b.iter(|| black_box(&canvas).height()));
 
-    group.bench_function("save_count", |b| {
-        b.iter(|| black_box(&canvas).save_count())
-    });
+    group.bench_function("save_count", |b| b.iter(|| black_box(&canvas).save_count()));
 
     group.bench_function("total_matrix", |b| {
         b.iter(|| black_box(&canvas).total_matrix())
@@ -110,41 +104,49 @@ fn bench_canvas_save_restore(c: &mut Criterion) {
             )
         });
 
-        group.bench_with_input(BenchmarkId::new("deep_restore", depth), &depth, |b, &depth| {
-            b.iter_batched(
-                || {
-                    let mut canvas = Canvas::new(1920, 1080);
-                    for _ in 0..depth {
-                        canvas.save();
-                    }
-                    canvas
-                },
-                |mut canvas| {
-                    for _ in 0..depth {
-                        canvas.restore();
-                    }
-                    canvas
-                },
-                criterion::BatchSize::SmallInput,
-            )
-        });
+        group.bench_with_input(
+            BenchmarkId::new("deep_restore", depth),
+            &depth,
+            |b, &depth| {
+                b.iter_batched(
+                    || {
+                        let mut canvas = Canvas::new(1920, 1080);
+                        for _ in 0..depth {
+                            canvas.save();
+                        }
+                        canvas
+                    },
+                    |mut canvas| {
+                        for _ in 0..depth {
+                            canvas.restore();
+                        }
+                        canvas
+                    },
+                    criterion::BatchSize::SmallInput,
+                )
+            },
+        );
 
-        group.bench_with_input(BenchmarkId::new("restore_to_count", depth), &depth, |b, &depth| {
-            b.iter_batched(
-                || {
-                    let mut canvas = Canvas::new(1920, 1080);
-                    for _ in 0..depth {
-                        canvas.save();
-                    }
-                    canvas
-                },
-                |mut canvas| {
-                    canvas.restore_to_count(1);
-                    canvas
-                },
-                criterion::BatchSize::SmallInput,
-            )
-        });
+        group.bench_with_input(
+            BenchmarkId::new("restore_to_count", depth),
+            &depth,
+            |b, &depth| {
+                b.iter_batched(
+                    || {
+                        let mut canvas = Canvas::new(1920, 1080);
+                        for _ in 0..depth {
+                            canvas.save();
+                        }
+                        canvas
+                    },
+                    |mut canvas| {
+                        canvas.restore_to_count(1);
+                        canvas
+                    },
+                    criterion::BatchSize::SmallInput,
+                )
+            },
+        );
     }
 
     group.finish();
@@ -310,18 +312,22 @@ fn bench_canvas_clip(c: &mut Criterion) {
         let bounds = Rect::from_xywh(0.0, 0.0, 1920.0, 1080.0);
         let rects = random_rects(&mut rng, count, &bounds, 200.0);
 
-        group.bench_with_input(BenchmarkId::new("multiple_clips", count), &rects, |b, rects| {
-            b.iter_batched(
-                || Canvas::new(1920, 1080),
-                |mut canvas| {
-                    for rect in rects {
-                        canvas.clip_rect(rect, ClipOp::Intersect, false);
-                    }
-                    canvas
-                },
-                criterion::BatchSize::SmallInput,
-            )
-        });
+        group.bench_with_input(
+            BenchmarkId::new("multiple_clips", count),
+            &rects,
+            |b, rects| {
+                b.iter_batched(
+                    || Canvas::new(1920, 1080),
+                    |mut canvas| {
+                        for rect in rects {
+                            canvas.clip_rect(rect, ClipOp::Intersect, false);
+                        }
+                        canvas
+                    },
+                    criterion::BatchSize::SmallInput,
+                )
+            },
+        );
     }
 
     group.finish();
@@ -387,7 +393,12 @@ fn bench_canvas_drawing(c: &mut Criterion) {
         b.iter_batched(
             || Canvas::new(1920, 1080),
             |mut canvas| {
-                canvas.draw_round_rect(black_box(&rect), black_box(10.0), black_box(10.0), black_box(&paint));
+                canvas.draw_round_rect(
+                    black_box(&rect),
+                    black_box(10.0),
+                    black_box(10.0),
+                    black_box(&paint),
+                );
                 canvas
             },
             criterion::BatchSize::SmallInput,
@@ -452,25 +463,15 @@ fn bench_surface(c: &mut Criterion) {
     let info = ImageInfo::new_rgba8888(1920, 1080);
     let surface = Surface::new_raster(&info, None).unwrap();
 
-    group.bench_function("info", |b| {
-        b.iter(|| black_box(&surface).info())
-    });
+    group.bench_function("info", |b| b.iter(|| black_box(&surface).info()));
 
-    group.bench_function("width", |b| {
-        b.iter(|| black_box(&surface).width())
-    });
+    group.bench_function("width", |b| b.iter(|| black_box(&surface).width()));
 
-    group.bench_function("height", |b| {
-        b.iter(|| black_box(&surface).height())
-    });
+    group.bench_function("height", |b| b.iter(|| black_box(&surface).height()));
 
-    group.bench_function("row_bytes", |b| {
-        b.iter(|| black_box(&surface).row_bytes())
-    });
+    group.bench_function("row_bytes", |b| b.iter(|| black_box(&surface).row_bytes()));
 
-    group.bench_function("pixels", |b| {
-        b.iter(|| black_box(&surface).pixels().len())
-    });
+    group.bench_function("pixels", |b| b.iter(|| black_box(&surface).pixels().len()));
 
     group.bench_function("canvas", |b| {
         b.iter_batched(
@@ -486,9 +487,7 @@ fn bench_surface(c: &mut Criterion) {
 fn bench_picture(c: &mut Criterion) {
     let mut group = c.benchmark_group("Picture");
 
-    group.bench_function("recorder_new", |b| {
-        b.iter(|| PictureRecorder::new())
-    });
+    group.bench_function("recorder_new", |b| b.iter(|| PictureRecorder::new()));
 
     let bounds = Rect::from_xywh(0.0, 0.0, 1920.0, 1080.0);
 

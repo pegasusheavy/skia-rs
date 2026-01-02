@@ -136,8 +136,12 @@ pub fn stroke_to_fill(path: &Path, params: &StrokeParams) -> Option<Path> {
                 // Flatten conic to lines (approximate as quad)
                 if let Some(&start) = current_contour.last() {
                     let mid_ctrl = Point::new(
-                        start.x * (1.0 - weight) / 2.0 + ctrl.x * weight + end.x * (1.0 - weight) / 2.0,
-                        start.y * (1.0 - weight) / 2.0 + ctrl.y * weight + end.y * (1.0 - weight) / 2.0,
+                        start.x * (1.0 - weight) / 2.0
+                            + ctrl.x * weight
+                            + end.x * (1.0 - weight) / 2.0,
+                        start.y * (1.0 - weight) / 2.0
+                            + ctrl.y * weight
+                            + end.y * (1.0 - weight) / 2.0,
                     );
                     flatten_quad(&mut current_contour, start, mid_ctrl, end, 4);
                 }
@@ -276,14 +280,8 @@ fn stroke_contour(
                 }
                 StrokeJoin::Round => {
                     // Simplified: use multiple points to approximate round join
-                    left_side.push(Point::new(
-                        points[i].x + offset.x,
-                        points[i].y + offset.y,
-                    ));
-                    right_side.push(Point::new(
-                        points[i].x - offset.x,
-                        points[i].y - offset.y,
-                    ));
+                    left_side.push(Point::new(points[i].x + offset.x, points[i].y + offset.y));
+                    right_side.push(Point::new(points[i].x - offset.x, points[i].y - offset.y));
                 }
             }
         } else {
@@ -341,7 +339,14 @@ fn stroke_contour(
             }
 
             // Add end cap
-            add_cap(builder, points[n - 1], normals[normals.len() - 1], half_width, params.cap, false);
+            add_cap(
+                builder,
+                points[n - 1],
+                normals[normals.len() - 1],
+                half_width,
+                params.cap,
+                false,
+            );
 
             // Right side (reverse)
             for p in right_side.iter().rev() {
@@ -373,8 +378,14 @@ fn add_cap(
                 Point::new(normal.y, -normal.x)
             };
             let ext = Point::new(dir.x * half_width, dir.y * half_width);
-            builder.line_to(center.x + normal.x * half_width + ext.x, center.y + normal.y * half_width + ext.y);
-            builder.line_to(center.x - normal.x * half_width + ext.x, center.y - normal.y * half_width + ext.y);
+            builder.line_to(
+                center.x + normal.x * half_width + ext.x,
+                center.y + normal.y * half_width + ext.y,
+            );
+            builder.line_to(
+                center.x - normal.x * half_width + ext.x,
+                center.y - normal.y * half_width + ext.y,
+            );
         }
         StrokeCap::Round => {
             // Approximate semicircle with line segments
@@ -406,7 +417,14 @@ fn flatten_quad(points: &mut Vec<Point>, p0: Point, p1: Point, p2: Point, steps:
     }
 }
 
-fn flatten_cubic(points: &mut Vec<Point>, p0: Point, p1: Point, p2: Point, p3: Point, steps: usize) {
+fn flatten_cubic(
+    points: &mut Vec<Point>,
+    p0: Point,
+    p1: Point,
+    p2: Point,
+    p3: Point,
+    steps: usize,
+) {
     for i in 1..=steps {
         let t = i as Scalar / steps as Scalar;
         let mt = 1.0 - t;
@@ -444,8 +462,7 @@ mod tests {
         builder.close();
         let path = builder.build();
 
-        let params = StrokeParams::new(5.0)
-            .with_join(StrokeJoin::Round);
+        let params = StrokeParams::new(5.0).with_join(StrokeJoin::Round);
         let stroked = stroke_to_fill(&path, &params).unwrap();
 
         assert!(!stroked.is_empty());

@@ -44,9 +44,10 @@ fn render_node(node: &SvgNode, canvas: &mut RasterCanvas<'_>, dom: &SvgDom) {
     canvas.concat(&node.transform);
 
     // Create paint for fill
-    let fill_paint = node.fill.as_ref().and_then(|fill| {
-        create_paint_from_svg_paint(fill, Style::Fill, node, dom)
-    });
+    let fill_paint = node
+        .fill
+        .as_ref()
+        .and_then(|fill| create_paint_from_svg_paint(fill, Style::Fill, node, dom));
 
     // Create paint for stroke
     let stroke_paint = node.stroke.as_ref().and_then(|stroke| {
