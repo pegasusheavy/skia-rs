@@ -3,7 +3,8 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::hint::black_box;
 use std::sync::Arc;
-use skia_rs_text::{Font, FontStyle, Typeface, TextBlobBuilder, Shaper, TextDirection, Script};
+use skia_rs_text::{Font, FontStyle, Typeface, TextBlobBuilder, Shaper};
+use skia_rs_text::shaper::TextDirection;
 use skia_rs_core::Point;
 
 fn bench_typeface(c: &mut Criterion) {
