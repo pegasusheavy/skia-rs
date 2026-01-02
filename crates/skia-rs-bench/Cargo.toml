@@ -1,0 +1,55 @@
+[package]
+name = "skia-rs-bench"
+description = "Benchmarks for skia-rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+skia-rs-core = { workspace = true }
+skia-rs-path = { workspace = true }
+skia-rs-paint = { workspace = true }
+skia-rs-canvas = { workspace = true }
+skia-rs-codec = { workspace = true }
+skia-rs-text = { workspace = true }
+rand = { workspace = true }
+rand_xorshift = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "core_benchmarks"
+harness = false
+
+[[bench]]
+name = "path_benchmarks"
+harness = false
+
+[[bench]]
+name = "paint_benchmarks"
+harness = false
+
+[[bench]]
+name = "canvas_benchmarks"
+harness = false
+
+[[bench]]
+name = "matrix_benchmarks"
+harness = false
+
+[[bench]]
+name = "raster_benchmarks"
+harness = false
+
+[[bench]]
+name = "codec_benchmarks"
+harness = false
+
+[[bench]]
+name = "text_benchmarks"
+harness = false

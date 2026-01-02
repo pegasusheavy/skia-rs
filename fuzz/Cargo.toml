@@ -1,0 +1,144 @@
+[package]
+name = "skia-rs-fuzz"
+version = "0.0.0"
+authors = ["Pegasus Heavy Industries"]
+publish = false
+edition = "2021"  # Use 2021 for fuzz targets (libfuzzer compatibility)
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1.4", features = ["derive"] }
+
+# Local crates to fuzz
+skia-rs-core = { path = "../crates/skia-rs-core" }
+skia-rs-path = { path = "../crates/skia-rs-path" }
+skia-rs-paint = { path = "../crates/skia-rs-paint" }
+skia-rs-canvas = { path = "../crates/skia-rs-canvas" }
+skia-rs-codec = { path = "../crates/skia-rs-codec" }
+
+# Workspace feature flags
+[features]
+default = []
+
+# Fuzz targets
+[[bin]]
+name = "fuzz_point"
+path = "fuzz_targets/fuzz_point.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_rect"
+path = "fuzz_targets/fuzz_rect.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_matrix"
+path = "fuzz_targets/fuzz_matrix.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_color"
+path = "fuzz_targets/fuzz_color.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_path"
+path = "fuzz_targets/fuzz_path.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_path_builder"
+path = "fuzz_targets/fuzz_path_builder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_paint"
+path = "fuzz_targets/fuzz_paint.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_canvas"
+path = "fuzz_targets/fuzz_canvas.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_svg_path"
+path = "fuzz_targets/fuzz_svg_path.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_codec_png"
+path = "fuzz_targets/fuzz_codec_png.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_codec_jpeg"
+path = "fuzz_targets/fuzz_codec_jpeg.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_path_ops"
+path = "fuzz_targets/fuzz_path_ops.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_codec_gif"
+path = "fuzz_targets/fuzz_codec_gif.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_codec_webp"
+path = "fuzz_targets/fuzz_codec_webp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_format_detect"
+path = "fuzz_targets/fuzz_format_detect.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_region"
+path = "fuzz_targets/fuzz_region.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_matrix44"
+path = "fuzz_targets/fuzz_matrix44.rs"
+test = false
+doc = false
+bench = false

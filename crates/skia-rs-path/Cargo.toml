@@ -1,0 +1,23 @@
+[package]
+name = "skia-rs-path"
+description = "Path geometry and operations for skia-rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/skia-rs-path"
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[dependencies]
+skia-rs-core = { workspace = true }
+smallvec = { workspace = true }
+arrayvec = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

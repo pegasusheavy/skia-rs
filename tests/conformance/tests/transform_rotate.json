@@ -1,0 +1,37 @@
+{
+  "name": "transform_rotate",
+  "description": "Draw a rotated rectangle",
+  "width": 256,
+  "height": 256,
+  "tolerance": 0.02,
+  "operations": [
+    {
+      "type": "clear",
+      "color": "#FFFFFFFF"
+    },
+    {
+      "type": "save"
+    },
+    {
+      "type": "translate",
+      "dx": 128,
+      "dy": 128
+    },
+    {
+      "type": "rotate",
+      "degrees": 45
+    },
+    {
+      "type": "draw_rect",
+      "rect": [-50, -50, 50, 50],
+      "paint": {
+        "color": "#FFFF00FF",
+        "style": "fill",
+        "anti_alias": true
+      }
+    },
+    {
+      "type": "restore"
+    }
+  ]
+}

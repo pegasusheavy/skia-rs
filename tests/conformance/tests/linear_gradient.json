@@ -1,0 +1,28 @@
+{
+  "name": "linear_gradient",
+  "description": "Draw a rectangle with linear gradient fill",
+  "width": 256,
+  "height": 256,
+  "tolerance": 0.05,
+  "operations": [
+    {
+      "type": "clear",
+      "color": "#FFFFFFFF"
+    },
+    {
+      "type": "draw_rect",
+      "rect": [20, 20, 236, 236],
+      "paint": {
+        "shader": {
+          "type": "linear_gradient",
+          "start": [20, 20],
+          "end": [236, 236],
+          "colors": ["#FFFF0000", "#FF0000FF"],
+          "positions": [0.0, 1.0],
+          "tile_mode": "clamp"
+        },
+        "style": "fill"
+      }
+    }
+  ]
+}

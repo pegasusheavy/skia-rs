@@ -1,0 +1,23 @@
+{
+  "name": "basic_circle",
+  "description": "Draw a blue circle with anti-aliasing",
+  "width": 256,
+  "height": 256,
+  "tolerance": 0.02,
+  "operations": [
+    {
+      "type": "clear",
+      "color": "#FFFFFFFF"
+    },
+    {
+      "type": "draw_circle",
+      "center": [128, 128],
+      "radius": 100,
+      "paint": {
+        "color": "#FF0000FF",
+        "style": "fill",
+        "anti_alias": true
+      }
+    }
+  ]
+}

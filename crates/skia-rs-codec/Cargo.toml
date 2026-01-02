@@ -1,0 +1,33 @@
+[package]
+name = "skia-rs-codec"
+description = "Image encoding and decoding for skia-rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/skia-rs-codec"
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[features]
+default = ["png", "jpeg", "gif", "webp"]
+png = ["dep:png"]
+jpeg = ["dep:jpeg-decoder", "dep:jpeg-encoder"]
+gif = ["dep:gif"]
+webp = ["dep:webp"]
+
+[dependencies]
+skia-rs-core = { workspace = true }
+png = { workspace = true, optional = true }
+jpeg-decoder = { workspace = true, optional = true }
+jpeg-encoder = { workspace = true, optional = true }
+gif = { workspace = true, optional = true }
+webp = { workspace = true, optional = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

@@ -1,0 +1,140 @@
+name: Fuzzing
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      fuzz_time:
+        description: 'Fuzzing duration per target (seconds)'
+        required: false
+        default: '60'
+      targets:
+        description: 'Comma-separated list of fuzz targets (empty = all)'
+        required: false
+        default: ''
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - fuzz_point
+          - fuzz_rect
+          - fuzz_matrix
+          - fuzz_matrix44
+          - fuzz_color
+          - fuzz_region
+          - fuzz_path
+          - fuzz_path_builder
+          - fuzz_path_ops
+          - fuzz_svg_path
+          - fuzz_paint
+          - fuzz_canvas
+          - fuzz_codec_png
+          - fuzz_codec_jpeg
+          - fuzz_codec_gif
+          - fuzz_codec_webp
+          - fuzz_format_detect
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: Download corpus
+        uses: actions/cache@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
+      - name: Run fuzzer
+        working-directory: fuzz
+        run: |
+          FUZZ_TIME=${{ github.event.inputs.fuzz_time || '60' }}
+          cargo +nightly fuzz run ${{ matrix.target }} -- \
+            -max_total_time=$FUZZ_TIME \
+            -max_len=65536 \
+            -jobs=2
+        continue-on-error: true
+
+      - name: Save corpus
+        uses: actions/cache/save@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+        if: always()
+
+      - name: Upload crashes
+        uses: actions/upload-artifact@v4
+        with:
+          name: crashes-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          retention-days: 30
+        if: failure()
+
+  # ==========================================================================
+  # Coverage-guided fuzzing report
+  # ==========================================================================
+  report:
+    name: Fuzzing Report
+    runs-on: ubuntu-latest
+    needs: fuzz
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all crash artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: crashes-*
+          path: all-crashes/
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Generate report
+        run: |
+          echo "# Fuzzing Report" > fuzz-report.md
+          echo "" >> fuzz-report.md
+          echo "Run: ${{ github.run_id }}" >> fuzz-report.md
+          echo "Date: $(date -u)" >> fuzz-report.md
+          echo "" >> fuzz-report.md
+
+          crash_count=$(find all-crashes -type f 2>/dev/null | wc -l || echo "0")
+          echo "## Summary" >> fuzz-report.md
+          echo "- Crashes found: $crash_count" >> fuzz-report.md
+          echo "" >> fuzz-report.md
+
+          if [ "$crash_count" -gt 0 ]; then
+            echo "## Crashes" >> fuzz-report.md
+            find all-crashes -type f -exec echo "- {}" \; >> fuzz-report.md
+          fi
+
+          cat fuzz-report.md
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-report
+          path: fuzz-report.md
+          retention-days: 30

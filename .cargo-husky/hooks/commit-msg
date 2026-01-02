@@ -1,0 +1,58 @@
+#!/bin/sh
+#
+# Commit message hook for skia-rs
+# Enforces conventional commit format
+#
+
+COMMIT_MSG_FILE=$1
+COMMIT_MSG=$(cat "$COMMIT_MSG_FILE")
+
+# Conventional commit pattern
+# type(scope): description
+# or
+# type: description
+PATTERN='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9_-]+\))?: .{1,72}'
+
+# Allow merge commits
+if echo "$COMMIT_MSG" | grep -qE '^Merge '; then
+    exit 0
+fi
+
+# Allow revert commits
+if echo "$COMMIT_MSG" | grep -qE '^Revert '; then
+    exit 0
+fi
+
+# Check if the commit message matches the pattern
+if ! echo "$COMMIT_MSG" | head -1 | grep -qE "$PATTERN"; then
+    echo ""
+    echo "❌ Invalid commit message format!"
+    echo ""
+    echo "Commit messages must follow Conventional Commits format:"
+    echo "  <type>(<scope>): <description>"
+    echo ""
+    echo "Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert"
+    echo ""
+    echo "Examples:"
+    echo "  feat(core): add Matrix inversion"
+    echo "  fix(path): correct cubic curve bounds calculation"
+    echo "  docs: update API documentation"
+    echo "  refactor(canvas): simplify save/restore stack"
+    echo "  test(paint): add property tests for color conversion"
+    echo ""
+    echo "Your message: $COMMIT_MSG"
+    echo ""
+    exit 1
+fi
+
+# Check description length (should be <= 72 chars for first line)
+FIRST_LINE=$(echo "$COMMIT_MSG" | head -1)
+if [ ${#FIRST_LINE} -gt 72 ]; then
+    echo ""
+    echo "⚠️  First line of commit message is too long (${#FIRST_LINE} > 72 chars)"
+    echo "   Consider shortening: $FIRST_LINE"
+    echo ""
+    # Warning only, don't block
+fi
+
+exit 0

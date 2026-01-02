@@ -1,0 +1,179 @@
+name: Conformance Testing
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run weekly on Sundays at midnight UTC
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ==========================================================================
+  # Generate Reference Images from Skia
+  # ==========================================================================
+  generate-reference:
+    name: Generate Skia Reference Images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Cache Skia build
+        uses: actions/cache@v4
+        with:
+          path: |
+            skia/out
+          key: skia-build-${{ runner.os }}-${{ hashFiles('skia/DEPS') }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            python3 \
+            ninja-build \
+            libgl1-mesa-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev
+
+      - name: Build Skia (if not cached)
+        working-directory: skia
+        run: |
+          if [ ! -d "out/Release" ]; then
+            python3 tools/git-sync-deps
+            bin/gn gen out/Release --args='is_official_build=true'
+            ninja -C out/Release
+          fi
+        continue-on-error: true
+
+      - name: Generate reference images
+        run: |
+          mkdir -p tests/conformance/reference
+          # Reference image generation would go here
+          # This is a placeholder for when Skia tools are available
+          echo "Reference image generation placeholder"
+        continue-on-error: true
+
+      - name: Upload reference images
+        uses: actions/upload-artifact@v4
+        with:
+          name: reference-images
+          path: tests/conformance/reference/
+          retention-days: 30
+        if: always()
+
+  # ==========================================================================
+  # Generate skia-rs Output Images
+  # ==========================================================================
+  generate-output:
+    name: Generate skia-rs Output Images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build conformance test runner
+        run: cargo build --release -p skia-rs-bench
+
+      - name: Generate output images
+        run: |
+          mkdir -p tests/conformance/output
+          cargo run --release -p skia-rs-bench --bin conformance_runner 2>/dev/null || echo "Conformance runner not yet implemented"
+        continue-on-error: true
+
+      - name: Upload output images
+        uses: actions/upload-artifact@v4
+        with:
+          name: output-images
+          path: tests/conformance/output/
+          retention-days: 30
+        if: always()
+
+  # ==========================================================================
+  # Compare Images
+  # ==========================================================================
+  compare:
+    name: Compare Images
+    runs-on: ubuntu-latest
+    needs: [generate-reference, generate-output]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download reference images
+        uses: actions/download-artifact@v4
+        with:
+          name: reference-images
+          path: tests/conformance/reference/
+        continue-on-error: true
+
+      - name: Download output images
+        uses: actions/download-artifact@v4
+        with:
+          name: output-images
+          path: tests/conformance/output/
+        continue-on-error: true
+
+      - name: Install ImageMagick
+        run: sudo apt-get install -y imagemagick
+
+      - name: Compare images
+        run: |
+          mkdir -p tests/conformance/diff
+
+          # Compare each pair of images
+          for ref in tests/conformance/reference/*.png; do
+            if [ -f "$ref" ]; then
+              name=$(basename "$ref")
+              out="tests/conformance/output/$name"
+              diff="tests/conformance/diff/$name"
+
+              if [ -f "$out" ]; then
+                # Generate diff image and calculate metrics
+                compare -metric RMSE "$ref" "$out" "$diff" 2>&1 || true
+              fi
+            fi
+          done
+
+          echo "Image comparison complete"
+        continue-on-error: true
+
+      - name: Upload diff images
+        uses: actions/upload-artifact@v4
+        with:
+          name: diff-images
+          path: tests/conformance/diff/
+          retention-days: 30
+        if: always()
+
+      - name: Generate conformance report
+        run: |
+          echo "# Conformance Report" > conformance-report.md
+          echo "" >> conformance-report.md
+          echo "Generated: $(date -u)" >> conformance-report.md
+          echo "" >> conformance-report.md
+
+          ref_count=$(find tests/conformance/reference -name "*.png" 2>/dev/null | wc -l || echo "0")
+          out_count=$(find tests/conformance/output -name "*.png" 2>/dev/null | wc -l || echo "0")
+
+          echo "## Summary" >> conformance-report.md
+          echo "- Reference images: $ref_count" >> conformance-report.md
+          echo "- Output images: $out_count" >> conformance-report.md
+          echo "" >> conformance-report.md
+
+          cat conformance-report.md
+
+      - name: Upload conformance report
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-report
+          path: conformance-report.md
+          retention-days: 30

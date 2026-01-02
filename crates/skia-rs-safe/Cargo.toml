@@ -1,0 +1,36 @@
+[package]
+name = "skia-rs-safe"
+description = "High-level safe Rust API for skia-rs - A pure Rust implementation of Skia"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/skia-rs-safe"
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+
+[features]
+default = ["codec", "svg"]
+codec = ["dep:skia-rs-codec"]
+svg = ["dep:skia-rs-svg"]
+pdf = ["dep:skia-rs-pdf"]
+gpu = ["dep:skia-rs-gpu"]
+
+[dependencies]
+skia-rs-core = { workspace = true }
+skia-rs-path = { workspace = true }
+skia-rs-paint = { workspace = true }
+skia-rs-canvas = { workspace = true }
+skia-rs-text = { workspace = true }
+skia-rs-codec = { workspace = true, optional = true }
+skia-rs-svg = { workspace = true, optional = true }
+skia-rs-pdf = { workspace = true, optional = true }
+skia-rs-gpu = { workspace = true, optional = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

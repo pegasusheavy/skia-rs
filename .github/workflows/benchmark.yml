@@ -1,0 +1,123 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  benchmark:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run benchmarks
+        run: |
+          cargo bench -p skia-rs-bench -- --noplot --save-baseline current 2>&1 | tee benchmark-output.txt
+
+      - name: Download previous benchmark
+        uses: actions/cache@v4
+        with:
+          path: target/criterion
+          key: benchmark-${{ runner.os }}-${{ github.base_ref || 'main' }}
+          restore-keys: |
+            benchmark-${{ runner.os }}-
+
+      - name: Compare with baseline
+        run: |
+          if [ -d "target/criterion" ]; then
+            cargo bench -p skia-rs-bench -- --noplot --baseline main 2>&1 | tee benchmark-comparison.txt || true
+          fi
+        continue-on-error: true
+
+      - name: Save benchmark baseline
+        uses: actions/cache/save@v4
+        with:
+          path: target/criterion
+          key: benchmark-${{ runner.os }}-${{ github.ref_name }}
+        if: github.event_name == 'push'
+
+      - name: Generate benchmark report
+        run: |
+          echo "# Benchmark Report" > benchmark-report.md
+          echo "" >> benchmark-report.md
+          echo "## Environment" >> benchmark-report.md
+          echo "- OS: ${{ runner.os }}" >> benchmark-report.md
+          echo "- Rust: $(rustc --version)" >> benchmark-report.md
+          echo "- Commit: ${{ github.sha }}" >> benchmark-report.md
+          echo "" >> benchmark-report.md
+
+          echo "## Results Summary" >> benchmark-report.md
+          echo '```' >> benchmark-report.md
+          grep -E "^(Benchmarking|time:)" benchmark-output.txt | head -100 >> benchmark-report.md || true
+          echo '```' >> benchmark-report.md
+
+          if [ -f "benchmark-comparison.txt" ]; then
+            echo "" >> benchmark-report.md
+            echo "## Comparison with Baseline" >> benchmark-report.md
+            echo '```' >> benchmark-report.md
+            grep -E "(improved|regressed|change)" benchmark-comparison.txt | head -50 >> benchmark-report.md || true
+            echo '```' >> benchmark-report.md
+          fi
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            benchmark-report.md
+            benchmark-output.txt
+            benchmark-comparison.txt
+          retention-days: 30
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('benchmark-report.md', 'utf8');
+
+            // Find existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' &&
+              c.body.includes('# Benchmark Report')
+            );
+
+            const body = `## 📊 Benchmark Results\n\n${report}`;
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }
+        continue-on-error: true

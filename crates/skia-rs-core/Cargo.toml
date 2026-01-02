@@ -1,0 +1,25 @@
+[package]
+name = "skia-rs-core"
+description = "Core types for skia-rs: geometry, color, and pixel storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/skia-rs-core"
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[dependencies]
+glam = { workspace = true }
+bytemuck = { workspace = true }
+bitflags = { workspace = true }
+thiserror = { workspace = true }
+smallvec = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+cargo-husky = { workspace = true }

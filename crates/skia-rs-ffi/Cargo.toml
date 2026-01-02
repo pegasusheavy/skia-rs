@@ -1,0 +1,27 @@
+[package]
+name = "skia-rs-ffi"
+description = "C FFI bindings for skia-rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/skia-rs-ffi"
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[lib]
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+skia-rs-core = { workspace = true }
+skia-rs-path = { workspace = true }
+skia-rs-paint = { workspace = true }
+skia-rs-canvas = { workspace = true }
+skia-rs-text = { workspace = true }
+skia-rs-codec = { workspace = true }
+skia-rs-gpu = { workspace = true }
+libc = { workspace = true }

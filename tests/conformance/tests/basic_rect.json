@@ -1,0 +1,22 @@
+{
+  "name": "basic_rect",
+  "description": "Draw a simple red rectangle on white background",
+  "width": 256,
+  "height": 256,
+  "tolerance": 0.0,
+  "operations": [
+    {
+      "type": "clear",
+      "color": "#FFFFFFFF"
+    },
+    {
+      "type": "draw_rect",
+      "rect": [10, 10, 200, 150],
+      "paint": {
+        "color": "#FFFF0000",
+        "style": "fill",
+        "anti_alias": false
+      }
+    }
+  ]
+}

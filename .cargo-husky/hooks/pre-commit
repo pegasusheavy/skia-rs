@@ -1,0 +1,48 @@
+#!/bin/sh
+#
+# Pre-commit hook for skia-rs
+# Runs formatting checks and clippy before allowing commits
+#
+
+set -e
+
+echo "🔍 Running pre-commit checks..."
+
+# Check if there are any staged Rust files
+STAGED_RS_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.rs$' || true)
+
+if [ -z "$STAGED_RS_FILES" ]; then
+    echo "✅ No Rust files staged, skipping checks"
+    exit 0
+fi
+
+echo "📝 Checking code formatting..."
+if ! cargo fmt --all -- --check; then
+    echo ""
+    echo "❌ Code formatting check failed!"
+    echo "   Run 'cargo fmt --all' to fix formatting issues"
+    exit 1
+fi
+echo "✅ Formatting OK"
+
+echo ""
+echo "🔎 Running Clippy..."
+if ! cargo clippy --workspace --all-targets -- -D warnings; then
+    echo ""
+    echo "❌ Clippy found issues!"
+    echo "   Fix the warnings above before committing"
+    exit 1
+fi
+echo "✅ Clippy OK"
+
+echo ""
+echo "🧪 Running quick compile check..."
+if ! cargo check --workspace; then
+    echo ""
+    echo "❌ Compilation failed!"
+    exit 1
+fi
+echo "✅ Compilation OK"
+
+echo ""
+echo "✨ All pre-commit checks passed!"

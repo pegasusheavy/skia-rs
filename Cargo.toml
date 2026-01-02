@@ -1,6 +1,108 @@
-[package]
-name = "skia-rs"
+[workspace]
+resolver = "2"
+members = [
+    "crates/skia-rs-core",
+    "crates/skia-rs-path",
+    "crates/skia-rs-paint",
+    "crates/skia-rs-canvas",
+    "crates/skia-rs-text",
+    "crates/skia-rs-gpu",
+    "crates/skia-rs-codec",
+    "crates/skia-rs-svg",
+    "crates/skia-rs-pdf",
+    "crates/skia-rs-ffi",
+    "crates/skia-rs-safe",
+    "crates/skia-rs-bench",
+]
+exclude = ["fuzz"]  # Fuzz crate uses different edition for libfuzzer compatibility
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PegasusHeavyIndustries/skia-rs"
+homepage = "https://github.com/PegasusHeavyIndustries/skia-rs"
+documentation = "https://docs.rs/skia-rs-safe"
+authors = ["Pegasus Heavy Industries"]
+rust-version = "1.85"
+keywords = ["graphics", "2d", "skia", "rendering", "canvas"]
+categories = ["graphics", "rendering::graphics-api", "multimedia::images"]
 
-[dependencies]
+[workspace.dependencies]
+# Internal crates
+skia-rs-core = { path = "crates/skia-rs-core" }
+skia-rs-path = { path = "crates/skia-rs-path" }
+skia-rs-paint = { path = "crates/skia-rs-paint" }
+skia-rs-canvas = { path = "crates/skia-rs-canvas" }
+skia-rs-text = { path = "crates/skia-rs-text" }
+skia-rs-gpu = { path = "crates/skia-rs-gpu" }
+skia-rs-codec = { path = "crates/skia-rs-codec" }
+skia-rs-svg = { path = "crates/skia-rs-svg" }
+skia-rs-pdf = { path = "crates/skia-rs-pdf" }
+skia-rs-ffi = { path = "crates/skia-rs-ffi" }
+skia-rs-safe = { path = "crates/skia-rs-safe" }
+
+# Math and geometry
+glam = "0.29"
+
+# GPU backends
+ash = "0.38"
+wgpu = "23.0"
+glow = "0.16"
+pollster = "0.4"
+
+# Text and fonts
+rustybuzz = "0.18"
+fontdb = "0.21"
+ttf-parser = "0.24"
+
+# Image codecs
+png = "0.17"
+jpeg-decoder = "0.3"
+jpeg-encoder = "0.6"
+gif = "0.13"
+webp = "0.3"
+
+# SVG
+roxmltree = "0.20"
+usvg = "0.43"
+
+# PDF
+pdf-writer = "0.12"
+
+# FFI
+libc = "0.2"
+
+# Utilities
+thiserror = "2.0"
+bitflags = "2.6"
+bytemuck = { version = "1.18", features = ["derive"] }
+smallvec = "1.13"
+arrayvec = "0.7"
+parking_lot = "0.12"
+
+# Testing & Benchmarking
+criterion = { version = "0.6", features = ["html_reports"] }
+proptest = "1.5"
+rand = "0.8"
+rand_xorshift = "0.3"
+
+# Git hooks
+cargo-husky = { version = "1.5", default-features = false, features = ["user-hooks"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# Benchmark profile - optimized but with debug info for profiling
+[profile.bench]
+inherits = "release"
+debug = true
+lto = "thin"

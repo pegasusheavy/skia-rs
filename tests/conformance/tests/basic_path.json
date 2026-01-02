@@ -1,0 +1,22 @@
+{
+  "name": "basic_path",
+  "description": "Draw a simple SVG path (triangle)",
+  "width": 256,
+  "height": 256,
+  "tolerance": 0.01,
+  "operations": [
+    {
+      "type": "clear",
+      "color": "#FFFFFFFF"
+    },
+    {
+      "type": "draw_path",
+      "path": "M 128 20 L 230 220 L 26 220 Z",
+      "paint": {
+        "color": "#FF00FF00",
+        "style": "fill",
+        "anti_alias": true
+      }
+    }
+  ]
+}
