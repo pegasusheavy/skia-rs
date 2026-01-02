@@ -59,17 +59,17 @@
 | Phase 3: Paint & Shaders | ✅ Complete | 100% |
 | Phase 4: Canvas & Drawing | ✅ Complete | 100% |
 | Phase 5: Text & Fonts | ✅ Complete | 100% |
-| Phase 6: Image & Codec | ✅ Complete | 85% |
+| Phase 6: Image & Codec | ✅ Complete | 95% |
 | Phase 7: GPU Backend | 🔄 In Progress | 40% |
-| Phase 8: CPU Rasterizer | ✅ Complete | 85% |
+| Phase 8: CPU Rasterizer | ✅ Complete | 90% |
 | Phase 9: Advanced Features | 🔄 In Progress | 50% |
-| Phase 10: FFI Layer | 🔄 In Progress | 60% |
+| Phase 10: FFI Layer | ✅ Complete | 80% |
 | Phase 11: Testing | ✅ Complete | 95% |
-| Phase 12: Documentation | ⏳ Pending | 10% |
+| Phase 12: Documentation | 🔄 In Progress | 20% |
 
 **Key Achievements:**
-- Full CPU software rasterizer with anti-aliasing
-- PNG/JPEG/GIF/WebP codec support
+- Full CPU software rasterizer with anti-aliasing and shader blit support
+- PNG/JPEG/GIF/WebP/BMP/ICO codec support
 - Complete path system with boolean operations
 - Text shaping via rustybuzz integration
 - GPU backend foundation (wgpu)
@@ -77,6 +77,9 @@
 - 17 fuzz targets covering all major subsystems
 - Full CI/CD pipeline with GitHub Actions (5 workflows)
 - Conformance testing framework with visual diff comparison
+- C FFI with auto-generated headers via cbindgen
+- Color space conversion (sRGB, linear, Display P3, XYZ, Lab)
+- Panic-safe FFI boundary with error retrieval
 
 ---
 
@@ -325,15 +328,17 @@
 - [x] JPEG (encode + decode) - full implementation with `jpeg-decoder`/`jpeg-encoder`
 - [x] WebP (encode + decode) - full implementation with `webp` crate
 - [x] GIF (decode) - full implementation with `gif` crate
-- [ ] BMP, ICO, WBMP
+- [x] BMP (encode + decode) - implementation with magic detection
+- [x] ICO (decode) - implementation with magic detection
+- [ ] WBMP
 - [ ] HEIF/AVIF (optional)
 - [ ] Raw image format support
 
 ### 6.3 Image Operations
 - [x] Scaling (nearest neighbor)
 - [x] Subset/crop
-- [ ] Color space conversion
-- [ ] Premultiplication handling
+- [x] Color space conversion (sRGB, linear sRGB, Display P3, XYZ, Lab)
+- [x] Premultiplication handling (premultiply/unpremultiply in place)
 
 ---
 
@@ -390,7 +395,7 @@
 
 ### 8.2 Blitting
 - [x] Solid color blit
-- [ ] Shader blit (sampling)
+- [x] Shader blit (sampling via Shader::sample for gradients/images)
 - [x] Alpha blending (Porter-Duff modes)
 - [x] Porter-Duff compositing (12 modes implemented)
 - [ ] SIMD optimization (SSE4.2, AVX2, NEON)
@@ -463,13 +468,13 @@ void sk_surface_draw_circle(surface, cx, cy, radius, paint);
 ```
 
 ### 10.3 FFI Implementation
-- [ ] Generate bindings using `cbindgen`
+- [x] Generate bindings using `cbindgen` (include/skia-rs.h)
 - [x] Memory safety across FFI boundary
 - [ ] Thread safety documentation
-- [ ] Panic catching at FFI boundary
+- [x] Panic catching at FFI boundary (catch_unwind with error retrieval)
 
 ### 10.4 Language Bindings
-- [ ] C header generation (`skia.h`)
+- [x] C header generation (`include/skia-rs.h`)
 - [ ] Python bindings (via `PyO3` optional crate)
 - [ ] Node.js bindings (via `napi-rs` optional crate)
 - [ ] Provide examples for each language
@@ -526,7 +531,7 @@ void sk_surface_draw_circle(surface, cx, cy, radius, paint);
 - [ ] Examples gallery
 
 ### 12.2 Examples
-- [ ] Basic drawing example
+- [x] Basic drawing example (`examples/basic_drawing.rs`)
 - [ ] Text rendering example
 - [ ] GPU rendering example
 - [ ] Animation example

@@ -12,6 +12,76 @@
 use skia_rs_core::{Color4f, Matrix, Point, Rect, Scalar};
 use std::sync::Arc;
 
+// =============================================================================
+// Helper Functions for Gradient Sampling
+// =============================================================================
+
+/// Apply tile mode to a t value (typically 0-1 range).
+#[inline]
+fn apply_tile_mode(t: Scalar, mode: TileMode) -> Scalar {
+    match mode {
+        TileMode::Clamp => t.clamp(0.0, 1.0),
+        TileMode::Repeat => t.rem_euclid(1.0),
+        TileMode::Mirror => {
+            let t = t.rem_euclid(2.0);
+            if t > 1.0 {
+                2.0 - t
+            } else {
+                t
+            }
+        }
+        TileMode::Decal => t, // Colors outside 0-1 handled separately
+    }
+}
+
+/// Interpolate a gradient color at position t.
+#[inline]
+fn interpolate_gradient_color(
+    colors: &[Color4f],
+    positions: Option<&[Scalar]>,
+    t: Scalar,
+) -> Color4f {
+    if colors.is_empty() {
+        return Color4f::transparent();
+    }
+    if colors.len() == 1 {
+        return colors[0];
+    }
+
+    // Handle out-of-bounds for decal mode
+    if t < 0.0 || t > 1.0 {
+        return Color4f::transparent();
+    }
+
+    // If no explicit positions, use uniform distribution
+    if let Some(pos) = positions {
+        // Find the segment containing t
+        for i in 0..pos.len() - 1 {
+            if t >= pos[i] && t <= pos[i + 1] {
+                let segment_t = if pos[i + 1] > pos[i] {
+                    (t - pos[i]) / (pos[i + 1] - pos[i])
+                } else {
+                    0.0
+                };
+                return colors[i].lerp(&colors[i + 1], segment_t);
+            }
+        }
+        // Edge case: return last color
+        return colors[colors.len() - 1];
+    }
+
+    // Uniform positions
+    let scaled = t * (colors.len() - 1) as Scalar;
+    let idx = scaled.floor() as usize;
+    let frac = scaled - idx as Scalar;
+
+    if idx >= colors.len() - 1 {
+        colors[colors.len() - 1]
+    } else {
+        colors[idx].lerp(&colors[idx + 1], frac)
+    }
+}
+
 /// Tile mode for shaders.
 ///
 /// Determines how a shader handles coordinates outside its bounds.
@@ -52,6 +122,16 @@ pub trait Shader: Send + Sync + std::fmt::Debug {
 
     /// Returns the kind of shader for debugging.
     fn shader_kind(&self) -> ShaderKind;
+
+    /// Sample the shader at a given point.
+    ///
+    /// The point is in the shader's local coordinate space (after applying
+    /// any local matrix). Returns the color at that point.
+    fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
+        // Default implementation returns transparent
+        let _ = (x, y);
+        Color4f::transparent()
+    }
 }
 
 /// Kind of shader (for debugging/inspection).
@@ -114,6 +194,10 @@ impl Shader for ColorShader {
 
     fn shader_kind(&self) -> ShaderKind {
         ShaderKind::Color
+    }
+
+    fn sample(&self, _x: Scalar, _y: Scalar) -> Color4f {
+        self.color
     }
 }
 
@@ -206,6 +290,29 @@ impl Shader for LinearGradient {
     fn shader_kind(&self) -> ShaderKind {
         ShaderKind::LinearGradient
     }
+
+    fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
+        // Calculate the projection of the point onto the gradient line
+        let dx = self.end.x - self.start.x;
+        let dy = self.end.y - self.start.y;
+        let len_sq = dx * dx + dy * dy;
+
+        if len_sq < 1e-10 {
+            // Degenerate gradient (start == end)
+            return self.colors.first().cloned().unwrap_or(Color4f::transparent());
+        }
+
+        // Project point onto gradient line
+        let px = x - self.start.x;
+        let py = y - self.start.y;
+        let mut t = (px * dx + py * dy) / len_sq;
+
+        // Apply tile mode
+        t = apply_tile_mode(t, self.tile_mode);
+
+        // Interpolate color
+        interpolate_gradient_color(&self.colors, self.positions.as_deref(), t)
+    }
 }
 
 /// Radial gradient shader.
@@ -296,6 +403,24 @@ impl Shader for RadialGradient {
 
     fn shader_kind(&self) -> ShaderKind {
         ShaderKind::RadialGradient
+    }
+
+    fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
+        if self.radius <= 0.0 {
+            return self.colors.first().cloned().unwrap_or(Color4f::transparent());
+        }
+
+        // Calculate distance from center
+        let dx = x - self.center.x;
+        let dy = y - self.center.y;
+        let dist = (dx * dx + dy * dy).sqrt();
+        let mut t = dist / self.radius;
+
+        // Apply tile mode
+        t = apply_tile_mode(t, self.tile_mode);
+
+        // Interpolate color
+        interpolate_gradient_color(&self.colors, self.positions.as_deref(), t)
     }
 }
 
@@ -397,6 +522,32 @@ impl Shader for SweepGradient {
 
     fn shader_kind(&self) -> ShaderKind {
         ShaderKind::SweepGradient
+    }
+
+    fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
+        // Calculate angle from center
+        let dx = x - self.center.x;
+        let dy = y - self.center.y;
+
+        // atan2 returns [-PI, PI], convert to [0, 360]
+        let mut angle = dy.atan2(dx).to_degrees();
+        if angle < 0.0 {
+            angle += 360.0;
+        }
+
+        // Map angle to t value
+        let sweep = self.end_angle - self.start_angle;
+        let mut t = if sweep.abs() < 1e-10 {
+            0.0
+        } else {
+            (angle - self.start_angle) / sweep
+        };
+
+        // Apply tile mode
+        t = apply_tile_mode(t, self.tile_mode);
+
+        // Interpolate color
+        interpolate_gradient_color(&self.colors, self.positions.as_deref(), t)
     }
 }
 

@@ -1,6 +1,7 @@
 //! Paint structure for drawing configuration.
 
 use crate::blend::BlendMode;
+use crate::shader::ShaderRef;
 use skia_rs_core::{Color, Color4f, Scalar};
 
 /// Paint style (fill, stroke, or both).
@@ -47,6 +48,8 @@ pub enum StrokeJoin {
 pub struct Paint {
     /// Fill color.
     color: Color4f,
+    /// Shader for complex fills (gradients, images, etc.).
+    shader: Option<ShaderRef>,
     /// Blend mode.
     blend_mode: BlendMode,
     /// Style (fill/stroke).
@@ -69,6 +72,7 @@ impl Default for Paint {
     fn default() -> Self {
         Self {
             color: Color4f::new(0.0, 0.0, 0.0, 1.0),
+            shader: None,
             blend_mode: BlendMode::SrcOver,
             style: Style::Fill,
             stroke_width: 1.0,
@@ -216,6 +220,25 @@ impl Paint {
         self
     }
 
+    /// Get the shader.
+    #[inline]
+    pub fn shader(&self) -> Option<&ShaderRef> {
+        self.shader.as_ref()
+    }
+
+    /// Set the shader.
+    #[inline]
+    pub fn set_shader(&mut self, shader: Option<ShaderRef>) -> &mut Self {
+        self.shader = shader;
+        self
+    }
+
+    /// Check if the paint has a shader.
+    #[inline]
+    pub fn has_shader(&self) -> bool {
+        self.shader.is_some()
+    }
+
     /// Check if anti-aliasing is enabled.
     #[inline]
     pub fn is_anti_alias(&self) -> bool {
@@ -358,6 +381,7 @@ impl Paint {
 
         Some(Self {
             color,
+            shader: None, // Shaders are not serialized
             blend_mode,
             style,
             stroke_width,

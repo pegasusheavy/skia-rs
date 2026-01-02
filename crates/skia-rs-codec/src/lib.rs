@@ -7,6 +7,8 @@
 //! - JPEG encode/decode
 //! - GIF decode
 //! - WebP encode/decode
+//! - BMP encode/decode
+//! - ICO decode
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]

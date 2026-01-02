@@ -9,6 +9,12 @@
 //! - Pointers are valid and non-null (unless explicitly documented otherwise)
 //! - Proper lifetime management (using the appropriate `_unref` functions)
 //! - Thread safety when accessing shared objects
+//!
+//! # Panic Safety
+//!
+//! All FFI functions catch panics at the boundary to prevent unwinding
+//! into C code. Functions that panic will return a default/null value
+//! and set an error flag if applicable.
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
@@ -17,7 +23,45 @@
 #![allow(non_camel_case_types)] // FFI types follow C naming conventions
 
 use std::ffi::{CStr, c_char, c_void};
+use std::panic::{self, AssertUnwindSafe};
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+// =============================================================================
+// Panic Catching Infrastructure
+// =============================================================================
+
+/// Global flag indicating if the last FFI call panicked.
+static LAST_PANIC: AtomicBool = AtomicBool::new(false);
+
+/// Check if the last FFI call panicked.
+///
+/// Returns true if a panic occurred, false otherwise.
+/// Reading this flag clears it.
+#[unsafe(no_mangle)]
+pub extern "C" fn sk_last_call_panicked() -> bool {
+    LAST_PANIC.swap(false, Ordering::SeqCst)
+}
+
+/// Catch panics and return a default value if one occurs.
+#[inline]
+fn catch_panic<T: Default, F: FnOnce() -> T + panic::UnwindSafe>(f: F) -> T {
+    match panic::catch_unwind(f) {
+        Ok(result) => result,
+        Err(_) => {
+            LAST_PANIC.store(true, Ordering::SeqCst);
+            T::default()
+        }
+    }
+}
+
+/// Catch panics in void-returning functions.
+#[inline]
+fn catch_panic_void<F: FnOnce() + panic::UnwindSafe>(f: F) {
+    if panic::catch_unwind(f).is_err() {
+        LAST_PANIC.store(true, Ordering::SeqCst);
+    }
+}
 
 // Re-export types for FFI
 use skia_rs_canvas::{PixelBuffer, RasterCanvas, Surface};
@@ -195,10 +239,12 @@ impl From<sk_matrix_t> for Matrix {
 /// Create a new raster surface.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_surface_new_raster(width: i32, height: i32) -> *mut SkSurface {
-    match Surface::new_raster_n32_premul(width, height) {
-        Some(surface) => Box::into_raw(Box::new(surface)),
-        None => ptr::null_mut(),
-    }
+    catch_panic(|| {
+        match Surface::new_raster_n32_premul(width, height) {
+            Some(surface) => Box::into_raw(Box::new(surface)),
+            None => ptr::null_mut(),
+        }
+    })
 }
 
 /// Create a raster surface with specific image info.
@@ -243,9 +289,11 @@ pub unsafe extern "C" fn sk_surface_new_raster_with_info(
 /// Delete a surface.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_surface_unref(surface: *mut SkSurface) {
-    if !surface.is_null() {
-        drop(Box::from_raw(surface));
-    }
+    catch_panic_void(AssertUnwindSafe(|| {
+        if !surface.is_null() {
+            drop(Box::from_raw(surface));
+        }
+    }));
 }
 
 /// Get the width of a surface.
@@ -290,7 +338,7 @@ pub unsafe extern "C" fn sk_surface_peek_pixels(
 /// Create a new paint.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_paint_new() -> *mut SkPaint {
-    Box::into_raw(Box::new(Paint::new()))
+    catch_panic(|| Box::into_raw(Box::new(Paint::new())))
 }
 
 /// Clone a paint.

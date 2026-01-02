@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Publish skia-rs crates to crates.io
-# 
+#
 # This script publishes crates in dependency order, checking if each
 # crate version is already published before attempting to publish.
 #
@@ -61,7 +61,7 @@ echo ""
 get_local_version() {
     local crate_name="$1"
     local crate_dir="$WORKSPACE_ROOT/crates/$crate_name"
-    
+
     if [[ -f "$crate_dir/Cargo.toml" ]]; then
         # Check if version is workspace-inherited
         if grep -q 'version.workspace = true' "$crate_dir/Cargo.toml"; then
@@ -79,12 +79,12 @@ get_local_version() {
 # Function to get published version from crates.io
 get_published_version() {
     local crate_name="$1"
-    
+
     # Query crates.io API with timeout
     local response
     response=$(curl -s --max-time 10 -H "User-Agent: skia-rs-publish-script" \
         "https://crates.io/api/v1/crates/$crate_name" 2>/dev/null || echo '{"errors":[]}')
-    
+
     if echo "$response" | grep -q '"errors"'; then
         echo ""  # Not published or error
     else
@@ -97,15 +97,15 @@ get_published_version() {
 version_exists() {
     local local_ver="$1"
     local published_ver="$2"
-    
+
     if [[ -z "$published_ver" ]]; then
         return 1  # Not published
     fi
-    
+
     if [[ "$local_ver" == "$published_ver" ]]; then
         return 0  # Same version exists
     fi
-    
+
     return 1  # Different version
 }
 
@@ -123,13 +123,13 @@ declare -A CRATE_STATUS
 for crate in "${CRATES[@]}"; do
     local_ver=$(get_local_version "$crate")
     published_ver=$(get_published_version "$crate")
-    
+
     if [[ -z "$local_ver" ]]; then
         echo -e "  ${RED}✗${NC} $crate - ${RED}Could not read local version${NC}"
         CRATE_STATUS[$crate]="error"
         continue
     fi
-    
+
     if version_exists "$local_ver" "$published_ver"; then
         echo -e "  ${GREEN}✓${NC} $crate@$local_ver - ${GREEN}Already published${NC}"
         CRATE_STATUS[$crate]="published"
@@ -177,23 +177,23 @@ for crate in "${CRATES[@]}"; do
     if [[ "${CRATE_STATUS[$crate]:-}" != "needs_publish" ]]; then
         continue
     fi
-    
+
     local_ver=$(get_local_version "$crate")
     crate_dir="$WORKSPACE_ROOT/crates/$crate"
-    
+
     echo -e "${BLUE}Publishing $crate@$local_ver...${NC}"
-    
+
     if (cd "$crate_dir" && cargo publish --no-verify); then
         echo -e "  ${GREEN}✓ Published $crate@$local_ver${NC}"
         ((PUBLISHED++)) || true
-        
+
         # Wait for crates.io to index the new crate before publishing dependents
         echo -e "  ${YELLOW}Waiting 30s for crates.io to index...${NC}"
         sleep 30
     else
         echo -e "  ${RED}✗ Failed to publish $crate${NC}"
         ((FAILED++)) || true
-        
+
         # Ask if we should continue
         echo -e "${RED}Continue with remaining crates? [y/N]${NC}"
         read -r response

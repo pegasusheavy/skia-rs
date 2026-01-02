@@ -790,6 +790,321 @@ pub enum IccPcs {
 }
 
 // =============================================================================
+// Color Space Conversion Utilities
+// =============================================================================
+
+/// Convert a single sRGB component to linear.
+///
+/// The sRGB transfer function is piecewise: linear for small values,
+/// then a power curve for larger values.
+#[inline]
+pub fn srgb_to_linear(s: Scalar) -> Scalar {
+    if s <= 0.04045 {
+        s / 12.92
+    } else {
+        ((s + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// Convert a single linear component to sRGB.
+#[inline]
+pub fn linear_to_srgb(l: Scalar) -> Scalar {
+    if l <= 0.0031308 {
+        l * 12.92
+    } else {
+        1.055 * l.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// Convert an sRGB Color4f to linear RGB.
+#[inline]
+pub fn color4f_srgb_to_linear(color: &Color4f) -> Color4f {
+    Color4f {
+        r: srgb_to_linear(color.r),
+        g: srgb_to_linear(color.g),
+        b: srgb_to_linear(color.b),
+        a: color.a, // Alpha is always linear
+    }
+}
+
+/// Convert a linear RGB Color4f to sRGB.
+#[inline]
+pub fn color4f_linear_to_srgb(color: &Color4f) -> Color4f {
+    Color4f {
+        r: linear_to_srgb(color.r),
+        g: linear_to_srgb(color.g),
+        b: linear_to_srgb(color.b),
+        a: color.a,
+    }
+}
+
+/// Convert sRGB Color to linear RGB Color4f.
+#[inline]
+pub fn color_to_linear(color: Color) -> Color4f {
+    color4f_srgb_to_linear(&Color4f::from_color(color))
+}
+
+/// Convert linear RGB Color4f to sRGB Color.
+#[inline]
+pub fn linear_to_color(color: &Color4f) -> Color {
+    color4f_linear_to_srgb(color).to_color()
+}
+
+/// HSL to RGB conversion.
+///
+/// H is in [0, 360), S and L are in [0, 1].
+/// Returns (R, G, B) in [0, 1].
+pub fn hsl_to_rgb(h: Scalar, s: Scalar, l: Scalar) -> (Scalar, Scalar, Scalar) {
+    if s == 0.0 {
+        return (l, l, l);
+    }
+
+    let q = if l < 0.5 {
+        l * (1.0 + s)
+    } else {
+        l + s - l * s
+    };
+    let p = 2.0 * l - q;
+    let h = h / 360.0;
+
+    let hue_to_rgb = |p: Scalar, q: Scalar, mut t: Scalar| -> Scalar {
+        if t < 0.0 {
+            t += 1.0;
+        }
+        if t > 1.0 {
+            t -= 1.0;
+        }
+        if t < 1.0 / 6.0 {
+            return p + (q - p) * 6.0 * t;
+        }
+        if t < 0.5 {
+            return q;
+        }
+        if t < 2.0 / 3.0 {
+            return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+        }
+        p
+    };
+
+    let r = hue_to_rgb(p, q, h + 1.0 / 3.0);
+    let g = hue_to_rgb(p, q, h);
+    let b = hue_to_rgb(p, q, h - 1.0 / 3.0);
+
+    (r, g, b)
+}
+
+/// RGB to HSL conversion.
+///
+/// R, G, B are in [0, 1].
+/// Returns (H, S, L) where H is in [0, 360), S and L are in [0, 1].
+pub fn rgb_to_hsl(r: Scalar, g: Scalar, b: Scalar) -> (Scalar, Scalar, Scalar) {
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+
+    if max == min {
+        return (0.0, 0.0, l);
+    }
+
+    let d = max - min;
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
+
+    let h = if max == r {
+        (g - b) / d + if g < b { 6.0 } else { 0.0 }
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+
+    (h * 60.0, s, l)
+}
+
+/// HSV to RGB conversion.
+///
+/// H is in [0, 360), S and V are in [0, 1].
+/// Returns (R, G, B) in [0, 1].
+pub fn hsv_to_rgb(h: Scalar, s: Scalar, v: Scalar) -> (Scalar, Scalar, Scalar) {
+    if s == 0.0 {
+        return (v, v, v);
+    }
+
+    let h = h / 60.0;
+    let i = h.floor();
+    let f = h - i;
+    let p = v * (1.0 - s);
+    let q = v * (1.0 - s * f);
+    let t = v * (1.0 - s * (1.0 - f));
+
+    match i as i32 % 6 {
+        0 => (v, t, p),
+        1 => (q, v, p),
+        2 => (p, v, t),
+        3 => (p, q, v),
+        4 => (t, p, v),
+        _ => (v, p, q),
+    }
+}
+
+/// RGB to HSV conversion.
+///
+/// R, G, B are in [0, 1].
+/// Returns (H, S, V) where H is in [0, 360), S and V are in [0, 1].
+pub fn rgb_to_hsv(r: Scalar, g: Scalar, b: Scalar) -> (Scalar, Scalar, Scalar) {
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let v = max;
+    let d = max - min;
+
+    let s = if max == 0.0 { 0.0 } else { d / max };
+
+    if max == min {
+        return (0.0, s, v);
+    }
+
+    let h = if max == r {
+        (g - b) / d + if g < b { 6.0 } else { 0.0 }
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+
+    (h * 60.0, s, v)
+}
+
+/// RGB to XYZ conversion (using sRGB primaries).
+///
+/// R, G, B are linear values in [0, 1].
+/// Returns (X, Y, Z) where Y is luminance.
+pub fn rgb_to_xyz(r: Scalar, g: Scalar, b: Scalar) -> (Scalar, Scalar, Scalar) {
+    // sRGB to XYZ matrix (D65 white point)
+    let x = r * 0.4124564 + g * 0.3575761 + b * 0.1804375;
+    let y = r * 0.2126729 + g * 0.7151522 + b * 0.0721750;
+    let z = r * 0.0193339 + g * 0.1191920 + b * 0.9503041;
+    (x, y, z)
+}
+
+/// XYZ to RGB conversion (to sRGB primaries).
+///
+/// Returns (R, G, B) linear values.
+pub fn xyz_to_rgb(x: Scalar, y: Scalar, z: Scalar) -> (Scalar, Scalar, Scalar) {
+    // XYZ to sRGB matrix (D65 white point)
+    let r = x * 3.2404542 + y * -1.5371385 + z * -0.4985314;
+    let g = x * -0.9692660 + y * 1.8760108 + z * 0.0415560;
+    let b = x * 0.0556434 + y * -0.2040259 + z * 1.0572252;
+    (r, g, b)
+}
+
+/// RGB to Lab conversion.
+///
+/// R, G, B are linear values in [0, 1].
+/// Returns (L, a, b) where L is in [0, 100], a and b are approximately [-128, 128].
+pub fn rgb_to_lab(r: Scalar, g: Scalar, b: Scalar) -> (Scalar, Scalar, Scalar) {
+    let (x, y, z) = rgb_to_xyz(r, g, b);
+
+    // D65 reference white
+    let ref_x = 0.95047;
+    let ref_y = 1.00000;
+    let ref_z = 1.08883;
+
+    let f = |t: Scalar| -> Scalar {
+        if t > 0.008856 {
+            t.cbrt()
+        } else {
+            (7.787 * t) + (16.0 / 116.0)
+        }
+    };
+
+    let fx = f(x / ref_x);
+    let fy = f(y / ref_y);
+    let fz = f(z / ref_z);
+
+    let l = (116.0 * fy) - 16.0;
+    let a = 500.0 * (fx - fy);
+    let b = 200.0 * (fy - fz);
+
+    (l, a, b)
+}
+
+/// Lab to RGB conversion.
+///
+/// Returns linear (R, G, B) values.
+pub fn lab_to_rgb(l: Scalar, a: Scalar, b: Scalar) -> (Scalar, Scalar, Scalar) {
+    // D65 reference white
+    let ref_x = 0.95047;
+    let ref_y = 1.00000;
+    let ref_z = 1.08883;
+
+    let fy = (l + 16.0) / 116.0;
+    let fx = a / 500.0 + fy;
+    let fz = fy - b / 200.0;
+
+    let f_inv = |t: Scalar| -> Scalar {
+        let t3 = t * t * t;
+        if t3 > 0.008856 {
+            t3
+        } else {
+            (t - 16.0 / 116.0) / 7.787
+        }
+    };
+
+    let x = ref_x * f_inv(fx);
+    let y = ref_y * f_inv(fy);
+    let z = ref_z * f_inv(fz);
+
+    xyz_to_rgb(x, y, z)
+}
+
+/// Calculate the perceived luminance of an sRGB color.
+///
+/// Returns a value in [0, 1] representing the relative luminance.
+/// This is useful for contrast calculations.
+pub fn luminance(color: Color) -> Scalar {
+    let r = srgb_to_linear(color.red() as Scalar / 255.0);
+    let g = srgb_to_linear(color.green() as Scalar / 255.0);
+    let b = srgb_to_linear(color.blue() as Scalar / 255.0);
+
+    // Rec. 709 luminance coefficients
+    0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/// Calculate contrast ratio between two colors (WCAG).
+///
+/// Returns a value >= 1.0. Higher values indicate more contrast.
+/// WCAG requires 4.5:1 for normal text, 3:1 for large text.
+pub fn contrast_ratio(color1: Color, color2: Color) -> Scalar {
+    let l1 = luminance(color1);
+    let l2 = luminance(color2);
+
+    let lighter = l1.max(l2);
+    let darker = l1.min(l2);
+
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+/// Mix two colors in linear space with a given ratio.
+///
+/// `t` of 0.0 returns `color1`, `t` of 1.0 returns `color2`.
+pub fn mix_colors(color1: Color, color2: Color, t: Scalar) -> Color {
+    let c1 = color_to_linear(color1);
+    let c2 = color_to_linear(color2);
+
+    let mixed = Color4f {
+        r: c1.r + (c2.r - c1.r) * t,
+        g: c1.g + (c2.g - c1.g) * t,
+        b: c1.b + (c2.b - c1.b) * t,
+        a: c1.a + (c2.a - c1.a) * t,
+    };
+
+    linear_to_color(&mixed)
+}
+
+// =============================================================================
 // Color Filter Flags
 // =============================================================================
 
@@ -859,5 +1174,94 @@ mod tests {
         assert_eq!(transparent.red(), 255);
         assert_eq!(transparent.green(), 0);
         assert_eq!(transparent.blue(), 0);
+    }
+
+    #[test]
+    fn test_srgb_linear_roundtrip() {
+        // Test roundtrip conversion
+        for i in 0..=100 {
+            let s = i as f32 / 100.0;
+            let linear = srgb_to_linear(s);
+            let back = linear_to_srgb(linear);
+            assert!((s - back).abs() < 0.0001, "Roundtrip failed for {}", s);
+        }
+    }
+
+    #[test]
+    fn test_srgb_linear_values() {
+        // Black stays black
+        assert_eq!(srgb_to_linear(0.0), 0.0);
+        // White stays white
+        assert!((srgb_to_linear(1.0) - 1.0).abs() < 0.0001);
+        // Middle gray is darker in linear
+        let mid = srgb_to_linear(0.5);
+        assert!(mid < 0.5);
+        assert!(mid > 0.1);
+    }
+
+    #[test]
+    fn test_hsl_roundtrip() {
+        let test_cases = [
+            (1.0, 0.0, 0.0), // Red
+            (0.0, 1.0, 0.0), // Green
+            (0.0, 0.0, 1.0), // Blue
+            (0.5, 0.5, 0.5), // Gray
+        ];
+
+        for (r, g, b) in test_cases {
+            let (h, s, l) = rgb_to_hsl(r, g, b);
+            let (r2, g2, b2) = hsl_to_rgb(h, s, l);
+            assert!((r - r2).abs() < 0.001);
+            assert!((g - g2).abs() < 0.001);
+            assert!((b - b2).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn test_hsv_roundtrip() {
+        let test_cases = [
+            (1.0, 0.0, 0.0), // Red
+            (0.0, 1.0, 0.0), // Green
+            (0.0, 0.0, 1.0), // Blue
+            (0.5, 0.5, 0.5), // Gray
+        ];
+
+        for (r, g, b) in test_cases {
+            let (h, s, v) = rgb_to_hsv(r, g, b);
+            let (r2, g2, b2) = hsv_to_rgb(h, s, v);
+            assert!((r - r2).abs() < 0.001);
+            assert!((g - g2).abs() < 0.001);
+            assert!((b - b2).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn test_luminance() {
+        // White has luminance 1.0
+        assert!((luminance(Color::WHITE) - 1.0).abs() < 0.001);
+        // Black has luminance 0.0
+        assert!(luminance(Color::BLACK).abs() < 0.001);
+        // Green is brighter than red (for same intensity)
+        assert!(luminance(Color::GREEN) > luminance(Color::RED));
+    }
+
+    #[test]
+    fn test_contrast_ratio() {
+        // White and black have maximum contrast
+        let ratio = contrast_ratio(Color::WHITE, Color::BLACK);
+        assert!(ratio > 20.0);
+
+        // Same color has ratio of 1.0
+        let same = contrast_ratio(Color::RED, Color::RED);
+        assert!((same - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_mix_colors() {
+        // Mix black and white at 50%
+        let mixed = mix_colors(Color::BLACK, Color::WHITE, 0.5);
+        // Should be approximately middle gray
+        let gray = mixed.red();
+        assert!(gray > 100 && gray < 200);
     }
 }

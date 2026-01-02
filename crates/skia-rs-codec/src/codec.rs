@@ -715,6 +715,446 @@ impl ImageEncoder for WebpEncoder {
 }
 
 // =============================================================================
+// BMP Codec
+// =============================================================================
+
+/// BMP decoder.
+#[derive(Debug, Default)]
+pub struct BmpDecoder;
+
+impl BmpDecoder {
+    /// Create a new BMP decoder.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl ImageDecoder for BmpDecoder {
+    fn decode<R: Read>(&self, mut reader: R) -> CodecResult<Image> {
+        let mut data = Vec::new();
+        reader.read_to_end(&mut data).map_err(CodecError::Io)?;
+        decode_bmp(&data)
+    }
+
+    fn format(&self) -> ImageFormat {
+        ImageFormat::Bmp
+    }
+}
+
+/// BMP encoder.
+#[derive(Debug, Default)]
+pub struct BmpEncoder;
+
+impl BmpEncoder {
+    /// Create a new BMP encoder.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl ImageEncoder for BmpEncoder {
+    fn encode<W: Write>(&self, image: &Image, mut writer: W) -> CodecResult<()> {
+        let pixels = image
+            .peek_pixels()
+            .ok_or_else(|| CodecError::EncodingError("Cannot access pixels".into()))?;
+
+        let width = image.width() as u32;
+        let height = image.height() as u32;
+
+        // Calculate row padding (each row must be aligned to 4 bytes)
+        let row_size = (width * 4 + 3) & !3; // 32-bit BGRA, aligned
+        let pixel_data_size = row_size * height;
+        let file_size = 14 + 40 + pixel_data_size; // header + DIB header + pixels
+
+        // BITMAPFILEHEADER (14 bytes)
+        writer.write_all(b"BM")?; // Signature
+        writer.write_all(&(file_size as u32).to_le_bytes())?; // File size
+        writer.write_all(&[0u8; 4])?; // Reserved
+        writer.write_all(&(14u32 + 40).to_le_bytes())?; // Pixel data offset
+
+        // BITMAPINFOHEADER (40 bytes)
+        writer.write_all(&40u32.to_le_bytes())?; // Header size
+        writer.write_all(&(width as i32).to_le_bytes())?; // Width
+        writer.write_all(&(height as i32).to_le_bytes())?; // Height (positive = bottom-up)
+        writer.write_all(&1u16.to_le_bytes())?; // Planes
+        writer.write_all(&32u16.to_le_bytes())?; // Bits per pixel (32-bit BGRA)
+        writer.write_all(&0u32.to_le_bytes())?; // Compression (BI_RGB = none)
+        writer.write_all(&pixel_data_size.to_le_bytes())?; // Image size
+        writer.write_all(&2835u32.to_le_bytes())?; // X pixels per meter (~72 DPI)
+        writer.write_all(&2835u32.to_le_bytes())?; // Y pixels per meter
+        writer.write_all(&0u32.to_le_bytes())?; // Colors used
+        writer.write_all(&0u32.to_le_bytes())?; // Important colors
+
+        // Pixel data (bottom-to-top, BGRA)
+        let stride = width as usize * 4;
+        let row_padding = row_size as usize - stride;
+        let padding = vec![0u8; row_padding];
+
+        for y in (0..height as usize).rev() {
+            let row_start = y * stride;
+            let row = &pixels[row_start..row_start + stride];
+
+            // Convert RGBA to BGRA
+            for chunk in row.chunks(4) {
+                writer.write_all(&[chunk[2], chunk[1], chunk[0], chunk[3]])?; // BGRA
+            }
+
+            if row_padding > 0 {
+                writer.write_all(&padding)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn format(&self) -> ImageFormat {
+        ImageFormat::Bmp
+    }
+}
+
+/// Decode a BMP image from bytes.
+fn decode_bmp(data: &[u8]) -> CodecResult<Image> {
+    if data.len() < 54 {
+        return Err(CodecError::InvalidData("BMP too short".into()));
+    }
+
+    // Validate signature
+    if &data[0..2] != b"BM" {
+        return Err(CodecError::InvalidData("Invalid BMP signature".into()));
+    }
+
+    // Parse BITMAPFILEHEADER
+    let pixel_offset = u32::from_le_bytes([data[10], data[11], data[12], data[13]]) as usize;
+
+    // Parse BITMAPINFOHEADER
+    let header_size = u32::from_le_bytes([data[14], data[15], data[16], data[17]]);
+    if header_size < 40 {
+        return Err(CodecError::Unsupported(
+            "Only BITMAPINFOHEADER and later supported".into(),
+        ));
+    }
+
+    let width = i32::from_le_bytes([data[18], data[19], data[20], data[21]]);
+    let height = i32::from_le_bytes([data[22], data[23], data[24], data[25]]);
+    let bits_per_pixel = u16::from_le_bytes([data[28], data[29]]);
+    let compression = u32::from_le_bytes([data[30], data[31], data[32], data[33]]);
+
+    if width <= 0 {
+        return Err(CodecError::InvalidData("Invalid BMP width".into()));
+    }
+
+    let width = width as usize;
+    let (height, bottom_up) = if height < 0 {
+        ((-height) as usize, false)
+    } else {
+        (height as usize, true)
+    };
+
+    // Only support uncompressed and basic RLE for now
+    if compression != 0 && compression != 3 {
+        return Err(CodecError::Unsupported(format!(
+            "BMP compression {} not supported",
+            compression
+        )));
+    }
+
+    if pixel_offset >= data.len() {
+        return Err(CodecError::InvalidData("Invalid pixel data offset".into()));
+    }
+
+    let pixel_data = &data[pixel_offset..];
+    let mut rgba = vec![0u8; width * height * 4];
+
+    match bits_per_pixel {
+        24 => {
+            // 24-bit BGR
+            let row_size = (width * 3 + 3) & !3;
+            for y in 0..height {
+                let src_y = if bottom_up { height - 1 - y } else { y };
+                let src_row = src_y * row_size;
+                let dst_row = y * width * 4;
+
+                for x in 0..width {
+                    let src = src_row + x * 3;
+                    let dst = dst_row + x * 4;
+                    if src + 2 < pixel_data.len() {
+                        rgba[dst] = pixel_data[src + 2]; // R
+                        rgba[dst + 1] = pixel_data[src + 1]; // G
+                        rgba[dst + 2] = pixel_data[src]; // B
+                        rgba[dst + 3] = 255; // A
+                    }
+                }
+            }
+        }
+        32 => {
+            // 32-bit BGRA or BGRX
+            let row_size = width * 4;
+            for y in 0..height {
+                let src_y = if bottom_up { height - 1 - y } else { y };
+                let src_row = src_y * row_size;
+                let dst_row = y * width * 4;
+
+                for x in 0..width {
+                    let src = src_row + x * 4;
+                    let dst = dst_row + x * 4;
+                    if src + 3 < pixel_data.len() {
+                        rgba[dst] = pixel_data[src + 2]; // R
+                        rgba[dst + 1] = pixel_data[src + 1]; // G
+                        rgba[dst + 2] = pixel_data[src]; // B
+                        rgba[dst + 3] = pixel_data[src + 3]; // A
+                    }
+                }
+            }
+        }
+        8 => {
+            // 8-bit indexed (need to read color table)
+            let colors_used = u32::from_le_bytes([data[46], data[47], data[48], data[49]]) as usize;
+            let palette_size = if colors_used == 0 { 256 } else { colors_used };
+            let palette_offset = 14 + header_size as usize;
+
+            if palette_offset + palette_size * 4 > pixel_offset {
+                return Err(CodecError::InvalidData("Invalid palette".into()));
+            }
+
+            let palette = &data[palette_offset..palette_offset + palette_size * 4];
+            let row_size = (width + 3) & !3;
+
+            for y in 0..height {
+                let src_y = if bottom_up { height - 1 - y } else { y };
+                let src_row = src_y * row_size;
+                let dst_row = y * width * 4;
+
+                for x in 0..width {
+                    let src = src_row + x;
+                    let dst = dst_row + x * 4;
+                    if src < pixel_data.len() {
+                        let index = pixel_data[src] as usize;
+                        if index < palette_size {
+                            let p = index * 4;
+                            rgba[dst] = palette[p + 2]; // R
+                            rgba[dst + 1] = palette[p + 1]; // G
+                            rgba[dst + 2] = palette[p]; // B
+                            rgba[dst + 3] = 255; // A
+                        }
+                    }
+                }
+            }
+        }
+        _ => {
+            return Err(CodecError::Unsupported(format!(
+                "BMP {} bits per pixel not supported",
+                bits_per_pixel
+            )));
+        }
+    }
+
+    let info = crate::ImageInfo::new(
+        width as i32,
+        height as i32,
+        skia_rs_core::ColorType::Rgba8888,
+        skia_rs_core::AlphaType::Unpremul,
+    );
+
+    Image::from_raster_data_owned(info, rgba, width * 4)
+        .ok_or_else(|| CodecError::DecodingError("Failed to create image".into()))
+}
+
+// =============================================================================
+// ICO Codec
+// =============================================================================
+
+/// ICO decoder.
+#[derive(Debug, Default)]
+pub struct IcoDecoder;
+
+impl IcoDecoder {
+    /// Create a new ICO decoder.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl ImageDecoder for IcoDecoder {
+    fn decode<R: Read>(&self, mut reader: R) -> CodecResult<Image> {
+        let mut data = Vec::new();
+        reader.read_to_end(&mut data).map_err(CodecError::Io)?;
+        decode_ico(&data)
+    }
+
+    fn format(&self) -> ImageFormat {
+        ImageFormat::Ico
+    }
+}
+
+/// Decode an ICO image from bytes.
+/// Returns the largest image in the icon file.
+fn decode_ico(data: &[u8]) -> CodecResult<Image> {
+    if data.len() < 6 {
+        return Err(CodecError::InvalidData("ICO too short".into()));
+    }
+
+    // Validate header
+    let reserved = u16::from_le_bytes([data[0], data[1]]);
+    let image_type = u16::from_le_bytes([data[2], data[3]]);
+    let image_count = u16::from_le_bytes([data[4], data[5]]) as usize;
+
+    if reserved != 0 || image_type != 1 {
+        return Err(CodecError::InvalidData("Invalid ICO header".into()));
+    }
+
+    if image_count == 0 {
+        return Err(CodecError::InvalidData("ICO has no images".into()));
+    }
+
+    // Find the largest image
+    let mut best_index = 0;
+    let mut best_size = 0u32;
+
+    for i in 0..image_count {
+        let entry_offset = 6 + i * 16;
+        if entry_offset + 16 > data.len() {
+            break;
+        }
+
+        let width = if data[entry_offset] == 0 {
+            256
+        } else {
+            data[entry_offset] as u32
+        };
+        let height = if data[entry_offset + 1] == 0 {
+            256
+        } else {
+            data[entry_offset + 1] as u32
+        };
+
+        let size = width * height;
+        if size > best_size {
+            best_size = size;
+            best_index = i;
+        }
+    }
+
+    // Get the best entry
+    let entry_offset = 6 + best_index * 16;
+    let image_offset =
+        u32::from_le_bytes([data[entry_offset + 12], data[entry_offset + 13], data[entry_offset + 14], data[entry_offset + 15]])
+            as usize;
+    let image_size = u32::from_le_bytes([data[entry_offset + 8], data[entry_offset + 9], data[entry_offset + 10], data[entry_offset + 11]])
+        as usize;
+
+    if image_offset + image_size > data.len() {
+        return Err(CodecError::InvalidData("Invalid ICO image data".into()));
+    }
+
+    let image_data = &data[image_offset..image_offset + image_size];
+
+    // Check if it's PNG or BMP
+    if image_data.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        // PNG encoded
+        PngDecoder::new().decode_bytes(image_data)
+    } else {
+        // BMP encoded (without file header)
+        decode_ico_bmp(image_data)
+    }
+}
+
+/// Decode a BMP from ICO format (no BITMAPFILEHEADER).
+fn decode_ico_bmp(data: &[u8]) -> CodecResult<Image> {
+    if data.len() < 40 {
+        return Err(CodecError::InvalidData("ICO BMP too short".into()));
+    }
+
+    let header_size = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if header_size < 40 {
+        return Err(CodecError::Unsupported("Invalid ICO BMP header".into()));
+    }
+
+    let width = i32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+    let height = i32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize / 2; // Height includes mask
+    let bits_per_pixel = u16::from_le_bytes([data[14], data[15]]);
+
+    let pixel_offset = header_size as usize;
+    let pixel_data = &data[pixel_offset..];
+    let mut rgba = vec![0u8; width * height * 4];
+
+    match bits_per_pixel {
+        32 => {
+            // 32-bit BGRA
+            let row_size = width * 4;
+            for y in 0..height {
+                let src_y = height - 1 - y; // Bottom-up
+                let src_row = src_y * row_size;
+                let dst_row = y * width * 4;
+
+                for x in 0..width {
+                    let src = src_row + x * 4;
+                    let dst = dst_row + x * 4;
+                    if src + 3 < pixel_data.len() {
+                        rgba[dst] = pixel_data[src + 2]; // R
+                        rgba[dst + 1] = pixel_data[src + 1]; // G
+                        rgba[dst + 2] = pixel_data[src]; // B
+                        rgba[dst + 3] = pixel_data[src + 3]; // A
+                    }
+                }
+            }
+        }
+        24 => {
+            // 24-bit BGR with separate alpha mask
+            let row_size = (width * 3 + 3) & !3;
+            let mask_row_size = (width + 31) / 32 * 4;
+            let mask_offset = height * row_size;
+
+            for y in 0..height {
+                let src_y = height - 1 - y;
+                let src_row = src_y * row_size;
+                let dst_row = y * width * 4;
+                let mask_row = mask_offset + src_y * mask_row_size;
+
+                for x in 0..width {
+                    let src = src_row + x * 3;
+                    let dst = dst_row + x * 4;
+                    if src + 2 < pixel_data.len() {
+                        rgba[dst] = pixel_data[src + 2]; // R
+                        rgba[dst + 1] = pixel_data[src + 1]; // G
+                        rgba[dst + 2] = pixel_data[src]; // B
+
+                        // Check mask
+                        let mask_byte = mask_row + x / 8;
+                        let mask_bit = 7 - (x % 8);
+                        let alpha = if mask_byte < pixel_data.len() {
+                            if (pixel_data[mask_byte] >> mask_bit) & 1 == 0 {
+                                255
+                            } else {
+                                0
+                            }
+                        } else {
+                            255
+                        };
+                        rgba[dst + 3] = alpha;
+                    }
+                }
+            }
+        }
+        _ => {
+            return Err(CodecError::Unsupported(format!(
+                "ICO {} bits per pixel not supported",
+                bits_per_pixel
+            )));
+        }
+    }
+
+    let info = crate::ImageInfo::new(
+        width as i32,
+        height as i32,
+        skia_rs_core::ColorType::Rgba8888,
+        skia_rs_core::AlphaType::Unpremul,
+    );
+
+    Image::from_raster_data_owned(info, rgba, width * 4)
+        .ok_or_else(|| CodecError::DecodingError("Failed to create image".into()))
+}
+
+// =============================================================================
 // Utility Functions
 // =============================================================================
 
@@ -727,6 +1167,8 @@ pub fn decode_image(data: &[u8]) -> CodecResult<Image> {
         ImageFormat::Jpeg => JpegDecoder::new().decode_bytes(data),
         ImageFormat::Gif => GifDecoder::new().decode_bytes(data),
         ImageFormat::WebP => WebpDecoder::new().decode_bytes(data),
+        ImageFormat::Bmp => BmpDecoder::new().decode_bytes(data),
+        ImageFormat::Ico => IcoDecoder::new().decode_bytes(data),
         _ => Err(CodecError::Unsupported(format!(
             "Format {:?} not supported",
             format
@@ -741,6 +1183,8 @@ pub fn get_image_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
     match format {
         ImageFormat::Png => get_png_dimensions(data),
         ImageFormat::Jpeg => get_jpeg_dimensions(data),
+        ImageFormat::Bmp => get_bmp_dimensions(data),
+        ImageFormat::Ico => get_ico_dimensions(data),
         _ => Err(CodecError::Unsupported(format!(
             "Format {:?} not supported",
             format
@@ -792,6 +1236,57 @@ fn get_jpeg_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
     ))
 }
 
+fn get_bmp_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
+    if data.len() < 26 {
+        return Err(CodecError::InvalidData("BMP too short".into()));
+    }
+
+    let width = i32::from_le_bytes([data[18], data[19], data[20], data[21]]);
+    let height = i32::from_le_bytes([data[22], data[23], data[24], data[25]]).abs();
+
+    Ok((width, height))
+}
+
+fn get_ico_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
+    if data.len() < 22 {
+        return Err(CodecError::InvalidData("ICO too short".into()));
+    }
+
+    let image_count = u16::from_le_bytes([data[4], data[5]]) as usize;
+    if image_count == 0 {
+        return Err(CodecError::InvalidData("ICO has no images".into()));
+    }
+
+    // Return the largest image dimensions
+    let mut best_width = 0i32;
+    let mut best_height = 0i32;
+
+    for i in 0..image_count {
+        let entry_offset = 6 + i * 16;
+        if entry_offset + 8 > data.len() {
+            break;
+        }
+
+        let width = if data[entry_offset] == 0 {
+            256
+        } else {
+            data[entry_offset] as i32
+        };
+        let height = if data[entry_offset + 1] == 0 {
+            256
+        } else {
+            data[entry_offset + 1] as i32
+        };
+
+        if width * height > best_width * best_height {
+            best_width = width;
+            best_height = height;
+        }
+    }
+
+    Ok((best_width, best_height))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -814,6 +1309,14 @@ mod tests {
         let webp = b"RIFF\x00\x00\x00\x00WEBP";
         assert_eq!(ImageFormat::from_magic(webp), ImageFormat::WebP);
 
+        // BMP magic bytes
+        let bmp = b"BM\x00\x00\x00\x00\x00\x00";
+        assert_eq!(ImageFormat::from_magic(bmp), ImageFormat::Bmp);
+
+        // ICO magic bytes
+        let ico = [0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x10, 0x10];
+        assert_eq!(ImageFormat::from_magic(&ico), ImageFormat::Ico);
+
         // Unknown (need at least 8 bytes to test)
         let unknown = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
         assert_eq!(ImageFormat::from_magic(&unknown), ImageFormat::Unknown);
@@ -824,12 +1327,16 @@ mod tests {
         assert_eq!(ImageFormat::Png.extension(), "png");
         assert_eq!(ImageFormat::Jpeg.extension(), "jpg");
         assert_eq!(ImageFormat::Gif.extension(), "gif");
+        assert_eq!(ImageFormat::Bmp.extension(), "bmp");
+        assert_eq!(ImageFormat::Ico.extension(), "ico");
     }
 
     #[test]
     fn test_format_mime_types() {
         assert_eq!(ImageFormat::Png.mime_type(), "image/png");
         assert_eq!(ImageFormat::Jpeg.mime_type(), "image/jpeg");
+        assert_eq!(ImageFormat::Bmp.mime_type(), "image/bmp");
+        assert_eq!(ImageFormat::Ico.mime_type(), "image/x-icon");
     }
 
     #[test]
@@ -839,5 +1346,53 @@ mod tests {
 
         let q_over = EncoderQuality::new(150);
         assert_eq!(q_over.value(), 100);
+    }
+
+    #[test]
+    fn test_bmp_encode_decode_roundtrip() {
+        // Create a simple 2x2 image
+        let info = crate::ImageInfo::new(
+            2,
+            2,
+            skia_rs_core::ColorType::Rgba8888,
+            skia_rs_core::AlphaType::Unpremul,
+        );
+        let pixels = vec![
+            255, 0, 0, 255, // Red
+            0, 255, 0, 255, // Green
+            0, 0, 255, 255, // Blue
+            255, 255, 0, 255, // Yellow
+        ];
+        let image = Image::from_raster_data_owned(info, pixels, 8).unwrap();
+
+        // Encode to BMP
+        let encoder = BmpEncoder::new();
+        let encoded = encoder.encode_bytes(&image).unwrap();
+
+        // Verify format detection
+        assert_eq!(ImageFormat::from_magic(&encoded), ImageFormat::Bmp);
+
+        // Decode back
+        let decoder = BmpDecoder::new();
+        let decoded = decoder.decode_bytes(&encoded).unwrap();
+
+        // Verify dimensions
+        assert_eq!(decoded.width(), 2);
+        assert_eq!(decoded.height(), 2);
+    }
+
+    #[test]
+    fn test_bmp_dimensions() {
+        // Create a simple BMP header for a 100x50 image
+        let mut bmp = vec![0u8; 54];
+        bmp[0] = b'B';
+        bmp[1] = b'M';
+        // Width at offset 18-21
+        bmp[18..22].copy_from_slice(&100i32.to_le_bytes());
+        // Height at offset 22-25
+        bmp[22..26].copy_from_slice(&50i32.to_le_bytes());
+
+        let dims = get_bmp_dimensions(&bmp).unwrap();
+        assert_eq!(dims, (100, 50));
     }
 }

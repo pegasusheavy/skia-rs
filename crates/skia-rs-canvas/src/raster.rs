@@ -474,11 +474,26 @@ impl<'a> Rasterizer<'a> {
         let x1 = transformed.right.round() as i32;
         let y1 = transformed.bottom.round() as i32;
 
-        let color = paint.color32();
         let blend_mode = paint.blend_mode();
 
-        for y in y0..y1 {
-            self.draw_hline(x0, x1 - 1, y, color, blend_mode);
+        // Check if we have a shader
+        if let Some(shader) = paint.shader() {
+            // Shader-based fill - sample each pixel
+            use skia_rs_paint::shader::Shader;
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    // Sample shader at pixel center
+                    let color4f = shader.sample(x as Scalar + 0.5, y as Scalar + 0.5);
+                    let color = color4f.to_color();
+                    self.buffer.blend_pixel(x, y, color, blend_mode);
+                }
+            }
+        } else {
+            // Solid color fill (fast path)
+            let color = paint.color32();
+            for y in y0..y1 {
+                self.draw_hline(x0, x1 - 1, y, color, blend_mode);
+            }
         }
     }
 
