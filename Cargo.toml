@@ -29,18 +29,18 @@ keywords = ["graphics", "2d", "skia", "rendering", "canvas"]
 categories = ["graphics", "rendering::graphics-api", "multimedia::images"]
 
 [workspace.dependencies]
-# Internal crates
-skia-rs-core = { path = "crates/skia-rs-core" }
-skia-rs-path = { path = "crates/skia-rs-path" }
-skia-rs-paint = { path = "crates/skia-rs-paint" }
-skia-rs-canvas = { path = "crates/skia-rs-canvas" }
-skia-rs-text = { path = "crates/skia-rs-text" }
-skia-rs-gpu = { path = "crates/skia-rs-gpu" }
-skia-rs-codec = { path = "crates/skia-rs-codec" }
-skia-rs-svg = { path = "crates/skia-rs-svg" }
-skia-rs-pdf = { path = "crates/skia-rs-pdf" }
-skia-rs-ffi = { path = "crates/skia-rs-ffi" }
-skia-rs-safe = { path = "crates/skia-rs-safe" }
+# Internal crates - version is required for crates.io, path is for local dev
+skia-rs-core = { version = "0.1.0", path = "crates/skia-rs-core" }
+skia-rs-path = { version = "0.1.0", path = "crates/skia-rs-path" }
+skia-rs-paint = { version = "0.1.0", path = "crates/skia-rs-paint" }
+skia-rs-canvas = { version = "0.1.0", path = "crates/skia-rs-canvas" }
+skia-rs-text = { version = "0.1.0", path = "crates/skia-rs-text" }
+skia-rs-gpu = { version = "0.1.0", path = "crates/skia-rs-gpu" }
+skia-rs-codec = { version = "0.1.0", path = "crates/skia-rs-codec" }
+skia-rs-svg = { version = "0.1.0", path = "crates/skia-rs-svg" }
+skia-rs-pdf = { version = "0.1.0", path = "crates/skia-rs-pdf" }
+skia-rs-ffi = { version = "0.1.0", path = "crates/skia-rs-ffi" }
+skia-rs-safe = { version = "0.1.0", path = "crates/skia-rs-safe" }
 
 # Math and geometry
 glam = "0.29"
