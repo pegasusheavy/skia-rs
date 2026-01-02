@@ -65,7 +65,7 @@
 | Phase 9: Advanced Features | 🔄 In Progress | 50% |
 | Phase 10: FFI Layer | ✅ Complete | 80% |
 | Phase 11: Testing | ✅ Complete | 95% |
-| Phase 12: Documentation | 🔄 In Progress | 20% |
+| Phase 12: Documentation | 🔄 In Progress | 50% |
 
 **Key Achievements:**
 - Full CPU software rasterizer with anti-aliasing and shader blit support
@@ -330,7 +330,7 @@
 - [x] GIF (decode) - full implementation with `gif` crate
 - [x] BMP (encode + decode) - implementation with magic detection
 - [x] ICO (decode) - implementation with magic detection
-- [ ] WBMP
+- [x] WBMP (encode + decode) - monochrome wireless bitmap format
 - [ ] HEIF/AVIF (optional)
 - [ ] Raw image format support
 
@@ -532,11 +532,11 @@ void sk_surface_draw_circle(surface, cx, cy, radius, paint);
 
 ### 12.2 Examples
 - [x] Basic drawing example (`examples/basic_drawing.rs`)
-- [ ] Text rendering example
-- [ ] GPU rendering example
+- [x] Text rendering example (`examples/text_rendering.rs`)
+- [x] GPU rendering example (`examples/gpu_rendering.rs`)
 - [ ] Animation example
-- [ ] SVG viewer
-- [ ] PDF generator
+- [x] SVG viewer (`examples/svg_viewer.rs`)
+- [x] PDF generator (`examples/pdf_generator.rs`)
 
 ### 12.3 Release Preparation
 - [ ] Cargo feature flags for optional backends

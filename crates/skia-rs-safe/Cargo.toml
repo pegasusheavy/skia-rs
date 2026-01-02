@@ -19,6 +19,7 @@ codec = ["dep:skia-rs-codec"]
 svg = ["dep:skia-rs-svg"]
 pdf = ["dep:skia-rs-pdf"]
 gpu = ["dep:skia-rs-gpu"]
+wgpu-backend = ["gpu", "skia-rs-gpu?/wgpu-backend"]
 
 [dependencies]
 skia-rs-core = { workspace = true }

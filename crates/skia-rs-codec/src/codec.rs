@@ -44,6 +44,8 @@ pub enum ImageFormat {
     Bmp,
     /// ICO format.
     Ico,
+    /// WBMP format (Wireless Bitmap).
+    Wbmp,
     /// Unknown format.
     Unknown,
 }
@@ -85,6 +87,16 @@ impl ImageFormat {
             return Self::Ico;
         }
 
+        // WBMP: Type 0, FixHeaderField 0, followed by width/height
+        // First two bytes are 0, third byte encodes width
+        if data.len() >= 4 && data[0] == 0 && data[1] == 0 {
+            // Check if it looks like valid WBMP multibyte integers
+            // WBMP uses variable-length integers where bit 7 indicates continuation
+            if data[2] < 128 && data[3] < 128 {
+                return Self::Wbmp;
+            }
+        }
+
         Self::Unknown
     }
 
@@ -97,6 +109,7 @@ impl ImageFormat {
             Self::WebP => "webp",
             Self::Bmp => "bmp",
             Self::Ico => "ico",
+            Self::Wbmp => "wbmp",
             Self::Unknown => "",
         }
     }
@@ -110,6 +123,7 @@ impl ImageFormat {
             Self::WebP => "image/webp",
             Self::Bmp => "image/bmp",
             Self::Ico => "image/x-icon",
+            Self::Wbmp => "image/vnd.wap.wbmp",
             Self::Unknown => "application/octet-stream",
         }
     }
@@ -1155,6 +1169,247 @@ fn decode_ico_bmp(data: &[u8]) -> CodecResult<Image> {
 }
 
 // =============================================================================
+// WBMP Codec (Wireless Bitmap)
+// =============================================================================
+
+/// WBMP decoder.
+///
+/// WBMP is a simple monochrome image format used in WAP applications.
+pub struct WbmpDecoder;
+
+impl WbmpDecoder {
+    /// Create a new WBMP decoder.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for WbmpDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ImageDecoder for WbmpDecoder {
+    fn decode<R: Read>(&self, mut reader: R) -> CodecResult<Image> {
+        let mut data = Vec::new();
+        reader.read_to_end(&mut data).map_err(CodecError::Io)?;
+        decode_wbmp(&data)
+    }
+
+    fn format(&self) -> ImageFormat {
+        ImageFormat::Wbmp
+    }
+}
+
+/// WBMP encoder.
+pub struct WbmpEncoder;
+
+impl WbmpEncoder {
+    /// Create a new WBMP encoder.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for WbmpEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ImageEncoder for WbmpEncoder {
+    fn encode<W: Write>(&self, image: &Image, mut writer: W) -> CodecResult<()> {
+        encode_wbmp(image, &mut writer)
+    }
+
+    fn format(&self) -> ImageFormat {
+        ImageFormat::Wbmp
+    }
+}
+
+/// Read a WBMP multi-byte integer.
+/// Each byte has 7 bits of data, MSB indicates if more bytes follow.
+fn read_wbmp_int(data: &[u8], offset: &mut usize) -> Option<u32> {
+    let mut value = 0u32;
+    loop {
+        if *offset >= data.len() {
+            return None;
+        }
+        let byte = data[*offset];
+        *offset += 1;
+        value = (value << 7) | (byte & 0x7F) as u32;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        if value > 0xFFFF {
+            return None; // Sanity check
+        }
+    }
+    Some(value)
+}
+
+/// Write a WBMP multi-byte integer.
+fn write_wbmp_int<W: Write>(writer: &mut W, mut value: u32) -> CodecResult<()> {
+    let mut bytes = Vec::new();
+    bytes.push((value & 0x7F) as u8);
+    value >>= 7;
+    while value > 0 {
+        bytes.push(0x80 | (value & 0x7F) as u8);
+        value >>= 7;
+    }
+    bytes.reverse();
+    writer.write_all(&bytes).map_err(CodecError::Io)
+}
+
+/// Decode a WBMP image from bytes.
+fn decode_wbmp(data: &[u8]) -> CodecResult<Image> {
+    if data.len() < 4 {
+        return Err(CodecError::InvalidData("WBMP too short".into()));
+    }
+
+    let mut offset = 0;
+
+    // Read type (should be 0 for WBMP type 0)
+    let type_field = read_wbmp_int(data, &mut offset)
+        .ok_or_else(|| CodecError::InvalidData("Invalid WBMP type".into()))?;
+    if type_field != 0 {
+        return Err(CodecError::Unsupported(format!(
+            "WBMP type {} not supported",
+            type_field
+        )));
+    }
+
+    // Read fixed header field (should be 0)
+    let fix_header = read_wbmp_int(data, &mut offset)
+        .ok_or_else(|| CodecError::InvalidData("Invalid WBMP header".into()))?;
+    if fix_header != 0 {
+        return Err(CodecError::Unsupported("Extended WBMP headers not supported".into()));
+    }
+
+    // Read width
+    let width = read_wbmp_int(data, &mut offset)
+        .ok_or_else(|| CodecError::InvalidData("Invalid WBMP width".into()))?;
+
+    // Read height
+    let height = read_wbmp_int(data, &mut offset)
+        .ok_or_else(|| CodecError::InvalidData("Invalid WBMP height".into()))?;
+
+    if width == 0 || height == 0 || width > 10000 || height > 10000 {
+        return Err(CodecError::InvalidData("Invalid WBMP dimensions".into()));
+    }
+
+    // Calculate row size (bits rounded up to bytes)
+    let row_bytes = (width as usize + 7) / 8;
+    let expected_size = offset + row_bytes * height as usize;
+
+    if data.len() < expected_size {
+        return Err(CodecError::InvalidData("WBMP data too short".into()));
+    }
+
+    // Decode pixels (1 = white, 0 = black)
+    let mut rgba = vec![0u8; width as usize * height as usize * 4];
+
+    for y in 0..height as usize {
+        let row_start = offset + y * row_bytes;
+        for x in 0..width as usize {
+            let byte_idx = x / 8;
+            let bit_idx = 7 - (x % 8);
+            let bit = (data[row_start + byte_idx] >> bit_idx) & 1;
+
+            let pixel_idx = (y * width as usize + x) * 4;
+            let value = if bit == 1 { 255 } else { 0 };
+            rgba[pixel_idx] = value;     // R
+            rgba[pixel_idx + 1] = value; // G
+            rgba[pixel_idx + 2] = value; // B
+            rgba[pixel_idx + 3] = 255;   // A
+        }
+    }
+
+    let info = crate::ImageInfo::new(
+        width as i32,
+        height as i32,
+        skia_rs_core::ColorType::Rgba8888,
+        skia_rs_core::AlphaType::Opaque,
+    );
+
+    Image::from_raster_data_owned(info, rgba, width as usize * 4)
+        .ok_or_else(|| CodecError::DecodingError("Failed to create image".into()))
+}
+
+/// Encode an image as WBMP.
+fn encode_wbmp<W: Write>(image: &Image, writer: &mut W) -> CodecResult<()> {
+    let width = image.width() as u32;
+    let height = image.height() as u32;
+    let pixels = image
+        .peek_pixels()
+        .ok_or_else(|| CodecError::EncodingError("Cannot access pixels".into()))?;
+
+    // Write type (0)
+    write_wbmp_int(writer, 0)?;
+
+    // Write fixed header field (0)
+    write_wbmp_int(writer, 0)?;
+
+    // Write width
+    write_wbmp_int(writer, width)?;
+
+    // Write height
+    write_wbmp_int(writer, height)?;
+
+    // Convert to 1-bit (use luminance threshold of 128)
+    let row_bytes = (width as usize + 7) / 8;
+
+    for y in 0..height as usize {
+        let mut row_data = vec![0u8; row_bytes];
+
+        for x in 0..width as usize {
+            let pixel_idx = (y * width as usize + x) * 4;
+
+            // Calculate luminance
+            let r = pixels[pixel_idx] as u32;
+            let g = pixels[pixel_idx + 1] as u32;
+            let b = pixels[pixel_idx + 2] as u32;
+            let luminance = (r * 299 + g * 587 + b * 114) / 1000;
+
+            // Set bit if luminance > 128 (white)
+            if luminance > 128 {
+                let byte_idx = x / 8;
+                let bit_idx = 7 - (x % 8);
+                row_data[byte_idx] |= 1 << bit_idx;
+            }
+        }
+
+        writer.write_all(&row_data).map_err(CodecError::Io)?;
+    }
+
+    Ok(())
+}
+
+/// Get WBMP dimensions without fully decoding.
+fn get_wbmp_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
+    if data.len() < 4 {
+        return Err(CodecError::InvalidData("WBMP too short".into()));
+    }
+
+    let mut offset = 0;
+
+    // Skip type and header
+    let _ = read_wbmp_int(data, &mut offset)
+        .ok_or_else(|| CodecError::InvalidData("Invalid WBMP type".into()))?;
+    let _ = read_wbmp_int(data, &mut offset)
+        .ok_or_else(|| CodecError::InvalidData("Invalid WBMP header".into()))?;
+
+    // Read dimensions
+    let width = read_wbmp_int(data, &mut offset)
+        .ok_or_else(|| CodecError::InvalidData("Invalid WBMP width".into()))?;
+    let height = read_wbmp_int(data, &mut offset)
+        .ok_or_else(|| CodecError::InvalidData("Invalid WBMP height".into()))?;
+
+    Ok((width as i32, height as i32))
+}
+
+// =============================================================================
 // Utility Functions
 // =============================================================================
 
@@ -1169,6 +1424,7 @@ pub fn decode_image(data: &[u8]) -> CodecResult<Image> {
         ImageFormat::WebP => WebpDecoder::new().decode_bytes(data),
         ImageFormat::Bmp => BmpDecoder::new().decode_bytes(data),
         ImageFormat::Ico => IcoDecoder::new().decode_bytes(data),
+        ImageFormat::Wbmp => WbmpDecoder::new().decode_bytes(data),
         _ => Err(CodecError::Unsupported(format!(
             "Format {:?} not supported",
             format
@@ -1185,6 +1441,7 @@ pub fn get_image_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
         ImageFormat::Jpeg => get_jpeg_dimensions(data),
         ImageFormat::Bmp => get_bmp_dimensions(data),
         ImageFormat::Ico => get_ico_dimensions(data),
+        ImageFormat::Wbmp => get_wbmp_dimensions(data),
         _ => Err(CodecError::Unsupported(format!(
             "Format {:?} not supported",
             format

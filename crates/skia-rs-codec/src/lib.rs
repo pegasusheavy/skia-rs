@@ -9,6 +9,7 @@
 //! - WebP encode/decode
 //! - BMP encode/decode
 //! - ICO decode
+//! - WBMP encode/decode (Wireless Bitmap)
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
