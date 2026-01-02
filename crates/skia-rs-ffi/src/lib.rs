@@ -14,6 +14,7 @@
 #![warn(clippy::all)]
 #![allow(clippy::missing_safety_doc)]
 #![allow(unsafe_op_in_unsafe_fn)]
+#![allow(non_camel_case_types)] // FFI types follow C naming conventions
 
 use std::ffi::{c_char, c_void, CStr};
 use std::ptr;
