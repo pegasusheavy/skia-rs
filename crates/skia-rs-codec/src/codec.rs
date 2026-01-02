@@ -88,11 +88,13 @@ impl ImageFormat {
         }
 
         // WBMP: Type 0, FixHeaderField 0, followed by width/height
-        // First two bytes are 0, third byte encodes width
+        // First two bytes are 0, third and fourth bytes encode width and height
+        // Both dimensions must be non-zero for a valid WBMP
         if data.len() >= 4 && data[0] == 0 && data[1] == 0 {
             // Check if it looks like valid WBMP multibyte integers
             // WBMP uses variable-length integers where bit 7 indicates continuation
-            if data[2] < 128 && data[3] < 128 {
+            // Both width and height must be non-zero
+            if data[2] < 128 && data[2] > 0 && data[3] < 128 && data[3] > 0 {
                 return Self::Wbmp;
             }
         }

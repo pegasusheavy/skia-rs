@@ -28,6 +28,7 @@ jpeg-encoder = { workspace = true, optional = true }
 gif = { workspace = true, optional = true }
 webp = { workspace = true, optional = true }
 thiserror = { workspace = true }
+parking_lot = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

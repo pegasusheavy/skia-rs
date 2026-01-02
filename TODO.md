@@ -318,9 +318,9 @@
 ### 6.1 Image Types
 - [x] `SkImage` (immutable image)
 - [x] Raster-backed images
-- [ ] GPU-backed images
-- [ ] Lazy/deferred images
-- [ ] `SkImageGenerator`
+- [x] GPU-backed images (`GpuImage` with texture handle management)
+- [x] Lazy/deferred images (`LazyImage` with on-demand generation)
+- [x] `SkImageGenerator` (trait for deferred pixel generation)
 
 ### 6.2 Codecs
 - [x] `SkCodec` framework (trait-based)

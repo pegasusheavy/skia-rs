@@ -1485,6 +1485,7 @@ dependencies = [
  "gif",
  "jpeg-decoder",
  "jpeg-encoder",
+ "parking_lot",
  "png",
  "proptest",
  "skia-rs-core",
