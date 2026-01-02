@@ -3,7 +3,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::hint::black_box;
 use skia_rs_bench::{create_rng, random_matrices, random_points, random_rects, sizes};
-use skia_rs_core::{Matrix, Point, Rect, Scalar};
+use skia_rs_core::{Matrix, Point, Rect};
 
 fn bench_matrix_creation(c: &mut Criterion) {
     let mut group = c.benchmark_group("Matrix/creation");
@@ -61,10 +61,6 @@ fn bench_matrix_queries(c: &mut Criterion) {
         b.iter(|| black_box(complex).is_translate())
     });
 
-    group.bench_function("has_perspective", |b| {
-        b.iter(|| black_box(complex).has_perspective())
-    });
-
     group.finish();
 }
 
@@ -81,10 +77,6 @@ fn bench_matrix_concat(c: &mut Criterion) {
 
     group.bench_function("three_matrices", |b| {
         b.iter(|| black_box(m1).concat(black_box(&m2)).concat(black_box(&m3)))
-    });
-
-    group.bench_function("mul_operator", |b| {
-        b.iter(|| black_box(m1) * black_box(m2))
     });
 
     // Chain many matrices
