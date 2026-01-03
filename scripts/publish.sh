@@ -32,6 +32,7 @@ BACKOFF_MULTIPLIER=2    # Exponential backoff multiplier
 INDEX_WAIT=45           # Time to wait for crates.io to index a new crate
 
 # Crates in dependency order (must publish in this order)
+# Note: skia-rs-bench is excluded (publish = false, internal benchmarks only)
 CRATES=(
     "skia-rs-core"
     "skia-rs-path"
@@ -45,7 +46,6 @@ CRATES=(
     "skia-rs-skottie"
     "skia-rs-ffi"
     "skia-rs-safe"
-    "skia-rs-bench"
     "skia-rs"
 )
 
