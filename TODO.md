@@ -365,7 +365,7 @@
 
 ### 7.4 OpenGL Backend (via wgpu)
 - [x] OpenGL support via wgpu abstraction
-- [ ] Direct OpenGL API (via `glow`) - optional
+- [x] Direct OpenGL API (via `glow`) - optional `opengl` feature
 
 ### 7.5 Metal Backend (macOS/iOS, via wgpu)
 - [x] Metal support via wgpu abstraction

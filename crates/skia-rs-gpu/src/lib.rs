@@ -27,6 +27,9 @@ pub mod wgpu_backend;
 #[cfg(feature = "vulkan")]
 pub mod vulkan_backend;
 
+#[cfg(feature = "opengl")]
+pub mod opengl_backend;
+
 pub use command::*;
 pub use context::*;
 pub use pipeline::*;
@@ -39,3 +42,6 @@ pub use wgpu_backend::*;
 
 #[cfg(feature = "vulkan")]
 pub use vulkan_backend::*;
+
+#[cfg(feature = "opengl")]
+pub use opengl_backend::*;
