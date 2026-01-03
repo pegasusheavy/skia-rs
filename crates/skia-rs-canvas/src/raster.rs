@@ -445,7 +445,12 @@ impl<'a> Rasterizer<'a> {
         }
     }
 
-    /// Draw a horizontal line (fast path).
+    /// Draw a horizontal line (fast path with SIMD optimization).
+    ///
+    /// Uses SIMD-accelerated blitting when available for:
+    /// - SSE4.2 on x86/x86_64 (4 pixels at a time)
+    /// - AVX2 on x86/x86_64 (8 pixels at a time)
+    /// - NEON on ARM/AArch64 (4 pixels at a time)
     fn draw_hline(&mut self, x0: i32, x1: i32, y: i32, color: Color, blend_mode: BlendMode) {
         let (start, end) = if x0 < x1 { (x0, x1) } else { (x1, x0) };
         let start = start.max(self.clip.left as i32);
@@ -455,24 +460,37 @@ impl<'a> Rasterizer<'a> {
             return;
         }
 
-        // Batch optimization for opaque SrcOver (most common case)
-        if blend_mode == BlendMode::SrcOver
-            && color.alpha() == 255
-            && start >= 0
-            && end < self.buffer.width
-            && y >= 0
-            && y < self.buffer.height
+        if start > end {
+            return;
+        }
+
+        // Validate bounds
+        if start < 0
+            || end >= self.buffer.width
+            || y < 0
+            || y >= self.buffer.height
         {
-            let row_offset = (y as usize) * self.buffer.stride;
-            let start_offset = row_offset + (start as usize) * 4;
-            let end_offset = row_offset + ((end + 1) as usize) * 4;
-            let pattern = [color.red(), color.green(), color.blue(), color.alpha()];
-            for chunk in self.buffer.pixels[start_offset..end_offset].chunks_exact_mut(4) {
-                chunk.copy_from_slice(&pattern);
+            // Fall back to per-pixel with bounds checking
+            for x in start..=end {
+                self.buffer.blend_pixel(x, y, color, blend_mode);
             }
             return;
         }
 
+        let row_offset = (y as usize) * self.buffer.stride;
+        let start_offset = row_offset + (start as usize) * 4;
+        let end_offset = row_offset + ((end + 1) as usize) * 4;
+
+        // SIMD-optimized path for SrcOver blend mode (most common case)
+        if blend_mode == BlendMode::SrcOver {
+            crate::simd::fill_span_solid(
+                &mut self.buffer.pixels[start_offset..end_offset],
+                color,
+            );
+            return;
+        }
+
+        // For other blend modes, use per-pixel blending
         for x in start..=end {
             self.buffer.blend_pixel(x, y, color, blend_mode);
         }

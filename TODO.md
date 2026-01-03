@@ -398,7 +398,7 @@
 - [x] Shader blit (sampling via Shader::sample for gradients/images)
 - [x] Alpha blending (Porter-Duff modes)
 - [x] Porter-Duff compositing (12 modes implemented)
-- [ ] SIMD optimization (SSE4.2, AVX2, NEON)
+- [x] SIMD optimization (SSE4.1, AVX2, NEON) - runtime feature detection
 
 ### 8.3 Clipping
 - [x] Rectangular clip (fast path)
