@@ -360,8 +360,8 @@
 
 ### 7.3 Vulkan Backend (via wgpu)
 - [x] Vulkan support via wgpu abstraction
-- [ ] Direct Vulkan API (via `ash`) - optional
-- [ ] Advanced Vulkan features
+- [x] Direct Vulkan API (via `ash`) - optional `vulkan` feature
+- [x] Advanced Vulkan features - caps, format queries, multi-queue
 
 ### 7.4 OpenGL Backend (via wgpu)
 - [x] OpenGL support via wgpu abstraction

@@ -24,6 +24,9 @@ pub mod texture;
 #[cfg(feature = "wgpu-backend")]
 pub mod wgpu_backend;
 
+#[cfg(feature = "vulkan")]
+pub mod vulkan_backend;
+
 pub use command::*;
 pub use context::*;
 pub use pipeline::*;
@@ -33,3 +36,6 @@ pub use texture::*;
 
 #[cfg(feature = "wgpu-backend")]
 pub use wgpu_backend::*;
+
+#[cfg(feature = "vulkan")]
+pub use vulkan_backend::*;

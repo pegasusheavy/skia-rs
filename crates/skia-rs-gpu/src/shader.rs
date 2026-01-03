@@ -219,14 +219,14 @@ var<uniform> params: BlurParams;
 fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let dims = textureDimensions(input_texture);
     let coord = vec2<i32>(global_id.xy);
-    
+
     if coord.x >= i32(dims.x) || coord.y >= i32(dims.y) {
         return;
     }
-    
+
     var color = vec4<f32>(0.0);
     var weight_sum = 0.0;
-    
+
     for (var i = -params.radius; i <= params.radius; i++) {
         let offset = vec2<i32>(params.direction * f32(i));
         let sample_coord = clamp(coord + offset, vec2<i32>(0), vec2<i32>(dims) - 1);
@@ -234,7 +234,7 @@ fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         color += textureLoad(input_texture, sample_coord, 0) * weight;
         weight_sum += weight;
     }
-    
+
     textureStore(output_texture, coord, color / weight_sum);
 }
 "#;
@@ -264,7 +264,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
         vec2<f32>(1.0, 0.0),
         vec2<f32>(0.0, 0.0),
     );
-    
+
     var output: VertexOutput;
     output.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
     output.tex_coord = tex_coords[vertex_index];
