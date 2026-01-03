@@ -1,0 +1,52 @@
+{
+  "name": "@skia-rs/node",
+  "version": "0.1.0",
+  "description": "Node.js bindings for skia-rs - 2D graphics library",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "*.node"
+  ],
+  "napi": {
+    "name": "skia-rs-node",
+    "triples": {
+      "defaults": true,
+      "additional": [
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-gnu",
+        "aarch64-apple-darwin",
+        "aarch64-unknown-linux-musl"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "napi build --release",
+    "build:debug": "napi build",
+    "prepublishOnly": "napi prepublish -t npm",
+    "test": "node test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pegasusheavy/skia-rs"
+  },
+  "keywords": [
+    "skia",
+    "graphics",
+    "2d",
+    "canvas",
+    "drawing",
+    "image",
+    "rust",
+    "napi"
+  ],
+  "author": "Pegasus Heavy Industries",
+  "license": "MIT OR Apache-2.0",
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.0"
+  },
+  "engines": {
+    "node": ">= 18"
+  }
+}

@@ -1,0 +1,27 @@
+[package]
+name = "skia-rs-python"
+description = "Python bindings for skia-rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["skia", "graphics", "2d", "python", "bindings"]
+categories = ["graphics", "api-bindings"]
+readme = "README.md"
+
+[lib]
+name = "skia_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+skia-rs-core = { workspace = true }
+skia-rs-path = { workspace = true }
+skia-rs-paint = { workspace = true }
+skia-rs-canvas = { workspace = true }
+pyo3 = { version = "0.22", features = ["extension-module"] }
+
+[build-dependencies]
+pyo3-build-config = "0.22"

@@ -475,9 +475,9 @@ void sk_surface_draw_circle(surface, cx, cy, radius, paint);
 
 ### 10.4 Language Bindings
 - [x] C header generation (`include/skia-rs.h`)
-- [ ] Python bindings (via `PyO3` optional crate)
-- [ ] Node.js bindings (via `napi-rs` optional crate)
-- [ ] Provide examples for each language
+- [x] Python bindings (via `PyO3` - `skia-rs-python` crate)
+- [x] Node.js bindings (via `napi-rs` - `skia-rs-node` crate)
+- [x] Provide examples for each language (`examples/` in each binding crate)
 
 ---
 

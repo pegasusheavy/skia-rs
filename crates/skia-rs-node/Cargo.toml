@@ -1,0 +1,27 @@
+[package]
+name = "skia-rs-node"
+description = "Node.js bindings for skia-rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["skia", "graphics", "2d", "nodejs", "bindings"]
+categories = ["graphics", "api-bindings"]
+readme = "README.md"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+skia-rs-core = { workspace = true }
+skia-rs-path = { workspace = true }
+skia-rs-paint = { workspace = true }
+skia-rs-canvas = { workspace = true }
+napi = { version = "2", features = ["napi9"] }
+napi-derive = "2"
+
+[build-dependencies]
+napi-build = "2"
