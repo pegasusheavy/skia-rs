@@ -19,6 +19,8 @@ png = ["dep:png"]
 jpeg = ["dep:jpeg-decoder", "dep:jpeg-encoder"]
 gif = ["dep:gif"]
 webp = ["dep:webp"]
+avif = ["dep:ravif", "dep:avif-decode"]
+raw = ["dep:rawloader"]
 
 [dependencies]
 skia-rs-core = { workspace = true }
@@ -27,6 +29,9 @@ jpeg-decoder = { workspace = true, optional = true }
 jpeg-encoder = { workspace = true, optional = true }
 gif = { workspace = true, optional = true }
 webp = { workspace = true, optional = true }
+ravif = { workspace = true, optional = true }
+avif-decode = { workspace = true, optional = true }
+rawloader = { workspace = true, optional = true }
 thiserror = { workspace = true }
 parking_lot = { workspace = true }
 

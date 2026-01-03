@@ -331,8 +331,8 @@
 - [x] BMP (encode + decode) - implementation with magic detection
 - [x] ICO (decode) - implementation with magic detection
 - [x] WBMP (encode + decode) - monochrome wireless bitmap format
-- [ ] HEIF/AVIF (optional)
-- [ ] Raw image format support
+- [x] AVIF (encode + decode) - optional `avif` feature using `ravif`/`avif-decode`
+- [x] Camera RAW (decode) - optional `raw` feature using `rawloader`
 
 ### 6.3 Image Operations
 - [x] Scaling (nearest neighbor)

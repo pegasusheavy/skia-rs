@@ -13,6 +13,8 @@
 //! - BMP encode/decode
 //! - ICO decode
 //! - WBMP encode/decode (Wireless Bitmap)
+//! - AVIF encode/decode (optional, requires `avif` feature)
+//! - Camera RAW decode (optional, requires `raw` feature)
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]

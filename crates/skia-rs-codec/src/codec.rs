@@ -46,6 +46,10 @@ pub enum ImageFormat {
     Ico,
     /// WBMP format (Wireless Bitmap).
     Wbmp,
+    /// AVIF format (AV1 Image File Format).
+    Avif,
+    /// Camera RAW format.
+    Raw,
     /// Unknown format.
     Unknown,
 }
@@ -87,6 +91,15 @@ impl ImageFormat {
             return Self::Ico;
         }
 
+        // AVIF: ftyp box with 'avif' or 'avis' brand
+        // HEIF/AVIF files start with ftyp box: size (4 bytes) + "ftyp" + brand
+        if data.len() >= 12 && &data[4..8] == b"ftyp" {
+            // Check for AVIF brands
+            if &data[8..12] == b"avif" || &data[8..12] == b"avis" || &data[8..12] == b"mif1" {
+                return Self::Avif;
+            }
+        }
+
         // WBMP: Type 0, FixHeaderField 0, followed by width/height
         // First two bytes are 0, third and fourth bytes encode width and height
         // Both dimensions must be non-zero for a valid WBMP
@@ -112,6 +125,8 @@ impl ImageFormat {
             Self::Bmp => "bmp",
             Self::Ico => "ico",
             Self::Wbmp => "wbmp",
+            Self::Avif => "avif",
+            Self::Raw => "raw",
             Self::Unknown => "",
         }
     }
@@ -126,6 +141,8 @@ impl ImageFormat {
             Self::Bmp => "image/bmp",
             Self::Ico => "image/x-icon",
             Self::Wbmp => "image/vnd.wap.wbmp",
+            Self::Avif => "image/avif",
+            Self::Raw => "image/x-raw",
             Self::Unknown => "application/octet-stream",
         }
     }
@@ -1412,6 +1429,443 @@ fn get_wbmp_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
 }
 
 // =============================================================================
+// AVIF Codec
+// =============================================================================
+
+/// AVIF decoder.
+///
+/// AVIF is a modern image format based on AV1 video codec, offering
+/// excellent compression and quality.
+pub struct AvifDecoder;
+
+impl AvifDecoder {
+    /// Create a new AVIF decoder.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for AvifDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ImageDecoder for AvifDecoder {
+    #[cfg(feature = "avif")]
+    fn decode<R: Read>(&self, mut reader: R) -> CodecResult<Image> {
+        use avif_decode::{Decoder, Image as AvifImage};
+
+        let mut data = Vec::new();
+        reader
+            .read_to_end(&mut data)
+            .map_err(|e| CodecError::Io(e))?;
+
+        let decoder = Decoder::from_avif(&data)
+            .map_err(|e| CodecError::DecodingError(format!("AVIF decode error: {:?}", e)))?;
+
+        let decoded = decoder.to_image()
+            .map_err(|e| CodecError::DecodingError(format!("AVIF decode error: {:?}", e)))?;
+
+        // Extract dimensions and pixels based on the image variant
+        let (width, height, pixels) = match decoded {
+            AvifImage::Rgb8(img) => {
+                let w = img.width();
+                let h = img.height();
+                let rgba: Vec<u8> = img.pixels()
+                    .flat_map(|p| [p.r, p.g, p.b, 255])
+                    .collect();
+                (w as i32, h as i32, rgba)
+            }
+            AvifImage::Rgba8(img) => {
+                let w = img.width();
+                let h = img.height();
+                let rgba: Vec<u8> = img.pixels()
+                    .flat_map(|p| [p.r, p.g, p.b, p.a])
+                    .collect();
+                (w as i32, h as i32, rgba)
+            }
+            AvifImage::Rgb16(img) => {
+                let w = img.width();
+                let h = img.height();
+                // Convert 16-bit to 8-bit
+                let rgba: Vec<u8> = img.pixels()
+                    .flat_map(|p| {
+                        [(p.r >> 8) as u8, (p.g >> 8) as u8, (p.b >> 8) as u8, 255]
+                    })
+                    .collect();
+                (w as i32, h as i32, rgba)
+            }
+            AvifImage::Rgba16(img) => {
+                let w = img.width();
+                let h = img.height();
+                // Convert 16-bit to 8-bit
+                let rgba: Vec<u8> = img.pixels()
+                    .flat_map(|p| {
+                        [(p.r >> 8) as u8, (p.g >> 8) as u8, (p.b >> 8) as u8, (p.a >> 8) as u8]
+                    })
+                    .collect();
+                (w as i32, h as i32, rgba)
+            }
+            AvifImage::Gray8(img) => {
+                let w = img.width();
+                let h = img.height();
+                let rgba: Vec<u8> = img.pixels()
+                    .flat_map(|g| {
+                        let v = g.value();
+                        [v, v, v, 255]
+                    })
+                    .collect();
+                (w as i32, h as i32, rgba)
+            }
+            AvifImage::Gray16(img) => {
+                let w = img.width();
+                let h = img.height();
+                let rgba: Vec<u8> = img.pixels()
+                    .flat_map(|g| {
+                        let g8 = (g.value() >> 8) as u8;
+                        [g8, g8, g8, 255]
+                    })
+                    .collect();
+                (w as i32, h as i32, rgba)
+            }
+        };
+
+        let info = crate::ImageInfo::new(
+            width,
+            height,
+            skia_rs_core::ColorType::Rgba8888,
+            skia_rs_core::AlphaType::Unpremul,
+        );
+
+        Image::from_raster_data_owned(info, pixels, width as usize * 4)
+            .ok_or_else(|| CodecError::DecodingError("Failed to create image".into()))
+    }
+
+    #[cfg(not(feature = "avif"))]
+    fn decode<R: Read>(&self, _reader: R) -> CodecResult<Image> {
+        Err(CodecError::Unsupported(
+            "AVIF decoding requires the 'avif' feature".into(),
+        ))
+    }
+
+    fn format(&self) -> ImageFormat {
+        ImageFormat::Avif
+    }
+}
+
+/// AVIF encoder.
+///
+/// Encodes images to AVIF format using the rav1e AV1 encoder.
+pub struct AvifEncoder {
+    quality: u8,
+    speed: u8,
+}
+
+impl AvifEncoder {
+    /// Create a new AVIF encoder with default settings.
+    pub fn new() -> Self {
+        Self {
+            quality: 80,
+            speed: 6, // Balance between speed and quality
+        }
+    }
+
+    /// Set the quality (0-100, higher is better quality but larger file).
+    pub fn with_quality(mut self, quality: u8) -> Self {
+        self.quality = quality.min(100);
+        self
+    }
+
+    /// Set the encoding speed (1-10, higher is faster but lower quality).
+    pub fn with_speed(mut self, speed: u8) -> Self {
+        self.speed = speed.clamp(1, 10);
+        self
+    }
+}
+
+impl Default for AvifEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ImageEncoder for AvifEncoder {
+    #[cfg(feature = "avif")]
+    fn encode<W: Write>(&self, image: &Image, mut writer: W) -> CodecResult<()> {
+        use ravif::{Encoder, Img};
+        use ravif::RGBA8;
+
+        let width = image.width() as usize;
+        let height = image.height() as usize;
+
+        let pixels = image
+            .peek_pixels()
+            .ok_or_else(|| CodecError::EncodingError("Failed to access pixels".into()))?;
+
+        // Convert to RGBA pixels for ravif
+        let rgba_pixels: Vec<RGBA8> = pixels
+            .chunks_exact(4)
+            .map(|c| RGBA8::new(c[0], c[1], c[2], c[3]))
+            .collect();
+
+        let img = Img::new(rgba_pixels.as_slice(), width, height);
+
+        let encoder = Encoder::new()
+            .with_quality(self.quality as f32)
+            .with_speed(self.speed);
+
+        let result = encoder
+            .encode_rgba(img)
+            .map_err(|e| CodecError::EncodingError(format!("AVIF encode error: {:?}", e)))?;
+
+        writer
+            .write_all(&result.avif_file)
+            .map_err(|e| CodecError::Io(e))?;
+
+        Ok(())
+    }
+
+    #[cfg(not(feature = "avif"))]
+    fn encode<W: Write>(&self, _image: &Image, _writer: W) -> CodecResult<()> {
+        Err(CodecError::Unsupported(
+            "AVIF encoding requires the 'avif' feature".into(),
+        ))
+    }
+
+    fn format(&self) -> ImageFormat {
+        ImageFormat::Avif
+    }
+}
+
+/// Get AVIF dimensions from data.
+#[cfg(feature = "avif")]
+fn get_avif_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
+    use avif_decode::{Decoder, Image as AvifImage};
+    let decoder = Decoder::from_avif(data)
+        .map_err(|e| CodecError::DecodingError(format!("AVIF decode error: {:?}", e)))?;
+    let image = decoder.to_image()
+        .map_err(|e| CodecError::DecodingError(format!("AVIF decode error: {:?}", e)))?;
+
+    let (w, h) = match image {
+        AvifImage::Rgb8(img) => (img.width(), img.height()),
+        AvifImage::Rgba8(img) => (img.width(), img.height()),
+        AvifImage::Rgb16(img) => (img.width(), img.height()),
+        AvifImage::Rgba16(img) => (img.width(), img.height()),
+        AvifImage::Gray8(img) => (img.width(), img.height()),
+        AvifImage::Gray16(img) => (img.width(), img.height()),
+    };
+    Ok((w as i32, h as i32))
+}
+
+#[cfg(not(feature = "avif"))]
+fn get_avif_dimensions(_data: &[u8]) -> CodecResult<(i32, i32)> {
+    Err(CodecError::Unsupported(
+        "AVIF support requires the 'avif' feature".into(),
+    ))
+}
+
+// =============================================================================
+// RAW Codec
+// =============================================================================
+
+/// Camera RAW decoder.
+///
+/// Decodes camera RAW formats from various manufacturers including
+/// Canon, Nikon, Sony, Fuji, and many others.
+pub struct RawDecoder;
+
+impl RawDecoder {
+    /// Create a new RAW decoder.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for RawDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ImageDecoder for RawDecoder {
+    #[cfg(feature = "raw")]
+    fn decode<R: Read>(&self, mut reader: R) -> CodecResult<Image> {
+        use std::io::Cursor;
+
+        let mut data = Vec::new();
+        reader
+            .read_to_end(&mut data)
+            .map_err(|e| CodecError::Io(e))?;
+
+        let mut cursor = Cursor::new(&data);
+        let raw_image = rawloader::decode(&mut cursor)
+            .map_err(|e| CodecError::DecodingError(format!("RAW decode error: {:?}", e)))?;
+
+        // Get dimensions
+        let width = raw_image.width as i32;
+        let height = raw_image.height as i32;
+
+        // Convert RAW data to RGB
+        // RAW images are typically in a Bayer pattern, we need to demosaic
+        let pixels = demosaic_raw(&raw_image)?;
+
+        let info = crate::ImageInfo::new(
+            width,
+            height,
+            skia_rs_core::ColorType::Rgba8888,
+            skia_rs_core::AlphaType::Opaque,
+        );
+
+        Image::from_raster_data_owned(info, pixels, width as usize * 4)
+            .ok_or_else(|| CodecError::DecodingError("Failed to create image".into()))
+    }
+
+    #[cfg(not(feature = "raw"))]
+    fn decode<R: Read>(&self, _reader: R) -> CodecResult<Image> {
+        Err(CodecError::Unsupported(
+            "RAW decoding requires the 'raw' feature".into(),
+        ))
+    }
+
+    fn format(&self) -> ImageFormat {
+        ImageFormat::Raw
+    }
+}
+
+/// Demosaic a RAW image to RGBA.
+#[cfg(feature = "raw")]
+fn demosaic_raw(raw: &rawloader::RawImage) -> CodecResult<Vec<u8>> {
+    let width = raw.width;
+    let height = raw.height;
+    let mut output = vec![0u8; width * height * 4];
+
+    // Get the raw data
+    let data = match &raw.data {
+        rawloader::RawImageData::Integer(d) => d,
+        rawloader::RawImageData::Float(_) => {
+            return Err(CodecError::Unsupported(
+                "Float RAW data not yet supported".into(),
+            ));
+        }
+    };
+
+    // Simple demosaicing - convert to grayscale for simplicity
+    // A full implementation would do proper Bayer demosaicing
+    let cfa = &raw.cfa;
+    let black = raw.blacklevels[0] as f32;
+    let white = raw.whitelevels[0] as f32;
+    let range = if white > black { white - black } else { 65535.0 };
+
+    // Color indices: 0=Red, 1=Green, 2=Blue
+    const RED: usize = 0;
+    const GREEN: usize = 1;
+    const BLUE: usize = 2;
+
+    for y in 0..height {
+        for x in 0..width {
+            let idx = y * width + x;
+            let out_idx = idx * 4;
+
+            // Get color index at this position (returns 0, 1, or 2)
+            let color = cfa.color_at(y, x);
+
+            // Get raw value normalized to 0-255
+            let raw_val = data[idx] as f32;
+            let normalized = ((raw_val - black) / range * 255.0).clamp(0.0, 255.0) as u8;
+
+            // Simple nearest-neighbor for demo purposes
+            match color {
+                RED => {
+                    output[out_idx] = normalized;
+                    output[out_idx + 1] = get_neighbor_avg_by_color(data, x, y, width, height, cfa, GREEN, black, range);
+                    output[out_idx + 2] = get_neighbor_avg_by_color(data, x, y, width, height, cfa, BLUE, black, range);
+                }
+                GREEN => {
+                    output[out_idx] = get_neighbor_avg_by_color(data, x, y, width, height, cfa, RED, black, range);
+                    output[out_idx + 1] = normalized;
+                    output[out_idx + 2] = get_neighbor_avg_by_color(data, x, y, width, height, cfa, BLUE, black, range);
+                }
+                BLUE => {
+                    output[out_idx] = get_neighbor_avg_by_color(data, x, y, width, height, cfa, RED, black, range);
+                    output[out_idx + 1] = get_neighbor_avg_by_color(data, x, y, width, height, cfa, GREEN, black, range);
+                    output[out_idx + 2] = normalized;
+                }
+                _ => {
+                    // Unknown CFA pattern, just use grayscale
+                    output[out_idx] = normalized;
+                    output[out_idx + 1] = normalized;
+                    output[out_idx + 2] = normalized;
+                }
+            }
+            output[out_idx + 3] = 255; // Alpha
+        }
+    }
+
+    Ok(output)
+}
+
+/// Get average of neighboring pixels of a specific color index.
+#[cfg(feature = "raw")]
+fn get_neighbor_avg_by_color(
+    data: &[u16],
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    cfa: &rawloader::CFA,
+    target_color: usize,
+    black: f32,
+    range: f32,
+) -> u8 {
+    let mut sum = 0.0;
+    let mut count = 0;
+
+    // Check 3x3 neighborhood
+    for dy in -1i32..=1 {
+        for dx in -1i32..=1 {
+            let nx = x as i32 + dx;
+            let ny = y as i32 + dy;
+
+            if nx >= 0 && nx < width as i32 && ny >= 0 && ny < height as i32 {
+                let nx = nx as usize;
+                let ny = ny as usize;
+
+                if cfa.color_at(ny, nx) == target_color {
+                    let idx = ny * width + nx;
+                    let raw_val = data[idx] as f32;
+                    sum += (raw_val - black) / range * 255.0;
+                    count += 1;
+                }
+            }
+        }
+    }
+
+    if count > 0 {
+        (sum / count as f32).clamp(0.0, 255.0) as u8
+    } else {
+        128 // Fallback if no neighbors found
+    }
+}
+
+/// Get RAW dimensions from data.
+#[cfg(feature = "raw")]
+fn get_raw_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
+    use std::io::Cursor;
+    let mut cursor = Cursor::new(data);
+    let raw = rawloader::decode(&mut cursor)
+        .map_err(|e| CodecError::DecodingError(format!("RAW decode error: {:?}", e)))?;
+    Ok((raw.width as i32, raw.height as i32))
+}
+
+#[cfg(not(feature = "raw"))]
+fn get_raw_dimensions(_data: &[u8]) -> CodecResult<(i32, i32)> {
+    Err(CodecError::Unsupported(
+        "RAW support requires the 'raw' feature".into(),
+    ))
+}
+
+// =============================================================================
 // Utility Functions
 // =============================================================================
 
@@ -1427,6 +1881,8 @@ pub fn decode_image(data: &[u8]) -> CodecResult<Image> {
         ImageFormat::Bmp => BmpDecoder::new().decode_bytes(data),
         ImageFormat::Ico => IcoDecoder::new().decode_bytes(data),
         ImageFormat::Wbmp => WbmpDecoder::new().decode_bytes(data),
+        ImageFormat::Avif => AvifDecoder::new().decode_bytes(data),
+        ImageFormat::Raw => RawDecoder::new().decode_bytes(data),
         _ => Err(CodecError::Unsupported(format!(
             "Format {:?} not supported",
             format
@@ -1444,6 +1900,8 @@ pub fn get_image_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
         ImageFormat::Bmp => get_bmp_dimensions(data),
         ImageFormat::Ico => get_ico_dimensions(data),
         ImageFormat::Wbmp => get_wbmp_dimensions(data),
+        ImageFormat::Avif => get_avif_dimensions(data),
+        ImageFormat::Raw => get_raw_dimensions(data),
         _ => Err(CodecError::Unsupported(format!(
             "Format {:?} not supported",
             format

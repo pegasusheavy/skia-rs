@@ -62,6 +62,9 @@ jpeg-decoder = "0.3"
 jpeg-encoder = "0.6"
 gif = "0.13"
 webp = "0.3"
+ravif = "0.11"
+avif-decode = "1.0"
+rawloader = "0.37"
 
 # SVG
 roxmltree = "0.20"
