@@ -6,6 +6,7 @@
 //! - Font embedding (Type 1, TrueType)
 //! - Image embedding (JPEG, PNG)
 //! - Transparency (ExtGState, soft masks, transparency groups)
+//! - PDF/A compliance (ISO 19005)
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
@@ -14,6 +15,7 @@ pub mod canvas;
 pub mod document;
 pub mod font;
 pub mod image;
+pub mod pdfa;
 pub mod stream;
 pub mod transparency;
 
@@ -21,6 +23,10 @@ pub use canvas::*;
 pub use document::*;
 pub use font::{PdfFont, PdfFontManager, PdfFontType, StandardFont};
 pub use image::{PdfColorSpace, PdfImage, PdfImageFilter, PdfImageManager};
+pub use pdfa::{
+    EmbeddedFileInfo, OutputIntent, PdfADocument, PdfAError, PdfAErrorCode, PdfAFontInfo,
+    PdfALevel, PdfAValidator, XmpMetadata,
+};
 pub use stream::*;
 pub use transparency::{
     ExtGStateKey, ExtGraphicsState, PdfBlendMode, SoftMask, SoftMaskSubtype,

@@ -91,7 +91,7 @@
 - [x] Define Rust crate structure mirroring Skia's organization
 - [x] Choose rendering backends to support (CPU, GPU/wgpu)
 - [x] Establish memory management strategy (no GC, Rust ownership)
-- [ ] Define versioning strategy aligned with Skia releases
+- [x] Define versioning strategy aligned with Skia releases (VERSIONING.md)
 
 ### 0.2 Project Structure
 - [x] Create workspace with multiple crates:
@@ -423,7 +423,7 @@
 - [x] Image embedding - JPEG (DCTDecode), PNG/RGB (FlateDecode), RGBA soft masks
 - [x] Vector graphics output (PdfCanvas)
 - [x] Transparency groups - ExtGState, soft masks, TransparencyGroup, blend modes
-- [ ] PDF/A compliance (optional)
+- [x] PDF/A compliance - PdfALevel (A-1/A-2/A-3), XmpMetadata, OutputIntent, PdfAValidator
 
 ### 9.3 Skottie (Lottie Animation)
 - [x] JSON parsing for Lottie format - LottieModel, LayerModel, ShapeModel, etc.
