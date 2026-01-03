@@ -35,7 +35,10 @@ fn main() {
     let page_width = 612.0;
     let page_height = 792.0;
 
-    println!("\nBeginning page 1 ({}x{} points)...", page_width, page_height);
+    println!(
+        "\nBeginning page 1 ({}x{} points)...",
+        page_width, page_height
+    );
 
     let mut canvas = doc.begin_page(page_width, page_height);
 
@@ -113,13 +116,25 @@ fn main() {
         line_paint.set_style(Style::Stroke);
         line_paint.set_stroke_width(2.0);
 
-        canvas.draw_line(Point::new(50.0, 360.0), Point::new(200.0, 360.0), &line_paint);
+        canvas.draw_line(
+            Point::new(50.0, 360.0),
+            Point::new(200.0, 360.0),
+            &line_paint,
+        );
 
         line_paint.set_stroke_width(4.0);
-        canvas.draw_line(Point::new(50.0, 380.0), Point::new(200.0, 380.0), &line_paint);
+        canvas.draw_line(
+            Point::new(50.0, 380.0),
+            Point::new(200.0, 380.0),
+            &line_paint,
+        );
 
         line_paint.set_stroke_width(6.0);
-        canvas.draw_line(Point::new(50.0, 400.0), Point::new(200.0, 400.0), &line_paint);
+        canvas.draw_line(
+            Point::new(50.0, 400.0),
+            Point::new(200.0, 400.0),
+            &line_paint,
+        );
         println!("  Drew lines with varying widths");
     }
 

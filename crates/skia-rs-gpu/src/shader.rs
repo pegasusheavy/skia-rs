@@ -412,7 +412,10 @@ impl ShaderCompiler {
 
     /// Get a combined shader module source.
     pub fn combine_shaders(&self, vertex: &str, fragment: &str) -> String {
-        format!("// Vertex Shader\n{}\n\n// Fragment Shader\n{}", vertex, fragment)
+        format!(
+            "// Vertex Shader\n{}\n\n// Fragment Shader\n{}",
+            vertex, fragment
+        )
     }
 }
 
@@ -434,19 +437,40 @@ impl ShaderLibrary {
         let mut shaders = HashMap::new();
 
         // Add built-in shaders
-        shaders.insert("solid_color_vs".to_string(), builtin::SOLID_COLOR_VS.to_string());
-        shaders.insert("solid_color_fs".to_string(), builtin::SOLID_COLOR_FS.to_string());
+        shaders.insert(
+            "solid_color_vs".to_string(),
+            builtin::SOLID_COLOR_VS.to_string(),
+        );
+        shaders.insert(
+            "solid_color_fs".to_string(),
+            builtin::SOLID_COLOR_FS.to_string(),
+        );
         shaders.insert("textured_vs".to_string(), builtin::TEXTURED_VS.to_string());
         shaders.insert("textured_fs".to_string(), builtin::TEXTURED_FS.to_string());
         shaders.insert("gradient_vs".to_string(), builtin::GRADIENT_VS.to_string());
-        shaders.insert("linear_gradient_fs".to_string(), builtin::LINEAR_GRADIENT_FS.to_string());
-        shaders.insert("radial_gradient_fs".to_string(), builtin::RADIAL_GRADIENT_FS.to_string());
+        shaders.insert(
+            "linear_gradient_fs".to_string(),
+            builtin::LINEAR_GRADIENT_FS.to_string(),
+        );
+        shaders.insert(
+            "radial_gradient_fs".to_string(),
+            builtin::RADIAL_GRADIENT_FS.to_string(),
+        );
         shaders.insert("blur_cs".to_string(), builtin::BLUR_CS.to_string());
         shaders.insert("blit_vs".to_string(), builtin::BLIT_VS.to_string());
         shaders.insert("blit_fs".to_string(), builtin::BLIT_FS.to_string());
-        shaders.insert("path_fill_vs".to_string(), builtin::PATH_FILL_VS.to_string());
-        shaders.insert("path_stencil_fs".to_string(), builtin::PATH_STENCIL_FS.to_string());
-        shaders.insert("path_cover_fs".to_string(), builtin::PATH_COVER_FS.to_string());
+        shaders.insert(
+            "path_fill_vs".to_string(),
+            builtin::PATH_FILL_VS.to_string(),
+        );
+        shaders.insert(
+            "path_stencil_fs".to_string(),
+            builtin::PATH_STENCIL_FS.to_string(),
+        );
+        shaders.insert(
+            "path_cover_fs".to_string(),
+            builtin::PATH_COVER_FS.to_string(),
+        );
 
         Self { shaders }
     }

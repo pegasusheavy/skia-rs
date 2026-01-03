@@ -51,8 +51,12 @@ unsafe impl GlobalAlloc for TrackingAllocator {
             let current = total - DEALLOCATED.load(Ordering::Relaxed);
             let mut peak = PEAK.load(Ordering::Relaxed);
             while current > peak {
-                match PEAK.compare_exchange_weak(peak, current, Ordering::Relaxed, Ordering::Relaxed)
-                {
+                match PEAK.compare_exchange_weak(
+                    peak,
+                    current,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
                     Ok(_) => break,
                     Err(p) => peak = p,
                 }
@@ -332,7 +336,12 @@ impl MemoryProfile {
         // Summary
         let total_allocated: usize = self.measurements.iter().map(|(_, s)| s.allocated).sum();
         let total_allocs: usize = self.measurements.iter().map(|(_, s)| s.alloc_count).sum();
-        let max_peak = self.measurements.iter().map(|(_, s)| s.peak).max().unwrap_or(0);
+        let max_peak = self
+            .measurements
+            .iter()
+            .map(|(_, s)| s.peak)
+            .max()
+            .unwrap_or(0);
 
         report.push_str(&format!(
             "{:<40} {:>12} {:>12} {:>10}\n",

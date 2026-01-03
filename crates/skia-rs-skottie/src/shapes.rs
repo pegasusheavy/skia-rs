@@ -69,7 +69,9 @@ impl Shape {
             "fl" => Some(Shape::Fill(FillShape::from_lottie(model))),
             "st" => Some(Shape::Stroke(StrokeShape::from_lottie(model))),
             "gf" => Some(Shape::GradientFill(GradientFillShape::from_lottie(model))),
-            "gs" => Some(Shape::GradientStroke(GradientStrokeShape::from_lottie(model))),
+            "gs" => Some(Shape::GradientStroke(GradientStrokeShape::from_lottie(
+                model,
+            ))),
             "tm" => Some(Shape::TrimPath(TrimPathShape::from_lottie(model))),
             "mm" => Some(Shape::MergePaths(MergePathsShape::from_lottie(model))),
             "rd" => Some(Shape::RoundCorners(RoundCornersShape::from_lottie(model))),
@@ -195,7 +197,11 @@ impl RectangleShape {
 
     /// Build a path at a specific frame.
     pub fn to_path(&self, frame: Scalar) -> Option<Path> {
-        let pos = self.position.value_at(frame).as_vec2().unwrap_or([0.0, 0.0]);
+        let pos = self
+            .position
+            .value_at(frame)
+            .as_vec2()
+            .unwrap_or([0.0, 0.0]);
         let size = self.size.value_at(frame).as_vec2().unwrap_or([0.0, 0.0]);
         let roundness = self.roundness.value_at(frame).as_scalar().unwrap_or(0.0);
 
@@ -217,7 +223,12 @@ impl RectangleShape {
             builder.line_to(left + size[0] - r, top);
             builder.quad_to(left + size[0], top, left + size[0], top + r);
             builder.line_to(left + size[0], top + size[1] - r);
-            builder.quad_to(left + size[0], top + size[1], left + size[0] - r, top + size[1]);
+            builder.quad_to(
+                left + size[0],
+                top + size[1],
+                left + size[0] - r,
+                top + size[1],
+            );
             builder.line_to(left + r, top + size[1]);
             builder.quad_to(left, top + size[1], left, top + size[1] - r);
             builder.line_to(left, top + r);
@@ -268,7 +279,11 @@ impl EllipseShape {
 
     /// Build a path at a specific frame.
     pub fn to_path(&self, frame: Scalar) -> Option<Path> {
-        let pos = self.position.value_at(frame).as_vec2().unwrap_or([0.0, 0.0]);
+        let pos = self
+            .position
+            .value_at(frame)
+            .as_vec2()
+            .unwrap_or([0.0, 0.0]);
         let size = self.size.value_at(frame).as_vec2().unwrap_or([0.0, 0.0]);
 
         if size[0] <= 0.0 || size[1] <= 0.0 {
@@ -353,15 +368,19 @@ fn path_data_to_path(data: &PathData) -> Path {
             data.vertices[prev][0] + out_t[0],
             data.vertices[prev][1] + out_t[1],
         ];
-        let c2 = [
-            data.vertices[i][0] + in_t[0],
-            data.vertices[i][1] + in_t[1],
-        ];
+        let c2 = [data.vertices[i][0] + in_t[0], data.vertices[i][1] + in_t[1]];
 
         if out_t == [0.0, 0.0] && in_t == [0.0, 0.0] {
             builder.line_to(data.vertices[i][0], data.vertices[i][1]);
         } else {
-            builder.cubic_to(c1[0], c1[1], c2[0], c2[1], data.vertices[i][0], data.vertices[i][1]);
+            builder.cubic_to(
+                c1[0],
+                c1[1],
+                c2[0],
+                c2[1],
+                data.vertices[i][0],
+                data.vertices[i][1],
+            );
         }
     }
 
@@ -374,15 +393,19 @@ fn path_data_to_path(data: &PathData) -> Path {
             data.vertices[last][0] + out_t[0],
             data.vertices[last][1] + out_t[1],
         ];
-        let c2 = [
-            data.vertices[0][0] + in_t[0],
-            data.vertices[0][1] + in_t[1],
-        ];
+        let c2 = [data.vertices[0][0] + in_t[0], data.vertices[0][1] + in_t[1]];
 
         if out_t == [0.0, 0.0] && in_t == [0.0, 0.0] {
             builder.close();
         } else {
-            builder.cubic_to(c1[0], c1[1], c2[0], c2[1], data.vertices[0][0], data.vertices[0][1]);
+            builder.cubic_to(
+                c1[0],
+                c1[1],
+                c2[0],
+                c2[1],
+                data.vertices[0][0],
+                data.vertices[0][1],
+            );
             builder.close();
         }
     }
@@ -454,10 +477,22 @@ impl PolystarShape {
 
     /// Build a path at a specific frame.
     pub fn to_path(&self, frame: Scalar) -> Option<Path> {
-        let pos = self.position.value_at(frame).as_vec2().unwrap_or([0.0, 0.0]);
+        let pos = self
+            .position
+            .value_at(frame)
+            .as_vec2()
+            .unwrap_or([0.0, 0.0]);
         let points = self.points.value_at(frame).as_scalar().unwrap_or(5.0);
-        let outer_r = self.outer_radius.value_at(frame).as_scalar().unwrap_or(100.0);
-        let inner_r = self.inner_radius.value_at(frame).as_scalar().unwrap_or(50.0);
+        let outer_r = self
+            .outer_radius
+            .value_at(frame)
+            .as_scalar()
+            .unwrap_or(100.0);
+        let inner_r = self
+            .inner_radius
+            .value_at(frame)
+            .as_scalar()
+            .unwrap_or(50.0);
         let rotation = self.rotation.value_at(frame).as_scalar().unwrap_or(0.0);
 
         let n = points.round() as i32;
@@ -529,7 +564,11 @@ impl FillShape {
 
     /// Get the color at a specific frame.
     pub fn color_at(&self, frame: Scalar) -> Color4f {
-        let c = self.color.value_at(frame).as_color().unwrap_or([0.0, 0.0, 0.0, 1.0]);
+        let c = self
+            .color
+            .value_at(frame)
+            .as_color()
+            .unwrap_or([0.0, 0.0, 0.0, 1.0]);
         let opacity = self.opacity.value_at(frame).as_scalar().unwrap_or(100.0) / 100.0;
         Color4f::new(c[0], c[1], c[2], c[3] * opacity)
     }
@@ -602,7 +641,11 @@ impl StrokeShape {
 
     /// Get the color at a specific frame.
     pub fn color_at(&self, frame: Scalar) -> Color4f {
-        let c = self.color.value_at(frame).as_color().unwrap_or([0.0, 0.0, 0.0, 1.0]);
+        let c = self
+            .color
+            .value_at(frame)
+            .as_color()
+            .unwrap_or([0.0, 0.0, 0.0, 1.0]);
         let opacity = self.opacity.value_at(frame).as_scalar().unwrap_or(100.0) / 100.0;
         Color4f::new(c[0], c[1], c[2], c[3] * opacity)
     }
@@ -653,7 +696,11 @@ impl GradientFillShape {
                 .as_ref()
                 .map(|gc| AnimatedProperty::from_lottie(&gc.colors))
                 .unwrap_or_default(),
-            color_count: model.gradient_colors.as_ref().map(|gc| gc.count).unwrap_or(2),
+            color_count: model
+                .gradient_colors
+                .as_ref()
+                .map(|gc| gc.count)
+                .unwrap_or(2),
             opacity: model
                 .opacity
                 .as_ref()
@@ -709,7 +756,11 @@ impl GradientStrokeShape {
                 .as_ref()
                 .map(|gc| AnimatedProperty::from_lottie(&gc.colors))
                 .unwrap_or_default(),
-            color_count: model.gradient_colors.as_ref().map(|gc| gc.count).unwrap_or(2),
+            color_count: model
+                .gradient_colors
+                .as_ref()
+                .map(|gc| gc.count)
+                .unwrap_or(2),
             opacity: model
                 .opacity
                 .as_ref()

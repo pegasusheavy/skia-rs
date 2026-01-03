@@ -267,7 +267,11 @@ fn detect_jpeg_color_space(data: &[u8]) -> PdfColorSpace {
             let marker = data[i + 1];
 
             // SOF markers (0xC0-0xCF except 0xC4, 0xC8, 0xCC)
-            if (marker >= 0xC0 && marker <= 0xCF) && marker != 0xC4 && marker != 0xC8 && marker != 0xCC {
+            if (marker >= 0xC0 && marker <= 0xCF)
+                && marker != 0xC4
+                && marker != 0xC8
+                && marker != 0xCC
+            {
                 if i + 9 < data.len() {
                     let num_components = data[i + 9];
                     return match num_components {
@@ -334,7 +338,8 @@ impl PdfImageManager {
     /// Add a grayscale image.
     pub fn add_grayscale(&mut self, width: u32, height: u32, data: &[u8]) -> usize {
         let idx = self.images.len();
-        self.images.push(PdfImage::from_grayscale(width, height, data));
+        self.images
+            .push(PdfImage::from_grayscale(width, height, data));
         idx
     }
 

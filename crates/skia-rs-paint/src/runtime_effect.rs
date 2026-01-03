@@ -3,8 +3,8 @@
 //! This module provides Skia's runtime effects system, allowing custom
 //! shaders written in SkSL to be compiled and used at runtime.
 
-use crate::sksl::{Expr, FnDecl, Parser, SkslProgram, SkslType, Stmt};
 use crate::shader::{Shader, ShaderKind};
+use crate::sksl::{Expr, FnDecl, Parser, SkslProgram, SkslType, Stmt};
 use skia_rs_core::{Color4f, Matrix, Scalar};
 use std::sync::Arc;
 
@@ -525,7 +525,11 @@ impl RuntimeEffect {
                 )
             }
             Expr::Assign { target, value } => {
-                format!("({} = {})", self.expr_to_glsl(target), self.expr_to_glsl(value))
+                format!(
+                    "({} = {})",
+                    self.expr_to_glsl(target),
+                    self.expr_to_glsl(value)
+                )
             }
             Expr::CompoundAssign { target, op, value } => {
                 format!(
@@ -536,10 +540,18 @@ impl RuntimeEffect {
                 )
             }
             Expr::PostIncDec { expr, inc } => {
-                format!("{}{}",self.expr_to_glsl(expr), if *inc { "++" } else { "--" })
+                format!(
+                    "{}{}",
+                    self.expr_to_glsl(expr),
+                    if *inc { "++" } else { "--" }
+                )
             }
             Expr::PreIncDec { expr, inc } => {
-                format!("{}{}", if *inc { "++" } else { "--" }, self.expr_to_glsl(expr))
+                format!(
+                    "{}{}",
+                    if *inc { "++" } else { "--" },
+                    self.expr_to_glsl(expr)
+                )
             }
         }
     }

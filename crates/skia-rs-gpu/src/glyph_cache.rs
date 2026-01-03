@@ -3,7 +3,7 @@
 //! This module provides a cache for rasterized glyphs, managing their
 //! storage in texture atlases for efficient GPU rendering.
 
-use crate::atlas::{AtlasEntryId, AtlasRegion, TextureAtlas, AtlasConfig, AtlasAllocResult};
+use crate::atlas::{AtlasAllocResult, AtlasConfig, AtlasEntryId, AtlasRegion, TextureAtlas};
 use skia_rs_core::{Point, Rect, Scalar};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -309,10 +309,7 @@ impl GlyphBatch {
         let uv = glyph.region.uv_rect(atlas_size.0, atlas_size.1);
 
         self.instances.push(GlyphInstance {
-            position: Point::new(
-                position.x + glyph.offset.x,
-                position.y + glyph.offset.y,
-            ),
+            position: Point::new(position.x + glyph.offset.x, position.y + glyph.offset.y),
             uv,
             size: [glyph.region.width as f32, glyph.region.height as f32],
             color,
@@ -420,7 +417,12 @@ mod tests {
             bounds: Rect::from_xywh(0.0, 0.0, 16.0, 20.0),
         };
 
-        batch.add_glyph(&glyph, Point::new(100.0, 100.0), [1.0, 1.0, 1.0, 1.0], (1024, 1024));
+        batch.add_glyph(
+            &glyph,
+            Point::new(100.0, 100.0),
+            [1.0, 1.0, 1.0, 1.0],
+            (1024, 1024),
+        );
 
         assert_eq!(batch.len(), 1);
         assert_eq!(batch.instances[0].position.x, 100.0);

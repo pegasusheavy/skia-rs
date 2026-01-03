@@ -2,7 +2,7 @@
 //!
 //! These benchmarks measure memory allocation patterns rather than speed.
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
 
 use skia_rs_bench::{
@@ -31,12 +31,16 @@ fn bench_surface_allocation(c: &mut Criterion) {
         let expected_bytes = (width * height * 4) as u64; // RGBA
         group.throughput(Throughput::Bytes(expected_bytes));
 
-        group.bench_with_input(BenchmarkId::new("create", name), &(width, height), |b, &(w, h)| {
-            b.iter(|| {
-                let surface = Surface::new_raster_n32_premul(w, h);
-                black_box(surface)
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("create", name),
+            &(width, height),
+            |b, &(w, h)| {
+                b.iter(|| {
+                    let surface = Surface::new_raster_n32_premul(w, h);
+                    black_box(surface)
+                });
+            },
+        );
     }
 
     group.finish();
@@ -100,36 +104,28 @@ fn bench_pathbuilder_growth(c: &mut Criterion) {
     for &count in &counts {
         group.throughput(Throughput::Elements(count as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("line_to", count),
-            &count,
-            |b, &count| {
-                b.iter(|| {
-                    let mut builder = PathBuilder::new();
-                    builder.move_to(0.0, 0.0);
-                    for i in 0..count {
-                        builder.line_to(i as f32, (i % 100) as f32);
-                    }
-                    black_box(builder.build())
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("line_to", count), &count, |b, &count| {
+            b.iter(|| {
+                let mut builder = PathBuilder::new();
+                builder.move_to(0.0, 0.0);
+                for i in 0..count {
+                    builder.line_to(i as f32, (i % 100) as f32);
+                }
+                black_box(builder.build())
+            });
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("cubic_to", count),
-            &count,
-            |b, &count| {
-                b.iter(|| {
-                    let mut builder = PathBuilder::new();
-                    builder.move_to(0.0, 0.0);
-                    for i in 0..count {
-                        let x = i as f32;
-                        builder.cubic_to(x, 10.0, x + 5.0, -10.0, x + 10.0, 0.0);
-                    }
-                    black_box(builder.build())
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("cubic_to", count), &count, |b, &count| {
+            b.iter(|| {
+                let mut builder = PathBuilder::new();
+                builder.move_to(0.0, 0.0);
+                for i in 0..count {
+                    let x = i as f32;
+                    builder.cubic_to(x, 10.0, x + 5.0, -10.0, x + 10.0, 0.0);
+                }
+                black_box(builder.build())
+            });
+        });
     }
 
     group.finish();

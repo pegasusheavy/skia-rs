@@ -208,10 +208,9 @@ impl KeyframeValue {
             (KeyframeValue::Scalar(a), KeyframeValue::Scalar(b)) => {
                 KeyframeValue::Scalar(a + (b - a) * t)
             }
-            (KeyframeValue::Vec2(a), KeyframeValue::Vec2(b)) => KeyframeValue::Vec2([
-                a[0] + (b[0] - a[0]) * t,
-                a[1] + (b[1] - a[1]) * t,
-            ]),
+            (KeyframeValue::Vec2(a), KeyframeValue::Vec2(b)) => {
+                KeyframeValue::Vec2([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t])
+            }
             (KeyframeValue::Vec3(a), KeyframeValue::Vec3(b)) => KeyframeValue::Vec3([
                 a[0] + (b[0] - a[0]) * t,
                 a[1] + (b[1] - a[1]) * t,
@@ -223,9 +222,7 @@ impl KeyframeValue {
                 a[2] + (b[2] - a[2]) * t,
                 a[3] + (b[3] - a[3]) * t,
             ]),
-            (KeyframeValue::Path(a), KeyframeValue::Path(b)) => {
-                KeyframeValue::Path(a.lerp(b, t))
-            }
+            (KeyframeValue::Path(a), KeyframeValue::Path(b)) => KeyframeValue::Path(a.lerp(b, t)),
             // Mismatched types - return first
             _ => self.clone(),
         }
@@ -333,7 +330,8 @@ impl AnimatedProperty {
     /// Add a keyframe.
     pub fn add_keyframe(&mut self, keyframe: Keyframe) {
         self.keyframes.push(keyframe);
-        self.keyframes.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
+        self.keyframes
+            .sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
     }
 
     /// Check if this property is animated.
@@ -453,9 +451,7 @@ fn parse_keyframe_value(values: &[Scalar]) -> KeyframeValue {
 
 fn parse_json_value(value: &serde_json::Value) -> KeyframeValue {
     match value {
-        serde_json::Value::Number(n) => {
-            KeyframeValue::Scalar(n.as_f64().unwrap_or(0.0) as Scalar)
-        }
+        serde_json::Value::Number(n) => KeyframeValue::Scalar(n.as_f64().unwrap_or(0.0) as Scalar),
         serde_json::Value::Array(arr) => {
             let values: Vec<Scalar> = arr
                 .iter()

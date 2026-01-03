@@ -468,8 +468,8 @@ impl MetalContext {
             Device::system_default()
         };
 
-        let device = device
-            .ok_or_else(|| GpuError::DeviceCreation("No Metal device found".into()))?;
+        let device =
+            device.ok_or_else(|| GpuError::DeviceCreation("No Metal device found".into()))?;
 
         Self::from_device(device)
     }
@@ -528,7 +528,8 @@ impl MetalContext {
             max_samplers_per_stage: 16,
             max_textures_per_stage: 128,
             max_buffers_per_stage: 31,
-            argument_buffers: device.argument_buffers_support() != metal::MTLArgumentBuffersTier::Tier1,
+            argument_buffers: device.argument_buffers_support()
+                != metal::MTLArgumentBuffersTier::Tier1,
             raster_order_groups: device.are_raster_order_groups_supported(),
             float32_filtering: true, // Most Metal devices support this
             msaa_depth_resolve: true,
@@ -609,21 +610,14 @@ impl MetalContext {
             MetalFeatureSet::AppleFamily7
             | MetalFeatureSet::AppleFamily8
             | MetalFeatureSet::AppleFamily9
-            | MetalFeatureSet::MacosGpuFamily2V1 => {
-                (16384, 2048, 16384, 2048)
-            }
+            | MetalFeatureSet::MacosGpuFamily2V1 => (16384, 2048, 16384, 2048),
             MetalFeatureSet::AppleFamily5
             | MetalFeatureSet::AppleFamily6
-            | MetalFeatureSet::MacosGpuFamily1V4 => {
+            | MetalFeatureSet::MacosGpuFamily1V4 => (16384, 2048, 16384, 2048),
+            MetalFeatureSet::AppleFamily3 | MetalFeatureSet::AppleFamily4 => {
                 (16384, 2048, 16384, 2048)
             }
-            MetalFeatureSet::AppleFamily3
-            | MetalFeatureSet::AppleFamily4 => {
-                (16384, 2048, 16384, 2048)
-            }
-            _ => {
-                (8192, 2048, 8192, 2048)
-            }
+            _ => (8192, 2048, 8192, 2048),
         }
     }
 
@@ -686,10 +680,8 @@ impl MetalContext {
 
     /// Create a new buffer with size.
     pub fn new_buffer(&self, size: u64) -> metal::Buffer {
-        self.device.new_buffer(
-            size,
-            metal::MTLResourceOptions::StorageModeShared,
-        )
+        self.device
+            .new_buffer(size, metal::MTLResourceOptions::StorageModeShared)
     }
 
     /// Create a new texture.
@@ -698,7 +690,10 @@ impl MetalContext {
     }
 
     /// Create a new sampler state.
-    pub fn new_sampler_state(&self, descriptor: &metal::SamplerDescriptorRef) -> metal::SamplerState {
+    pub fn new_sampler_state(
+        &self,
+        descriptor: &metal::SamplerDescriptorRef,
+    ) -> metal::SamplerState {
         self.device.new_sampler_state(descriptor)
     }
 
@@ -711,10 +706,7 @@ impl MetalContext {
     }
 
     /// Compile a shader library from source.
-    pub fn new_library_with_source(
-        &self,
-        source: &str,
-    ) -> Result<metal::Library, String> {
+    pub fn new_library_with_source(&self, source: &str) -> Result<metal::Library, String> {
         let options = metal::CompileOptions::new();
         self.device
             .new_library_with_source(source, &options)
@@ -774,8 +766,14 @@ mod tests {
 
     #[test]
     fn test_metal_feature_set_display() {
-        assert_eq!(format!("{}", MetalFeatureSet::AppleFamily7), "Apple Family 7");
-        assert_eq!(format!("{}", MetalFeatureSet::CommonFamily1), "Common Family 1");
+        assert_eq!(
+            format!("{}", MetalFeatureSet::AppleFamily7),
+            "Apple Family 7"
+        );
+        assert_eq!(
+            format!("{}", MetalFeatureSet::CommonFamily1),
+            "Common Family 1"
+        );
     }
 
     #[test]

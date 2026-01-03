@@ -273,7 +273,11 @@ impl TextureAtlas {
     }
 
     /// Allocate and return the entry ID.
-    pub fn allocate_with_id(&mut self, width: u32, height: u32) -> Option<(AtlasEntryId, AtlasRegion)> {
+    pub fn allocate_with_id(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> Option<(AtlasEntryId, AtlasRegion)> {
         match self.allocate(width, height) {
             AtlasAllocResult::Success(region) => {
                 let id = AtlasEntryId::new(self.next_id - 1);

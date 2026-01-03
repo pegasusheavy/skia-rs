@@ -24,11 +24,7 @@ fn apply_tile_mode(t: Scalar, mode: TileMode) -> Scalar {
         TileMode::Repeat => t.rem_euclid(1.0),
         TileMode::Mirror => {
             let t = t.rem_euclid(2.0);
-            if t > 1.0 {
-                2.0 - t
-            } else {
-                t
-            }
+            if t > 1.0 { 2.0 - t } else { t }
         }
         TileMode::Decal => t, // Colors outside 0-1 handled separately
     }
@@ -299,7 +295,11 @@ impl Shader for LinearGradient {
 
         if len_sq < 1e-10 {
             // Degenerate gradient (start == end)
-            return self.colors.first().cloned().unwrap_or(Color4f::transparent());
+            return self
+                .colors
+                .first()
+                .cloned()
+                .unwrap_or(Color4f::transparent());
         }
 
         // Project point onto gradient line
@@ -407,7 +407,11 @@ impl Shader for RadialGradient {
 
     fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
         if self.radius <= 0.0 {
-            return self.colors.first().cloned().unwrap_or(Color4f::transparent());
+            return self
+                .colors
+                .first()
+                .cloned()
+                .unwrap_or(Color4f::transparent());
         }
 
         // Calculate distance from center

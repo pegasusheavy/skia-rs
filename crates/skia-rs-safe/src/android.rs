@@ -281,12 +281,16 @@ impl HardwareBuffer {
 
     /// Check if this buffer can be used as a GPU texture.
     pub fn is_gpu_texture(&self) -> bool {
-        self.desc.usage.contains(HardwareBufferUsage::GPU_SAMPLED_IMAGE)
+        self.desc
+            .usage
+            .contains(HardwareBufferUsage::GPU_SAMPLED_IMAGE)
     }
 
     /// Check if this buffer can be used as a GPU render target.
     pub fn is_gpu_render_target(&self) -> bool {
-        self.desc.usage.contains(HardwareBufferUsage::GPU_COLOR_OUTPUT)
+        self.desc
+            .usage
+            .contains(HardwareBufferUsage::GPU_COLOR_OUTPUT)
     }
 }
 
@@ -303,9 +307,7 @@ impl<'a> LockedBuffer<'a> {
     /// Get a slice of the pixel data.
     pub fn as_slice(&self) -> &[u8] {
         let bpp = self.buffer.format().bytes_per_pixel().unwrap_or(4);
-        let len = (self.buffer.stride() as usize)
-            * (self.buffer.height() as usize)
-            * bpp;
+        let len = (self.buffer.stride() as usize) * (self.buffer.height() as usize) * bpp;
         unsafe { std::slice::from_raw_parts(self.ptr, len) }
     }
 }
@@ -321,9 +323,7 @@ impl<'a> LockedBufferMut<'a> {
     /// Get a mutable slice of the pixel data.
     pub fn as_slice_mut(&mut self) -> &mut [u8] {
         let bpp = self.buffer.format().bytes_per_pixel().unwrap_or(4);
-        let len = (self.buffer.stride() as usize)
-            * (self.buffer.height() as usize)
-            * bpp;
+        let len = (self.buffer.stride() as usize) * (self.buffer.height() as usize) * bpp;
         unsafe { std::slice::from_raw_parts_mut(self.ptr, len) }
     }
 }
@@ -613,10 +613,7 @@ impl Default for SurfaceTextureTransform {
     fn default() -> Self {
         Self {
             matrix: [
-                1.0, 0.0, 0.0, 0.0,
-                0.0, 1.0, 0.0, 0.0,
-                0.0, 0.0, 1.0, 0.0,
-                0.0, 0.0, 0.0, 1.0,
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
             ],
         }
     }
@@ -847,7 +844,10 @@ mod tests {
 
     #[test]
     fn test_hardware_buffer_format() {
-        assert_eq!(HardwareBufferFormat::R8G8B8A8_UNORM.bytes_per_pixel(), Some(4));
+        assert_eq!(
+            HardwareBufferFormat::R8G8B8A8_UNORM.bytes_per_pixel(),
+            Some(4)
+        );
         assert_eq!(HardwareBufferFormat::RGB_565.bytes_per_pixel(), Some(2));
         assert!(HardwareBufferFormat::R8G8B8A8_UNORM.has_alpha());
         assert!(!HardwareBufferFormat::R8G8B8_UNORM.has_alpha());

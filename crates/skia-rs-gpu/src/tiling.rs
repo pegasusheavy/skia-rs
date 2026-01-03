@@ -104,13 +104,8 @@ pub fn generate_tiles(
             // Generate tiles
             for ty in -1..tile_count_y {
                 for tx in -1..tile_count_x {
-                    let (uv, flip_x, flip_y) = get_tile_uv(
-                        tx,
-                        ty,
-                        config.tile_x,
-                        config.tile_y,
-                        &config.source_rect,
-                    );
+                    let (uv, flip_x, flip_y) =
+                        get_tile_uv(tx, ty, config.tile_x, config.tile_y, &config.source_rect);
 
                     // Skip decal tiles outside bounds
                     if config.tile_x == TileMode::Decal && (tx < 0 || tx >= 1) {
@@ -183,19 +178,14 @@ fn get_tile_coord(index: i32, mode: TileMode, min: f32, _max: f32) -> (f32, bool
 }
 
 /// Calculate UV transform matrix for tiled rendering.
-pub fn calculate_uv_transform(
-    image_width: u32,
-    image_height: u32,
-    config: &TileConfig,
-) -> Matrix {
+pub fn calculate_uv_transform(image_width: u32, image_height: u32, config: &TileConfig) -> Matrix {
     let scale_x = config.dest_rect.width() / (config.source_rect.width() * image_width as f32);
     let scale_y = config.dest_rect.height() / (config.source_rect.height() * image_height as f32);
 
     let offset_x = config.source_rect.left;
     let offset_y = config.source_rect.top;
 
-    Matrix::scale(1.0 / scale_x, 1.0 / scale_y)
-        .concat(&Matrix::translate(offset_x, offset_y))
+    Matrix::scale(1.0 / scale_x, 1.0 / scale_y).concat(&Matrix::translate(offset_x, offset_y))
 }
 
 /// Nine-patch image configuration.
@@ -214,7 +204,12 @@ pub struct NinePatch {
 impl NinePatch {
     /// Create a new nine-patch configuration.
     pub fn new(left: f32, top: f32, right: f32, bottom: f32) -> Self {
-        Self { left, top, right, bottom }
+        Self {
+            left,
+            top,
+            right,
+            bottom,
+        }
     }
 
     /// Create a uniform nine-patch (same inset on all sides).
@@ -277,17 +272,37 @@ pub fn generate_nine_patch(
         // Middle row
         (
             Rect::new(dst_left, dst_inner_top, dst_inner_left, dst_inner_bottom),
-            [0.0, to_uv_y(src_top), to_uv_x(src_left), to_uv_y(src_bottom)],
+            [
+                0.0,
+                to_uv_y(src_top),
+                to_uv_x(src_left),
+                to_uv_y(src_bottom),
+            ],
             [-1, 0],
         ),
         (
-            Rect::new(dst_inner_left, dst_inner_top, dst_inner_right, dst_inner_bottom),
-            [to_uv_x(src_left), to_uv_y(src_top), to_uv_x(src_right), to_uv_y(src_bottom)],
+            Rect::new(
+                dst_inner_left,
+                dst_inner_top,
+                dst_inner_right,
+                dst_inner_bottom,
+            ),
+            [
+                to_uv_x(src_left),
+                to_uv_y(src_top),
+                to_uv_x(src_right),
+                to_uv_y(src_bottom),
+            ],
             [0, 0],
         ),
         (
             Rect::new(dst_inner_right, dst_inner_top, dst_right, dst_inner_bottom),
-            [to_uv_x(src_right), to_uv_y(src_top), 1.0, to_uv_y(src_bottom)],
+            [
+                to_uv_x(src_right),
+                to_uv_y(src_top),
+                1.0,
+                to_uv_y(src_bottom),
+            ],
             [1, 0],
         ),
         // Bottom row
@@ -297,8 +312,18 @@ pub fn generate_nine_patch(
             [-1, 1],
         ),
         (
-            Rect::new(dst_inner_left, dst_inner_bottom, dst_inner_right, dst_bottom),
-            [to_uv_x(src_left), to_uv_y(src_bottom), to_uv_x(src_right), 1.0],
+            Rect::new(
+                dst_inner_left,
+                dst_inner_bottom,
+                dst_inner_right,
+                dst_bottom,
+            ),
+            [
+                to_uv_x(src_left),
+                to_uv_y(src_bottom),
+                to_uv_x(src_right),
+                1.0,
+            ],
             [0, 1],
         ),
         (

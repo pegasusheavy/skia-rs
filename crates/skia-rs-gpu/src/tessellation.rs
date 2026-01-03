@@ -96,7 +96,8 @@ impl TessMesh {
     pub fn merge(&mut self, other: &TessMesh) {
         let base_index = self.vertices.len() as TessIndex;
         self.vertices.extend_from_slice(&other.vertices);
-        self.indices.extend(other.indices.iter().map(|i| i + base_index));
+        self.indices
+            .extend(other.indices.iter().map(|i| i + base_index));
     }
 }
 
@@ -527,7 +528,8 @@ pub fn tessellate_rounded_rect(rect: Rect, radius: Scalar, quality: TessQuality)
 
     // Top-left corner
     for i in 0..=segments {
-        let angle = std::f32::consts::PI + (i as f32 / segments as f32) * std::f32::consts::FRAC_PI_2;
+        let angle =
+            std::f32::consts::PI + (i as f32 / segments as f32) * std::f32::consts::FRAC_PI_2;
         let x = rect.left + r + r * angle.cos();
         let y = rect.top + r + r * angle.sin();
         let u = (x - rect.left) / rect.width();
@@ -537,7 +539,8 @@ pub fn tessellate_rounded_rect(rect: Rect, radius: Scalar, quality: TessQuality)
 
     // Top-right corner
     for i in 0..=segments {
-        let angle = std::f32::consts::PI * 1.5 + (i as f32 / segments as f32) * std::f32::consts::FRAC_PI_2;
+        let angle =
+            std::f32::consts::PI * 1.5 + (i as f32 / segments as f32) * std::f32::consts::FRAC_PI_2;
         let x = rect.right - r + r * angle.cos();
         let y = rect.top + r + r * angle.sin();
         let u = (x - rect.left) / rect.width();
@@ -557,7 +560,8 @@ pub fn tessellate_rounded_rect(rect: Rect, radius: Scalar, quality: TessQuality)
 
     // Bottom-left corner
     for i in 0..=segments {
-        let angle = std::f32::consts::FRAC_PI_2 + (i as f32 / segments as f32) * std::f32::consts::FRAC_PI_2;
+        let angle = std::f32::consts::FRAC_PI_2
+            + (i as f32 / segments as f32) * std::f32::consts::FRAC_PI_2;
         let x = rect.left + r + r * angle.cos();
         let y = rect.bottom - r + r * angle.sin();
         let u = (x - rect.left) / rect.width();
@@ -658,7 +662,8 @@ mod tests {
     fn test_path_tessellator_fill() {
         let mut tessellator = PathTessellator::new();
         let mut builder = PathBuilder::new();
-        builder.move_to(0.0, 0.0)
+        builder
+            .move_to(0.0, 0.0)
             .line_to(100.0, 0.0)
             .line_to(100.0, 100.0)
             .line_to(0.0, 100.0)
@@ -676,7 +681,8 @@ mod tests {
     fn test_path_tessellator_stroke() {
         let mut tessellator = PathTessellator::new();
         let mut builder = PathBuilder::new();
-        builder.move_to(0.0, 0.0)
+        builder
+            .move_to(0.0, 0.0)
             .line_to(100.0, 0.0)
             .line_to(100.0, 100.0);
         let path = builder.build();

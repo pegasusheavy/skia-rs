@@ -161,9 +161,7 @@ fn main() {
     println!("Profiling batch operations...");
 
     profile.measure("Alloc 1000 Points", || {
-        let _points: Vec<Point> = (0..1000)
-            .map(|i| Point::new(i as f32, i as f32))
-            .collect();
+        let _points: Vec<Point> = (0..1000).map(|i| Point::new(i as f32, i as f32)).collect();
     });
 
     profile.measure("Alloc 1000 Rects", || {
@@ -186,8 +184,15 @@ fn main() {
     // Summary calculations
     println!("\nMemory Efficiency Notes:");
     println!("------------------------");
-    println!("- Surface 1920x1080 = {} bytes pixel buffer", 1920 * 1080 * 4);
-    println!("- Path with N lines ≈ {} + N * {} bytes", memory::size_of::path(), 16); // Approx
+    println!(
+        "- Surface 1920x1080 = {} bytes pixel buffer",
+        1920 * 1080 * 4
+    );
+    println!(
+        "- Path with N lines ≈ {} + N * {} bytes",
+        memory::size_of::path(),
+        16
+    ); // Approx
     println!("- Paint base struct = {} bytes", memory::size_of::paint());
     println!();
 

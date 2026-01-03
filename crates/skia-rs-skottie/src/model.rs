@@ -191,9 +191,9 @@ pub enum AnimatedValue {
 
 impl Default for AnimatedValue {
     fn default() -> Self {
-        AnimatedValue::Direct(serde_json::Value::Array(vec![
-            serde_json::Value::Number(0.into()),
-        ]))
+        AnimatedValue::Direct(serde_json::Value::Array(vec![serde_json::Value::Number(
+            0.into(),
+        )]))
     }
 }
 

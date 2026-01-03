@@ -258,14 +258,26 @@ unsafe fn fill_span_blend_sse41(dst: &mut [u8], src: Color) {
         // (The interleaved layout makes per-channel extraction complex)
         let blended_lo = blend_16(dst_lo, unsafe {
             _mm_set_epi16(
-                sa, src.blue() as i16, src.green() as i16, src.red() as i16,
-                sa, src.blue() as i16, src.green() as i16, src.red() as i16,
+                sa,
+                src.blue() as i16,
+                src.green() as i16,
+                src.red() as i16,
+                sa,
+                src.blue() as i16,
+                src.green() as i16,
+                src.red() as i16,
             )
         });
         let blended_hi = blend_16(dst_hi, unsafe {
             _mm_set_epi16(
-                sa, src.blue() as i16, src.green() as i16, src.red() as i16,
-                sa, src.blue() as i16, src.green() as i16, src.red() as i16,
+                sa,
+                src.blue() as i16,
+                src.green() as i16,
+                src.red() as i16,
+                sa,
+                src.blue() as i16,
+                src.green() as i16,
+                src.red() as i16,
             )
         });
 
@@ -340,7 +352,12 @@ unsafe fn fill_span_blend_avx2(dst: &mut [u8], src: Color) {
 
         // Recombine channels
         let rg = unsafe { _mm256_or_si256(result_r, _mm256_slli_epi32(result_g, 8)) };
-        let ba = unsafe { _mm256_or_si256(_mm256_slli_epi32(result_b, 16), _mm256_slli_epi32(result_a, 24)) };
+        let ba = unsafe {
+            _mm256_or_si256(
+                _mm256_slli_epi32(result_b, 16),
+                _mm256_slli_epi32(result_a, 24),
+            )
+        };
         let result = unsafe { _mm256_or_si256(rg, ba) };
 
         // Store result

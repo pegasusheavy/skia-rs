@@ -156,10 +156,20 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
             .unwrap();
 
             if rect.rx > 0.0 {
-                write!(output, " rx=\"{}\"", format_scalar(rect.rx, options.precision)).unwrap();
+                write!(
+                    output,
+                    " rx=\"{}\"",
+                    format_scalar(rect.rx, options.precision)
+                )
+                .unwrap();
             }
             if rect.ry > 0.0 {
-                write!(output, " ry=\"{}\"", format_scalar(rect.ry, options.precision)).unwrap();
+                write!(
+                    output,
+                    " ry=\"{}\"",
+                    format_scalar(rect.ry, options.precision)
+                )
+                .unwrap();
             }
 
             export_common_attrs(output, node, options);
@@ -262,7 +272,12 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
                 write!(output, " font-family=\"{}\"", escape_xml(family)).unwrap();
             }
 
-            write!(output, " font-size=\"{}\"", format_scalar(text.font_size, options.precision)).unwrap();
+            write!(
+                output,
+                " font-size=\"{}\"",
+                format_scalar(text.font_size, options.precision)
+            )
+            .unwrap();
 
             if text.font_weight != 400 {
                 write!(output, " font-weight=\"{}\"", text.font_weight).unwrap();
@@ -483,7 +498,12 @@ fn export_common_attrs(output: &mut String, node: &SvgNode, options: &SvgExportO
 
     // Opacity
     if (node.opacity - 1.0).abs() > 0.001 {
-        write!(output, " opacity=\"{}\"", format_scalar(node.opacity, options.precision)).unwrap();
+        write!(
+            output,
+            " opacity=\"{}\"",
+            format_scalar(node.opacity, options.precision)
+        )
+        .unwrap();
     }
 
     // Visibility
@@ -502,7 +522,13 @@ fn export_common_attrs(output: &mut String, node: &SvgNode, options: &SvgExportO
 fn is_standard_attr(key: &str) -> bool {
     matches!(
         key,
-        "id" | "class" | "transform" | "fill" | "stroke" | "stroke-width" | "opacity" | "visibility"
+        "id" | "class"
+            | "transform"
+            | "fill"
+            | "stroke"
+            | "stroke-width"
+            | "opacity"
+            | "visibility"
     )
 }
 
@@ -515,10 +541,8 @@ fn export_transform_attr(output: &mut String, matrix: &Matrix, options: &SvgExpo
         && v[3].abs() < 0.001
         && (v[4] - 1.0).abs() < 0.001;
 
-    let is_scale = v[1].abs() < 0.001
-        && v[3].abs() < 0.001
-        && v[2].abs() < 0.001
-        && v[5].abs() < 0.001;
+    let is_scale =
+        v[1].abs() < 0.001 && v[3].abs() < 0.001 && v[2].abs() < 0.001 && v[5].abs() < 0.001;
 
     if is_translate && (v[2].abs() > 0.001 || v[5].abs() > 0.001) {
         write!(
@@ -561,7 +585,11 @@ fn export_transform_attr(output: &mut String, matrix: &Matrix, options: &SvgExpo
     }
 }
 
-fn export_points_attr(output: &mut String, points: &[skia_rs_core::Point], options: &SvgExportOptions) {
+fn export_points_attr(
+    output: &mut String,
+    points: &[skia_rs_core::Point],
+    options: &SvgExportOptions,
+) {
     output.push_str(" points=\"");
     for (i, p) in points.iter().enumerate() {
         if i > 0 {
@@ -662,7 +690,12 @@ fn export_gradient_attrs(output: &mut String, spread: &SpreadMethod, units: &Gra
     }
 }
 
-fn export_gradient_stop(output: &mut String, stop: &GradientStop, options: &SvgExportOptions, depth: usize) {
+fn export_gradient_stop(
+    output: &mut String,
+    stop: &GradientStop,
+    options: &SvgExportOptions,
+    depth: usize,
+) {
     let indent = if options.pretty_print {
         options.indent.repeat(depth)
     } else {
@@ -680,7 +713,12 @@ fn export_gradient_stop(output: &mut String, stop: &GradientStop, options: &SvgE
     .unwrap();
 
     if (stop.opacity - 1.0).abs() > 0.001 {
-        write!(output, " stop-opacity=\"{}\"", format_scalar(stop.opacity, options.precision)).unwrap();
+        write!(
+            output,
+            " stop-opacity=\"{}\"",
+            format_scalar(stop.opacity, options.precision)
+        )
+        .unwrap();
     }
 
     output.push_str("/>");
@@ -697,7 +735,12 @@ fn format_paint(paint: &SvgPaint) -> String {
 
 fn format_color(color: &Color) -> String {
     if color.alpha() == 255 {
-        format!("#{:02x}{:02x}{:02x}", color.red(), color.green(), color.blue())
+        format!(
+            "#{:02x}{:02x}{:02x}",
+            color.red(),
+            color.green(),
+            color.blue()
+        )
     } else {
         format!(
             "rgba({}, {}, {}, {})",
@@ -799,6 +842,9 @@ mod tests {
     #[test]
     fn test_format_color() {
         assert_eq!(format_color(&Color::from_rgb(255, 0, 0)), "#ff0000");
-        assert_eq!(format_color(&Color::from_argb(128, 255, 0, 0)), "rgba(255, 0, 0, 0.5019608)");
+        assert_eq!(
+            format_color(&Color::from_argb(128, 255, 0, 0)),
+            "rgba(255, 0, 0, 0.5019608)"
+        );
     }
 }

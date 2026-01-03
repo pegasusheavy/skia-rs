@@ -237,10 +237,7 @@ impl PdfFont {
         dict.push_str(&format!("/Flags {}\n", self.flags | 32)); // Non-symbolic
         dict.push_str(&format!(
             "/FontBBox [{} {} {} {}]\n",
-            self.bbox[0] as i32,
-            self.bbox[1] as i32,
-            self.bbox[2] as i32,
-            self.bbox[3] as i32
+            self.bbox[0] as i32, self.bbox[1] as i32, self.bbox[2] as i32, self.bbox[3] as i32
         ));
         dict.push_str(&format!("/ItalicAngle {}\n", self.italic_angle as i32));
         dict.push_str(&format!("/Ascent {}\n", self.ascender as i32));
@@ -394,7 +391,9 @@ impl PdfFontManager {
 
     /// Get font by name.
     pub fn get_by_name(&self, name: &str) -> Option<&PdfFont> {
-        self.name_to_index.get(name).and_then(|&idx| self.fonts.get(idx))
+        self.name_to_index
+            .get(name)
+            .and_then(|&idx| self.fonts.get(idx))
     }
 
     /// Get all fonts.

@@ -271,11 +271,7 @@ fn apply_tile_mode(t: f32, mode: GradientTileMode) -> f32 {
         GradientTileMode::Repeat => t.rem_euclid(1.0),
         GradientTileMode::Mirror => {
             let cycle = t.rem_euclid(2.0);
-            if cycle > 1.0 {
-                2.0 - cycle
-            } else {
-                cycle
-            }
+            if cycle > 1.0 { 2.0 - cycle } else { cycle }
         }
         GradientTileMode::Decal => {
             if t < 0.0 || t > 1.0 {
@@ -429,11 +425,11 @@ mod tests {
 
         // First pixel should be red
         assert!(pixels[0] > 200); // R
-        assert!(pixels[2] < 50);  // B
+        assert!(pixels[2] < 50); // B
 
         // Last pixel should be blue
         let last = (255 * 4) as usize;
-        assert!(pixels[last] < 50);     // R
+        assert!(pixels[last] < 50); // R
         assert!(pixels[last + 2] > 200); // B
     }
 

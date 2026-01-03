@@ -32,17 +32,17 @@ pub mod region;
 
 // Re-exports for convenience
 pub use color::{
-    color4f_linear_to_srgb, color4f_srgb_to_linear, color_to_linear, contrast_ratio,
-    hsl_to_rgb, hsv_to_rgb, lab_to_rgb, linear_to_color, linear_to_srgb, luminance, mix_colors,
-    premultiply_color, rgb_to_hsl, rgb_to_hsv, rgb_to_lab, rgb_to_xyz, srgb_to_linear,
-    unpremultiply_color, xyz_to_rgb, AlphaType, Color, Color4f, ColorFilterFlags, ColorGamut,
-    ColorSpace, ColorType, IccColorSpace, IccPcs, IccProfile, IccProfileClass, TransferFunction,
+    AlphaType, Color, Color4f, ColorFilterFlags, ColorGamut, ColorSpace, ColorType, IccColorSpace,
+    IccPcs, IccProfile, IccProfileClass, TransferFunction, color_to_linear, color4f_linear_to_srgb,
+    color4f_srgb_to_linear, contrast_ratio, hsl_to_rgb, hsv_to_rgb, lab_to_rgb, linear_to_color,
+    linear_to_srgb, luminance, mix_colors, premultiply_color, rgb_to_hsl, rgb_to_hsv, rgb_to_lab,
+    rgb_to_xyz, srgb_to_linear, unpremultiply_color, xyz_to_rgb,
 };
-pub use geometry::{Corner, IPoint, IRect, ISize, Matrix, Point, Point3, Rect, RRect, Size};
+pub use geometry::{Corner, IPoint, IRect, ISize, Matrix, Point, Point3, RRect, Rect, Size};
 pub use matrix44::Matrix44;
 pub use pixel::{
-    convert_pixels, premultiply_in_place, swizzle_rb_in_place, unpremultiply_in_place, Bitmap,
-    ImageInfo, PixelError, PixelGeometry, Pixmap, SurfaceProps, SurfacePropsFlags,
+    Bitmap, ImageInfo, PixelError, PixelGeometry, Pixmap, SurfaceProps, SurfacePropsFlags,
+    convert_pixels, premultiply_in_place, swizzle_rb_in_place, unpremultiply_in_place,
 };
 pub use region::{Region, RegionOp};
 
@@ -82,12 +82,12 @@ impl AsScalar for i32 {
 /// Prelude module for convenient imports.
 pub mod prelude {
     pub use crate::color::{
-        hsl_to_rgb, hsv_to_rgb, linear_to_srgb, luminance, mix_colors, premultiply_color,
-        rgb_to_hsl, rgb_to_hsv, srgb_to_linear, unpremultiply_color, AlphaType, Color, Color4f,
-        ColorSpace, ColorType,
+        AlphaType, Color, Color4f, ColorSpace, ColorType, hsl_to_rgb, hsv_to_rgb, linear_to_srgb,
+        luminance, mix_colors, premultiply_color, rgb_to_hsl, rgb_to_hsv, srgb_to_linear,
+        unpremultiply_color,
     };
     pub use crate::geometry::{
-        Corner, IPoint, IRect, ISize, Matrix, Point, Point3, Rect, RRect, Size,
+        Corner, IPoint, IRect, ISize, Matrix, Point, Point3, RRect, Rect, Size,
     };
     pub use crate::matrix44::Matrix44;
     pub use crate::pixel::{Bitmap, ImageInfo, PixelGeometry, Pixmap, SurfaceProps};

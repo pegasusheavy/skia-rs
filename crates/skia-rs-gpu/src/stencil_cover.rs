@@ -463,8 +463,14 @@ mod tests {
 
     #[test]
     fn test_stencil_fill_rule_conversion() {
-        assert_eq!(StencilFillRule::from(FillType::Winding), StencilFillRule::NonZero);
-        assert_eq!(StencilFillRule::from(FillType::EvenOdd), StencilFillRule::EvenOdd);
+        assert_eq!(
+            StencilFillRule::from(FillType::Winding),
+            StencilFillRule::NonZero
+        );
+        assert_eq!(
+            StencilFillRule::from(FillType::EvenOdd),
+            StencilFillRule::EvenOdd
+        );
     }
 
     #[test]
@@ -478,7 +484,8 @@ mod tests {
     #[test]
     fn test_prepare_stencil_cover() {
         let mut builder = PathBuilder::new();
-        builder.move_to(0.0, 0.0)
+        builder
+            .move_to(0.0, 0.0)
             .line_to(100.0, 0.0)
             .line_to(100.0, 100.0)
             .line_to(0.0, 100.0)

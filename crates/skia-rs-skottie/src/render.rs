@@ -5,9 +5,7 @@
 
 use crate::animation::{Asset, PrecompAsset};
 use crate::layers::{Layer, LayerContent, MatteMode};
-use crate::shapes::{
-    FillShape, GradientFillShape, Shape, ShapeGroup, StrokeShape, TrimPathShape,
-};
+use crate::shapes::{FillShape, GradientFillShape, Shape, ShapeGroup, StrokeShape, TrimPathShape};
 use skia_rs_core::{Color4f, Matrix, Rect, Scalar};
 use skia_rs_paint::{BlendMode, Paint, Style};
 use skia_rs_path::Path;
@@ -116,12 +114,7 @@ impl<'a> RenderContext<'a> {
     }
 
     /// Render a layer.
-    pub fn render_layer(
-        &mut self,
-        layer: &Layer,
-        frame: Scalar,
-        assets: &HashMap<String, Asset>,
-    ) {
+    pub fn render_layer(&mut self, layer: &Layer, frame: Scalar, assets: &HashMap<String, Asset>) {
         if !layer.is_visible_at(frame) || layer.hidden {
             return;
         }
@@ -157,12 +150,8 @@ impl<'a> RenderContext<'a> {
                 paint.set_style(Style::Fill);
 
                 let color = paint.color();
-                let adjusted_color = Color4f::new(
-                    color.r,
-                    color.g,
-                    color.b,
-                    color.a * self.current_opacity,
-                );
+                let adjusted_color =
+                    Color4f::new(color.r, color.g, color.b, color.a * self.current_opacity);
                 paint.set_color(adjusted_color);
 
                 self.draw_rect(&rect, &paint);

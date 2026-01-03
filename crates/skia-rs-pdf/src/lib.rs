@@ -29,6 +29,6 @@ pub use pdfa::{
 };
 pub use stream::*;
 pub use transparency::{
-    ExtGStateKey, ExtGraphicsState, PdfBlendMode, SoftMask, SoftMaskSubtype,
-    TransparencyGroup, TransparencyManager,
+    ExtGStateKey, ExtGraphicsState, PdfBlendMode, SoftMask, SoftMaskSubtype, TransparencyGroup,
+    TransparencyManager,
 };

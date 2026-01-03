@@ -411,7 +411,12 @@ impl<'a> Rasterizer<'a> {
 
     /// Reset the clip to device bounds.
     pub fn reset_clip(&mut self) {
-        let bounds = Rect::from_xywh(0.0, 0.0, self.buffer.width as Scalar, self.buffer.height as Scalar);
+        let bounds = Rect::from_xywh(
+            0.0,
+            0.0,
+            self.buffer.width as Scalar,
+            self.buffer.height as Scalar,
+        );
         self.clip = bounds;
         self.clip_stack.reset(&bounds);
         self.use_advanced_clip = false;
@@ -436,7 +441,8 @@ impl<'a> Rasterizer<'a> {
                     color.green(),
                     color.blue(),
                 );
-                self.buffer.blend_pixel(x, y, adjusted_color, paint.blend_mode());
+                self.buffer
+                    .blend_pixel(x, y, adjusted_color, paint.blend_mode());
             }
         }
     }
@@ -624,11 +630,7 @@ impl<'a> Rasterizer<'a> {
         }
 
         // Validate bounds
-        if start < 0
-            || end >= self.buffer.width
-            || y < 0
-            || y >= self.buffer.height
-        {
+        if start < 0 || end >= self.buffer.width || y < 0 || y >= self.buffer.height {
             // Fall back to per-pixel with bounds checking
             for x in start..=end {
                 self.buffer.blend_pixel(x, y, color, blend_mode);
@@ -642,10 +644,7 @@ impl<'a> Rasterizer<'a> {
 
         // SIMD-optimized path for SrcOver blend mode (most common case)
         if blend_mode == BlendMode::SrcOver {
-            crate::simd::fill_span_solid(
-                &mut self.buffer.pixels[start_offset..end_offset],
-                color,
-            );
+            crate::simd::fill_span_solid(&mut self.buffer.pixels[start_offset..end_offset], color);
             return;
         }
 
@@ -1775,11 +1774,7 @@ mod tests {
 
         // Check a pixel outside the triangle
         let pixel = buffer.get_pixel(10, 10).unwrap();
-        assert_eq!(
-            pixel.red(),
-            255,
-            "Outside should remain white (background)"
-        );
+        assert_eq!(pixel.red(), 255, "Outside should remain white (background)");
         assert_eq!(pixel.green(), 255);
     }
 

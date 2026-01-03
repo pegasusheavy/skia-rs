@@ -1069,11 +1069,18 @@ fn decode_ico(data: &[u8]) -> CodecResult<Image> {
 
     // Get the best entry
     let entry_offset = 6 + best_index * 16;
-    let image_offset =
-        u32::from_le_bytes([data[entry_offset + 12], data[entry_offset + 13], data[entry_offset + 14], data[entry_offset + 15]])
-            as usize;
-    let image_size = u32::from_le_bytes([data[entry_offset + 8], data[entry_offset + 9], data[entry_offset + 10], data[entry_offset + 11]])
-        as usize;
+    let image_offset = u32::from_le_bytes([
+        data[entry_offset + 12],
+        data[entry_offset + 13],
+        data[entry_offset + 14],
+        data[entry_offset + 15],
+    ]) as usize;
+    let image_size = u32::from_le_bytes([
+        data[entry_offset + 8],
+        data[entry_offset + 9],
+        data[entry_offset + 10],
+        data[entry_offset + 11],
+    ]) as usize;
 
     if image_offset + image_size > data.len() {
         return Err(CodecError::InvalidData("Invalid ICO image data".into()));
@@ -1303,7 +1310,9 @@ fn decode_wbmp(data: &[u8]) -> CodecResult<Image> {
     let fix_header = read_wbmp_int(data, &mut offset)
         .ok_or_else(|| CodecError::InvalidData("Invalid WBMP header".into()))?;
     if fix_header != 0 {
-        return Err(CodecError::Unsupported("Extended WBMP headers not supported".into()));
+        return Err(CodecError::Unsupported(
+            "Extended WBMP headers not supported".into(),
+        ));
     }
 
     // Read width
@@ -1338,10 +1347,10 @@ fn decode_wbmp(data: &[u8]) -> CodecResult<Image> {
 
             let pixel_idx = (y * width as usize + x) * 4;
             let value = if bit == 1 { 255 } else { 0 };
-            rgba[pixel_idx] = value;     // R
+            rgba[pixel_idx] = value; // R
             rgba[pixel_idx + 1] = value; // G
             rgba[pixel_idx + 2] = value; // B
-            rgba[pixel_idx + 3] = 255;   // A
+            rgba[pixel_idx + 3] = 255; // A
         }
     }
 
@@ -1464,7 +1473,8 @@ impl ImageDecoder for AvifDecoder {
         let decoder = Decoder::from_avif(&data)
             .map_err(|e| CodecError::DecodingError(format!("AVIF decode error: {:?}", e)))?;
 
-        let decoded = decoder.to_image()
+        let decoded = decoder
+            .to_image()
             .map_err(|e| CodecError::DecodingError(format!("AVIF decode error: {:?}", e)))?;
 
         // Extract dimensions and pixels based on the image variant
@@ -1472,27 +1482,22 @@ impl ImageDecoder for AvifDecoder {
             AvifImage::Rgb8(img) => {
                 let w = img.width();
                 let h = img.height();
-                let rgba: Vec<u8> = img.pixels()
-                    .flat_map(|p| [p.r, p.g, p.b, 255])
-                    .collect();
+                let rgba: Vec<u8> = img.pixels().flat_map(|p| [p.r, p.g, p.b, 255]).collect();
                 (w as i32, h as i32, rgba)
             }
             AvifImage::Rgba8(img) => {
                 let w = img.width();
                 let h = img.height();
-                let rgba: Vec<u8> = img.pixels()
-                    .flat_map(|p| [p.r, p.g, p.b, p.a])
-                    .collect();
+                let rgba: Vec<u8> = img.pixels().flat_map(|p| [p.r, p.g, p.b, p.a]).collect();
                 (w as i32, h as i32, rgba)
             }
             AvifImage::Rgb16(img) => {
                 let w = img.width();
                 let h = img.height();
                 // Convert 16-bit to 8-bit
-                let rgba: Vec<u8> = img.pixels()
-                    .flat_map(|p| {
-                        [(p.r >> 8) as u8, (p.g >> 8) as u8, (p.b >> 8) as u8, 255]
-                    })
+                let rgba: Vec<u8> = img
+                    .pixels()
+                    .flat_map(|p| [(p.r >> 8) as u8, (p.g >> 8) as u8, (p.b >> 8) as u8, 255])
                     .collect();
                 (w as i32, h as i32, rgba)
             }
@@ -1500,9 +1505,15 @@ impl ImageDecoder for AvifDecoder {
                 let w = img.width();
                 let h = img.height();
                 // Convert 16-bit to 8-bit
-                let rgba: Vec<u8> = img.pixels()
+                let rgba: Vec<u8> = img
+                    .pixels()
                     .flat_map(|p| {
-                        [(p.r >> 8) as u8, (p.g >> 8) as u8, (p.b >> 8) as u8, (p.a >> 8) as u8]
+                        [
+                            (p.r >> 8) as u8,
+                            (p.g >> 8) as u8,
+                            (p.b >> 8) as u8,
+                            (p.a >> 8) as u8,
+                        ]
                     })
                     .collect();
                 (w as i32, h as i32, rgba)
@@ -1510,7 +1521,8 @@ impl ImageDecoder for AvifDecoder {
             AvifImage::Gray8(img) => {
                 let w = img.width();
                 let h = img.height();
-                let rgba: Vec<u8> = img.pixels()
+                let rgba: Vec<u8> = img
+                    .pixels()
                     .flat_map(|g| {
                         let v = g.value();
                         [v, v, v, 255]
@@ -1521,7 +1533,8 @@ impl ImageDecoder for AvifDecoder {
             AvifImage::Gray16(img) => {
                 let w = img.width();
                 let h = img.height();
-                let rgba: Vec<u8> = img.pixels()
+                let rgba: Vec<u8> = img
+                    .pixels()
                     .flat_map(|g| {
                         let g8 = (g.value() >> 8) as u8;
                         [g8, g8, g8, 255]
@@ -1593,8 +1606,8 @@ impl Default for AvifEncoder {
 impl ImageEncoder for AvifEncoder {
     #[cfg(feature = "avif")]
     fn encode<W: Write>(&self, image: &Image, mut writer: W) -> CodecResult<()> {
-        use ravif::{Encoder, Img};
         use ravif::RGBA8;
+        use ravif::{Encoder, Img};
 
         let width = image.width() as usize;
         let height = image.height() as usize;
@@ -1644,7 +1657,8 @@ fn get_avif_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
     use avif_decode::{Decoder, Image as AvifImage};
     let decoder = Decoder::from_avif(data)
         .map_err(|e| CodecError::DecodingError(format!("AVIF decode error: {:?}", e)))?;
-    let image = decoder.to_image()
+    let image = decoder
+        .to_image()
         .map_err(|e| CodecError::DecodingError(format!("AVIF decode error: {:?}", e)))?;
 
     let (w, h) = match image {
@@ -1755,7 +1769,11 @@ fn demosaic_raw(raw: &rawloader::RawImage) -> CodecResult<Vec<u8>> {
     let cfa = &raw.cfa;
     let black = raw.blacklevels[0] as f32;
     let white = raw.whitelevels[0] as f32;
-    let range = if white > black { white - black } else { 65535.0 };
+    let range = if white > black {
+        white - black
+    } else {
+        65535.0
+    };
 
     // Color indices: 0=Red, 1=Green, 2=Blue
     const RED: usize = 0;
@@ -1778,17 +1796,29 @@ fn demosaic_raw(raw: &rawloader::RawImage) -> CodecResult<Vec<u8>> {
             match color {
                 RED => {
                     output[out_idx] = normalized;
-                    output[out_idx + 1] = get_neighbor_avg_by_color(data, x, y, width, height, cfa, GREEN, black, range);
-                    output[out_idx + 2] = get_neighbor_avg_by_color(data, x, y, width, height, cfa, BLUE, black, range);
+                    output[out_idx + 1] = get_neighbor_avg_by_color(
+                        data, x, y, width, height, cfa, GREEN, black, range,
+                    );
+                    output[out_idx + 2] = get_neighbor_avg_by_color(
+                        data, x, y, width, height, cfa, BLUE, black, range,
+                    );
                 }
                 GREEN => {
-                    output[out_idx] = get_neighbor_avg_by_color(data, x, y, width, height, cfa, RED, black, range);
+                    output[out_idx] = get_neighbor_avg_by_color(
+                        data, x, y, width, height, cfa, RED, black, range,
+                    );
                     output[out_idx + 1] = normalized;
-                    output[out_idx + 2] = get_neighbor_avg_by_color(data, x, y, width, height, cfa, BLUE, black, range);
+                    output[out_idx + 2] = get_neighbor_avg_by_color(
+                        data, x, y, width, height, cfa, BLUE, black, range,
+                    );
                 }
                 BLUE => {
-                    output[out_idx] = get_neighbor_avg_by_color(data, x, y, width, height, cfa, RED, black, range);
-                    output[out_idx + 1] = get_neighbor_avg_by_color(data, x, y, width, height, cfa, GREEN, black, range);
+                    output[out_idx] = get_neighbor_avg_by_color(
+                        data, x, y, width, height, cfa, RED, black, range,
+                    );
+                    output[out_idx + 1] = get_neighbor_avg_by_color(
+                        data, x, y, width, height, cfa, GREEN, black, range,
+                    );
                     output[out_idx + 2] = normalized;
                 }
                 _ => {

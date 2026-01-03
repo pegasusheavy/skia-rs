@@ -23,7 +23,7 @@ pub use canvas::*;
 pub use clip::{ClipMask, ClipStack, ClipState};
 pub use picture::*;
 pub use raster::*;
-pub use simd::{simd_capabilities, SimdCapabilities};
+pub use simd::{SimdCapabilities, simd_capabilities};
 pub use surface::{RasterCanvas, Surface, VertexMode};
 
 // Re-export Image for drawing

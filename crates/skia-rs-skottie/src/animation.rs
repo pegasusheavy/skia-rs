@@ -97,11 +97,7 @@ impl Animation {
     /// Build an animation from a parsed Lottie model.
     fn from_model(model: LottieModel) -> Result<Self> {
         // Parse layers
-        let layers: Vec<Layer> = model
-            .layers
-            .iter()
-            .map(Layer::from_lottie)
-            .collect();
+        let layers: Vec<Layer> = model.layers.iter().map(Layer::from_lottie).collect();
 
         // Parse assets
         let mut assets = HashMap::new();
@@ -247,13 +243,15 @@ impl Animation {
 
         if new_frame >= self.out_point {
             if should_loop {
-                self.current_frame = self.in_point + (new_frame - self.out_point) % self.total_frames();
+                self.current_frame =
+                    self.in_point + (new_frame - self.out_point) % self.total_frames();
             } else {
                 self.current_frame = self.out_point - 0.001;
             }
         } else if new_frame < self.in_point {
             if should_loop {
-                self.current_frame = self.out_point - (self.in_point - new_frame) % self.total_frames();
+                self.current_frame =
+                    self.out_point - (self.in_point - new_frame) % self.total_frames();
             } else {
                 self.current_frame = self.in_point;
             }
@@ -513,9 +511,7 @@ mod tests {
 
     #[test]
     fn test_builder() {
-        let anim = AnimationBuilder::new()
-            .load(SIMPLE_ANIMATION)
-            .unwrap();
+        let anim = AnimationBuilder::new().load(SIMPLE_ANIMATION).unwrap();
 
         assert_eq!(anim.name(), "Test Animation");
     }

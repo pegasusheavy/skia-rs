@@ -7,7 +7,7 @@
 //!   cargo run --example skia_comparison -p skia-rs-bench --release
 
 use skia_rs_bench::skia_comparison::{
-    reference_timings, BenchmarkRunner, ComparisonReport, ComparisonResult,
+    BenchmarkRunner, ComparisonReport, ComparisonResult, reference_timings,
 };
 use skia_rs_canvas::Surface;
 use skia_rs_core::{Color, Matrix, Point, Rect};
@@ -38,8 +38,12 @@ fn main() {
         std::hint::black_box(a.concat(&b));
     });
     report.add(
-        ComparisonResult::compare("matrix_multiply", time, reference_timings::get("matrix_multiply").unwrap_or(time))
-            .with_notes("3x3 matrix concatenation"),
+        ComparisonResult::compare(
+            "matrix_multiply",
+            time,
+            reference_timings::get("matrix_multiply").unwrap_or(time),
+        )
+        .with_notes("3x3 matrix concatenation"),
     );
 
     // Matrix invert
@@ -48,8 +52,12 @@ fn main() {
         std::hint::black_box(m.invert());
     });
     report.add(
-        ComparisonResult::compare("matrix_invert", time, reference_timings::get("matrix_invert").unwrap_or(time))
-            .with_notes("3x3 matrix inversion"),
+        ComparisonResult::compare(
+            "matrix_invert",
+            time,
+            reference_timings::get("matrix_invert").unwrap_or(time),
+        )
+        .with_notes("3x3 matrix inversion"),
     );
 
     // Point transform
@@ -59,8 +67,12 @@ fn main() {
         std::hint::black_box(m.map_point(p));
     });
     report.add(
-        ComparisonResult::compare("point_transform", time, reference_timings::get("point_transform").unwrap_or(time))
-            .with_notes("Single point transform"),
+        ComparisonResult::compare(
+            "point_transform",
+            time,
+            reference_timings::get("point_transform").unwrap_or(time),
+        )
+        .with_notes("Single point transform"),
     );
 
     // ==========================================================================
@@ -82,8 +94,12 @@ fn main() {
         std::hint::black_box(path.bounds());
     });
     report.add(
-        ComparisonResult::compare("path_bounds", time, reference_timings::get("path_bounds").unwrap_or(time))
-            .with_notes("100-segment path bounds"),
+        ComparisonResult::compare(
+            "path_bounds",
+            time,
+            reference_timings::get("path_bounds").unwrap_or(time),
+        )
+        .with_notes("100-segment path bounds"),
     );
 
     // Path contains
@@ -92,8 +108,12 @@ fn main() {
         std::hint::black_box(path.contains(point));
     });
     report.add(
-        ComparisonResult::compare("path_contains", time, reference_timings::get("path_contains").unwrap_or(time))
-            .with_notes("Point containment test"),
+        ComparisonResult::compare(
+            "path_contains",
+            time,
+            reference_timings::get("path_contains").unwrap_or(time),
+        )
+        .with_notes("Point containment test"),
     );
 
     // Path construction
@@ -107,8 +127,12 @@ fn main() {
         std::hint::black_box(b.build());
     });
     report.add(
-        ComparisonResult::compare("path_100_lines", time, reference_timings::get("path_100_lines").unwrap_or(time))
-            .with_notes("Build 100-line path"),
+        ComparisonResult::compare(
+            "path_100_lines",
+            time,
+            reference_timings::get("path_100_lines").unwrap_or(time),
+        )
+        .with_notes("Build 100-line path"),
     );
 
     // ==========================================================================
@@ -121,8 +145,12 @@ fn main() {
         std::hint::black_box(Surface::new_raster_n32_premul(256, 256));
     });
     report.add(
-        ComparisonResult::compare("surface_create_256", time, reference_timings::get("surface_create_256").unwrap_or(time))
-            .with_notes("256x256 RGBA surface"),
+        ComparisonResult::compare(
+            "surface_create_256",
+            time,
+            reference_timings::get("surface_create_256").unwrap_or(time),
+        )
+        .with_notes("256x256 RGBA surface"),
     );
 
     // Surface creation - 1080p
@@ -131,8 +159,12 @@ fn main() {
         std::hint::black_box(Surface::new_raster_n32_premul(1920, 1080));
     });
     report.add(
-        ComparisonResult::compare("surface_create_1080p", time, reference_timings::get("surface_create_1080p").unwrap_or(time))
-            .with_notes("1920x1080 RGBA surface"),
+        ComparisonResult::compare(
+            "surface_create_1080p",
+            time,
+            reference_timings::get("surface_create_1080p").unwrap_or(time),
+        )
+        .with_notes("1920x1080 RGBA surface"),
     );
 
     // Surface clear
@@ -142,8 +174,12 @@ fn main() {
         canvas.clear(Color::WHITE);
     });
     report.add(
-        ComparisonResult::compare("surface_clear", time, reference_timings::get("surface_clear").unwrap_or(time))
-            .with_notes("1080p clear"),
+        ComparisonResult::compare(
+            "surface_clear",
+            time,
+            reference_timings::get("surface_clear").unwrap_or(time),
+        )
+        .with_notes("1080p clear"),
     );
 
     // ==========================================================================
@@ -161,8 +197,12 @@ fn main() {
         canvas.draw_rect(&rect, &paint);
     });
     report.add(
-        ComparisonResult::compare("draw_rect", time, reference_timings::get("draw_rect").unwrap_or(time))
-            .with_notes("200x200 filled rect"),
+        ComparisonResult::compare(
+            "draw_rect",
+            time,
+            reference_timings::get("draw_rect").unwrap_or(time),
+        )
+        .with_notes("200x200 filled rect"),
     );
 
     // Draw circle
@@ -171,8 +211,12 @@ fn main() {
         canvas.draw_circle(Point::new(500.0, 500.0), 100.0, &paint);
     });
     report.add(
-        ComparisonResult::compare("draw_circle", time, reference_timings::get("draw_circle").unwrap_or(time))
-            .with_notes("r=100 filled circle"),
+        ComparisonResult::compare(
+            "draw_circle",
+            time,
+            reference_timings::get("draw_circle").unwrap_or(time),
+        )
+        .with_notes("r=100 filled circle"),
     );
 
     // Draw star path
@@ -203,8 +247,12 @@ fn main() {
         canvas.draw_path(&star, &paint);
     });
     report.add(
-        ComparisonResult::compare("draw_path_star", time, reference_timings::get("draw_path_star").unwrap_or(time))
-            .with_notes("10-vertex star"),
+        ComparisonResult::compare(
+            "draw_path_star",
+            time,
+            reference_timings::get("draw_path_star").unwrap_or(time),
+        )
+        .with_notes("10-vertex star"),
     );
 
     // ==========================================================================

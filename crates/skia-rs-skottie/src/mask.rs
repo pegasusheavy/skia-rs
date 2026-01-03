@@ -164,15 +164,19 @@ fn path_data_to_path(data: &PathData) -> Path {
             data.vertices[prev][0] + out_t[0],
             data.vertices[prev][1] + out_t[1],
         ];
-        let c2 = [
-            data.vertices[i][0] + in_t[0],
-            data.vertices[i][1] + in_t[1],
-        ];
+        let c2 = [data.vertices[i][0] + in_t[0], data.vertices[i][1] + in_t[1]];
 
         if out_t == [0.0, 0.0] && in_t == [0.0, 0.0] {
             builder.line_to(data.vertices[i][0], data.vertices[i][1]);
         } else {
-            builder.cubic_to(c1[0], c1[1], c2[0], c2[1], data.vertices[i][0], data.vertices[i][1]);
+            builder.cubic_to(
+                c1[0],
+                c1[1],
+                c2[0],
+                c2[1],
+                data.vertices[i][0],
+                data.vertices[i][1],
+            );
         }
     }
 
@@ -185,15 +189,19 @@ fn path_data_to_path(data: &PathData) -> Path {
             data.vertices[last][0] + out_t[0],
             data.vertices[last][1] + out_t[1],
         ];
-        let c2 = [
-            data.vertices[0][0] + in_t[0],
-            data.vertices[0][1] + in_t[1],
-        ];
+        let c2 = [data.vertices[0][0] + in_t[0], data.vertices[0][1] + in_t[1]];
 
         if out_t == [0.0, 0.0] && in_t == [0.0, 0.0] {
             builder.close();
         } else {
-            builder.cubic_to(c1[0], c1[1], c2[0], c2[1], data.vertices[0][0], data.vertices[0][1]);
+            builder.cubic_to(
+                c1[0],
+                c1[1],
+                c2[0],
+                c2[1],
+                data.vertices[0][0],
+                data.vertices[0][1],
+            );
             builder.close();
         }
     }
@@ -230,9 +238,8 @@ impl MaskGroup {
             .iter()
             .filter(|m| m.is_active(frame))
             .filter_map(|m| {
-                m.path_at(frame).map(|path| {
-                    (path, m.mode, m.opacity_at(frame))
-                })
+                m.path_at(frame)
+                    .map(|path| (path, m.mode, m.opacity_at(frame)))
             })
             .collect()
     }

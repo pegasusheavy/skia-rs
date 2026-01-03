@@ -265,12 +265,10 @@ impl Layer {
             .unwrap_or_default();
 
         let content = match layer_type {
-            LayerType::Precomp => {
-                LayerContent::Precomp(PrecompContent {
-                    ref_id: model.ref_id.clone().unwrap_or_default(),
-                    time_remap: None,
-                })
-            }
+            LayerType::Precomp => LayerContent::Precomp(PrecompContent {
+                ref_id: model.ref_id.clone().unwrap_or_default(),
+                time_remap: None,
+            }),
             LayerType::Solid => {
                 let color = model
                     .solid_color
@@ -283,17 +281,12 @@ impl Layer {
                     height: model.solid_height.unwrap_or(100.0),
                 })
             }
-            LayerType::Image => {
-                LayerContent::Image(ImageContent {
-                    ref_id: model.ref_id.clone().unwrap_or_default(),
-                })
-            }
+            LayerType::Image => LayerContent::Image(ImageContent {
+                ref_id: model.ref_id.clone().unwrap_or_default(),
+            }),
             LayerType::Shape => {
-                let shapes: Vec<Shape> = model
-                    .shapes
-                    .iter()
-                    .filter_map(Shape::from_lottie)
-                    .collect();
+                let shapes: Vec<Shape> =
+                    model.shapes.iter().filter_map(Shape::from_lottie).collect();
                 LayerContent::Shape(ShapeContent { shapes })
             }
             LayerType::Text => {
@@ -338,11 +331,7 @@ impl Layer {
             _ => LayerContent::None,
         };
 
-        let masks = model
-            .masks
-            .iter()
-            .map(Mask::from_lottie)
-            .collect();
+        let masks = model.masks.iter().map(Mask::from_lottie).collect();
 
         let blend_mode = match model.blend_mode {
             0 => BlendMode::SrcOver,

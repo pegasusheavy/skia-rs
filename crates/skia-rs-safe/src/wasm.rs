@@ -24,7 +24,7 @@
 #![cfg(target_arch = "wasm32")]
 
 use wasm_bindgen::prelude::*;
-use web_sys::{ImageData, HtmlCanvasElement, CanvasRenderingContext2d};
+use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageData};
 
 use crate::prelude::*;
 
@@ -105,11 +105,7 @@ impl WasmSurface {
             chunk.swap(0, 2); // Swap B and R
         }
 
-        ImageData::new_with_u8_clamped_array_and_sh(
-            wasm_bindgen::Clamped(&rgba),
-            width,
-            height,
-        )
+        ImageData::new_with_u8_clamped_array_and_sh(wasm_bindgen::Clamped(&rgba), width, height)
     }
 
     /// Draw to an HTML canvas element.
@@ -146,7 +142,9 @@ pub struct WasmPaint {
 impl WasmPaint {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
-        Self { inner: Paint::new() }
+        Self {
+            inner: Paint::new(),
+        }
     }
 
     pub fn set_color(&mut self, color: u32) {
@@ -180,7 +178,9 @@ pub struct WasmPathBuilder {
 impl WasmPathBuilder {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
-        Self { inner: PathBuilder::new() }
+        Self {
+            inner: PathBuilder::new(),
+        }
     }
 
     pub fn move_to(&mut self, x: f32, y: f32) {
@@ -232,14 +232,26 @@ pub fn rgb(r: u8, g: u8, b: u8) -> u32 {
 
 // Re-export common colors
 #[wasm_bindgen]
-pub fn color_black() -> u32 { 0xFF000000 }
+pub fn color_black() -> u32 {
+    0xFF000000
+}
 #[wasm_bindgen]
-pub fn color_white() -> u32 { 0xFFFFFFFF }
+pub fn color_white() -> u32 {
+    0xFFFFFFFF
+}
 #[wasm_bindgen]
-pub fn color_red() -> u32 { 0xFFFF0000 }
+pub fn color_red() -> u32 {
+    0xFFFF0000
+}
 #[wasm_bindgen]
-pub fn color_green() -> u32 { 0xFF00FF00 }
+pub fn color_green() -> u32 {
+    0xFF00FF00
+}
 #[wasm_bindgen]
-pub fn color_blue() -> u32 { 0xFF0000FF }
+pub fn color_blue() -> u32 {
+    0xFF0000FF
+}
 #[wasm_bindgen]
-pub fn color_transparent() -> u32 { 0x00000000 }
+pub fn color_transparent() -> u32 {
+    0x00000000
+}

@@ -523,11 +523,9 @@ pub type sk_surface_t = RefCounted<Surface>;
 /// Returns a surface with refcount of 1, or null on failure.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_surface_new_raster(width: i32, height: i32) -> *mut sk_surface_t {
-    catch_panic(|| {
-        match Surface::new_raster_n32_premul(width, height) {
-            Some(surface) => RefCounted::new(surface),
-            None => ptr::null_mut(),
-        }
+    catch_panic(|| match Surface::new_raster_n32_premul(width, height) {
+        Some(surface) => RefCounted::new(surface),
+        None => ptr::null_mut(),
     })
 }
 
@@ -804,13 +802,11 @@ pub unsafe extern "C" fn sk_path_is_empty(path: *const sk_path_t) -> bool {
 /// Get the fill type.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_path_get_filltype(path: *const sk_path_t) -> u32 {
-    RefCounted::get_ref(path).map_or(0, |p| {
-        match p.fill_type() {
-            FillType::Winding => 0,
-            FillType::EvenOdd => 1,
-            FillType::InverseWinding => 2,
-            FillType::InverseEvenOdd => 3,
-        }
+    RefCounted::get_ref(path).map_or(0, |p| match p.fill_type() {
+        FillType::Winding => 0,
+        FillType::EvenOdd => 1,
+        FillType::InverseWinding => 2,
+        FillType::InverseEvenOdd => 3,
     })
 }
 
@@ -978,7 +974,9 @@ pub unsafe extern "C" fn sk_pathbuilder_detach(builder: *mut sk_pathbuilder_t) -
 /// Returns a new path with refcount of 1.
 /// The builder retains its current state.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_pathbuilder_snapshot(builder: *const sk_pathbuilder_t) -> *mut sk_path_t {
+pub unsafe extern "C" fn sk_pathbuilder_snapshot(
+    builder: *const sk_pathbuilder_t,
+) -> *mut sk_path_t {
     RefCounted::get_ref(builder).map_or(ptr::null_mut(), |b| RefCounted::new(b.clone().build()))
 }
 
@@ -1084,9 +1082,11 @@ pub unsafe extern "C" fn sk_surface_draw_rect(
     rect: *const sk_rect_t,
     paint: *const sk_paint_t,
 ) {
-    if let (Some(s), Some(r), Some(p)) =
-        (RefCounted::get_mut(surface), rect.as_ref(), RefCounted::get_ref(paint))
-    {
+    if let (Some(s), Some(r), Some(p)) = (
+        RefCounted::get_mut(surface),
+        rect.as_ref(),
+        RefCounted::get_ref(paint),
+    ) {
         let mut canvas = s.raster_canvas();
         canvas.draw_rect(&Rect::from(*r), p);
     }

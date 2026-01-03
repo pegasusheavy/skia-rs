@@ -190,14 +190,20 @@ pub trait ImageGenerator: Send + Sync {
         self.on_get_pixels(&mut native_pixels, native_row_bytes)?;
 
         // Convert to target format
-        convert_pixels(native_info, &native_pixels, native_row_bytes, info, pixels, row_bytes)
+        convert_pixels(
+            native_info,
+            &native_pixels,
+            native_row_bytes,
+            info,
+            pixels,
+            row_bytes,
+        )
     }
 
     /// Check if the generator is valid and can produce pixels.
     fn is_valid(&self) -> bool {
         !self.info().is_empty()
     }
-
 }
 
 /// A boxed image generator.
@@ -217,9 +223,7 @@ pub fn convert_pixels(
 ) -> GeneratorResult<()> {
     // Validate dimensions
     if src_info.width != dst_info.width || src_info.height != dst_info.height {
-        return Err(GeneratorError::GenerateFailed(
-            "Dimension mismatch".into(),
-        ));
+        return Err(GeneratorError::GenerateFailed("Dimension mismatch".into()));
     }
 
     let width = src_info.width as usize;
@@ -426,7 +430,9 @@ mod tests {
         assert_eq!(generator.height(), 10);
 
         let mut pixels = vec![0u8; 10 * 10 * 4];
-        generator.get_pixels(generator.info(), &mut pixels, 10 * 4).unwrap();
+        generator
+            .get_pixels(generator.info(), &mut pixels, 10 * 4)
+            .unwrap();
 
         // Check first pixel is red
         assert_eq!(pixels[0], 255); // R

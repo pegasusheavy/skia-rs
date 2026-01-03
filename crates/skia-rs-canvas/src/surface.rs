@@ -5,7 +5,7 @@ use crate::raster::PixelBuffer;
 #[cfg(feature = "codec")]
 use skia_rs_codec::Image;
 use skia_rs_core::pixel::{ImageInfo, SurfaceProps};
-use skia_rs_core::{AlphaType, ColorType, Color, IRect, Matrix, Point, Rect, Region, Scalar};
+use skia_rs_core::{AlphaType, Color, ColorType, IRect, Matrix, Point, Rect, Region, Scalar};
 use skia_rs_paint::{BlendMode, Paint};
 use skia_rs_path::Path;
 

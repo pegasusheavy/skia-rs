@@ -168,8 +168,7 @@ impl GpuImage {
             return None;
         }
 
-        let texture_format =
-            GpuTextureFormat::from_color_type(info.color_type).unwrap_or_default();
+        let texture_format = GpuTextureFormat::from_color_type(info.color_type).unwrap_or_default();
 
         static ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let unique_id = ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -202,8 +201,7 @@ impl GpuImage {
             return None;
         }
 
-        let texture_format =
-            GpuTextureFormat::from_color_type(info.color_type).unwrap_or_default();
+        let texture_format = GpuTextureFormat::from_color_type(info.color_type).unwrap_or_default();
 
         static ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let unique_id = ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -233,8 +231,7 @@ impl GpuImage {
             return None;
         }
 
-        let texture_format =
-            GpuTextureFormat::from_color_type(info.color_type).unwrap_or_default();
+        let texture_format = GpuTextureFormat::from_color_type(info.color_type).unwrap_or_default();
         let row_bytes = info.min_row_bytes();
 
         static ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);

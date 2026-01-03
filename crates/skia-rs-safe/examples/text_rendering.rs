@@ -200,11 +200,14 @@ fn main() {
     let ref mut writer = BufWriter::new(file);
 
     // Create image info and encode
-    let img_info = skia_rs_codec::ImageInfo::new(width, height, ColorType::Rgba8888, AlphaType::Premul);
+    let img_info =
+        skia_rs_codec::ImageInfo::new(width, height, ColorType::Rgba8888, AlphaType::Premul);
 
     if let Some(image) = skia_rs_codec::Image::from_raster_data(&img_info, pixels, stride) {
         let encoder = PngEncoder::new();
-        encoder.encode(&image, writer).expect("Failed to encode PNG");
+        encoder
+            .encode(&image, writer)
+            .expect("Failed to encode PNG");
         println!("\nSaved output to: {}", output_path);
     } else {
         eprintln!("Failed to create image from surface pixels");

@@ -454,11 +454,13 @@ pub fn apply_style_property(node: &mut SvgNode, property: &str, value: &str) {
         }
         "stroke-linecap" | "stroke-linejoin" | "stroke-dasharray" | "stroke-dashoffset" => {
             // Store in attributes for later use
-            node.attributes.insert(property.to_string(), value.to_string());
+            node.attributes
+                .insert(property.to_string(), value.to_string());
         }
         _ => {
             // Store unknown properties in attributes
-            node.attributes.insert(property.to_string(), value.to_string());
+            node.attributes
+                .insert(property.to_string(), value.to_string());
         }
     }
 }

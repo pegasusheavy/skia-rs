@@ -16,8 +16,8 @@ pub mod export;
 pub mod parser;
 pub mod render;
 
-pub use css::{apply_stylesheet, parse_inline_style, CssRule, CssSelector, Stylesheet};
+pub use css::{CssRule, CssSelector, Stylesheet, apply_stylesheet, parse_inline_style};
 pub use dom::*;
-pub use export::{export_svg, export_svg_with_options, SvgExportOptions};
+pub use export::{SvgExportOptions, export_svg, export_svg_with_options};
 pub use parser::*;
 pub use render::*;

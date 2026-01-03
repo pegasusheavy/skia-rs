@@ -125,9 +125,9 @@ impl MsaaConfig {
 
         let color_size = pixels * color_bytes * samples;
 
-        let depth_size = self.depth_stencil_format.map_or(0, |fmt| {
-            pixels * fmt.bytes_per_pixel() as u64 * samples
-        });
+        let depth_size = self
+            .depth_stencil_format
+            .map_or(0, |fmt| pixels * fmt.bytes_per_pixel() as u64 * samples);
 
         color_size + depth_size
     }
@@ -231,10 +231,7 @@ pub mod sample_positions {
     use super::*;
 
     /// Standard 2x MSAA sample positions.
-    pub const MSAA_2X: [(f32, f32); 2] = [
-        (0.25, 0.25),
-        (0.75, 0.75),
-    ];
+    pub const MSAA_2X: [(f32, f32); 2] = [(0.25, 0.25), (0.75, 0.75)];
 
     /// Standard 4x MSAA sample positions (rotated grid).
     pub const MSAA_4X: [(f32, f32); 4] = [
@@ -346,12 +343,7 @@ mod tests {
 
     #[test]
     fn test_msaa_config_memory() {
-        let config = MsaaConfig::new(
-            SampleCount::S4,
-            TextureFormat::Rgba8Unorm,
-            1920,
-            1080,
-        );
+        let config = MsaaConfig::new(SampleCount::S4, TextureFormat::Rgba8Unorm, 1920, 1080);
 
         let memory = config.memory_estimate();
         // 1920 * 1080 * 4 bytes * 4 samples = ~31.6 MB

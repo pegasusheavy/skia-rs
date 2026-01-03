@@ -218,7 +218,7 @@ impl LazyImage {
                 LazyImageState::Failed => {
                     return Err(GeneratorError::GenerateFailed(
                         "Previous generation failed".into(),
-                    ))
+                    ));
                 }
                 _ => {}
             }
@@ -233,12 +233,12 @@ impl LazyImage {
             LazyImageState::Failed => {
                 return Err(GeneratorError::GenerateFailed(
                     "Previous generation failed".into(),
-                ))
+                ));
             }
             LazyImageState::Generating => {
                 return Err(GeneratorError::GenerateFailed(
                     "Generation in progress".into(),
-                ))
+                ));
             }
             _ => {}
         }
@@ -253,7 +253,10 @@ impl LazyImage {
         let size = info.compute_byte_size(row_bytes);
         let mut pixels = vec![0u8; size];
 
-        let result = self.inner.generator.get_pixels(info, &mut pixels, row_bytes);
+        let result = self
+            .inner
+            .generator
+            .get_pixels(info, &mut pixels, row_bytes);
 
         // Update state based on result
         let mut state = self.inner.state.write();
@@ -321,7 +324,8 @@ impl LazyImage {
                 let dst_offset = y * dst_row_bytes;
                 let copy_len = width * bytes_per_pixel;
 
-                if dst_offset + copy_len <= dst.len() && src_offset + copy_len <= cached.pixels.len()
+                if dst_offset + copy_len <= dst.len()
+                    && src_offset + copy_len <= cached.pixels.len()
                 {
                     dst[dst_offset..dst_offset + copy_len]
                         .copy_from_slice(&cached.pixels[src_offset..src_offset + copy_len]);

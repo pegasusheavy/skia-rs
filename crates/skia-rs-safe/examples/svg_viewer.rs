@@ -92,18 +92,14 @@ fn main() {
             println!("SVG parsed successfully!");
 
             let view_box = dom.get_view_box();
-            println!(
-                "  ViewBox: {} x {}",
-                view_box.width(),
-                view_box.height()
-            );
+            println!("  ViewBox: {} x {}", view_box.width(), view_box.height());
 
             // Create output surface
             let width = 800;
             let height = 600;
 
-            let mut surface = Surface::new_raster_n32_premul(width, height)
-                .expect("Failed to create surface");
+            let mut surface =
+                Surface::new_raster_n32_premul(width, height).expect("Failed to create surface");
 
             println!("\nCreated {}x{} surface", width, height);
 
@@ -132,7 +128,9 @@ fn main() {
                 skia_rs_codec::Image::from_raster_data(&img_info, pixels, row_bytes)
             {
                 let encoder = PngEncoder::new();
-                encoder.encode(&image, writer).expect("Failed to encode PNG");
+                encoder
+                    .encode(&image, writer)
+                    .expect("Failed to encode PNG");
                 println!("\nSaved output to: {}", output_path);
             } else {
                 eprintln!("Failed to create image from surface pixels");

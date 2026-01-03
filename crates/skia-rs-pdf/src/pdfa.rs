@@ -279,7 +279,9 @@ impl XmpMetadata {
         xmp.push('\n');
 
         // Dublin Core metadata
-        xmp.push_str(r#"    <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/">"#);
+        xmp.push_str(
+            r#"    <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/">"#,
+        );
         xmp.push('\n');
 
         if let Some(ref title) = self.title {
@@ -310,7 +312,9 @@ impl XmpMetadata {
         xmp.push('\n');
 
         // XMP Basic metadata
-        xmp.push_str(r#"    <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/">"#);
+        xmp.push_str(
+            r#"    <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/">"#,
+        );
         xmp.push('\n');
 
         if let Some(ref creator) = self.creator {
@@ -341,7 +345,9 @@ impl XmpMetadata {
         xmp.push('\n');
 
         // PDF metadata
-        xmp.push_str(r#"    <rdf:Description rdf:about="" xmlns:pdf="http://ns.adobe.com/pdf/1.3/">"#);
+        xmp.push_str(
+            r#"    <rdf:Description rdf:about="" xmlns:pdf="http://ns.adobe.com/pdf/1.3/">"#,
+        );
         xmp.push('\n');
         xmp.push_str(r#"      <pdf:Producer>skia-rs 0.1.0</pdf:Producer>"#);
         xmp.push('\n');
@@ -643,10 +649,7 @@ impl PdfAValidator {
         if !self.level.allows_embedded_files() && !doc.embedded_files.is_empty() {
             self.errors.push(PdfAError {
                 code: PdfAErrorCode::EmbeddedFilesNotAllowed,
-                message: format!(
-                    "Embedded files not allowed in PDF/A-{}",
-                    self.level.part()
-                ),
+                message: format!("Embedded files not allowed in PDF/A-{}", self.level.part()),
                 location: None,
             });
         }
@@ -657,10 +660,7 @@ impl PdfAValidator {
                 if file.relationship.is_none() {
                     self.errors.push(PdfAError {
                         code: PdfAErrorCode::MissingFileRelationship,
-                        message: format!(
-                            "Embedded file '{}' missing AFRelationship",
-                            file.name
-                        ),
+                        message: format!("Embedded file '{}' missing AFRelationship", file.name),
                         location: Some(format!("File: {}", file.name)),
                     });
                 }
@@ -896,7 +896,11 @@ mod tests {
         assert!(result.is_err());
 
         let errors = result.unwrap_err();
-        assert!(errors.iter().any(|e| e.code == PdfAErrorCode::MissingXmpMetadata));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.code == PdfAErrorCode::MissingXmpMetadata)
+        );
     }
 
     #[test]
@@ -919,7 +923,11 @@ mod tests {
 
         assert!(result.is_err());
         let errors = result.unwrap_err();
-        assert!(errors.iter().any(|e| e.code == PdfAErrorCode::FontNotEmbedded));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.code == PdfAErrorCode::FontNotEmbedded)
+        );
     }
 
     #[test]
@@ -934,7 +942,11 @@ mod tests {
 
         assert!(result.is_err());
         let errors = result.unwrap_err();
-        assert!(errors.iter().any(|e| e.code == PdfAErrorCode::TransparencyNotAllowed));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.code == PdfAErrorCode::TransparencyNotAllowed)
+        );
     }
 
     #[test]
@@ -948,6 +960,12 @@ mod tests {
         let result = validator.validate(&doc);
 
         // Should pass - transparency allowed in PDF/A-2
-        assert!(result.is_ok() || !result.unwrap_err().iter().any(|e| e.code == PdfAErrorCode::TransparencyNotAllowed));
+        assert!(
+            result.is_ok()
+                || !result
+                    .unwrap_err()
+                    .iter()
+                    .any(|e| e.code == PdfAErrorCode::TransparencyNotAllowed)
+        );
     }
 }

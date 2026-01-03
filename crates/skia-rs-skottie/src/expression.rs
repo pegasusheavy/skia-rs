@@ -198,8 +198,20 @@ impl ExpressionEvaluator {
                         " + " => a + b,
                         " - " => a - b,
                         " * " => a * b,
-                        " / " => if b != 0.0 { a / b } else { 0.0 },
-                        " % " => if b != 0.0 { a % b } else { 0.0 },
+                        " / " => {
+                            if b != 0.0 {
+                                a / b
+                            } else {
+                                0.0
+                            }
+                        }
+                        " % " => {
+                            if b != 0.0 {
+                                a % b
+                            } else {
+                                0.0
+                            }
+                        }
                         _ => return None,
                     };
                     return Some(Value::Number(result));
@@ -293,11 +305,21 @@ impl ExpressionEvaluator {
             // Lottie-specific functions
             "linear" => {
                 if args.len() >= 5 {
-                    let t = ExpressionEvaluator::new(args[0]).evaluate(ctx).as_number()?;
-                    let t_min = ExpressionEvaluator::new(args[1]).evaluate(ctx).as_number()?;
-                    let t_max = ExpressionEvaluator::new(args[2]).evaluate(ctx).as_number()?;
-                    let v_min = ExpressionEvaluator::new(args[3]).evaluate(ctx).as_number()?;
-                    let v_max = ExpressionEvaluator::new(args[4]).evaluate(ctx).as_number()?;
+                    let t = ExpressionEvaluator::new(args[0])
+                        .evaluate(ctx)
+                        .as_number()?;
+                    let t_min = ExpressionEvaluator::new(args[1])
+                        .evaluate(ctx)
+                        .as_number()?;
+                    let t_max = ExpressionEvaluator::new(args[2])
+                        .evaluate(ctx)
+                        .as_number()?;
+                    let v_min = ExpressionEvaluator::new(args[3])
+                        .evaluate(ctx)
+                        .as_number()?;
+                    let v_max = ExpressionEvaluator::new(args[4])
+                        .evaluate(ctx)
+                        .as_number()?;
 
                     let normalized = (t - t_min) / (t_max - t_min);
                     let clamped = normalized.clamp(0.0, 1.0);
@@ -308,11 +330,21 @@ impl ExpressionEvaluator {
             }
             "ease" | "easeIn" | "easeOut" | "easeInOut" => {
                 if args.len() >= 5 {
-                    let t = ExpressionEvaluator::new(args[0]).evaluate(ctx).as_number()?;
-                    let t_min = ExpressionEvaluator::new(args[1]).evaluate(ctx).as_number()?;
-                    let t_max = ExpressionEvaluator::new(args[2]).evaluate(ctx).as_number()?;
-                    let v_min = ExpressionEvaluator::new(args[3]).evaluate(ctx).as_number()?;
-                    let v_max = ExpressionEvaluator::new(args[4]).evaluate(ctx).as_number()?;
+                    let t = ExpressionEvaluator::new(args[0])
+                        .evaluate(ctx)
+                        .as_number()?;
+                    let t_min = ExpressionEvaluator::new(args[1])
+                        .evaluate(ctx)
+                        .as_number()?;
+                    let t_max = ExpressionEvaluator::new(args[2])
+                        .evaluate(ctx)
+                        .as_number()?;
+                    let v_min = ExpressionEvaluator::new(args[3])
+                        .evaluate(ctx)
+                        .as_number()?;
+                    let v_max = ExpressionEvaluator::new(args[4])
+                        .evaluate(ctx)
+                        .as_number()?;
 
                     let normalized = ((t - t_min) / (t_max - t_min)).clamp(0.0, 1.0);
                     let eased = match name {
@@ -334,9 +366,15 @@ impl ExpressionEvaluator {
             }
             "clamp" => {
                 if args.len() >= 3 {
-                    let value = ExpressionEvaluator::new(args[0]).evaluate(ctx).as_number()?;
-                    let min = ExpressionEvaluator::new(args[1]).evaluate(ctx).as_number()?;
-                    let max = ExpressionEvaluator::new(args[2]).evaluate(ctx).as_number()?;
+                    let value = ExpressionEvaluator::new(args[0])
+                        .evaluate(ctx)
+                        .as_number()?;
+                    let min = ExpressionEvaluator::new(args[1])
+                        .evaluate(ctx)
+                        .as_number()?;
+                    let max = ExpressionEvaluator::new(args[2])
+                        .evaluate(ctx)
+                        .as_number()?;
                     Some(Value::Number(value.clamp(min, max)))
                 } else {
                     None
@@ -345,7 +383,10 @@ impl ExpressionEvaluator {
             "random" => {
                 // Simple pseudo-random based on time
                 let seed = if !args.is_empty() {
-                    ExpressionEvaluator::new(args[0]).evaluate(ctx).as_number().unwrap_or(0.0)
+                    ExpressionEvaluator::new(args[0])
+                        .evaluate(ctx)
+                        .as_number()
+                        .unwrap_or(0.0)
                 } else {
                     ctx.time
                 };
@@ -353,8 +394,12 @@ impl ExpressionEvaluator {
             }
             "wiggle" => {
                 if args.len() >= 2 {
-                    let freq = ExpressionEvaluator::new(args[0]).evaluate(ctx).as_number()?;
-                    let amp = ExpressionEvaluator::new(args[1]).evaluate(ctx).as_number()?;
+                    let freq = ExpressionEvaluator::new(args[0])
+                        .evaluate(ctx)
+                        .as_number()?;
+                    let amp = ExpressionEvaluator::new(args[1])
+                        .evaluate(ctx)
+                        .as_number()?;
 
                     // Simple wiggle approximation
                     let t = ctx.time * freq;

@@ -200,7 +200,12 @@ pub struct ScissorRect {
 impl ScissorRect {
     /// Create a new scissor rect.
     pub fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     /// Create from a rect (clamping to u32 bounds).
@@ -654,11 +659,21 @@ impl<'a> RenderPassEncoder<'a> {
 
     /// Set scissor rect.
     pub fn set_scissor_rect(&mut self, x: u32, y: u32, width: u32, height: u32) {
-        self.encoder.buffer.set_scissor(ScissorRect::new(x, y, width, height));
+        self.encoder
+            .buffer
+            .set_scissor(ScissorRect::new(x, y, width, height));
     }
 
     /// Set viewport.
-    pub fn set_viewport(&mut self, x: f32, y: f32, width: f32, height: f32, min_depth: f32, max_depth: f32) {
+    pub fn set_viewport(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        min_depth: f32,
+        max_depth: f32,
+    ) {
         self.encoder.buffer.set_viewport(Viewport {
             x,
             y,
@@ -680,7 +695,13 @@ impl<'a> RenderPassEncoder<'a> {
     }
 
     /// Draw primitives.
-    pub fn draw(&mut self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
+    pub fn draw(
+        &mut self,
+        vertex_count: u32,
+        instance_count: u32,
+        first_vertex: u32,
+        first_instance: u32,
+    ) {
         self.encoder.buffer.draw_with_offsets(
             vertex_count,
             instance_count,
@@ -783,7 +804,8 @@ mod tests {
         let mut encoder = CommandEncoder::new();
 
         {
-            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor::color_clear(0.0, 0.0, 0.0, 1.0));
+            let mut pass =
+                encoder.begin_render_pass(&RenderPassDescriptor::color_clear(0.0, 0.0, 0.0, 1.0));
             pass.set_pipeline(1);
             pass.draw(6, 1, 0, 0);
         }

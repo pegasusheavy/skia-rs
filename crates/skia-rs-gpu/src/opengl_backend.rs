@@ -24,33 +24,85 @@ pub struct OpenGLVersion {
 
 impl OpenGLVersion {
     /// OpenGL 3.3.
-    pub const GL_3_3: Self = Self { major: 3, minor: 3, is_es: false };
+    pub const GL_3_3: Self = Self {
+        major: 3,
+        minor: 3,
+        is_es: false,
+    };
     /// OpenGL 4.0.
-    pub const GL_4_0: Self = Self { major: 4, minor: 0, is_es: false };
+    pub const GL_4_0: Self = Self {
+        major: 4,
+        minor: 0,
+        is_es: false,
+    };
     /// OpenGL 4.1.
-    pub const GL_4_1: Self = Self { major: 4, minor: 1, is_es: false };
+    pub const GL_4_1: Self = Self {
+        major: 4,
+        minor: 1,
+        is_es: false,
+    };
     /// OpenGL 4.2.
-    pub const GL_4_2: Self = Self { major: 4, minor: 2, is_es: false };
+    pub const GL_4_2: Self = Self {
+        major: 4,
+        minor: 2,
+        is_es: false,
+    };
     /// OpenGL 4.3.
-    pub const GL_4_3: Self = Self { major: 4, minor: 3, is_es: false };
+    pub const GL_4_3: Self = Self {
+        major: 4,
+        minor: 3,
+        is_es: false,
+    };
     /// OpenGL 4.4.
-    pub const GL_4_4: Self = Self { major: 4, minor: 4, is_es: false };
+    pub const GL_4_4: Self = Self {
+        major: 4,
+        minor: 4,
+        is_es: false,
+    };
     /// OpenGL 4.5.
-    pub const GL_4_5: Self = Self { major: 4, minor: 5, is_es: false };
+    pub const GL_4_5: Self = Self {
+        major: 4,
+        minor: 5,
+        is_es: false,
+    };
     /// OpenGL 4.6.
-    pub const GL_4_6: Self = Self { major: 4, minor: 6, is_es: false };
+    pub const GL_4_6: Self = Self {
+        major: 4,
+        minor: 6,
+        is_es: false,
+    };
     /// OpenGL ES 2.0.
-    pub const GLES_2_0: Self = Self { major: 2, minor: 0, is_es: true };
+    pub const GLES_2_0: Self = Self {
+        major: 2,
+        minor: 0,
+        is_es: true,
+    };
     /// OpenGL ES 3.0.
-    pub const GLES_3_0: Self = Self { major: 3, minor: 0, is_es: true };
+    pub const GLES_3_0: Self = Self {
+        major: 3,
+        minor: 0,
+        is_es: true,
+    };
     /// OpenGL ES 3.1.
-    pub const GLES_3_1: Self = Self { major: 3, minor: 1, is_es: true };
+    pub const GLES_3_1: Self = Self {
+        major: 3,
+        minor: 1,
+        is_es: true,
+    };
     /// OpenGL ES 3.2.
-    pub const GLES_3_2: Self = Self { major: 3, minor: 2, is_es: true };
+    pub const GLES_3_2: Self = Self {
+        major: 3,
+        minor: 2,
+        is_es: true,
+    };
 
     /// Create a new version.
     pub const fn new(major: u32, minor: u32, is_es: bool) -> Self {
-        Self { major, minor, is_es }
+        Self {
+            major,
+            minor,
+            is_es,
+        }
     }
 
     /// Check if version meets minimum requirement.
@@ -661,7 +713,11 @@ impl OpenGLContext {
     }
 
     /// Query OpenGL capabilities.
-    unsafe fn query_caps(gl: &glow::Context, version: OpenGLVersion, glsl_version: Option<u32>) -> OpenGLCaps {
+    unsafe fn query_caps(
+        gl: &glow::Context,
+        version: OpenGLVersion,
+        glsl_version: Option<u32>,
+    ) -> OpenGLCaps {
         // SAFETY: gl is valid per function contract
         unsafe {
             let get_int = |pname| gl.get_parameter_i32(pname) as u32;
@@ -670,139 +726,139 @@ impl OpenGLContext {
             let max_texture_size = get_int(glow::MAX_TEXTURE_SIZE);
             let max_samples = get_int(glow::MAX_SAMPLES);
 
-        // Check extension support
-        let extensions = Self::get_extensions(gl);
-        let has_ext = |name: &str| extensions.iter().any(|e| e == name);
+            // Check extension support
+            let extensions = Self::get_extensions(gl);
+            let has_ext = |name: &str| extensions.iter().any(|e| e == name);
 
-        let compute_shaders = version.meets(&OpenGLVersion::GL_4_3)
-            || version.meets(&OpenGLVersion::GLES_3_1)
-            || has_ext("GL_ARB_compute_shader");
+            let compute_shaders = version.meets(&OpenGLVersion::GL_4_3)
+                || version.meets(&OpenGLVersion::GLES_3_1)
+                || has_ext("GL_ARB_compute_shader");
 
-        let geometry_shaders = version.meets(&OpenGLVersion::GL_3_3)
-            || has_ext("GL_ARB_geometry_shader4")
-            || has_ext("GL_EXT_geometry_shader");
+            let geometry_shaders = version.meets(&OpenGLVersion::GL_3_3)
+                || has_ext("GL_ARB_geometry_shader4")
+                || has_ext("GL_EXT_geometry_shader");
 
-        let tessellation_shaders = version.meets(&OpenGLVersion::GL_4_0)
-            || has_ext("GL_ARB_tessellation_shader");
+            let tessellation_shaders =
+                version.meets(&OpenGLVersion::GL_4_0) || has_ext("GL_ARB_tessellation_shader");
 
-        let shader_storage_buffers = version.meets(&OpenGLVersion::GL_4_3)
-            || version.meets(&OpenGLVersion::GLES_3_1)
-            || has_ext("GL_ARB_shader_storage_buffer_object");
+            let shader_storage_buffers = version.meets(&OpenGLVersion::GL_4_3)
+                || version.meets(&OpenGLVersion::GLES_3_1)
+                || has_ext("GL_ARB_shader_storage_buffer_object");
 
-        let shader_image_load_store = version.meets(&OpenGLVersion::GL_4_2)
-            || version.meets(&OpenGLVersion::GLES_3_1)
-            || has_ext("GL_ARB_shader_image_load_store");
+            let shader_image_load_store = version.meets(&OpenGLVersion::GL_4_2)
+                || version.meets(&OpenGLVersion::GLES_3_1)
+                || has_ext("GL_ARB_shader_image_load_store");
 
-        let multi_draw_indirect = version.meets(&OpenGLVersion::GL_4_3)
-            || has_ext("GL_ARB_multi_draw_indirect");
+            let multi_draw_indirect =
+                version.meets(&OpenGLVersion::GL_4_3) || has_ext("GL_ARB_multi_draw_indirect");
 
-        let buffer_storage = version.meets(&OpenGLVersion::GL_4_4)
-            || has_ext("GL_ARB_buffer_storage");
+            let buffer_storage =
+                version.meets(&OpenGLVersion::GL_4_4) || has_ext("GL_ARB_buffer_storage");
 
-        let texture_storage = version.meets(&OpenGLVersion::GL_4_2)
-            || version.meets(&OpenGLVersion::GLES_3_0)
-            || has_ext("GL_ARB_texture_storage");
+            let texture_storage = version.meets(&OpenGLVersion::GL_4_2)
+                || version.meets(&OpenGLVersion::GLES_3_0)
+                || has_ext("GL_ARB_texture_storage");
 
-        let direct_state_access = version.meets(&OpenGLVersion::GL_4_5)
-            || has_ext("GL_ARB_direct_state_access");
+            let direct_state_access =
+                version.meets(&OpenGLVersion::GL_4_5) || has_ext("GL_ARB_direct_state_access");
 
-        let debug_output = version.meets(&OpenGLVersion::GL_4_3)
-            || has_ext("GL_KHR_debug")
-            || has_ext("GL_ARB_debug_output");
+            let debug_output = version.meets(&OpenGLVersion::GL_4_3)
+                || has_ext("GL_KHR_debug")
+                || has_ext("GL_ARB_debug_output");
 
-        let clip_control = version.meets(&OpenGLVersion::GL_4_5)
-            || has_ext("GL_ARB_clip_control");
+            let clip_control =
+                version.meets(&OpenGLVersion::GL_4_5) || has_ext("GL_ARB_clip_control");
 
-        let seamless_cubemap = version.meets(&OpenGLVersion::GL_3_3)
-            || has_ext("GL_ARB_seamless_cube_map");
+            let seamless_cubemap =
+                version.meets(&OpenGLVersion::GL_3_3) || has_ext("GL_ARB_seamless_cube_map");
 
-        let texture_filter_anisotropic = has_ext("GL_EXT_texture_filter_anisotropic")
-            || has_ext("GL_ARB_texture_filter_anisotropic");
+            let texture_filter_anisotropic = has_ext("GL_EXT_texture_filter_anisotropic")
+                || has_ext("GL_ARB_texture_filter_anisotropic");
 
-        let max_anisotropy = if texture_filter_anisotropic {
-            get_float(0x84FF) // GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT
-        } else {
-            0.0
-        };
-
-        let instanced_arrays = version.meets(&OpenGLVersion::GL_3_3)
-            || version.meets(&OpenGLVersion::GLES_3_0)
-            || has_ext("GL_ARB_instanced_arrays");
-
-        let vertex_array_objects = version.meets(&OpenGLVersion::GL_3_3)
-            || version.meets(&OpenGLVersion::GLES_3_0)
-            || has_ext("GL_ARB_vertex_array_object");
-
-        let framebuffer_objects = version.meets(&OpenGLVersion::GL_3_3)
-            || version.meets(&OpenGLVersion::GLES_2_0)
-            || has_ext("GL_ARB_framebuffer_object");
-
-        let srgb_framebuffer = version.meets(&OpenGLVersion::GL_3_3)
-            || has_ext("GL_ARB_framebuffer_sRGB")
-            || has_ext("GL_EXT_sRGB");
-
-        let max_viewport_dims = {
-            let mut dims = [0i32; 2];
-            gl.get_parameter_i32_slice(glow::MAX_VIEWPORT_DIMS, &mut dims);
-            [dims[0] as u32, dims[1] as u32]
-        };
-
-        OpenGLCaps {
-            base: GpuCaps {
-                max_texture_size,
-                max_render_target_size: get_int(glow::MAX_RENDERBUFFER_SIZE),
-                msaa_support: max_samples > 1,
-                max_msaa_samples: max_samples,
-                compute_support: compute_shaders,
-                instancing_support: instanced_arrays,
-            },
-            version: Some(version),
-            glsl_version,
-            max_texture_units: get_int(glow::MAX_TEXTURE_IMAGE_UNITS),
-            max_combined_texture_image_units: get_int(glow::MAX_COMBINED_TEXTURE_IMAGE_UNITS),
-            max_vertex_attribs: get_int(glow::MAX_VERTEX_ATTRIBS),
-            max_uniform_buffer_bindings: if version.meets(&OpenGLVersion::GL_3_3) {
-                get_int(glow::MAX_UNIFORM_BUFFER_BINDINGS)
+            let max_anisotropy = if texture_filter_anisotropic {
+                get_float(0x84FF) // GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT
             } else {
-                0
-            },
-            max_uniform_block_size: if version.meets(&OpenGLVersion::GL_3_3) {
-                get_int(glow::MAX_UNIFORM_BLOCK_SIZE)
-            } else {
-                0
-            },
-            max_vertex_uniform_components: get_int(glow::MAX_VERTEX_UNIFORM_COMPONENTS),
-            max_fragment_uniform_components: get_int(glow::MAX_FRAGMENT_UNIFORM_COMPONENTS),
-            max_varying_components: if version.meets(&OpenGLVersion::GL_3_3) {
-                get_int(glow::MAX_VARYING_COMPONENTS)
-            } else {
-                0
-            },
-            max_color_attachments: get_int(glow::MAX_COLOR_ATTACHMENTS),
-            max_draw_buffers: get_int(glow::MAX_DRAW_BUFFERS),
-            max_samples,
-            max_renderbuffer_size: get_int(glow::MAX_RENDERBUFFER_SIZE),
-            max_viewport_dims,
-            max_texture_lod_bias: get_float(glow::MAX_TEXTURE_LOD_BIAS),
-            max_anisotropy,
-            compute_shaders,
-            geometry_shaders,
-            tessellation_shaders,
-            shader_storage_buffers,
-            shader_image_load_store,
-            multi_draw_indirect,
-            buffer_storage,
-            texture_storage,
-            direct_state_access,
-            debug_output,
-            clip_control,
-            seamless_cubemap,
-            texture_filter_anisotropic,
-            instanced_arrays,
-            vertex_array_objects,
-            framebuffer_objects,
-            srgb_framebuffer,
-        }
+                0.0
+            };
+
+            let instanced_arrays = version.meets(&OpenGLVersion::GL_3_3)
+                || version.meets(&OpenGLVersion::GLES_3_0)
+                || has_ext("GL_ARB_instanced_arrays");
+
+            let vertex_array_objects = version.meets(&OpenGLVersion::GL_3_3)
+                || version.meets(&OpenGLVersion::GLES_3_0)
+                || has_ext("GL_ARB_vertex_array_object");
+
+            let framebuffer_objects = version.meets(&OpenGLVersion::GL_3_3)
+                || version.meets(&OpenGLVersion::GLES_2_0)
+                || has_ext("GL_ARB_framebuffer_object");
+
+            let srgb_framebuffer = version.meets(&OpenGLVersion::GL_3_3)
+                || has_ext("GL_ARB_framebuffer_sRGB")
+                || has_ext("GL_EXT_sRGB");
+
+            let max_viewport_dims = {
+                let mut dims = [0i32; 2];
+                gl.get_parameter_i32_slice(glow::MAX_VIEWPORT_DIMS, &mut dims);
+                [dims[0] as u32, dims[1] as u32]
+            };
+
+            OpenGLCaps {
+                base: GpuCaps {
+                    max_texture_size,
+                    max_render_target_size: get_int(glow::MAX_RENDERBUFFER_SIZE),
+                    msaa_support: max_samples > 1,
+                    max_msaa_samples: max_samples,
+                    compute_support: compute_shaders,
+                    instancing_support: instanced_arrays,
+                },
+                version: Some(version),
+                glsl_version,
+                max_texture_units: get_int(glow::MAX_TEXTURE_IMAGE_UNITS),
+                max_combined_texture_image_units: get_int(glow::MAX_COMBINED_TEXTURE_IMAGE_UNITS),
+                max_vertex_attribs: get_int(glow::MAX_VERTEX_ATTRIBS),
+                max_uniform_buffer_bindings: if version.meets(&OpenGLVersion::GL_3_3) {
+                    get_int(glow::MAX_UNIFORM_BUFFER_BINDINGS)
+                } else {
+                    0
+                },
+                max_uniform_block_size: if version.meets(&OpenGLVersion::GL_3_3) {
+                    get_int(glow::MAX_UNIFORM_BLOCK_SIZE)
+                } else {
+                    0
+                },
+                max_vertex_uniform_components: get_int(glow::MAX_VERTEX_UNIFORM_COMPONENTS),
+                max_fragment_uniform_components: get_int(glow::MAX_FRAGMENT_UNIFORM_COMPONENTS),
+                max_varying_components: if version.meets(&OpenGLVersion::GL_3_3) {
+                    get_int(glow::MAX_VARYING_COMPONENTS)
+                } else {
+                    0
+                },
+                max_color_attachments: get_int(glow::MAX_COLOR_ATTACHMENTS),
+                max_draw_buffers: get_int(glow::MAX_DRAW_BUFFERS),
+                max_samples,
+                max_renderbuffer_size: get_int(glow::MAX_RENDERBUFFER_SIZE),
+                max_viewport_dims,
+                max_texture_lod_bias: get_float(glow::MAX_TEXTURE_LOD_BIAS),
+                max_anisotropy,
+                compute_shaders,
+                geometry_shaders,
+                tessellation_shaders,
+                shader_storage_buffers,
+                shader_image_load_store,
+                multi_draw_indirect,
+                buffer_storage,
+                texture_storage,
+                direct_state_access,
+                debug_output,
+                clip_control,
+                seamless_cubemap,
+                texture_filter_anisotropic,
+                instanced_arrays,
+                vertex_array_objects,
+                framebuffer_objects,
+                srgb_framebuffer,
+            }
         }
     }
 
@@ -1026,7 +1082,8 @@ impl OpenGLContext {
     /// Draw arrays instanced.
     pub fn draw_arrays_instanced(&self, mode: u32, first: i32, count: i32, instance_count: i32) {
         unsafe {
-            self.gl.draw_arrays_instanced(mode, first, count, instance_count);
+            self.gl
+                .draw_arrays_instanced(mode, first, count, instance_count);
         }
     }
 
@@ -1040,7 +1097,8 @@ impl OpenGLContext {
         instance_count: i32,
     ) {
         unsafe {
-            self.gl.draw_elements_instanced(mode, count, element_type, offset, instance_count);
+            self.gl
+                .draw_elements_instanced(mode, count, element_type, offset, instance_count);
         }
     }
 

@@ -108,12 +108,7 @@ impl SdfRenderParams {
 }
 
 /// Generate a signed distance field from a binary mask.
-pub fn generate_sdf_from_mask(
-    mask: &[u8],
-    width: u32,
-    height: u32,
-    spread: f32,
-) -> Vec<f32> {
+pub fn generate_sdf_from_mask(mask: &[u8], width: u32, height: u32, spread: f32) -> Vec<f32> {
     let mut sdf = vec![0.0f32; (width * height) as usize];
 
     // Two-pass algorithm: compute distance transform
@@ -438,7 +433,7 @@ mod tests {
         let texture = sdf_to_texture(&sdf, 8.0);
 
         assert_eq!(texture.len(), 3);
-        assert_eq!(texture[0], 0);   // -spread -> 0
+        assert_eq!(texture[0], 0); // -spread -> 0
         assert_eq!(texture[1], 128); // 0 -> 0.5 -> 128
         assert_eq!(texture[2], 255); // +spread -> 255
     }
@@ -480,7 +475,12 @@ mod tests {
             spread: 8.0,
         };
 
-        batch.add_glyph(&metrics, Point::new(100.0, 100.0), 2.0, [1.0, 1.0, 1.0, 1.0]);
+        batch.add_glyph(
+            &metrics,
+            Point::new(100.0, 100.0),
+            2.0,
+            [1.0, 1.0, 1.0, 1.0],
+        );
 
         assert_eq!(batch.len(), 1);
         assert_eq!(batch.instances[0].size, [32.0, 40.0]); // Scaled by 2

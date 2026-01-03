@@ -85,7 +85,10 @@ impl ComparisonReport {
     /// Create a new report.
     pub fn new() -> Self {
         let mut report = Self::default();
-        report.metadata.insert("skia_rs_version".to_string(), env!("CARGO_PKG_VERSION").to_string());
+        report.metadata.insert(
+            "skia_rs_version".to_string(),
+            env!("CARGO_PKG_VERSION").to_string(),
+        );
         report
     }
 
@@ -121,7 +124,10 @@ impl ComparisonReport {
 
         for result in &self.results {
             let skia_rs = format_duration(result.skia_rs_time);
-            let skia = result.skia_time.map(format_duration).unwrap_or_else(|| "-".to_string());
+            let skia = result
+                .skia_time
+                .map(format_duration)
+                .unwrap_or_else(|| "-".to_string());
             let ratio = result.format_ratio();
 
             output.push_str(&format!(
@@ -136,29 +142,26 @@ impl ComparisonReport {
         let with_comparison: Vec<_> = self.results.iter().filter(|r| r.ratio.is_some()).collect();
 
         if !with_comparison.is_empty() {
-            let faster_count = with_comparison.iter().filter(|r| r.ratio.unwrap() < 1.0).count();
-            let slower_count = with_comparison.iter().filter(|r| r.ratio.unwrap() > 1.0).count();
+            let faster_count = with_comparison
+                .iter()
+                .filter(|r| r.ratio.unwrap() < 1.0)
+                .count();
+            let slower_count = with_comparison
+                .iter()
+                .filter(|r| r.ratio.unwrap() > 1.0)
+                .count();
             let same_count = with_comparison.len() - faster_count - slower_count;
 
-            let avg_ratio: f64 =
-                with_comparison.iter().map(|r| r.ratio.unwrap()).sum::<f64>() / with_comparison.len() as f64;
+            let avg_ratio: f64 = with_comparison
+                .iter()
+                .map(|r| r.ratio.unwrap())
+                .sum::<f64>()
+                / with_comparison.len() as f64;
 
-            output.push_str(&format!(
-                "- **Faster**: {} operations\n",
-                faster_count
-            ));
-            output.push_str(&format!(
-                "- **Slower**: {} operations\n",
-                slower_count
-            ));
-            output.push_str(&format!(
-                "- **Same**: {} operations\n",
-                same_count
-            ));
-            output.push_str(&format!(
-                "- **Average ratio**: {:.2}x\n",
-                avg_ratio
-            ));
+            output.push_str(&format!("- **Faster**: {} operations\n", faster_count));
+            output.push_str(&format!("- **Slower**: {} operations\n", slower_count));
+            output.push_str(&format!("- **Same**: {} operations\n", same_count));
+            output.push_str(&format!("- **Average ratio**: {:.2}x\n", avg_ratio));
 
             if avg_ratio < 1.0 {
                 output.push_str(&format!(
@@ -195,7 +198,9 @@ impl ComparisonReport {
 
         // Metadata
         json.push_str("  \"metadata\": {\n");
-        let meta_entries: Vec<_> = self.metadata.iter()
+        let meta_entries: Vec<_> = self
+            .metadata
+            .iter()
             .map(|(k, v)| format!("    \"{}\": \"{}\"", k, v))
             .collect();
         json.push_str(&meta_entries.join(",\n"));

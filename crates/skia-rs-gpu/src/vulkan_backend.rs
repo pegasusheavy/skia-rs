@@ -28,9 +28,7 @@ pub const REQUIRED_INSTANCE_EXTENSIONS: &[&str] = &[
 ];
 
 /// Vulkan device extensions required by skia-rs.
-pub const REQUIRED_DEVICE_EXTENSIONS: &[&str] = &[
-    "VK_KHR_swapchain",
-];
+pub const REQUIRED_DEVICE_EXTENSIONS: &[&str] = &["VK_KHR_swapchain"];
 
 /// Optional Vulkan device extensions for advanced features.
 pub const OPTIONAL_DEVICE_EXTENSIONS: &[&str] = &[
@@ -60,17 +58,37 @@ pub struct VulkanVersion {
 
 impl VulkanVersion {
     /// Vulkan 1.0.
-    pub const V1_0: Self = Self { major: 1, minor: 0, patch: 0 };
+    pub const V1_0: Self = Self {
+        major: 1,
+        minor: 0,
+        patch: 0,
+    };
     /// Vulkan 1.1.
-    pub const V1_1: Self = Self { major: 1, minor: 1, patch: 0 };
+    pub const V1_1: Self = Self {
+        major: 1,
+        minor: 1,
+        patch: 0,
+    };
     /// Vulkan 1.2.
-    pub const V1_2: Self = Self { major: 1, minor: 2, patch: 0 };
+    pub const V1_2: Self = Self {
+        major: 1,
+        minor: 2,
+        patch: 0,
+    };
     /// Vulkan 1.3.
-    pub const V1_3: Self = Self { major: 1, minor: 3, patch: 0 };
+    pub const V1_3: Self = Self {
+        major: 1,
+        minor: 3,
+        patch: 0,
+    };
 
     /// Create a new version.
     pub const fn new(major: u32, minor: u32, patch: u32) -> Self {
-        Self { major, minor, patch }
+        Self {
+            major,
+            minor,
+            patch,
+        }
     }
 
     /// Convert to Vulkan API version.
@@ -412,9 +430,9 @@ impl VulkanContext {
                 .enabled_extension_names(&extension_ptrs)
                 .enabled_layer_names(&layer_ptrs);
 
-            let instance = entry
-                .create_instance(&create_info, None)
-                .map_err(|e| GpuError::DeviceCreation(format!("Failed to create Vulkan instance: {:?}", e)))?;
+            let instance = entry.create_instance(&create_info, None).map_err(|e| {
+                GpuError::DeviceCreation(format!("Failed to create Vulkan instance: {:?}", e))
+            })?;
 
             // Set up debug messenger
             let (debug_utils, debug_messenger) = if config.enable_validation {
@@ -442,9 +460,9 @@ impl VulkanContext {
             };
 
             // Select physical device
-            let physical_devices = instance
-                .enumerate_physical_devices()
-                .map_err(|e| GpuError::DeviceCreation(format!("Failed to enumerate devices: {:?}", e)))?;
+            let physical_devices = instance.enumerate_physical_devices().map_err(|e| {
+                GpuError::DeviceCreation(format!("Failed to enumerate devices: {:?}", e))
+            })?;
 
             if physical_devices.is_empty() {
                 return Err(GpuError::DeviceCreation("No Vulkan devices found".into()));
@@ -464,14 +482,16 @@ impl VulkanContext {
                 }
             }
 
-            let physical_device = best_device
-                .ok_or_else(|| GpuError::DeviceCreation("No suitable Vulkan device found".into()))?;
+            let physical_device = best_device.ok_or_else(|| {
+                GpuError::DeviceCreation("No suitable Vulkan device found".into())
+            })?;
 
             let device_props = instance.get_physical_device_properties(physical_device);
             let device_features = instance.get_physical_device_features(physical_device);
 
             // Find queue families
-            let queue_families = instance.get_physical_device_queue_family_properties(physical_device);
+            let queue_families =
+                instance.get_physical_device_queue_family_properties(physical_device);
 
             let mut graphics_family = None;
             let mut transfer_family = None;
@@ -541,7 +561,9 @@ impl VulkanContext {
 
             let device = instance
                 .create_device(physical_device, &device_create_info, None)
-                .map_err(|e| GpuError::DeviceCreation(format!("Failed to create device: {:?}", e)))?;
+                .map_err(|e| {
+                    GpuError::DeviceCreation(format!("Failed to create device: {:?}", e))
+                })?;
 
             // Get queues
             let graphics_queue = device.get_device_queue(graphics_queue_family, 0);
@@ -555,7 +577,9 @@ impl VulkanContext {
 
             let graphics_command_pool = device
                 .create_command_pool(&graphics_pool_info, None)
-                .map_err(|e| GpuError::ResourceCreation(format!("Failed to create command pool: {:?}", e)))?;
+                .map_err(|e| {
+                    GpuError::ResourceCreation(format!("Failed to create command pool: {:?}", e))
+                })?;
 
             let transfer_pool_info = vk::CommandPoolCreateInfo::default()
                 .queue_family_index(transfer_queue_family)
@@ -563,7 +587,9 @@ impl VulkanContext {
 
             let transfer_command_pool = device
                 .create_command_pool(&transfer_pool_info, None)
-                .map_err(|e| GpuError::ResourceCreation(format!("Failed to create command pool: {:?}", e)))?;
+                .map_err(|e| {
+                    GpuError::ResourceCreation(format!("Failed to create command pool: {:?}", e))
+                })?;
 
             // Build adapter info
             let device_name = CString::from_raw(device_props.device_name.as_ptr() as *mut i8)
@@ -596,9 +622,13 @@ impl VulkanContext {
             let caps = VulkanCaps {
                 base: GpuCaps {
                     max_texture_size: limits.max_image_dimension2_d,
-                    max_render_target_size: limits.max_framebuffer_width.min(limits.max_framebuffer_height),
+                    max_render_target_size: limits
+                        .max_framebuffer_width
+                        .min(limits.max_framebuffer_height),
                     msaa_support: true,
-                    max_msaa_samples: Self::get_max_sample_count(limits.framebuffer_color_sample_counts),
+                    max_msaa_samples: Self::get_max_sample_count(
+                        limits.framebuffer_color_sample_counts,
+                    ),
                     compute_support: true,
                     instancing_support: true,
                 },
@@ -606,10 +636,14 @@ impl VulkanContext {
                 max_push_constant_size: limits.max_push_constants_size,
                 max_bound_descriptor_sets: limits.max_bound_descriptor_sets,
                 max_per_stage_descriptor_samplers: limits.max_per_stage_descriptor_samplers,
-                max_per_stage_descriptor_uniform_buffers: limits.max_per_stage_descriptor_uniform_buffers,
-                max_per_stage_descriptor_storage_buffers: limits.max_per_stage_descriptor_storage_buffers,
-                max_per_stage_descriptor_sampled_images: limits.max_per_stage_descriptor_sampled_images,
-                max_per_stage_descriptor_storage_images: limits.max_per_stage_descriptor_storage_images,
+                max_per_stage_descriptor_uniform_buffers: limits
+                    .max_per_stage_descriptor_uniform_buffers,
+                max_per_stage_descriptor_storage_buffers: limits
+                    .max_per_stage_descriptor_storage_buffers,
+                max_per_stage_descriptor_sampled_images: limits
+                    .max_per_stage_descriptor_sampled_images,
+                max_per_stage_descriptor_storage_images: limits
+                    .max_per_stage_descriptor_storage_images,
                 max_per_stage_resources: limits.max_per_stage_resources,
                 max_descriptor_set_samplers: limits.max_descriptor_set_samplers,
                 max_descriptor_set_uniform_buffers: limits.max_descriptor_set_uniform_buffers,
@@ -684,7 +718,8 @@ impl VulkanContext {
 
         // Check for graphics queue
         // SAFETY: device is valid and instance is valid
-        let queue_families = unsafe { instance.get_physical_device_queue_family_properties(device) };
+        let queue_families =
+            unsafe { instance.get_physical_device_queue_family_properties(device) };
         let has_graphics = queue_families
             .iter()
             .any(|f| f.queue_flags.contains(vk::QueueFlags::GRAPHICS));
@@ -777,11 +812,14 @@ impl VulkanContext {
                 sampled: optimal.contains(vk::FormatFeatureFlags::SAMPLED_IMAGE),
                 storage: optimal.contains(vk::FormatFeatureFlags::STORAGE_IMAGE),
                 color_attachment: optimal.contains(vk::FormatFeatureFlags::COLOR_ATTACHMENT),
-                color_attachment_blend: optimal.contains(vk::FormatFeatureFlags::COLOR_ATTACHMENT_BLEND),
-                depth_stencil_attachment: optimal.contains(vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT),
+                color_attachment_blend: optimal
+                    .contains(vk::FormatFeatureFlags::COLOR_ATTACHMENT_BLEND),
+                depth_stencil_attachment: optimal
+                    .contains(vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT),
                 blit_src: optimal.contains(vk::FormatFeatureFlags::BLIT_SRC),
                 blit_dst: optimal.contains(vk::FormatFeatureFlags::BLIT_DST),
-                sampled_filter_linear: optimal.contains(vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR),
+                sampled_filter_linear: optimal
+                    .contains(vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR),
                 transfer_src: optimal.contains(vk::FormatFeatureFlags::TRANSFER_SRC),
                 transfer_dst: optimal.contains(vk::FormatFeatureFlags::TRANSFER_DST),
             }
@@ -834,7 +872,8 @@ impl Drop for VulkanContext {
 
             self.device.destroy_device(None);
 
-            if let (Some(debug_utils), Some(messenger)) = (&self.debug_utils, self.debug_messenger) {
+            if let (Some(debug_utils), Some(messenger)) = (&self.debug_utils, self.debug_messenger)
+            {
                 debug_utils.destroy_debug_utils_messenger(messenger, None);
             }
 

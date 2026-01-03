@@ -7,7 +7,6 @@
 //! - Type system for SkSL types
 //! - Compilation to target languages (GLSL, SPIR-V, MSL, WGSL)
 
-
 /// SkSL token types.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
@@ -207,7 +206,9 @@ impl<'a> Lexer<'a> {
         self.current_pos = pos;
 
         // Numbers
-        if ch.is_ascii_digit() || (ch == '.' && self.peek_next_char().map_or(false, |c| c.is_ascii_digit())) {
+        if ch.is_ascii_digit()
+            || (ch == '.' && self.peek_next_char().map_or(false, |c| c.is_ascii_digit()))
+        {
             return self.scan_number();
         }
 
@@ -385,7 +386,11 @@ impl<'a> Lexer<'a> {
             } else if (ch == 'e' || ch == 'E') && !has_exp {
                 has_exp = true;
                 self.chars.next();
-                if self.chars.peek().map_or(false, |&(_, c)| c == '+' || c == '-') {
+                if self
+                    .chars
+                    .peek()
+                    .map_or(false, |&(_, c)| c == '+' || c == '-')
+                {
                     self.chars.next();
                 }
             } else if ch == 'f' || ch == 'F' {
@@ -411,7 +416,11 @@ impl<'a> Lexer<'a> {
     fn scan_identifier(&mut self) -> Token {
         let start = self.current_pos;
 
-        while self.chars.peek().map_or(false, |&(_, c)| c.is_ascii_alphanumeric() || c == '_') {
+        while self
+            .chars
+            .peek()
+            .map_or(false, |&(_, c)| c.is_ascii_alphanumeric() || c == '_')
+        {
             self.chars.next();
         }
 
@@ -561,7 +570,10 @@ impl SkslType {
 
     /// Check if this is a scalar type.
     pub fn is_scalar(&self) -> bool {
-        matches!(self, SkslType::Bool | SkslType::Int | SkslType::Float | SkslType::Half)
+        matches!(
+            self,
+            SkslType::Bool | SkslType::Int | SkslType::Float | SkslType::Half
+        )
     }
 
     /// Check if this is a vector type.
@@ -959,7 +971,9 @@ impl<'a> Parser<'a> {
     fn advance(&mut self) -> Token {
         let current = std::mem::replace(
             &mut self.current,
-            self.peeked.take().unwrap_or_else(|| self.lexer.next_token()),
+            self.peeked
+                .take()
+                .unwrap_or_else(|| self.lexer.next_token()),
         );
         current
     }
@@ -1050,7 +1064,10 @@ impl<'a> Parser<'a> {
                 t => return Err(format!("Expected field name, got {:?}", t)),
             };
             self.expect(&Token::Semi)?;
-            fields.push(StructField { ty, name: field_name });
+            fields.push(StructField {
+                ty,
+                name: field_name,
+            });
         }
 
         self.expect(&Token::RBrace)?;
@@ -1081,7 +1098,11 @@ impl<'a> Parser<'a> {
 
         self.expect(&Token::Semi)?;
 
-        Ok(UniformDecl { ty, name, array_size })
+        Ok(UniformDecl {
+            ty,
+            name,
+            array_size,
+        })
     }
 
     fn parse_function(&mut self) -> Result<FnDecl, String> {
@@ -1644,7 +1665,10 @@ impl<'a> Parser<'a> {
                 self.expect(&Token::RParen)?;
                 Ok(Expr::Constructor { ty, args })
             }
-            _ => Err(format!("Unexpected token in expression: {:?}", self.current)),
+            _ => Err(format!(
+                "Unexpected token in expression: {:?}",
+                self.current
+            )),
         }
     }
 }

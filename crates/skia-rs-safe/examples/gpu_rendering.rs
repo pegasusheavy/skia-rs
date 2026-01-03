@@ -9,8 +9,8 @@
 //! Note: This requires a GPU. If no GPU is available, it will fail gracefully.
 
 use skia_rs_codec::{ImageEncoder, ImageInfo, PngEncoder};
-use skia_rs_core::{AlphaType, ColorType};
 use skia_rs_core::Color;
+use skia_rs_core::{AlphaType, ColorType};
 use std::fs::File;
 use std::io::BufWriter;
 
@@ -28,10 +28,7 @@ fn main() {
                 println!("GPU Context Created Successfully!");
                 println!("  Adapter: {}", context.adapter_info().name);
                 println!("  Backend: {:?}", context.backend_type());
-                println!(
-                    "  Device Type: {:?}",
-                    context.adapter_info().device_type
-                );
+                println!("  Device Type: {:?}", context.adapter_info().device_type);
 
                 let caps = context.capabilities();
                 println!("\nCapabilities:");
@@ -77,14 +74,12 @@ fn main() {
                             let g = pixels[1];
                             let b = pixels[2];
                             let a = pixels[3];
-                            println!(
-                                "First pixel: rgba({}, {}, {}, {})",
-                                r, g, b, a
-                            );
+                            println!("First pixel: rgba({}, {}, {}, {})", r, g, b, a);
 
                             // Save to file
                             let output_path = "gpu_rendering_output.png";
-                            let file = File::create(output_path).expect("Failed to create output file");
+                            let file =
+                                File::create(output_path).expect("Failed to create output file");
                             let ref mut writer = BufWriter::new(file);
 
                             let img_info = ImageInfo::new(
@@ -94,11 +89,13 @@ fn main() {
                                 AlphaType::Opaque,
                             );
 
-                            if let Some(image) =
-                                skia_rs_codec::Image::from_raster_data(&img_info, &pixels, row_bytes)
-                            {
+                            if let Some(image) = skia_rs_codec::Image::from_raster_data(
+                                &img_info, &pixels, row_bytes,
+                            ) {
                                 let encoder = PngEncoder::new();
-                                encoder.encode(&image, writer).expect("Failed to encode PNG");
+                                encoder
+                                    .encode(&image, writer)
+                                    .expect("Failed to encode PNG");
                                 println!("\nSaved output to: {}", output_path);
                             }
                         } else {
@@ -118,7 +115,9 @@ fn main() {
             Err(e) => {
                 eprintln!("Failed to create GPU context: {:?}", e);
                 eprintln!("This may be because no compatible GPU is available.");
-                eprintln!("The example will exit, but this is expected on systems without GPU support.");
+                eprintln!(
+                    "The example will exit, but this is expected on systems without GPU support."
+                );
             }
         }
     }

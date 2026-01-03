@@ -143,7 +143,11 @@ impl Transform {
 
     /// Get the scale at a specific frame (as factor, not percentage).
     pub fn scale_at(&self, frame: Scalar) -> [Scalar; 2] {
-        let scale = self.scale.value_at(frame).as_vec2().unwrap_or([100.0, 100.0]);
+        let scale = self
+            .scale
+            .value_at(frame)
+            .as_vec2()
+            .unwrap_or([100.0, 100.0]);
         [scale[0] / 100.0, scale[1] / 100.0]
     }
 
@@ -344,14 +348,18 @@ mod tests {
 
         // Add animated property
         let mut animated = Transform::new();
-        animated.position.add_keyframe(crate::keyframe::Keyframe::new(
-            0.0,
-            KeyframeValue::Vec2([0.0, 0.0]),
-        ));
-        animated.position.add_keyframe(crate::keyframe::Keyframe::new(
-            10.0,
-            KeyframeValue::Vec2([100.0, 100.0]),
-        ));
+        animated
+            .position
+            .add_keyframe(crate::keyframe::Keyframe::new(
+                0.0,
+                KeyframeValue::Vec2([0.0, 0.0]),
+            ));
+        animated
+            .position
+            .add_keyframe(crate::keyframe::Keyframe::new(
+                10.0,
+                KeyframeValue::Vec2([100.0, 100.0]),
+            ));
         assert!(animated.is_animated());
     }
 }

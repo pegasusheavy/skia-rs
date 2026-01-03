@@ -84,10 +84,22 @@ impl ClipMask {
         // Use supersampling for path coverage
         const SAMPLES: i32 = 4;
         let sample_offsets: [(f32, f32); 16] = [
-            (0.125, 0.125), (0.375, 0.125), (0.625, 0.125), (0.875, 0.125),
-            (0.125, 0.375), (0.375, 0.375), (0.625, 0.375), (0.875, 0.375),
-            (0.125, 0.625), (0.375, 0.625), (0.625, 0.625), (0.875, 0.625),
-            (0.125, 0.875), (0.375, 0.875), (0.625, 0.875), (0.875, 0.875),
+            (0.125, 0.125),
+            (0.375, 0.125),
+            (0.625, 0.125),
+            (0.875, 0.125),
+            (0.125, 0.375),
+            (0.375, 0.375),
+            (0.625, 0.375),
+            (0.875, 0.375),
+            (0.125, 0.625),
+            (0.375, 0.625),
+            (0.625, 0.625),
+            (0.875, 0.625),
+            (0.125, 0.875),
+            (0.375, 0.875),
+            (0.625, 0.875),
+            (0.875, 0.875),
         ];
 
         for y in 0..height {
@@ -184,8 +196,10 @@ impl ClipMask {
             for x in 0..self.width {
                 let dx = x + self.bounds.left;
                 let dy = y + self.bounds.top;
-                if dx < intersection.left || dx >= intersection.right
-                    || dy < intersection.top || dy >= intersection.bottom
+                if dx < intersection.left
+                    || dx >= intersection.right
+                    || dy < intersection.top
+                    || dy >= intersection.bottom
                 {
                     self.coverage[(y * self.width + x) as usize] = 0;
                 }
@@ -275,9 +289,7 @@ impl ClipState {
             ClipState::Rect(r) => r.contains(Point::new(x as f32, y as f32)),
             ClipState::Region(r) => r.contains(x, y),
             ClipState::Mask(m) => m.get_coverage_device(x, y) > 0,
-            ClipState::RegionAndMask(r, m) => {
-                r.contains(x, y) && m.get_coverage_device(x, y) > 0
-            }
+            ClipState::RegionAndMask(r, m) => r.contains(x, y) && m.get_coverage_device(x, y) > 0,
         }
     }
 
@@ -627,8 +639,8 @@ mod tests {
         stack.clip_region(&region);
 
         // L-shaped region
-        assert!(stack.contains(25, 25));  // Top-left
-        assert!(stack.contains(75, 75));  // Bottom-right
+        assert!(stack.contains(25, 25)); // Top-left
+        assert!(stack.contains(75, 75)); // Bottom-right
         assert!(!stack.contains(75, 25)); // Top-right (not in region)
         assert!(!stack.contains(25, 75)); // Bottom-left (not in region)
     }
