@@ -14,24 +14,67 @@ categories.workspace = true
 readme = "../../README.md"
 
 [features]
-default = ["codec", "svg"]
+default = ["std", "codec", "svg"]
+
+# Standard library support
+std = ["skia-rs-core/std", "skia-rs-path/std", "skia-rs-paint/std", "skia-rs-canvas/std"]
+
+# Serialization
+serde = ["skia-rs-core/serde", "skia-rs-path/serde", "skia-rs-paint/serde"]
+
+# Image codecs
 codec = ["dep:skia-rs-codec"]
+codec-png = ["codec", "skia-rs-codec?/png"]
+codec-jpeg = ["codec", "skia-rs-codec?/jpeg"]
+codec-webp = ["codec", "skia-rs-codec?/webp"]
+codec-gif = ["codec", "skia-rs-codec?/gif"]
+codec-avif = ["codec", "skia-rs-codec?/avif"]
+codec-raw = ["codec", "skia-rs-codec?/raw"]
+codec-all = ["codec-png", "codec-jpeg", "codec-webp", "codec-gif", "codec-avif", "codec-raw"]
+
+# SVG support
 svg = ["dep:skia-rs-svg"]
+
+# PDF generation
 pdf = ["dep:skia-rs-pdf"]
+
+# Lottie animation
+skottie = ["dep:skia-rs-skottie"]
+
+# GPU backends
 gpu = ["dep:skia-rs-gpu"]
 wgpu-backend = ["gpu", "skia-rs-gpu?/wgpu-backend"]
+vulkan = ["gpu", "skia-rs-gpu?/vulkan"]
+opengl = ["gpu", "skia-rs-gpu?/opengl"]
+metal = ["gpu", "skia-rs-gpu?/metal"]
+
+# Text rendering
+text = ["dep:skia-rs-text"]
+
+# All features (for testing/docs)
+full = ["std", "serde", "codec-all", "svg", "pdf", "skottie", "gpu", "text"]
 
 [dependencies]
 skia-rs-core = { workspace = true }
 skia-rs-path = { workspace = true }
 skia-rs-paint = { workspace = true }
 skia-rs-canvas = { workspace = true }
-skia-rs-text = { workspace = true }
+skia-rs-text = { workspace = true, optional = true }
 skia-rs-codec = { workspace = true, optional = true }
 skia-rs-svg = { workspace = true, optional = true }
 skia-rs-pdf = { workspace = true, optional = true }
 skia-rs-gpu = { workspace = true, optional = true }
+skia-rs-skottie = { workspace = true, optional = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window", "Document", "HtmlCanvasElement", "CanvasRenderingContext2d", "ImageData"] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

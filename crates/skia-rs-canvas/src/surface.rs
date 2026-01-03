@@ -2,9 +2,10 @@
 
 use crate::Canvas;
 use crate::raster::PixelBuffer;
+#[cfg(feature = "codec")]
 use skia_rs_codec::Image;
 use skia_rs_core::pixel::{ImageInfo, SurfaceProps};
-use skia_rs_core::{Color, IRect, Matrix, Point, Rect, Region, Scalar};
+use skia_rs_core::{AlphaType, ColorType, Color, IRect, Matrix, Point, Rect, Region, Scalar};
 use skia_rs_paint::{BlendMode, Paint};
 use skia_rs_path::Path;
 
@@ -96,6 +97,7 @@ impl Surface {
     /// Create a snapshot of the surface as an immutable image.
     ///
     /// The returned image shares pixel data with the surface when possible.
+    #[cfg(feature = "codec")]
     pub fn make_image_snapshot(&self) -> Option<Image> {
         let pixels = self.buffer.pixels.clone();
         let row_bytes = self.buffer.stride;
@@ -112,9 +114,8 @@ impl Surface {
     }
 
     /// Create a snapshot of a subset of the surface.
+    #[cfg(feature = "codec")]
     pub fn make_image_snapshot_subset(&self, subset: &IRect) -> Option<Image> {
-        use skia_rs_core::{AlphaType, ColorType};
-
         // Validate subset bounds
         if subset.left < 0
             || subset.top < 0
@@ -234,6 +235,7 @@ pub trait GpuSurface: Send + Sync {
     fn flush(&mut self);
 
     /// Create an image snapshot.
+    #[cfg(feature = "codec")]
     fn make_image_snapshot(&self) -> Option<Image>;
 }
 
@@ -530,6 +532,7 @@ impl<'a> RasterCanvas<'a> {
     }
 
     /// Draw an image at the specified position.
+    #[cfg(feature = "codec")]
     pub fn draw_image(&mut self, image: &Image, left: Scalar, top: Scalar, paint: Option<&Paint>) {
         let src_rect = IRect::new(0, 0, image.width(), image.height());
         let dst_rect =
@@ -538,6 +541,7 @@ impl<'a> RasterCanvas<'a> {
     }
 
     /// Draw an image with source and destination rectangles.
+    #[cfg(feature = "codec")]
     pub fn draw_image_rect(
         &mut self,
         image: &Image,
@@ -614,6 +618,7 @@ impl<'a> RasterCanvas<'a> {
     }
 
     /// Draw an image with nine-patch stretching.
+    #[cfg(feature = "codec")]
     pub fn draw_image_nine(
         &mut self,
         image: &Image,
@@ -866,6 +871,7 @@ impl<'a> RasterCanvas<'a> {
     }
 
     /// Draw text at the specified position.
+    #[cfg(feature = "text")]
     pub fn draw_string(
         &mut self,
         text: &str,
@@ -910,6 +916,7 @@ impl<'a> RasterCanvas<'a> {
     }
 
     /// Draw a text blob.
+    #[cfg(feature = "text")]
     pub fn draw_text_blob(
         &mut self,
         blob: &skia_rs_text::TextBlob,

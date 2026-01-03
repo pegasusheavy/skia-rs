@@ -27,4 +27,5 @@ pub use simd::{simd_capabilities, SimdCapabilities};
 pub use surface::{RasterCanvas, Surface, VertexMode};
 
 // Re-export Image for drawing
+#[cfg(feature = "codec")]
 pub use skia_rs_codec::Image;

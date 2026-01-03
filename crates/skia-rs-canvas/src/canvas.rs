@@ -363,6 +363,7 @@ impl Canvas {
     // =========================================================================
 
     /// Draw glyphs at specified positions.
+    #[cfg(feature = "text")]
     pub fn draw_glyphs(
         &mut self,
         _glyph_ids: &[u16],
@@ -375,6 +376,7 @@ impl Canvas {
     }
 
     /// Draw positioned text with alignment.
+    #[cfg(feature = "text")]
     pub fn draw_text_aligned(
         &mut self,
         text: &str,
@@ -394,6 +396,7 @@ impl Canvas {
     }
 
     /// Draw a string.
+    #[cfg(feature = "text")]
     pub fn draw_string(
         &mut self,
         _text: &str,

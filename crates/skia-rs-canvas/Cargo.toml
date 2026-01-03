@@ -13,14 +13,25 @@ keywords.workspace = true
 categories.workspace = true
 readme = "README.md"
 
+[features]
+default = ["std", "simd"]
+std = ["skia-rs-core/std", "skia-rs-path/std", "skia-rs-paint/std"]
+simd = []  # Enable SIMD optimizations
+codec = ["dep:skia-rs-codec"]
+text = ["dep:skia-rs-text"]
+
 [dependencies]
 skia-rs-core = { workspace = true }
 skia-rs-path = { workspace = true }
 skia-rs-paint = { workspace = true }
-skia-rs-codec = { workspace = true }
-skia-rs-text = { workspace = true }
+skia-rs-codec = { workspace = true, optional = true }
+skia-rs-text = { workspace = true, optional = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

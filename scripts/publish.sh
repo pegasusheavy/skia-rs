@@ -30,6 +30,7 @@ CRATES=(
     "skia-rs-gpu"
     "skia-rs-svg"
     "skia-rs-pdf"
+    "skia-rs-skottie"
     "skia-rs-ffi"
     "skia-rs-safe"
 )

@@ -13,13 +13,27 @@ keywords.workspace = true
 categories.workspace = true
 readme = "README.md"
 
+[features]
+default = ["std"]
+std = []
+libm = ["glam/libm"]  # For no_std math functions
+serde = ["dep:serde", "glam/serde", "bitflags/serde"]
+
 [dependencies]
 glam = { workspace = true }
 bytemuck = { workspace = true }
 bitflags = { workspace = true }
 thiserror = { workspace = true }
 smallvec = { workspace = true }
+serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
 cargo-husky = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

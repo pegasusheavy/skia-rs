@@ -49,7 +49,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # Math and geometry
-glam = "0.29"
+glam = { version = "0.29", default-features = false, features = ["std"] }
 
 # GPU backends
 ash = "0.38"
@@ -91,6 +91,12 @@ bytemuck = { version = "1.18", features = ["derive"] }
 smallvec = "1.13"
 arrayvec = "0.7"
 parking_lot = "0.12"
+
+# WASM support
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = "0.3"
+getrandom = "0.2"
 
 # Testing & Benchmarking
 criterion = { version = "0.6", features = ["html_reports"] }

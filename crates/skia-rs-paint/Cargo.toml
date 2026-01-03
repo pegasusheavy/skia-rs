@@ -13,11 +13,22 @@ keywords.workspace = true
 categories.workspace = true
 readme = "README.md"
 
+[features]
+default = ["std"]
+std = ["skia-rs-core/std", "skia-rs-path/std"]
+serde = ["dep:serde", "skia-rs-core/serde", "skia-rs-path/serde"]
+runtime-effects = []  # Enable SkSL runtime effects
+
 [dependencies]
 skia-rs-core = { workspace = true }
 skia-rs-path = { workspace = true }
 bitflags = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

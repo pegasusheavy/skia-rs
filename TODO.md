@@ -539,11 +539,11 @@ void sk_surface_draw_circle(surface, cx, cy, radius, paint);
 - [x] PDF generator (`examples/pdf_generator.rs`)
 
 ### 12.3 Release Preparation
-- [ ] Cargo feature flags for optional backends
-- [ ] Minimal dependency configuration
-- [ ] WASM target support
-- [ ] no_std core support (where possible)
-- [ ] Publish to crates.io
+- [x] Cargo feature flags for optional backends
+- [x] Minimal dependency configuration
+- [x] WASM target support
+- [x] no_std core support (where possible)
+- [x] Publish to crates.io (scripts/publish.sh)
 
 ---
 
