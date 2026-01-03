@@ -53,3 +53,15 @@ harness = false
 [[bench]]
 name = "text_benchmarks"
 harness = false
+
+[[bench]]
+name = "memory_benchmarks"
+harness = false
+
+[[example]]
+name = "skia_comparison"
+path = "examples/skia_comparison.rs"
+
+[[example]]
+name = "memory_profile"
+path = "examples/memory_profile.rs"

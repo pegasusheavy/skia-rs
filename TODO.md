@@ -516,8 +516,8 @@ void sk_surface_draw_circle(surface, cx, cy, radius, paint);
 - [x] Paint benchmarks (paint_benchmarks)
 - [x] Text benchmarks (text_benchmarks)
 - [x] Performance optimization pass (47-68x improvement in rect fills)
-- [ ] Memory usage profiling
-- [ ] Comparison with original Skia
+- [x] Memory usage profiling (`memory_benchmarks`, `memory_profile` example)
+- [x] Comparison with original Skia (`skia_comparison` module/example)
 
 ---
 
