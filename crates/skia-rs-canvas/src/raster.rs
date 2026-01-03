@@ -14,10 +14,20 @@
 //!
 //! The algorithm has O(n log n) setup time and O(n) per-scanline time, where n is
 //! the number of edges, making it efficient for complex paths.
+//!
+//! ## Clipping
+//!
+//! The rasterizer supports multiple clipping modes:
+//!
+//! - **Rectangular clip**: Fast path for simple rectangular clips
+//! - **Region-based clip**: Complex clips composed of multiple rectangles
+//! - **Anti-aliased clip**: Smooth clip edges using coverage masks
 
-use skia_rs_core::{Color, Matrix, Point, Rect, Scalar};
+use skia_rs_core::{Color, IRect, Matrix, Point, Rect, Region, Scalar};
 use skia_rs_paint::{BlendMode, Paint, Style};
 use skia_rs_path::{FillType, Path, PathElement};
+
+use crate::clip::{ClipMask, ClipStack, ClipState};
 
 /// A pixel buffer for rasterization.
 #[derive(Debug, Clone)]
@@ -268,10 +278,26 @@ fn blend_colors(src: Color, dst: Color, mode: BlendMode) -> Color {
     )
 }
 
+/// Apply coverage to a color by scaling the alpha.
+#[inline]
+fn apply_coverage(color: Color, coverage: u8) -> Color {
+    Color::from_argb(
+        ((color.alpha() as u32 * coverage as u32) / 255) as u8,
+        color.red(),
+        color.green(),
+        color.blue(),
+    )
+}
+
 /// Rasterizer for drawing to a pixel buffer.
 pub struct Rasterizer<'a> {
     buffer: &'a mut PixelBuffer,
+    /// Simple rectangular clip (for backward compatibility and fast path).
     clip: Rect,
+    /// Advanced clip stack with region and AA support.
+    clip_stack: ClipStack,
+    /// Whether to use the advanced clip stack.
+    use_advanced_clip: bool,
     matrix: Matrix,
 }
 
@@ -279,9 +305,12 @@ impl<'a> Rasterizer<'a> {
     /// Create a new rasterizer.
     pub fn new(buffer: &'a mut PixelBuffer) -> Self {
         let clip = Rect::from_xywh(0.0, 0.0, buffer.width as Scalar, buffer.height as Scalar);
+        let clip_stack = ClipStack::new(&clip);
         Self {
             buffer,
             clip,
+            clip_stack,
+            use_advanced_clip: false,
             matrix: Matrix::IDENTITY,
         }
     }
@@ -291,9 +320,101 @@ impl<'a> Rasterizer<'a> {
         self.matrix = *matrix;
     }
 
-    /// Set the clip rectangle.
+    /// Set the clip rectangle (simple mode).
     pub fn set_clip(&mut self, clip: Rect) {
         self.clip = clip;
+        self.use_advanced_clip = false;
+    }
+
+    /// Get the device bounds as an IRect.
+    fn device_bounds(&self) -> IRect {
+        IRect::new(0, 0, self.buffer.width, self.buffer.height)
+    }
+
+    /// Save the current clip state.
+    pub fn save_clip(&mut self) {
+        self.use_advanced_clip = true;
+        self.clip_stack.save();
+    }
+
+    /// Restore the previous clip state.
+    pub fn restore_clip(&mut self) {
+        self.clip_stack.restore();
+    }
+
+    /// Clip to a region.
+    ///
+    /// This enables advanced clipping mode with support for complex
+    /// multi-rectangle clip areas.
+    pub fn clip_region(&mut self, region: &Region) {
+        self.use_advanced_clip = true;
+        self.clip_stack.clip_region(region);
+    }
+
+    /// Clip to a path.
+    ///
+    /// If `anti_alias` is true, the clip edges will be anti-aliased
+    /// using a coverage mask.
+    pub fn clip_path(&mut self, path: &Path, anti_alias: bool) {
+        self.use_advanced_clip = true;
+        let device_bounds = self.device_bounds();
+        self.clip_stack.clip_path(path, &device_bounds, anti_alias);
+    }
+
+    /// Clip to a rectangle with optional anti-aliasing.
+    pub fn clip_rect_aa(&mut self, rect: &Rect, anti_alias: bool) {
+        self.use_advanced_clip = true;
+        if anti_alias {
+            let device_bounds = self.device_bounds();
+            self.clip_stack.clip_rect_aa(rect, &device_bounds);
+        } else {
+            self.clip_stack.clip_rect(rect);
+        }
+    }
+
+    /// Check if a point passes the current clip.
+    #[inline]
+    fn clip_contains(&self, x: i32, y: i32) -> bool {
+        if self.use_advanced_clip {
+            self.clip_stack.contains(x, y)
+        } else {
+            self.clip.contains(Point::new(x as Scalar, y as Scalar))
+        }
+    }
+
+    /// Get the clip coverage at a point (0-255).
+    /// Returns 255 for simple clips if the point is inside.
+    #[inline]
+    fn get_clip_coverage(&self, x: i32, y: i32) -> u8 {
+        if self.use_advanced_clip {
+            self.clip_stack.get_coverage(x, y)
+        } else if self.clip.contains(Point::new(x as Scalar, y as Scalar)) {
+            255
+        } else {
+            0
+        }
+    }
+
+    /// Get the current clip bounds.
+    pub fn clip_bounds(&self) -> Rect {
+        if self.use_advanced_clip {
+            self.clip_stack.bounds()
+        } else {
+            self.clip
+        }
+    }
+
+    /// Check if the current clip is anti-aliased.
+    pub fn is_clip_anti_aliased(&self) -> bool {
+        self.use_advanced_clip && self.clip_stack.is_anti_aliased()
+    }
+
+    /// Reset the clip to device bounds.
+    pub fn reset_clip(&mut self) {
+        let bounds = Rect::from_xywh(0.0, 0.0, self.buffer.width as Scalar, self.buffer.height as Scalar);
+        self.clip = bounds;
+        self.clip_stack.reset(&bounds);
+        self.use_advanced_clip = false;
     }
 
     /// Draw a point.
@@ -302,9 +423,21 @@ impl<'a> Rasterizer<'a> {
         let x = transformed.x.round() as i32;
         let y = transformed.y.round() as i32;
 
-        if self.clip.contains(transformed) {
+        let coverage = self.get_clip_coverage(x, y);
+        if coverage > 0 {
             let color = paint.color32();
-            self.buffer.blend_pixel(x, y, color, paint.blend_mode());
+            if coverage == 255 {
+                self.buffer.blend_pixel(x, y, color, paint.blend_mode());
+            } else {
+                // Apply clip coverage to pixel alpha
+                let adjusted_color = Color::from_argb(
+                    ((color.alpha() as u32 * coverage as u32) / 255) as u8,
+                    color.red(),
+                    color.green(),
+                    color.blue(),
+                );
+                self.buffer.blend_pixel(x, y, adjusted_color, paint.blend_mode());
+            }
         }
     }
 
@@ -337,8 +470,14 @@ impl<'a> Rasterizer<'a> {
         let blend_mode = paint.blend_mode();
 
         loop {
-            if self.clip.contains(Point::new(x0 as Scalar, y0 as Scalar)) {
-                self.buffer.blend_pixel(x0, y0, color, blend_mode);
+            let coverage = self.get_clip_coverage(x0, y0);
+            if coverage > 0 {
+                if coverage == 255 {
+                    self.buffer.blend_pixel(x0, y0, color, blend_mode);
+                } else {
+                    let adjusted = apply_coverage(color, coverage);
+                    self.buffer.blend_pixel(x0, y0, adjusted, blend_mode);
+                }
             }
 
             if x0 == x1 && y0 == y1 {
@@ -439,9 +578,12 @@ impl<'a> Rasterizer<'a> {
     /// Plot a pixel with coverage for anti-aliasing.
     #[inline]
     fn plot_aa(&mut self, x: i32, y: i32, coverage: f32, color: Color, blend_mode: BlendMode) {
-        if self.clip.contains(Point::new(x as Scalar, y as Scalar)) {
+        let clip_coverage = self.get_clip_coverage(x, y);
+        if clip_coverage > 0 {
+            // Combine line AA coverage with clip coverage
+            let combined_coverage = coverage * (clip_coverage as f32 / 255.0);
             self.buffer
-                .blend_pixel_aa(x, y, color, coverage, blend_mode);
+                .blend_pixel_aa(x, y, color, combined_coverage, blend_mode);
         }
     }
 
@@ -452,15 +594,32 @@ impl<'a> Rasterizer<'a> {
     /// - AVX2 on x86/x86_64 (8 pixels at a time)
     /// - NEON on ARM/AArch64 (4 pixels at a time)
     fn draw_hline(&mut self, x0: i32, x1: i32, y: i32, color: Color, blend_mode: BlendMode) {
+        let clip_bounds = self.clip_bounds();
         let (start, end) = if x0 < x1 { (x0, x1) } else { (x1, x0) };
-        let start = start.max(self.clip.left as i32);
-        let end = end.min(self.clip.right as i32 - 1);
+        let start = start.max(clip_bounds.left as i32);
+        let end = end.min(clip_bounds.right as i32 - 1);
 
-        if y < self.clip.top as i32 || y >= self.clip.bottom as i32 {
+        if y < clip_bounds.top as i32 || y >= clip_bounds.bottom as i32 {
             return;
         }
 
         if start > end {
+            return;
+        }
+
+        // For advanced clips (region-based or AA), use per-pixel with coverage
+        if self.use_advanced_clip {
+            for x in start..=end {
+                let coverage = self.get_clip_coverage(x, y);
+                if coverage > 0 {
+                    if coverage == 255 {
+                        self.buffer.blend_pixel(x, y, color, blend_mode);
+                    } else {
+                        let adjusted = apply_coverage(color, coverage);
+                        self.buffer.blend_pixel(x, y, adjusted, blend_mode);
+                    }
+                }
+            }
             return;
         }
 

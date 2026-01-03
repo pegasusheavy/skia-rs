@@ -402,9 +402,9 @@
 
 ### 8.3 Clipping
 - [x] Rectangular clip (fast path)
-- [ ] Anti-aliased clip
+- [x] Anti-aliased clip - ClipMask with coverage, supersampled path rasterization
 - [x] Path-based clip (via bounds)
-- [ ] Region-based clip
+- [x] Region-based clip - ClipStack with Region integration
 
 ---
 
