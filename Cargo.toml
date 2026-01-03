@@ -10,6 +10,7 @@ members = [
     "crates/skia-rs-codec",
     "crates/skia-rs-svg",
     "crates/skia-rs-pdf",
+    "crates/skia-rs-skottie",
     "crates/skia-rs-ffi",
     "crates/skia-rs-safe",
     "crates/skia-rs-bench",
@@ -41,6 +42,11 @@ skia-rs-svg = { version = "0.1.0", path = "crates/skia-rs-svg" }
 skia-rs-pdf = { version = "0.1.0", path = "crates/skia-rs-pdf" }
 skia-rs-ffi = { version = "0.1.0", path = "crates/skia-rs-ffi" }
 skia-rs-safe = { version = "0.1.0", path = "crates/skia-rs-safe" }
+skia-rs-skottie = { version = "0.1.0", path = "crates/skia-rs-skottie" }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 # Math and geometry
 glam = "0.29"

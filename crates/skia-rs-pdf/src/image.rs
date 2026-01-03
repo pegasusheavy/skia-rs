@@ -101,10 +101,10 @@ impl PdfImage {
     /// Create a new image from raw RGB data.
     pub fn from_rgb(width: u32, height: u32, data: &[u8]) -> Self {
         assert_eq!(data.len(), (width * height * 3) as usize);
-        
+
         // Compress with flate
         let compressed = compress_flate(data);
-        
+
         Self {
             width,
             height,
@@ -122,20 +122,20 @@ impl PdfImage {
     /// Create a new image from raw RGBA data.
     pub fn from_rgba(width: u32, height: u32, data: &[u8]) -> (Self, Self) {
         assert_eq!(data.len(), (width * height * 4) as usize);
-        
+
         // Separate RGB and alpha
         let mut rgb = Vec::with_capacity((width * height * 3) as usize);
         let mut alpha = Vec::with_capacity((width * height) as usize);
-        
+
         for chunk in data.chunks(4) {
             rgb.extend_from_slice(&chunk[..3]);
             alpha.push(chunk[3]);
         }
-        
+
         // Compress both
         let rgb_compressed = compress_flate(&rgb);
         let alpha_compressed = compress_flate(&alpha);
-        
+
         let image = Self {
             width,
             height,
@@ -148,7 +148,7 @@ impl PdfImage {
             is_mask: false,
             interpolate: true,
         };
-        
+
         let mask = Self {
             width,
             height,
@@ -161,16 +161,16 @@ impl PdfImage {
             is_mask: true,
             interpolate: true,
         };
-        
+
         (image, mask)
     }
 
     /// Create a new image from grayscale data.
     pub fn from_grayscale(width: u32, height: u32, data: &[u8]) -> Self {
         assert_eq!(data.len(), (width * height) as usize);
-        
+
         let compressed = compress_flate(data);
-        
+
         Self {
             width,
             height,
@@ -189,7 +189,7 @@ impl PdfImage {
     pub fn from_jpeg(width: u32, height: u32, jpeg_data: Vec<u8>) -> Self {
         // Detect color space from JPEG header
         let color_space = detect_jpeg_color_space(&jpeg_data);
-        
+
         Self {
             width,
             height,
@@ -212,7 +212,7 @@ impl PdfImage {
     /// Generate the image XObject PDF dictionary.
     pub fn to_pdf_xobject(&self, id: u32) -> Vec<u8> {
         let mut output = Vec::new();
-        
+
         // Object header
         write!(output, "{} 0 obj\n<<\n", id).unwrap();
         write!(output, "/Type /XObject\n").unwrap();
@@ -220,30 +220,30 @@ impl PdfImage {
         write!(output, "/Width {}\n", self.width).unwrap();
         write!(output, "/Height {}\n", self.height).unwrap();
         write!(output, "/BitsPerComponent {}\n", self.bits_per_component).unwrap();
-        
+
         if self.is_mask {
             write!(output, "/ColorSpace /DeviceGray\n").unwrap();
         } else {
             write!(output, "/ColorSpace /{}\n", self.color_space.pdf_name()).unwrap();
         }
-        
+
         if let Some(filter_name) = self.filter.pdf_name() {
             write!(output, "/Filter /{}\n", filter_name).unwrap();
         }
-        
+
         if let Some(mask_id) = self.soft_mask_id {
             write!(output, "/SMask {} 0 R\n", mask_id).unwrap();
         }
-        
+
         if self.interpolate {
             write!(output, "/Interpolate true\n").unwrap();
         }
-        
+
         write!(output, "/Length {}\n", self.data.len()).unwrap();
         write!(output, ">>\nstream\n").unwrap();
         output.extend_from_slice(&self.data);
         write!(output, "\nendstream\nendobj\n").unwrap();
-        
+
         output
     }
 }
@@ -251,7 +251,7 @@ impl PdfImage {
 /// Compress data using flate (zlib).
 fn compress_flate(data: &[u8]) -> Vec<u8> {
     use std::io::Write;
-    
+
     let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(data).unwrap();
     encoder.finish().unwrap()
@@ -265,7 +265,7 @@ fn detect_jpeg_color_space(data: &[u8]) -> PdfColorSpace {
     while i + 1 < data.len() {
         if data[i] == 0xFF && data[i + 1] != 0x00 && data[i + 1] != 0xFF {
             let marker = data[i + 1];
-            
+
             // SOF markers (0xC0-0xCF except 0xC4, 0xC8, 0xCC)
             if (marker >= 0xC0 && marker <= 0xCF) && marker != 0xC4 && marker != 0xC8 && marker != 0xCC {
                 if i + 9 < data.len() {
@@ -278,7 +278,7 @@ fn detect_jpeg_color_space(data: &[u8]) -> PdfColorSpace {
                     };
                 }
             }
-            
+
             // Skip marker
             if i + 3 < data.len() && marker != 0xD8 && marker != 0xD9 {
                 let length = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
@@ -290,7 +290,7 @@ fn detect_jpeg_color_space(data: &[u8]) -> PdfColorSpace {
             i += 1;
         }
     }
-    
+
     PdfColorSpace::DeviceRGB
 }
 
@@ -377,7 +377,7 @@ mod tests {
     fn test_image_from_rgb() {
         let data = vec![255u8; 100 * 100 * 3]; // 100x100 white image
         let image = PdfImage::from_rgb(100, 100, &data);
-        
+
         assert_eq!(image.width, 100);
         assert_eq!(image.height, 100);
         assert_eq!(image.color_space, PdfColorSpace::DeviceRGB);
@@ -388,7 +388,7 @@ mod tests {
     fn test_image_from_rgba() {
         let data = vec![255u8; 50 * 50 * 4]; // 50x50 white opaque image
         let (image, mask) = PdfImage::from_rgba(50, 50, &data);
-        
+
         assert_eq!(image.color_space, PdfColorSpace::DeviceRGB);
         assert_eq!(mask.color_space, PdfColorSpace::DeviceGray);
         assert!(mask.is_mask);
@@ -397,10 +397,10 @@ mod tests {
     #[test]
     fn test_image_manager() {
         let mut manager = PdfImageManager::new();
-        
+
         let data = vec![128u8; 10 * 10 * 3];
         let idx = manager.add_rgb(10, 10, &data);
-        
+
         assert_eq!(idx, 0);
         assert_eq!(manager.len(), 1);
     }

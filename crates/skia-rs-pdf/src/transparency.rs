@@ -95,39 +95,39 @@ impl ExtGraphicsState {
     pub fn to_pdf_dict(&self, id: u32) -> String {
         let mut dict = format!("{} 0 obj\n<<\n", id);
         dict.push_str("/Type /ExtGState\n");
-        
+
         if let Some(alpha) = self.stroke_alpha {
             dict.push_str(&format!("/CA {:.3}\n", alpha));
         }
-        
+
         if let Some(alpha) = self.fill_alpha {
             dict.push_str(&format!("/ca {:.3}\n", alpha));
         }
-        
+
         if let Some(mode) = &self.blend_mode {
             dict.push_str(&format!("/BM /{}\n", mode.pdf_name()));
         }
-        
+
         if let Some(mask_id) = self.soft_mask {
             dict.push_str(&format!("/SMask {} 0 R\n", mask_id));
         }
-        
+
         if let Some(ais) = self.alpha_is_shape {
             dict.push_str(&format!("/AIS {}\n", if ais { "true" } else { "false" }));
         }
-        
+
         if let Some(tk) = self.text_knockout {
             dict.push_str(&format!("/TK {}\n", if tk { "true" } else { "false" }));
         }
-        
+
         if let Some(op) = self.stroke_overprint {
             dict.push_str(&format!("/OP {}\n", if op { "true" } else { "false" }));
         }
-        
+
         if let Some(op) = self.fill_overprint {
             dict.push_str(&format!("/op {}\n", if op { "true" } else { "false" }));
         }
-        
+
         dict.push_str(">>\nendobj\n");
         dict
     }
@@ -284,14 +284,14 @@ impl SoftMask {
     pub fn to_pdf_dict(&self, id: u32) -> String {
         let mut dict = format!("{} 0 obj\n<<\n", id);
         dict.push_str("/Type /Mask\n");
-        
+
         match self.subtype {
             SoftMaskSubtype::Alpha => dict.push_str("/S /Alpha\n"),
             SoftMaskSubtype::Luminosity => dict.push_str("/S /Luminosity\n"),
         }
-        
+
         dict.push_str(&format!("/G {} 0 R\n", self.group_ref));
-        
+
         if let Some(ref backdrop) = self.backdrop {
             dict.push_str("/BC [");
             for val in backdrop {
@@ -299,11 +299,11 @@ impl SoftMask {
             }
             dict.push_str("]\n");
         }
-        
+
         if let Some(transfer_ref) = self.transfer {
             dict.push_str(&format!("/TR {} 0 R\n", transfer_ref));
         }
-        
+
         dict.push_str(">>\nendobj\n");
         dict
     }
@@ -366,7 +366,7 @@ impl TransparencyGroup {
     /// Generate the transparency group XObject.
     pub fn to_pdf_xobject(&self, id: u32) -> Vec<u8> {
         let mut output = Vec::new();
-        
+
         use std::io::Write;
         write!(output, "{} 0 obj\n<<\n", id).unwrap();
         write!(output, "/Type /XObject\n").unwrap();
@@ -378,30 +378,30 @@ impl TransparencyGroup {
             self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3]
         )
         .unwrap();
-        
+
         // Transparency group dictionary
         write!(output, "/Group <<\n").unwrap();
         write!(output, "/Type /Group\n").unwrap();
         write!(output, "/S /Transparency\n").unwrap();
-        
+
         if let Some(ref cs) = self.color_space {
             write!(output, "/CS /{}\n", cs).unwrap();
         }
-        
+
         if self.isolated {
             write!(output, "/I true\n").unwrap();
         }
-        
+
         if self.knockout {
             write!(output, "/K true\n").unwrap();
         }
-        
+
         write!(output, ">>\n").unwrap();
         write!(output, "/Length {}\n", self.content.len()).unwrap();
         write!(output, ">>\nstream\n").unwrap();
         output.extend_from_slice(&self.content);
         write!(output, "\nendstream\nendobj\n").unwrap();
-        
+
         output
     }
 }
@@ -429,11 +429,11 @@ impl TransparencyManager {
     pub fn get_or_create_alpha_state(&mut self, alpha: Scalar) -> usize {
         let state = ExtGraphicsState::with_alpha(alpha);
         let key = state.cache_key();
-        
+
         if let Some(&idx) = self.gstate_cache.get(&key) {
             return idx;
         }
-        
+
         let idx = self.ext_gstates.len();
         self.ext_gstates.push(state);
         self.gstate_cache.insert(key, idx);
@@ -444,11 +444,11 @@ impl TransparencyManager {
     pub fn get_or_create_blend_state(&mut self, mode: PdfBlendMode) -> usize {
         let state = ExtGraphicsState::with_blend_mode(mode);
         let key = state.cache_key();
-        
+
         if let Some(&idx) = self.gstate_cache.get(&key) {
             return idx;
         }
-        
+
         let idx = self.ext_gstates.len();
         self.ext_gstates.push(state);
         self.gstate_cache.insert(key, idx);
@@ -458,11 +458,11 @@ impl TransparencyManager {
     /// Add a custom ExtGState.
     pub fn add_ext_gstate(&mut self, state: ExtGraphicsState) -> usize {
         let key = state.cache_key();
-        
+
         if let Some(&idx) = self.gstate_cache.get(&key) {
             return idx;
         }
-        
+
         let idx = self.ext_gstates.len();
         self.ext_gstates.push(state);
         self.gstate_cache.insert(key, idx);
@@ -517,7 +517,7 @@ mod tests {
     fn test_ext_gstate_alpha() {
         let state = ExtGraphicsState::with_alpha(0.5);
         let dict = state.to_pdf_dict(5);
-        
+
         assert!(dict.contains("/CA 0.500"));
         assert!(dict.contains("/ca 0.500"));
     }
@@ -526,17 +526,17 @@ mod tests {
     fn test_ext_gstate_blend_mode() {
         let state = ExtGraphicsState::with_blend_mode(PdfBlendMode::Multiply);
         let dict = state.to_pdf_dict(6);
-        
+
         assert!(dict.contains("/BM /Multiply"));
     }
 
     #[test]
     fn test_transparency_manager_caching() {
         let mut manager = TransparencyManager::new();
-        
+
         let idx1 = manager.get_or_create_alpha_state(0.5);
         let idx2 = manager.get_or_create_alpha_state(0.5);
-        
+
         assert_eq!(idx1, idx2); // Should be cached
     }
 
@@ -544,7 +544,7 @@ mod tests {
     fn test_soft_mask() {
         let mask = SoftMask::alpha(10);
         let dict = mask.to_pdf_dict(7);
-        
+
         assert!(dict.contains("/S /Alpha"));
         assert!(dict.contains("/G 10 0 R"));
     }
@@ -553,10 +553,10 @@ mod tests {
     fn test_transparency_group() {
         let mut group = TransparencyGroup::new([0.0, 0.0, 100.0, 100.0]);
         group.set_isolated(true).set_knockout(false);
-        
+
         let xobject = group.to_pdf_xobject(8);
         let content = String::from_utf8_lossy(&xobject);
-        
+
         assert!(content.contains("/S /Transparency"));
         assert!(content.contains("/I true"));
     }

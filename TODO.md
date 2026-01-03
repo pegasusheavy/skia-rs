@@ -426,12 +426,12 @@
 - [ ] PDF/A compliance (optional)
 
 ### 9.3 Skottie (Lottie Animation)
-- [ ] JSON parsing for Lottie format
-- [ ] Animation interpolation
-- [ ] Shape layers
-- [ ] Transform animations
-- [ ] Mask and matte support
-- [ ] Expression evaluation (subset)
+- [x] JSON parsing for Lottie format - LottieModel, LayerModel, ShapeModel, etc.
+- [x] Animation interpolation - Keyframes, Easing (Linear, Hold, Bezier), AnimatedProperty
+- [x] Shape layers - Rectangle, Ellipse, Path, Polystar, Fill, Stroke, Gradient, Trim
+- [x] Transform animations - Position, Anchor, Scale, Rotation, Opacity, Skew
+- [x] Mask and matte support - MaskMode (Add/Subtract/Intersect), MatteMode (Alpha/Luma)
+- [x] Expression evaluation (subset) - Math functions, time/wiggle/linear/ease
 
 ### 9.4 Runtime Effects
 - [ ] SkSL (Skia Shading Language) parser

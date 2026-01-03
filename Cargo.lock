@@ -2091,6 +2091,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "skia-rs-skottie"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
+ "skia-rs-canvas",
+ "skia-rs-core",
+ "skia-rs-paint",
+ "skia-rs-path",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "skia-rs-svg"
 version = "0.1.0"
 dependencies = [

@@ -155,7 +155,7 @@ impl PdfFont {
     pub fn truetype(name: &str, data: Vec<u8>) -> Self {
         // Parse basic TrueType metrics (simplified)
         let metrics = parse_truetype_metrics(&data);
-        
+
         Self {
             font_type: PdfFontType::TrueType,
             base_font: name.to_string(),
@@ -188,7 +188,7 @@ impl PdfFont {
     /// Generate the font dictionary PDF object.
     pub fn to_pdf_dict(&self, id: u32) -> String {
         let mut dict = format!("{} 0 obj\n<<\n", id);
-        
+
         match self.font_type {
             PdfFontType::Type1 => {
                 dict.push_str("/Type /Font\n");
@@ -202,7 +202,7 @@ impl PdfFont {
                 dict.push_str(&format!("/BaseFont /{}\n", self.base_font.replace(' ', "")));
                 dict.push_str(&format!("/FirstChar {}\n", self.first_char));
                 dict.push_str(&format!("/LastChar {}\n", self.last_char));
-                
+
                 // Widths array
                 dict.push_str("/Widths [");
                 for i in self.first_char..=self.last_char {
@@ -210,7 +210,7 @@ impl PdfFont {
                     dict.push_str(&format!("{} ", width));
                 }
                 dict.push_str("]\n");
-                
+
                 if let Some(desc_id) = self.descriptor_id {
                     dict.push_str(&format!("/FontDescriptor {} 0 R\n", desc_id));
                 }
@@ -224,7 +224,7 @@ impl PdfFont {
                 dict.push_str("/Encoding /Identity-H\n");
             }
         }
-        
+
         dict.push_str(">>\nendobj\n");
         dict
     }
@@ -247,7 +247,7 @@ impl PdfFont {
         dict.push_str(&format!("/Descent {}\n", self.descender as i32));
         dict.push_str(&format!("/CapHeight {}\n", self.cap_height as i32));
         dict.push_str(&format!("/StemV {}\n", self.stem_v as i32));
-        
+
         if let Some(file_id) = font_file_id {
             match self.font_type {
                 PdfFontType::TrueType => {
@@ -259,7 +259,7 @@ impl PdfFont {
                 _ => {}
             }
         }
-        
+
         dict.push_str(">>\nendobj\n");
         dict
     }
@@ -276,19 +276,19 @@ impl PdfFont {
         cmap.push_str("1 begincodespacerange\n");
         cmap.push_str("<0000> <FFFF>\n");
         cmap.push_str("endcodespacerange\n");
-        
+
         // Simple ASCII mapping
         cmap.push_str("95 beginbfchar\n");
         for i in 32..127 {
             cmap.push_str(&format!("<{:04X}> <{:04X}>\n", i, i));
         }
         cmap.push_str("endbfchar\n");
-        
+
         cmap.push_str("endcmap\n");
         cmap.push_str("CMapName currentdict /CMap defineresource pop\n");
         cmap.push_str("end\n");
         cmap.push_str("end\n");
-        
+
         cmap
     }
 }
@@ -309,7 +309,7 @@ struct TrueTypeMetrics {
 fn parse_truetype_metrics(data: &[u8]) -> TrueTypeMetrics {
     // Simplified TrueType parsing - returns defaults
     // A full implementation would parse the font tables
-    
+
     let mut metrics = TrueTypeMetrics {
         flags: 0,
         italic_angle: 0.0,
@@ -320,25 +320,25 @@ fn parse_truetype_metrics(data: &[u8]) -> TrueTypeMetrics {
         bbox: [0.0, -250.0, 1000.0, 750.0],
         widths: HashMap::new(),
     };
-    
+
     // Check if this looks like a TrueType font
     if data.len() < 12 {
         return metrics;
     }
-    
+
     // Read sfnt version
     let version = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
-    
+
     // 0x00010000 = TrueType, "OTTO" = OpenType CFF
     if version != 0x00010000 && version != 0x4F54544F {
         return metrics;
     }
-    
+
     // Default widths (600 units for most characters)
     for i in 32u16..=255 {
         metrics.widths.insert(i, 600);
     }
-    
+
     metrics
 }
 
@@ -363,7 +363,7 @@ impl PdfFontManager {
         if let Some(&idx) = self.name_to_index.get(&name) {
             return idx;
         }
-        
+
         let idx = self.fonts.len();
         self.fonts.push(PdfFont::standard(font));
         self.name_to_index.insert(name, idx);
@@ -375,7 +375,7 @@ impl PdfFontManager {
         if let Some(&idx) = self.name_to_index.get(name) {
             return idx;
         }
-        
+
         let idx = self.fonts.len();
         self.fonts.push(PdfFont::truetype(name, data));
         self.name_to_index.insert(name.to_string(), idx);
@@ -432,10 +432,10 @@ mod tests {
     #[test]
     fn test_font_manager() {
         let mut manager = PdfFontManager::new();
-        
+
         let idx1 = manager.register_standard(StandardFont::Helvetica);
         let idx2 = manager.register_standard(StandardFont::Helvetica); // Same font
-        
+
         assert_eq!(idx1, idx2); // Should return same index
         assert_eq!(manager.len(), 1);
     }
@@ -444,7 +444,7 @@ mod tests {
     fn test_font_pdf_dict() {
         let font = PdfFont::standard(StandardFont::TimesRoman);
         let dict = font.to_pdf_dict(5);
-        
+
         assert!(dict.contains("/Type /Font"));
         assert!(dict.contains("/BaseFont /Times-Roman"));
     }
