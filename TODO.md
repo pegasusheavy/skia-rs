@@ -534,7 +534,7 @@ void sk_surface_draw_circle(surface, cx, cy, radius, paint);
 - [x] Basic drawing example (`examples/basic_drawing.rs`)
 - [x] Text rendering example (`examples/text_rendering.rs`)
 - [x] GPU rendering example (`examples/gpu_rendering.rs`)
-- [ ] Animation example
+- [x] Animation example (`examples/animation.rs`)
 - [x] SVG viewer (`examples/svg_viewer.rs`)
 - [x] PDF generator (`examples/pdf_generator.rs`)
 

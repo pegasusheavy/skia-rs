@@ -155,10 +155,10 @@ trait Canvas {
     fn rotate(&mut self, radians: Scalar);
     fn scale(&mut self, sx: Scalar, sy: Scalar);
     fn concat(&mut self, matrix: &Matrix);
-    
+
     fn clip_rect(&mut self, rect: &Rect, op: ClipOp);
     fn clip_path(&mut self, path: &Path, op: ClipOp);
-    
+
     fn draw_rect(&mut self, rect: &Rect, paint: &Paint);
     fn draw_circle(&mut self, center: Point, radius: Scalar, paint: &Paint);
     fn draw_path(&mut self, path: &Path, paint: &Paint);
@@ -491,7 +491,7 @@ impl Shader for MyShader {
     fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
         // Custom color computation
     }
-    
+
     fn is_opaque(&self) -> bool { false }
     fn shader_kind(&self) -> ShaderKind { ShaderKind::Color }
 }

@@ -81,7 +81,7 @@ impl Scene {
             circle_path: builder.build(),
         }
     }
-    
+
     fn render(&self, canvas: &mut impl Canvas) {
         canvas.draw_path(&self.circle_path, &paint);
     }
@@ -233,7 +233,7 @@ impl TextDisplay {
                 .build(),
         }
     }
-    
+
     fn render(&self, canvas: &mut impl Canvas, paint: &Paint) {
         canvas.draw_text_blob(&self.blob, Point::ZERO, paint);
     }
