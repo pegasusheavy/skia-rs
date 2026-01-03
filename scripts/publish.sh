@@ -46,6 +46,7 @@ CRATES=(
     "skia-rs-ffi"
     "skia-rs-safe"
     "skia-rs-bench"
+    "skia-rs"
 )
 
 # Parse arguments

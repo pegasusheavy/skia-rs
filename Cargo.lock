@@ -1954,6 +1954,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56199f7ddabf13fe5074ce809e7d3f42b42ae711800501b5b16ea82ad029c39d"
 
 [[package]]
+name = "skia-rs"
+version = "0.2.0"
+dependencies = [
+ "skia-rs-canvas",
+ "skia-rs-codec",
+ "skia-rs-core",
+ "skia-rs-ffi",
+ "skia-rs-gpu",
+ "skia-rs-paint",
+ "skia-rs-path",
+ "skia-rs-pdf",
+ "skia-rs-safe",
+ "skia-rs-skottie",
+ "skia-rs-svg",
+ "skia-rs-text",
+]
+
+[[package]]
 name = "skia-rs-bench"
 version = "0.2.0"
 dependencies = [
