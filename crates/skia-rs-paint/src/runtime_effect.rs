@@ -956,7 +956,7 @@ mod tests {
     const SIMPLE_SHADER: &str = r#"
         uniform float time;
         uniform vec2 resolution;
-        
+
         vec4 main(vec2 fragCoord) {
             vec2 uv = fragCoord / resolution;
             return vec4(uv.x, uv.y, sin(time), 1.0);
@@ -966,7 +966,7 @@ mod tests {
     #[test]
     fn test_make_effect() {
         let effect = RuntimeEffect::make_for_shader(SIMPLE_SHADER).unwrap();
-        
+
         assert_eq!(effect.uniforms().len(), 2);
         assert!(effect.find_uniform("time").is_some());
         assert!(effect.find_uniform("resolution").is_some());
@@ -986,7 +986,7 @@ mod tests {
     fn test_compile_glsl() {
         let effect = RuntimeEffect::make_for_shader(SIMPLE_SHADER).unwrap();
         let glsl = effect.compile_to(ShaderTarget::GlslEs300).unwrap();
-        
+
         assert!(glsl.contains("#version 300 es"));
         assert!(glsl.contains("uniform float time"));
         assert!(glsl.contains("uniform vec2 resolution"));
@@ -996,7 +996,7 @@ mod tests {
     fn test_compile_wgsl() {
         let effect = RuntimeEffect::make_for_shader(SIMPLE_SHADER).unwrap();
         let wgsl = effect.compile_to(ShaderTarget::Wgsl).unwrap();
-        
+
         assert!(wgsl.contains("struct Uniforms"));
         assert!(wgsl.contains("time: f32"));
     }
@@ -1005,7 +1005,7 @@ mod tests {
     fn test_compile_msl() {
         let effect = RuntimeEffect::make_for_shader(SIMPLE_SHADER).unwrap();
         let msl = effect.compile_to(ShaderTarget::Msl).unwrap();
-        
+
         assert!(msl.contains("#include <metal_stdlib>"));
         assert!(msl.contains("struct Uniforms"));
     }
@@ -1014,7 +1014,7 @@ mod tests {
     fn test_make_shader() {
         let effect = Arc::new(RuntimeEffect::make_for_shader(SIMPLE_SHADER).unwrap());
         let mut data = UniformData::from_effect(&effect);
-        
+
         data.set_float(0, 1.0);
         data.set_float2(4, 800.0, 600.0);
 

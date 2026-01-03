@@ -10,6 +10,14 @@
 //! - Proper lifetime management (using the appropriate `_unref` functions)
 //! - Thread safety when accessing shared objects
 //!
+//! # Reference Counting
+//!
+//! Objects follow Skia's reference counting model:
+//! - Objects are created with a reference count of 1
+//! - `sk_*_ref()` increments the reference count
+//! - `sk_*_unref()` decrements the reference count and frees when it reaches 0
+//! - Use `sk_refcnt_get_count()` to query the current count
+//!
 //! # Panic Safety
 //!
 //! All FFI functions catch panics at the boundary to prevent unwinding
@@ -22,10 +30,10 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(non_camel_case_types)] // FFI types follow C naming conventions
 
-use std::ffi::{CStr, c_char, c_void};
+use std::ffi::{c_char, c_void};
 use std::panic::{self, AssertUnwindSafe};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 // =============================================================================
 // Panic Catching Infrastructure
@@ -63,6 +71,128 @@ fn catch_panic_void<F: FnOnce() + panic::UnwindSafe>(f: F) {
     }
 }
 
+// =============================================================================
+// Reference Counting Infrastructure
+// =============================================================================
+
+/// Reference counted wrapper for FFI objects.
+///
+/// This provides Skia-compatible reference counting semantics:
+/// - Created with refcount of 1
+/// - `ref()` increments
+/// - `unref()` decrements and frees when 0
+#[repr(C)]
+pub struct RefCounted<T> {
+    /// Reference count.
+    refcnt: AtomicU32,
+    /// The wrapped value.
+    value: T,
+}
+
+impl<T> RefCounted<T> {
+    /// Create a new reference counted object with refcount of 1.
+    pub fn new(value: T) -> *mut Self {
+        Box::into_raw(Box::new(Self {
+            refcnt: AtomicU32::new(1),
+            value,
+        }))
+    }
+
+    /// Increment the reference count.
+    ///
+    /// # Safety
+    /// Pointer must be valid and non-null.
+    pub unsafe fn ref_ptr(ptr: *mut Self) {
+        if let Some(rc) = ptr.as_ref() {
+            rc.refcnt.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Decrement the reference count and free if it reaches 0.
+    ///
+    /// # Safety
+    /// Pointer must be valid and non-null.
+    /// Returns true if the object was freed.
+    pub unsafe fn unref_ptr(ptr: *mut Self) -> bool {
+        if ptr.is_null() {
+            return false;
+        }
+
+        let rc = &*ptr;
+        // Use AcqRel to ensure proper synchronization
+        if rc.refcnt.fetch_sub(1, Ordering::AcqRel) == 1 {
+            // Last reference, drop the box
+            drop(Box::from_raw(ptr));
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get the current reference count.
+    ///
+    /// # Safety
+    /// Pointer must be valid and non-null.
+    pub unsafe fn get_count(ptr: *const Self) -> u32 {
+        if let Some(rc) = ptr.as_ref() {
+            rc.refcnt.load(Ordering::Relaxed)
+        } else {
+            0
+        }
+    }
+
+    /// Check if this is the only reference.
+    ///
+    /// # Safety
+    /// Pointer must be valid and non-null.
+    pub unsafe fn is_unique(ptr: *const Self) -> bool {
+        Self::get_count(ptr) == 1
+    }
+
+    /// Get a reference to the inner value.
+    ///
+    /// # Safety
+    /// Pointer must be valid and non-null.
+    pub unsafe fn get_ref<'a>(ptr: *const Self) -> Option<&'a T> {
+        ptr.as_ref().map(|rc| &rc.value)
+    }
+
+    /// Get a mutable reference to the inner value.
+    ///
+    /// # Safety
+    /// Pointer must be valid and non-null.
+    /// Caller must ensure exclusive access.
+    pub unsafe fn get_mut<'a>(ptr: *mut Self) -> Option<&'a mut T> {
+        ptr.as_mut().map(|rc| &mut rc.value)
+    }
+}
+
+// =============================================================================
+// Reference Counting C API
+// =============================================================================
+
+/// Opaque reference counted object type.
+pub type sk_refcnt_t = c_void;
+
+/// Get the reference count of an object.
+///
+/// Returns 0 if the pointer is null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sk_refcnt_get_count(ptr: *const sk_refcnt_t) -> u32 {
+    // All our refcounted types start with AtomicU32
+    if ptr.is_null() {
+        return 0;
+    }
+    let refcnt = ptr as *const AtomicU32;
+    (*refcnt).load(Ordering::Relaxed)
+}
+
+/// Check if an object has only one reference (is unique).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sk_refcnt_is_unique(ptr: *const sk_refcnt_t) -> bool {
+    sk_refcnt_get_count(ptr) == 1
+}
+
 // Re-export types for FFI
 use skia_rs_canvas::{PixelBuffer, RasterCanvas, Surface};
 use skia_rs_core::{
@@ -75,16 +205,11 @@ use skia_rs_path::{FillType, Path, PathBuilder};
 // Type Definitions
 // =============================================================================
 
-/// Opaque surface type.
-pub type SkSurface = Surface;
-/// Opaque paint type.
-pub type SkPaint = Paint;
-/// Opaque path type.
-pub type SkPath = Path;
-/// Opaque path builder type.
-pub type SkPathBuilder = PathBuilder;
-/// Opaque matrix type.
-pub type SkMatrix = Matrix;
+// Note: Reference counted types are defined in their respective sections:
+// - sk_surface_t = RefCounted<Surface>
+// - sk_paint_t = RefCounted<Paint>
+// - sk_path_t = RefCounted<Path>
+// - sk_pathbuilder_t = RefCounted<PathBuilder>
 
 /// C-compatible point structure.
 #[repr(C)]
@@ -233,25 +358,32 @@ impl From<sk_matrix_t> for Matrix {
 }
 
 // =============================================================================
-// Surface API
+// Surface API (Reference Counted)
 // =============================================================================
 
+/// Reference counted surface type.
+pub type sk_surface_t = RefCounted<Surface>;
+
 /// Create a new raster surface.
+///
+/// Returns a surface with refcount of 1, or null on failure.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_surface_new_raster(width: i32, height: i32) -> *mut SkSurface {
+pub unsafe extern "C" fn sk_surface_new_raster(width: i32, height: i32) -> *mut sk_surface_t {
     catch_panic(|| {
         match Surface::new_raster_n32_premul(width, height) {
-            Some(surface) => Box::into_raw(Box::new(surface)),
+            Some(surface) => RefCounted::new(surface),
             None => ptr::null_mut(),
         }
     })
 }
 
 /// Create a raster surface with specific image info.
+///
+/// Returns a surface with refcount of 1, or null on failure.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_surface_new_raster_with_info(
     info: *const sk_imageinfo_t,
-) -> *mut SkSurface {
+) -> *mut sk_surface_t {
     if info.is_null() {
         return ptr::null_mut();
     }
@@ -281,105 +413,138 @@ pub unsafe extern "C" fn sk_surface_new_raster_with_info(
     };
 
     match Surface::new_raster(&img_info, None) {
-        Some(surface) => Box::into_raw(Box::new(surface)),
+        Some(surface) => RefCounted::new(surface),
         None => ptr::null_mut(),
     }
 }
 
-/// Delete a surface.
+/// Increment the reference count of a surface.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_surface_unref(surface: *mut SkSurface) {
+pub unsafe extern "C" fn sk_surface_ref(surface: *mut sk_surface_t) {
+    RefCounted::ref_ptr(surface);
+}
+
+/// Decrement the reference count of a surface.
+///
+/// Frees the surface when the count reaches 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sk_surface_unref(surface: *mut sk_surface_t) {
     catch_panic_void(AssertUnwindSafe(|| {
-        if !surface.is_null() {
-            drop(Box::from_raw(surface));
-        }
+        RefCounted::unref_ptr(surface);
     }));
+}
+
+/// Get the reference count of a surface.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sk_surface_get_refcnt(surface: *const sk_surface_t) -> u32 {
+    RefCounted::get_count(surface)
+}
+
+/// Check if the surface has only one reference.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sk_surface_is_unique(surface: *const sk_surface_t) -> bool {
+    RefCounted::is_unique(surface)
 }
 
 /// Get the width of a surface.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_surface_get_width(surface: *const SkSurface) -> i32 {
-    if surface.is_null() {
-        return 0;
-    }
-    (*surface).width()
+pub unsafe extern "C" fn sk_surface_get_width(surface: *const sk_surface_t) -> i32 {
+    RefCounted::get_ref(surface).map_or(0, |s| s.width())
 }
 
 /// Get the height of a surface.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_surface_get_height(surface: *const SkSurface) -> i32 {
-    if surface.is_null() {
-        return 0;
-    }
-    (*surface).height()
+pub unsafe extern "C" fn sk_surface_get_height(surface: *const sk_surface_t) -> i32 {
+    RefCounted::get_ref(surface).map_or(0, |s| s.height())
 }
 
 /// Get the pixel data from a surface.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_surface_peek_pixels(
-    surface: *const SkSurface,
+    surface: *const sk_surface_t,
     out_pixels: *mut *const u8,
     out_row_bytes: *mut usize,
 ) -> bool {
-    if surface.is_null() || out_pixels.is_null() || out_row_bytes.is_null() {
+    if out_pixels.is_null() || out_row_bytes.is_null() {
         return false;
     }
 
-    let surface = &*surface;
-    *out_pixels = surface.pixels().as_ptr();
-    *out_row_bytes = surface.row_bytes();
-    true
+    if let Some(s) = RefCounted::get_ref(surface) {
+        *out_pixels = s.pixels().as_ptr();
+        *out_row_bytes = s.row_bytes();
+        true
+    } else {
+        false
+    }
 }
 
 // =============================================================================
-// Paint API
+// Paint API (Reference Counted)
 // =============================================================================
 
+/// Reference counted paint type.
+pub type sk_paint_t = RefCounted<Paint>;
+
 /// Create a new paint.
+///
+/// Returns a paint with refcount of 1.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_paint_new() -> *mut SkPaint {
-    catch_panic(|| Box::into_raw(Box::new(Paint::new())))
+pub unsafe extern "C" fn sk_paint_new() -> *mut sk_paint_t {
+    catch_panic(|| RefCounted::new(Paint::new()))
 }
 
 /// Clone a paint.
+///
+/// Returns a new paint with refcount of 1.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_paint_clone(paint: *const SkPaint) -> *mut SkPaint {
-    if paint.is_null() {
-        return ptr::null_mut();
-    }
-    Box::into_raw(Box::new((*paint).clone()))
+pub unsafe extern "C" fn sk_paint_clone(paint: *const sk_paint_t) -> *mut sk_paint_t {
+    RefCounted::get_ref(paint).map_or(ptr::null_mut(), |p| RefCounted::new(p.clone()))
 }
 
-/// Delete a paint.
+/// Increment the reference count of a paint.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_paint_delete(paint: *mut SkPaint) {
-    if !paint.is_null() {
-        drop(Box::from_raw(paint));
-    }
+pub unsafe extern "C" fn sk_paint_ref(paint: *mut sk_paint_t) {
+    RefCounted::ref_ptr(paint);
+}
+
+/// Decrement the reference count of a paint (alias for unref).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sk_paint_delete(paint: *mut sk_paint_t) {
+    RefCounted::unref_ptr(paint);
+}
+
+/// Decrement the reference count of a paint.
+///
+/// Frees the paint when the count reaches 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sk_paint_unref(paint: *mut sk_paint_t) {
+    RefCounted::unref_ptr(paint);
+}
+
+/// Get the reference count of a paint.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sk_paint_get_refcnt(paint: *const sk_paint_t) -> u32 {
+    RefCounted::get_count(paint)
 }
 
 /// Set the paint color.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_paint_set_color(paint: *mut SkPaint, color: sk_color_t) {
-    if let Some(p) = paint.as_mut() {
+pub unsafe extern "C" fn sk_paint_set_color(paint: *mut sk_paint_t, color: sk_color_t) {
+    if let Some(p) = RefCounted::get_mut(paint) {
         p.set_color32(Color(color));
     }
 }
 
 /// Get the paint color.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_paint_get_color(paint: *const SkPaint) -> sk_color_t {
-    if let Some(p) = paint.as_ref() {
-        p.color32().0
-    } else {
-        0
-    }
+pub unsafe extern "C" fn sk_paint_get_color(paint: *const sk_paint_t) -> sk_color_t {
+    RefCounted::get_ref(paint).map_or(0, |p| p.color32().0)
 }
 
 /// Set the paint style.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_paint_set_style(paint: *mut SkPaint, style: u32) {
-    if let Some(p) = paint.as_mut() {
+pub unsafe extern "C" fn sk_paint_set_style(paint: *mut sk_paint_t, style: u32) {
+    if let Some(p) = RefCounted::get_mut(paint) {
         let style = match style {
             0 => Style::Fill,
             1 => Style::Stroke,
@@ -392,71 +557,85 @@ pub unsafe extern "C" fn sk_paint_set_style(paint: *mut SkPaint, style: u32) {
 
 /// Set the stroke width.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_paint_set_stroke_width(paint: *mut SkPaint, width: f32) {
-    if let Some(p) = paint.as_mut() {
+pub unsafe extern "C" fn sk_paint_set_stroke_width(paint: *mut sk_paint_t, width: f32) {
+    if let Some(p) = RefCounted::get_mut(paint) {
         p.set_stroke_width(width);
     }
 }
 
 /// Get the stroke width.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_paint_get_stroke_width(paint: *const SkPaint) -> f32 {
-    if let Some(p) = paint.as_ref() {
-        p.stroke_width()
-    } else {
-        0.0
-    }
+pub unsafe extern "C" fn sk_paint_get_stroke_width(paint: *const sk_paint_t) -> f32 {
+    RefCounted::get_ref(paint).map_or(0.0, |p| p.stroke_width())
 }
 
 /// Set anti-alias.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_paint_set_antialias(paint: *mut SkPaint, aa: bool) {
-    if let Some(p) = paint.as_mut() {
+pub unsafe extern "C" fn sk_paint_set_antialias(paint: *mut sk_paint_t, aa: bool) {
+    if let Some(p) = RefCounted::get_mut(paint) {
         p.set_anti_alias(aa);
     }
 }
 
 /// Check if anti-alias is enabled.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_paint_is_antialias(paint: *const SkPaint) -> bool {
-    if let Some(p) = paint.as_ref() {
-        p.is_anti_alias()
-    } else {
-        false
-    }
+pub unsafe extern "C" fn sk_paint_is_antialias(paint: *const sk_paint_t) -> bool {
+    RefCounted::get_ref(paint).map_or(false, |p| p.is_anti_alias())
 }
 
 // =============================================================================
-// Path API
+// Path API (Reference Counted)
 // =============================================================================
 
+/// Reference counted path type.
+pub type sk_path_t = RefCounted<Path>;
+
 /// Create a new path.
+///
+/// Returns a path with refcount of 1.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_path_new() -> *mut SkPath {
-    Box::into_raw(Box::new(Path::new()))
+pub unsafe extern "C" fn sk_path_new() -> *mut sk_path_t {
+    RefCounted::new(Path::new())
 }
 
 /// Clone a path.
+///
+/// Returns a new path with refcount of 1.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_path_clone(path: *const SkPath) -> *mut SkPath {
-    if path.is_null() {
-        return ptr::null_mut();
-    }
-    Box::into_raw(Box::new((*path).clone()))
+pub unsafe extern "C" fn sk_path_clone(path: *const sk_path_t) -> *mut sk_path_t {
+    RefCounted::get_ref(path).map_or(ptr::null_mut(), |p| RefCounted::new(p.clone()))
 }
 
-/// Delete a path.
+/// Increment the reference count of a path.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_path_delete(path: *mut SkPath) {
-    if !path.is_null() {
-        drop(Box::from_raw(path));
-    }
+pub unsafe extern "C" fn sk_path_ref(path: *mut sk_path_t) {
+    RefCounted::ref_ptr(path);
+}
+
+/// Decrement the reference count of a path (alias for unref).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sk_path_delete(path: *mut sk_path_t) {
+    RefCounted::unref_ptr(path);
+}
+
+/// Decrement the reference count of a path.
+///
+/// Frees the path when the count reaches 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sk_path_unref(path: *mut sk_path_t) {
+    RefCounted::unref_ptr(path);
+}
+
+/// Get the reference count of a path.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sk_path_get_refcnt(path: *const sk_path_t) -> u32 {
+    RefCounted::get_count(path)
 }
 
 /// Get the path bounds.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_path_get_bounds(path: *const SkPath, bounds: *mut sk_rect_t) {
-    if let (Some(p), Some(b)) = (path.as_ref(), bounds.as_mut()) {
+pub unsafe extern "C" fn sk_path_get_bounds(path: *const sk_path_t, bounds: *mut sk_rect_t) {
+    if let (Some(p), Some(b)) = (RefCounted::get_ref(path), bounds.as_mut()) {
         let rect = p.bounds();
         *b = rect.into();
     }
@@ -464,33 +643,27 @@ pub unsafe extern "C" fn sk_path_get_bounds(path: *const SkPath, bounds: *mut sk
 
 /// Check if path is empty.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_path_is_empty(path: *const SkPath) -> bool {
-    if let Some(p) = path.as_ref() {
-        p.is_empty()
-    } else {
-        true
-    }
+pub unsafe extern "C" fn sk_path_is_empty(path: *const sk_path_t) -> bool {
+    RefCounted::get_ref(path).map_or(true, |p| p.is_empty())
 }
 
 /// Get the fill type.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_path_get_filltype(path: *const SkPath) -> u32 {
-    if let Some(p) = path.as_ref() {
+pub unsafe extern "C" fn sk_path_get_filltype(path: *const sk_path_t) -> u32 {
+    RefCounted::get_ref(path).map_or(0, |p| {
         match p.fill_type() {
             FillType::Winding => 0,
             FillType::EvenOdd => 1,
             FillType::InverseWinding => 2,
             FillType::InverseEvenOdd => 3,
         }
-    } else {
-        0
-    }
+    })
 }
 
 /// Set the fill type.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_path_set_filltype(path: *mut SkPath, fill_type: u32) {
-    if let Some(p) = path.as_mut() {
+pub unsafe extern "C" fn sk_path_set_filltype(path: *mut sk_path_t, fill_type: u32) {
+    if let Some(p) = RefCounted::get_mut(path) {
         let ft = match fill_type {
             0 => FillType::Winding,
             1 => FillType::EvenOdd,
@@ -504,44 +677,57 @@ pub unsafe extern "C" fn sk_path_set_filltype(path: *mut SkPath, fill_type: u32)
 
 /// Check if path contains a point.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_path_contains(path: *const SkPath, x: f32, y: f32) -> bool {
-    if let Some(p) = path.as_ref() {
-        p.contains(Point::new(x, y))
-    } else {
-        false
-    }
+pub unsafe extern "C" fn sk_path_contains(path: *const sk_path_t, x: f32, y: f32) -> bool {
+    RefCounted::get_ref(path).map_or(false, |p| p.contains(Point::new(x, y)))
 }
 
 // =============================================================================
-// Path Builder API
+// Path Builder API (Reference Counted)
 // =============================================================================
+
+/// Reference counted path builder type.
+pub type sk_pathbuilder_t = RefCounted<PathBuilder>;
 
 /// Create a new path builder.
+///
+/// Returns a builder with refcount of 1.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_pathbuilder_new() -> *mut SkPathBuilder {
-    Box::into_raw(Box::new(PathBuilder::new()))
+pub unsafe extern "C" fn sk_pathbuilder_new() -> *mut sk_pathbuilder_t {
+    RefCounted::new(PathBuilder::new())
 }
 
-/// Delete a path builder.
+/// Increment the reference count of a path builder.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_pathbuilder_delete(builder: *mut SkPathBuilder) {
-    if !builder.is_null() {
-        drop(Box::from_raw(builder));
-    }
+pub unsafe extern "C" fn sk_pathbuilder_ref(builder: *mut sk_pathbuilder_t) {
+    RefCounted::ref_ptr(builder);
+}
+
+/// Decrement the reference count of a path builder (alias for unref).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sk_pathbuilder_delete(builder: *mut sk_pathbuilder_t) {
+    RefCounted::unref_ptr(builder);
+}
+
+/// Decrement the reference count of a path builder.
+///
+/// Frees the builder when the count reaches 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sk_pathbuilder_unref(builder: *mut sk_pathbuilder_t) {
+    RefCounted::unref_ptr(builder);
 }
 
 /// Move to a point.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_pathbuilder_move_to(builder: *mut SkPathBuilder, x: f32, y: f32) {
-    if let Some(b) = builder.as_mut() {
+pub unsafe extern "C" fn sk_pathbuilder_move_to(builder: *mut sk_pathbuilder_t, x: f32, y: f32) {
+    if let Some(b) = RefCounted::get_mut(builder) {
         b.move_to(x, y);
     }
 }
 
 /// Line to a point.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_pathbuilder_line_to(builder: *mut SkPathBuilder, x: f32, y: f32) {
-    if let Some(b) = builder.as_mut() {
+pub unsafe extern "C" fn sk_pathbuilder_line_to(builder: *mut sk_pathbuilder_t, x: f32, y: f32) {
+    if let Some(b) = RefCounted::get_mut(builder) {
         b.line_to(x, y);
     }
 }
@@ -549,13 +735,13 @@ pub unsafe extern "C" fn sk_pathbuilder_line_to(builder: *mut SkPathBuilder, x: 
 /// Quadratic bezier to a point.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_pathbuilder_quad_to(
-    builder: *mut SkPathBuilder,
+    builder: *mut sk_pathbuilder_t,
     cx: f32,
     cy: f32,
     x: f32,
     y: f32,
 ) {
-    if let Some(b) = builder.as_mut() {
+    if let Some(b) = RefCounted::get_mut(builder) {
         b.quad_to(cx, cy, x, y);
     }
 }
@@ -563,7 +749,7 @@ pub unsafe extern "C" fn sk_pathbuilder_quad_to(
 /// Cubic bezier to a point.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_pathbuilder_cubic_to(
-    builder: *mut SkPathBuilder,
+    builder: *mut sk_pathbuilder_t,
     c1x: f32,
     c1y: f32,
     c2x: f32,
@@ -571,15 +757,15 @@ pub unsafe extern "C" fn sk_pathbuilder_cubic_to(
     x: f32,
     y: f32,
 ) {
-    if let Some(b) = builder.as_mut() {
+    if let Some(b) = RefCounted::get_mut(builder) {
         b.cubic_to(c1x, c1y, c2x, c2y, x, y);
     }
 }
 
 /// Close the path.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_pathbuilder_close(builder: *mut SkPathBuilder) {
-    if let Some(b) = builder.as_mut() {
+pub unsafe extern "C" fn sk_pathbuilder_close(builder: *mut sk_pathbuilder_t) {
+    if let Some(b) = RefCounted::get_mut(builder) {
         b.close();
     }
 }
@@ -587,10 +773,10 @@ pub unsafe extern "C" fn sk_pathbuilder_close(builder: *mut SkPathBuilder) {
 /// Add a rectangle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_pathbuilder_add_rect(
-    builder: *mut SkPathBuilder,
+    builder: *mut sk_pathbuilder_t,
     rect: *const sk_rect_t,
 ) {
-    if let (Some(b), Some(r)) = (builder.as_mut(), rect.as_ref()) {
+    if let (Some(b), Some(r)) = (RefCounted::get_mut(builder), rect.as_ref()) {
         b.add_rect(&Rect::from(*r));
     }
 }
@@ -598,10 +784,10 @@ pub unsafe extern "C" fn sk_pathbuilder_add_rect(
 /// Add an oval.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_pathbuilder_add_oval(
-    builder: *mut SkPathBuilder,
+    builder: *mut sk_pathbuilder_t,
     rect: *const sk_rect_t,
 ) {
-    if let (Some(b), Some(r)) = (builder.as_mut(), rect.as_ref()) {
+    if let (Some(b), Some(r)) = (RefCounted::get_mut(builder), rect.as_ref()) {
         b.add_oval(&Rect::from(*r));
     }
 }
@@ -609,24 +795,37 @@ pub unsafe extern "C" fn sk_pathbuilder_add_oval(
 /// Add a circle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_pathbuilder_add_circle(
-    builder: *mut SkPathBuilder,
+    builder: *mut sk_pathbuilder_t,
     cx: f32,
     cy: f32,
     radius: f32,
 ) {
-    if let Some(b) = builder.as_mut() {
+    if let Some(b) = RefCounted::get_mut(builder) {
         b.add_circle(cx, cy, radius);
     }
 }
 
-/// Build the path (consumes the builder).
+/// Build the path and reset the builder.
+///
+/// Returns a new path with refcount of 1.
+/// The builder is reset and can be reused.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_pathbuilder_detach(builder: *mut SkPathBuilder) -> *mut SkPath {
-    if builder.is_null() {
-        return ptr::null_mut();
+pub unsafe extern "C" fn sk_pathbuilder_detach(builder: *mut sk_pathbuilder_t) -> *mut sk_path_t {
+    if let Some(b) = RefCounted::get_mut(builder) {
+        let path = std::mem::replace(b, PathBuilder::new()).build();
+        RefCounted::new(path)
+    } else {
+        ptr::null_mut()
     }
-    let builder = Box::from_raw(builder);
-    Box::into_raw(Box::new(builder.build()))
+}
+
+/// Build the path without resetting the builder.
+///
+/// Returns a new path with refcount of 1.
+/// The builder retains its current state.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sk_pathbuilder_snapshot(builder: *const sk_pathbuilder_t) -> *mut sk_path_t {
+    RefCounted::get_ref(builder).map_or(ptr::null_mut(), |b| RefCounted::new(b.clone().build()))
 }
 
 // =============================================================================
@@ -717,8 +916,8 @@ pub unsafe extern "C" fn sk_is_available() -> bool {
 
 /// Clear a surface with a color.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_surface_clear(surface: *mut SkSurface, color: sk_color_t) {
-    if let Some(s) = surface.as_mut() {
+pub unsafe extern "C" fn sk_surface_clear(surface: *mut sk_surface_t, color: sk_color_t) {
+    if let Some(s) = RefCounted::get_mut(surface) {
         let mut canvas = s.raster_canvas();
         canvas.clear(Color(color));
     }
@@ -727,11 +926,13 @@ pub unsafe extern "C" fn sk_surface_clear(surface: *mut SkSurface, color: sk_col
 /// Draw a rect on a surface.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_surface_draw_rect(
-    surface: *mut SkSurface,
+    surface: *mut sk_surface_t,
     rect: *const sk_rect_t,
-    paint: *const SkPaint,
+    paint: *const sk_paint_t,
 ) {
-    if let (Some(s), Some(r), Some(p)) = (surface.as_mut(), rect.as_ref(), paint.as_ref()) {
+    if let (Some(s), Some(r), Some(p)) =
+        (RefCounted::get_mut(surface), rect.as_ref(), RefCounted::get_ref(paint))
+    {
         let mut canvas = s.raster_canvas();
         canvas.draw_rect(&Rect::from(*r), p);
     }
@@ -740,13 +941,13 @@ pub unsafe extern "C" fn sk_surface_draw_rect(
 /// Draw a circle on a surface.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_surface_draw_circle(
-    surface: *mut SkSurface,
+    surface: *mut sk_surface_t,
     cx: f32,
     cy: f32,
     radius: f32,
-    paint: *const SkPaint,
+    paint: *const sk_paint_t,
 ) {
-    if let (Some(s), Some(p)) = (surface.as_mut(), paint.as_ref()) {
+    if let (Some(s), Some(p)) = (RefCounted::get_mut(surface), RefCounted::get_ref(paint)) {
         let mut canvas = s.raster_canvas();
         canvas.draw_circle(Point::new(cx, cy), radius, p);
     }
@@ -755,11 +956,15 @@ pub unsafe extern "C" fn sk_surface_draw_circle(
 /// Draw a path on a surface.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_surface_draw_path(
-    surface: *mut SkSurface,
-    path: *const SkPath,
-    paint: *const SkPaint,
+    surface: *mut sk_surface_t,
+    path: *const sk_path_t,
+    paint: *const sk_paint_t,
 ) {
-    if let (Some(s), Some(path), Some(p)) = (surface.as_mut(), path.as_ref(), paint.as_ref()) {
+    if let (Some(s), Some(path), Some(p)) = (
+        RefCounted::get_mut(surface),
+        RefCounted::get_ref(path),
+        RefCounted::get_ref(paint),
+    ) {
         let mut canvas = s.raster_canvas();
         canvas.draw_path(path, p);
     }
@@ -768,14 +973,14 @@ pub unsafe extern "C" fn sk_surface_draw_path(
 /// Draw a line on a surface.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_surface_draw_line(
-    surface: *mut SkSurface,
+    surface: *mut sk_surface_t,
     x0: f32,
     y0: f32,
     x1: f32,
     y1: f32,
-    paint: *const SkPaint,
+    paint: *const sk_paint_t,
 ) {
-    if let (Some(s), Some(p)) = (surface.as_mut(), paint.as_ref()) {
+    if let (Some(s), Some(p)) = (RefCounted::get_mut(surface), RefCounted::get_ref(paint)) {
         let mut canvas = s.raster_canvas();
         canvas.draw_line(Point::new(x0, y0), Point::new(x1, y1), p);
     }
@@ -792,7 +997,27 @@ mod tests {
             assert!(!surface.is_null());
             assert_eq!(sk_surface_get_width(surface), 100);
             assert_eq!(sk_surface_get_height(surface), 100);
+            assert_eq!(sk_surface_get_refcnt(surface), 1);
             sk_surface_unref(surface);
+        }
+    }
+
+    #[test]
+    fn test_surface_refcounting() {
+        unsafe {
+            let surface = sk_surface_new_raster(100, 100);
+            assert_eq!(sk_surface_get_refcnt(surface), 1);
+            assert!(sk_surface_is_unique(surface));
+
+            sk_surface_ref(surface);
+            assert_eq!(sk_surface_get_refcnt(surface), 2);
+            assert!(!sk_surface_is_unique(surface));
+
+            sk_surface_unref(surface);
+            assert_eq!(sk_surface_get_refcnt(surface), 1);
+            assert!(sk_surface_is_unique(surface));
+
+            sk_surface_unref(surface); // This frees it
         }
     }
 
@@ -801,6 +1026,7 @@ mod tests {
         unsafe {
             let paint = sk_paint_new();
             assert!(!paint.is_null());
+            assert_eq!(sk_paint_get_refcnt(paint), 1);
 
             sk_paint_set_color(paint, 0xFF0000FF); // Blue
             assert_eq!(sk_paint_get_color(paint), 0xFF0000FF);
@@ -809,6 +1035,28 @@ mod tests {
             assert_eq!(sk_paint_get_stroke_width(paint), 2.0);
 
             sk_paint_delete(paint);
+        }
+    }
+
+    #[test]
+    fn test_paint_refcounting() {
+        unsafe {
+            let paint = sk_paint_new();
+            assert_eq!(sk_paint_get_refcnt(paint), 1);
+
+            sk_paint_ref(paint);
+            assert_eq!(sk_paint_get_refcnt(paint), 2);
+
+            sk_paint_unref(paint);
+            assert_eq!(sk_paint_get_refcnt(paint), 1);
+
+            // Clone should create a new object with refcount 1
+            let paint2 = sk_paint_clone(paint);
+            assert_eq!(sk_paint_get_refcnt(paint), 1);
+            assert_eq!(sk_paint_get_refcnt(paint2), 1);
+
+            sk_paint_unref(paint);
+            sk_paint_unref(paint2);
         }
     }
 
@@ -826,6 +1074,7 @@ mod tests {
             let path = sk_pathbuilder_detach(builder);
             assert!(!path.is_null());
             assert!(!sk_path_is_empty(path));
+            assert_eq!(sk_path_get_refcnt(path), 1);
 
             let mut bounds = sk_rect_t::default();
             sk_path_get_bounds(path, &mut bounds);
@@ -833,6 +1082,28 @@ mod tests {
             assert_eq!(bounds.right, 100.0);
 
             sk_path_delete(path);
+            sk_pathbuilder_delete(builder);
+        }
+    }
+
+    #[test]
+    fn test_path_refcounting() {
+        unsafe {
+            let path = sk_path_new();
+            assert_eq!(sk_path_get_refcnt(path), 1);
+
+            sk_path_ref(path);
+            assert_eq!(sk_path_get_refcnt(path), 2);
+
+            let path2 = sk_path_clone(path);
+            assert_eq!(sk_path_get_refcnt(path), 2);
+            assert_eq!(sk_path_get_refcnt(path2), 1);
+
+            sk_path_unref(path);
+            assert_eq!(sk_path_get_refcnt(path), 1);
+
+            sk_path_unref(path);
+            sk_path_unref(path2);
         }
     }
 
@@ -869,6 +1140,25 @@ mod tests {
             sk_surface_draw_rect(surface, &rect, paint);
 
             sk_paint_delete(paint);
+            sk_surface_unref(surface);
+        }
+    }
+
+    #[test]
+    fn test_refcnt_utility() {
+        unsafe {
+            let surface = sk_surface_new_raster(100, 100);
+
+            // Test generic refcnt functions
+            let ptr = surface as *const sk_refcnt_t;
+            assert_eq!(sk_refcnt_get_count(ptr), 1);
+            assert!(sk_refcnt_is_unique(ptr));
+
+            sk_surface_ref(surface);
+            assert_eq!(sk_refcnt_get_count(ptr), 2);
+            assert!(!sk_refcnt_is_unique(ptr));
+
+            sk_surface_unref(surface);
             sk_surface_unref(surface);
         }
     }

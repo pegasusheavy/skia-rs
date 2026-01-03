@@ -326,7 +326,7 @@ impl<'a> Lexer<'a> {
             if let Some(&(_, '/')) = self.chars.peek() {
                 let mut chars_clone = self.chars.clone();
                 chars_clone.next();
-                
+
                 if let Some(&(_, '/')) = chars_clone.peek() {
                     // Line comment
                     self.chars.next();
@@ -1696,7 +1696,7 @@ mod tests {
         "#;
         let mut parser = Parser::new(source);
         let program = parser.parse_program().unwrap();
-        
+
         assert_eq!(program.functions.len(), 1);
         assert_eq!(program.functions[0].name, "main");
         assert_eq!(program.functions[0].return_type, SkslType::Vec4);
@@ -1713,7 +1713,7 @@ mod tests {
         "#;
         let mut parser = Parser::new(source);
         let program = parser.parse_program().unwrap();
-        
+
         assert_eq!(program.uniforms.len(), 2);
         assert_eq!(program.uniforms[0].name, "time");
         assert_eq!(program.uniforms[1].name, "resolution");

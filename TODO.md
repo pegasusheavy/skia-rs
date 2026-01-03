@@ -447,7 +447,7 @@
 ### 10.1 C API Design
 - [x] Mirror Skia's C API exactly (sk_* prefix)
 - [x] Opaque pointer types for all objects
-- [ ] Reference counting exposed through API
+- [x] Reference counting exposed through API - RefCounted<T> wrapper, sk_*_ref/unref, sk_refcnt_get_count
 - [x] Error handling via return codes + optional error info
 
 ### 10.2 Core FFI Functions
