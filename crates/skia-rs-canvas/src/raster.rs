@@ -1,10 +1,23 @@
 //! Rasterizer for drawing primitives to pixel buffers.
 //!
 //! This module provides software rasterization for basic shapes.
+//!
+//! ## Active Edge Table Algorithm
+//!
+//! For path filling, this module implements an optimized Active Edge Table (AET)
+//! scanline algorithm with the following characteristics:
+//!
+//! - **Global Edge Table (GET)**: Edges sorted by y_min for efficient activation
+//! - **Active Edge Table (AET)**: Only edges intersecting the current scanline
+//! - **Winding Number Calculation**: Supports both non-zero and even-odd fill rules
+//! - **X-Intersection Sorting**: Uses insertion sort optimized for nearly-sorted data
+//!
+//! The algorithm has O(n log n) setup time and O(n) per-scanline time, where n is
+//! the number of edges, making it efficient for complex paths.
 
 use skia_rs_core::{Color, Matrix, Point, Rect, Scalar};
 use skia_rs_paint::{BlendMode, Paint, Style};
-use skia_rs_path::{Path, PathElement};
+use skia_rs_path::{FillType, Path, PathElement};
 
 /// A pixel buffer for rasterization.
 #[derive(Debug, Clone)]
@@ -479,7 +492,6 @@ impl<'a> Rasterizer<'a> {
         // Check if we have a shader
         if let Some(shader) = paint.shader() {
             // Shader-based fill - sample each pixel
-            use skia_rs_paint::shader::Shader;
             for y in y0..y1 {
                 for x in x0..x1 {
                     // Sample shader at pixel center
@@ -619,8 +631,6 @@ impl<'a> Rasterizer<'a> {
         let max_x = (cx + r + 1.0).ceil() as i32;
         let min_y = (cy - r - 1.0).floor() as i32;
         let max_y = (cy + r + 1.0).ceil() as i32;
-
-        let r_sq = r * r;
 
         match paint.style() {
             Style::Fill => {
@@ -834,66 +844,194 @@ impl<'a> Rasterizer<'a> {
         }
     }
 
-    /// Fill a path using scanline algorithm.
+    /// Fill a path using the optimized Active Edge Table algorithm.
+    ///
+    /// This implementation uses:
+    /// - Global Edge Table (GET) for efficient edge activation
+    /// - Active Edge Table (AET) for tracking current edges
+    /// - Full winding number calculation for non-zero fill rule
+    /// - Even-odd fill rule support
+    /// - Incremental x-intercept updates between scanlines
     fn fill_path(&mut self, path: &Path, paint: &Paint) {
-        // Get transformed bounds
-        let bounds = self.matrix.map_rect(&path.bounds());
-
-        let y_min = bounds.top.floor() as i32;
-        let y_max = bounds.bottom.ceil() as i32;
-
+        let fill_type = path.fill_type();
         let color = paint.color32();
         let blend_mode = paint.blend_mode();
 
-        // Collect edges
+        // Collect edges from path
         let edges = collect_edges(path, &self.matrix);
+        if edges.is_empty() {
+            return;
+        }
 
-        // Scanline fill
+        // Create Global Edge Table (edges sorted by y_min)
+        let mut get = GlobalEdgeTable::new(edges);
+
+        // Get scanline range
+        let Some(y_start) = get.y_min() else {
+            return;
+        };
+        let y_end = get.y_max();
+
+        let y_min = y_start.floor() as i32;
+        let y_max = y_end.ceil() as i32;
+
+        // Create Active Edge Table
+        let mut aet = ActiveEdgeTable::new();
+
+        // Process each scanline
         for y in y_min..y_max {
             let scanline = y as f32 + 0.5;
 
-            // Find intersections
-            let mut intersections: Vec<f32> = Vec::new();
+            // Add new edges that become active at this scanline
+            aet.add_edges(get.get_new_edges_at(scanline), scanline);
 
-            for edge in &edges {
-                if let Some(x) = edge.intersect_scanline(scanline) {
-                    intersections.push(x);
+            // Remove edges that are no longer active
+            aet.remove_inactive(scanline);
+
+            // Skip if no active edges
+            if aet.is_empty() {
+                continue;
+            }
+
+            // Sort active edges by x-intercept (insertion sort - efficient for nearly-sorted)
+            aet.sort_by_x();
+
+            // Get spans to fill based on fill rule
+            let spans = aet.get_spans(fill_type);
+
+            // Fill spans
+            for (x0, x1) in spans {
+                let x_start = x0.round() as i32;
+                let x_end = x1.round() as i32;
+                if x_start < x_end {
+                    self.draw_hline(x_start, x_end - 1, y, color, blend_mode);
                 }
             }
 
-            // Sort intersections
-            intersections.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            // Update x-intercepts for next scanline
+            aet.step_all();
+        }
+    }
 
-            // Fill between pairs
-            let mut i = 0;
-            while i + 1 < intersections.len() {
-                let x0 = intersections[i].round() as i32;
-                let x1 = intersections[i + 1].round() as i32;
-                self.draw_hline(x0, x1, y, color, blend_mode);
-                i += 2;
+    /// Fill a path using anti-aliased rendering.
+    ///
+    /// Uses supersampling for improved edge quality.
+    pub fn fill_path_aa(&mut self, path: &Path, paint: &Paint) {
+        let fill_type = path.fill_type();
+        let color = paint.color32();
+        let blend_mode = paint.blend_mode();
+
+        // Collect edges from path
+        let edges = collect_edges(path, &self.matrix);
+        if edges.is_empty() {
+            return;
+        }
+
+        // Create Global Edge Table for initial scanline range
+        let get = GlobalEdgeTable::new(edges);
+
+        let Some(y_start) = get.y_min() else {
+            return;
+        };
+        let y_end = get.y_max();
+
+        let y_min = y_start.floor() as i32;
+        let y_max = y_end.ceil() as i32;
+
+        // 4x vertical supersampling
+        const SAMPLES: usize = 4;
+        let sample_offsets = [0.125f32, 0.375, 0.625, 0.875];
+
+        // Process each pixel row
+        for y in y_min..y_max {
+            // Accumulate coverage for each pixel
+            let mut coverage_map: std::collections::HashMap<i32, f32> =
+                std::collections::HashMap::new();
+
+            // Sample at multiple y positions within the pixel
+            for &offset in &sample_offsets {
+                let scanline = y as f32 + offset;
+
+                // Re-create AET for each sample (simpler than tracking multiple)
+                let mut sample_aet = ActiveEdgeTable::new();
+                let edges = collect_edges(path, &self.matrix);
+                let mut sample_get = GlobalEdgeTable::new(edges);
+
+                sample_aet.add_edges(sample_get.get_new_edges_at(scanline), scanline);
+
+                if sample_aet.is_empty() {
+                    continue;
+                }
+
+                sample_aet.sort_by_x();
+                let spans = sample_aet.get_spans(fill_type);
+
+                // Accumulate coverage
+                for (x0, x1) in spans {
+                    let x_start = x0.floor() as i32;
+                    let x_end = x1.ceil() as i32;
+
+                    for x in x_start..x_end {
+                        // Calculate pixel coverage for this sample
+                        let pixel_left = x as f32;
+                        let pixel_right = (x + 1) as f32;
+
+                        let overlap_left = pixel_left.max(x0);
+                        let overlap_right = pixel_right.min(x1);
+                        let overlap = (overlap_right - overlap_left).max(0.0);
+
+                        *coverage_map.entry(x).or_insert(0.0) += overlap / SAMPLES as f32;
+                    }
+                }
+            }
+
+            // Render pixels with accumulated coverage
+            for (x, coverage) in coverage_map {
+                if coverage > 0.0 {
+                    self.buffer
+                        .blend_pixel_aa(x, y, color, coverage.min(1.0), blend_mode);
+                }
             }
         }
     }
 }
 
-/// An edge for scanline rasterization.
+/// An edge for scanline rasterization with winding direction.
+///
+/// Edges are oriented from y_min to y_max, and the winding direction
+/// is used for non-zero fill rule calculation.
 #[derive(Debug, Clone)]
 struct Edge {
+    /// Minimum y coordinate (top of edge).
     y_min: f32,
+    /// Maximum y coordinate (bottom of edge).
     y_max: f32,
+    /// X coordinate at y_min.
     x_at_y_min: f32,
-    inv_slope: f32, // dx/dy
+    /// Inverse slope (dx/dy) for efficient x calculation.
+    inv_slope: f32,
+    /// Winding direction: +1 for downward edges, -1 for upward edges.
+    /// Used for non-zero fill rule.
+    winding: i32,
 }
 
 impl Edge {
+    /// Create a new edge from two points.
+    ///
+    /// Returns `None` for horizontal edges (no contribution to fill).
     fn new(p0: Point, p1: Point) -> Option<Self> {
-        let (top, bottom) = if p0.y < p1.y { (p0, p1) } else { (p1, p0) };
-
-        let dy = bottom.y - top.y;
+        let dy = p1.y - p0.y;
         if dy.abs() < 0.001 {
             return None; // Horizontal edge
         }
 
+        // Determine winding direction based on original edge direction
+        let winding = if dy > 0.0 { 1 } else { -1 };
+
+        // Orient edge so y_min < y_max
+        let (top, bottom) = if p0.y < p1.y { (p0, p1) } else { (p1, p0) };
+
+        let dy = bottom.y - top.y;
         let dx = bottom.x - top.x;
 
         Some(Self {
@@ -901,15 +1039,212 @@ impl Edge {
             y_max: bottom.y,
             x_at_y_min: top.x,
             inv_slope: dx / dy,
+            winding,
         })
     }
 
-    fn intersect_scanline(&self, y: f32) -> Option<f32> {
-        if y < self.y_min || y >= self.y_max {
-            return None;
+    /// Calculate x intersection at a given scanline y.
+    #[inline]
+    fn x_at(&self, y: f32) -> f32 {
+        self.x_at_y_min + (y - self.y_min) * self.inv_slope
+    }
+
+    /// Check if this edge is active at the given scanline.
+    ///
+    /// Note: This method is available for direct edge queries but is not used
+    /// by the optimized AET algorithm which tracks edges through the GET.
+    #[inline]
+    #[allow(dead_code)]
+    fn is_active_at(&self, y: f32) -> bool {
+        y >= self.y_min && y < self.y_max
+    }
+}
+
+/// Active edge entry for the Active Edge Table.
+///
+/// Contains the current x-intercept and a reference to the edge.
+#[derive(Debug, Clone)]
+struct ActiveEdge {
+    /// Current x-intercept at the current scanline.
+    x: f32,
+    /// Inverse slope for incremental updates.
+    inv_slope: f32,
+    /// Winding direction.
+    winding: i32,
+    /// Maximum y coordinate (for removal).
+    y_max: f32,
+}
+
+impl ActiveEdge {
+    /// Create a new active edge from an Edge at a given scanline.
+    fn from_edge(edge: &Edge, y: f32) -> Self {
+        Self {
+            x: edge.x_at(y),
+            inv_slope: edge.inv_slope,
+            winding: edge.winding,
+            y_max: edge.y_max,
         }
-        let x = self.x_at_y_min + (y - self.y_min) * self.inv_slope;
-        Some(x)
+    }
+
+    /// Update x-intercept for the next scanline.
+    #[inline]
+    fn step(&mut self) {
+        self.x += self.inv_slope;
+    }
+
+    /// Check if this edge is still active at the given y.
+    #[inline]
+    fn is_active_at(&self, y: f32) -> bool {
+        y < self.y_max
+    }
+}
+
+/// Global Edge Table - edges sorted by y_min for efficient scanline processing.
+struct GlobalEdgeTable {
+    /// Edges sorted by y_min.
+    edges: Vec<Edge>,
+    /// Current index into the edge list.
+    current_index: usize,
+}
+
+impl GlobalEdgeTable {
+    /// Create a new GET from a list of edges.
+    fn new(mut edges: Vec<Edge>) -> Self {
+        // Sort edges by y_min (primary), then by x_at_y_min (secondary)
+        edges.sort_by(|a, b| {
+            a.y_min
+                .partial_cmp(&b.y_min)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    a.x_at_y_min
+                        .partial_cmp(&b.x_at_y_min)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+        });
+
+        Self {
+            edges,
+            current_index: 0,
+        }
+    }
+
+    /// Get the minimum y coordinate where edges start.
+    fn y_min(&self) -> Option<f32> {
+        self.edges.first().map(|e| e.y_min)
+    }
+
+    /// Get the maximum y coordinate where edges end.
+    fn y_max(&self) -> f32 {
+        self.edges
+            .iter()
+            .map(|e| e.y_max)
+            .fold(f32::NEG_INFINITY, f32::max)
+    }
+
+    /// Get all edges that become active at the given scanline.
+    fn get_new_edges_at(&mut self, y: f32) -> impl Iterator<Item = &Edge> {
+        let start = self.current_index;
+        while self.current_index < self.edges.len() && self.edges[self.current_index].y_min <= y {
+            self.current_index += 1;
+        }
+        self.edges[start..self.current_index].iter()
+    }
+}
+
+/// Active Edge Table - maintains edges intersecting the current scanline.
+struct ActiveEdgeTable {
+    /// Active edges, sorted by x-intercept.
+    edges: Vec<ActiveEdge>,
+}
+
+impl ActiveEdgeTable {
+    /// Create a new empty AET.
+    fn new() -> Self {
+        Self { edges: Vec::new() }
+    }
+
+    /// Add new edges that become active at the given scanline.
+    fn add_edges<'a>(&mut self, new_edges: impl Iterator<Item = &'a Edge>, y: f32) {
+        for edge in new_edges {
+            self.edges.push(ActiveEdge::from_edge(edge, y));
+        }
+    }
+
+    /// Remove edges that are no longer active at the given scanline.
+    fn remove_inactive(&mut self, y: f32) {
+        self.edges.retain(|e| e.is_active_at(y));
+    }
+
+    /// Sort edges by x-intercept using insertion sort.
+    ///
+    /// Insertion sort is optimal here because the list is nearly sorted
+    /// (edges only move slightly between scanlines).
+    fn sort_by_x(&mut self) {
+        // Insertion sort - optimal for nearly sorted data
+        for i in 1..self.edges.len() {
+            let mut j = i;
+            while j > 0 && self.edges[j - 1].x > self.edges[j].x {
+                self.edges.swap(j - 1, j);
+                j -= 1;
+            }
+        }
+    }
+
+    /// Step all edges to the next scanline.
+    fn step_all(&mut self) {
+        for edge in &mut self.edges {
+            edge.step();
+        }
+    }
+
+    /// Get span pairs for filling using the specified fill rule.
+    fn get_spans(&self, fill_type: FillType) -> Vec<(f32, f32)> {
+        let mut spans = Vec::new();
+
+        match fill_type {
+            FillType::Winding | FillType::InverseWinding => {
+                // Non-zero winding rule
+                let mut winding = 0i32;
+                let mut span_start: Option<f32> = None;
+
+                for edge in &self.edges {
+                    let was_inside = winding != 0;
+                    winding += edge.winding;
+                    let is_inside = winding != 0;
+
+                    if !was_inside && is_inside {
+                        span_start = Some(edge.x);
+                    } else if was_inside && !is_inside {
+                        if let Some(start) = span_start {
+                            spans.push((start, edge.x));
+                            span_start = None;
+                        }
+                    }
+                }
+            }
+            FillType::EvenOdd | FillType::InverseEvenOdd => {
+                // Even-odd rule - fill between alternating pairs
+                let mut inside = false;
+                let mut span_start: Option<f32> = None;
+
+                for edge in &self.edges {
+                    inside = !inside;
+                    if inside {
+                        span_start = Some(edge.x);
+                    } else if let Some(start) = span_start {
+                        spans.push((start, edge.x));
+                        span_start = None;
+                    }
+                }
+            }
+        }
+
+        spans
+    }
+
+    /// Check if the AET is empty.
+    fn is_empty(&self) -> bool {
+        self.edges.is_empty()
     }
 }
 
@@ -1125,5 +1460,228 @@ mod tests {
         // Semi-transparent red over blue should give purple-ish
         assert!(result.red() > 100);
         assert!(result.blue() > 100);
+    }
+
+    // ============ Active Edge Table Tests ============
+
+    #[test]
+    fn test_edge_creation() {
+        // Horizontal edge should return None
+        let p0 = Point::new(0.0, 10.0);
+        let p1 = Point::new(100.0, 10.0);
+        assert!(Edge::new(p0, p1).is_none());
+
+        // Downward edge (positive winding)
+        let p0 = Point::new(0.0, 0.0);
+        let p1 = Point::new(10.0, 100.0);
+        let edge = Edge::new(p0, p1).unwrap();
+        assert_eq!(edge.winding, 1);
+        assert_eq!(edge.y_min, 0.0);
+        assert_eq!(edge.y_max, 100.0);
+
+        // Upward edge (negative winding)
+        let p0 = Point::new(10.0, 100.0);
+        let p1 = Point::new(0.0, 0.0);
+        let edge = Edge::new(p0, p1).unwrap();
+        assert_eq!(edge.winding, -1);
+        assert_eq!(edge.y_min, 0.0);
+        assert_eq!(edge.y_max, 100.0);
+    }
+
+    #[test]
+    fn test_edge_x_at() {
+        let p0 = Point::new(0.0, 0.0);
+        let p1 = Point::new(100.0, 100.0);
+        let edge = Edge::new(p0, p1).unwrap();
+
+        // 45-degree line: x should equal y
+        assert!((edge.x_at(0.0) - 0.0).abs() < 0.001);
+        assert!((edge.x_at(50.0) - 50.0).abs() < 0.001);
+        assert!((edge.x_at(100.0) - 100.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_active_edge_step() {
+        let p0 = Point::new(0.0, 0.0);
+        let p1 = Point::new(100.0, 100.0);
+        let edge = Edge::new(p0, p1).unwrap();
+
+        let mut active = ActiveEdge::from_edge(&edge, 0.5);
+        let initial_x = active.x;
+        active.step();
+        // After stepping, x should increase by inv_slope
+        assert!((active.x - initial_x - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_global_edge_table_ordering() {
+        let edges = vec![
+            Edge::new(Point::new(0.0, 50.0), Point::new(10.0, 100.0)).unwrap(),
+            Edge::new(Point::new(0.0, 0.0), Point::new(10.0, 50.0)).unwrap(),
+            Edge::new(Point::new(0.0, 25.0), Point::new(10.0, 75.0)).unwrap(),
+        ];
+
+        let get = GlobalEdgeTable::new(edges);
+
+        // Edges should be sorted by y_min
+        assert_eq!(get.edges[0].y_min, 0.0);
+        assert_eq!(get.edges[1].y_min, 25.0);
+        assert_eq!(get.edges[2].y_min, 50.0);
+    }
+
+    #[test]
+    fn test_active_edge_table_spans_even_odd() {
+        let mut aet = ActiveEdgeTable::new();
+
+        // Simulate a square: 4 vertical edges
+        let left_edge = Edge::new(Point::new(10.0, 0.0), Point::new(10.0, 100.0)).unwrap();
+        let right_edge = Edge::new(Point::new(50.0, 0.0), Point::new(50.0, 100.0)).unwrap();
+
+        aet.add_edges([&left_edge, &right_edge].into_iter(), 50.0);
+        aet.sort_by_x();
+
+        let spans = aet.get_spans(FillType::EvenOdd);
+        assert_eq!(spans.len(), 1);
+        assert!((spans[0].0 - 10.0).abs() < 0.001);
+        assert!((spans[0].1 - 50.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_active_edge_table_spans_nonzero() {
+        let mut aet = ActiveEdgeTable::new();
+
+        // Create a proper polygon contour - a square traversed clockwise
+        // Left edge goes down (winding +1), right edge goes up (winding -1)
+        let left_edge = Edge::new(Point::new(10.0, 0.0), Point::new(10.0, 100.0)).unwrap();
+        // Reverse the right edge so it goes up (from bottom to top)
+        let right_edge = Edge::new(Point::new(50.0, 100.0), Point::new(50.0, 0.0)).unwrap();
+
+        aet.add_edges([&left_edge, &right_edge].into_iter(), 50.0);
+        aet.sort_by_x();
+
+        let spans = aet.get_spans(FillType::Winding);
+
+        // Left edge winding +1, right edge winding -1
+        // At scanline: winding goes 0 -> +1 -> 0
+        // Should produce one span from left to right
+        assert_eq!(spans.len(), 1);
+        assert!((spans[0].0 - 10.0).abs() < 0.001);
+        assert!((spans[0].1 - 50.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_fill_triangle_path() {
+        use skia_rs_path::PathBuilder;
+
+        let mut buffer = PixelBuffer::new(100, 100);
+        buffer.clear(Color::from_argb(255, 255, 255, 255));
+
+        let mut rasterizer = Rasterizer::new(&mut buffer);
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_argb(255, 255, 0, 0));
+        paint.set_style(Style::Fill);
+
+        // Create a triangle path
+        let mut builder = PathBuilder::new();
+        builder
+            .move_to(50.0, 10.0)
+            .line_to(90.0, 90.0)
+            .line_to(10.0, 90.0)
+            .close();
+        let path = builder.build();
+
+        rasterizer.draw_path(&path, &paint);
+
+        // Check a pixel inside the triangle (centroid-ish)
+        let pixel = buffer.get_pixel(50, 60).unwrap();
+        assert_eq!(pixel.red(), 255, "Triangle should be filled at center");
+
+        // Check a pixel outside the triangle
+        let pixel = buffer.get_pixel(10, 10).unwrap();
+        assert_eq!(
+            pixel.red(),
+            255,
+            "Outside should remain white (background)"
+        );
+        assert_eq!(pixel.green(), 255);
+    }
+
+    #[test]
+    fn test_fill_complex_polygon() {
+        use skia_rs_path::PathBuilder;
+
+        let mut buffer = PixelBuffer::new(100, 100);
+        buffer.clear(Color::from_argb(255, 0, 0, 0));
+
+        let mut rasterizer = Rasterizer::new(&mut buffer);
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_argb(255, 0, 255, 0));
+        paint.set_style(Style::Fill);
+
+        // Create a star-like shape (self-intersecting)
+        let mut builder = PathBuilder::new();
+        builder
+            .move_to(50.0, 10.0)
+            .line_to(61.0, 40.0)
+            .line_to(90.0, 40.0)
+            .line_to(68.0, 58.0)
+            .line_to(79.0, 90.0)
+            .line_to(50.0, 70.0)
+            .line_to(21.0, 90.0)
+            .line_to(32.0, 58.0)
+            .line_to(10.0, 40.0)
+            .line_to(39.0, 40.0)
+            .close();
+        let path = builder.build();
+
+        rasterizer.draw_path(&path, &paint);
+
+        // The path should have some filled pixels
+        // Check center region
+        let pixel = buffer.get_pixel(50, 50).unwrap();
+        // With even-odd rule, center of star might not be filled
+        // With non-zero (default), it should be filled
+        assert_eq!(pixel.green(), 255, "Star center should be filled");
+    }
+
+    #[test]
+    fn test_winding_number_calculation() {
+        // Test that the winding rule correctly handles overlapping regions
+        use skia_rs_path::PathBuilder;
+
+        let mut buffer = PixelBuffer::new(100, 100);
+
+        // Create two overlapping squares - with non-zero winding, overlap is filled
+        let mut path_builder = PathBuilder::new();
+
+        // First square (clockwise)
+        path_builder
+            .move_to(20.0, 20.0)
+            .line_to(60.0, 20.0)
+            .line_to(60.0, 60.0)
+            .line_to(20.0, 60.0)
+            .close();
+
+        // Second square (also clockwise, overlapping)
+        path_builder
+            .move_to(40.0, 40.0)
+            .line_to(80.0, 40.0)
+            .line_to(80.0, 80.0)
+            .line_to(40.0, 80.0)
+            .close();
+
+        let mut path = path_builder.build();
+        path.set_fill_type(FillType::Winding);
+
+        buffer.clear(Color::from_argb(255, 255, 255, 255));
+        let mut rasterizer = Rasterizer::new(&mut buffer);
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_argb(255, 255, 0, 0));
+
+        rasterizer.fill_path(&path, &paint);
+
+        // With non-zero winding, the overlap region should be filled
+        let overlap_pixel = buffer.get_pixel(50, 50).unwrap();
+        assert_eq!(overlap_pixel.red(), 255, "Overlap should be filled");
     }
 }

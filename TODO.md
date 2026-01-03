@@ -61,7 +61,7 @@
 | Phase 5: Text & Fonts | ✅ Complete | 100% |
 | Phase 6: Image & Codec | ✅ Complete | 95% |
 | Phase 7: GPU Backend | 🔄 In Progress | 40% |
-| Phase 8: CPU Rasterizer | ✅ Complete | 90% |
+| Phase 8: CPU Rasterizer | ✅ Complete | 95% |
 | Phase 9: Advanced Features | 🔄 In Progress | 50% |
 | Phase 10: FFI Layer | ✅ Complete | 80% |
 | Phase 11: Testing | ✅ Complete | 95% |
@@ -388,9 +388,9 @@
 ### 8.1 Scanline Rasterization
 - [x] Edge building from paths
 - [x] Scanline fill algorithm
-- [ ] Active edge table optimization
+- [x] Active edge table optimization (GET/AET with O(n) per-scanline)
 - [x] Subpixel coverage computation - blend_pixel_aa
-- [x] Winding number calculation (basic only)
+- [x] Winding number calculation (full: non-zero and even-odd fill rules)
 - [x] Anti-aliased rendering - Wu's line algorithm, AA circles
 
 ### 8.2 Blitting
