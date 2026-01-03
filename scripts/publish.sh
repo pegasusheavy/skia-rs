@@ -33,19 +33,33 @@ INDEX_WAIT=45           # Time to wait for crates.io to index a new crate
 
 # Crates in dependency order (must publish in this order)
 # Note: skia-rs-bench is excluded (publish = false, internal benchmarks only)
+# Note: skia-rs (the combined crate) MUST be published LAST as it depends on all others
 CRATES=(
+    # Foundation crates (no internal dependencies)
     "skia-rs-core"
+    # Geometry (depends on: core)
     "skia-rs-path"
+    # Styling (depends on: core, path)
     "skia-rs-paint"
+    # Text (depends on: core, path, paint)
     "skia-rs-text"
+    # Image codecs (depends on: core)
     "skia-rs-codec"
+    # Drawing (depends on: core, path, paint)
     "skia-rs-canvas"
+    # GPU backends (depends on: core, path, paint, canvas)
     "skia-rs-gpu"
+    # SVG (depends on: core, path, paint, canvas)
     "skia-rs-svg"
+    # PDF (depends on: core, path, paint, canvas, text)
     "skia-rs-pdf"
+    # Lottie animations (depends on: core, path, paint, canvas)
     "skia-rs-skottie"
+    # C FFI bindings (depends on: all above)
     "skia-rs-ffi"
+    # High-level safe API (depends on: all above)
     "skia-rs-safe"
+    # Combined crate - MUST BE LAST (depends on: all above)
     "skia-rs"
 )
 
