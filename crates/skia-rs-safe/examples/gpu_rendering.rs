@@ -7,11 +7,18 @@
 //! - Reading back pixels to CPU
 //!
 //! Note: This requires a GPU. If no GPU is available, it will fail gracefully.
+//!
+//! Run with: cargo run --example gpu_rendering --features "wgpu-backend,codec"
 
+#[cfg(all(feature = "wgpu-backend", feature = "codec"))]
 use skia_rs_codec::{ImageEncoder, ImageInfo, PngEncoder};
+#[cfg(feature = "wgpu-backend")]
 use skia_rs_core::Color;
+#[cfg(all(feature = "wgpu-backend", feature = "codec"))]
 use skia_rs_core::{AlphaType, ColorType};
+#[cfg(all(feature = "wgpu-backend", feature = "codec"))]
 use std::fs::File;
+#[cfg(all(feature = "wgpu-backend", feature = "codec"))]
 use std::io::BufWriter;
 
 fn main() {
@@ -124,8 +131,10 @@ fn main() {
 
     #[cfg(not(feature = "wgpu-backend"))]
     {
-        eprintln!("GPU example requires 'wgpu-backend' feature.");
-        eprintln!("Compile with: cargo run --example gpu_rendering --features wgpu-backend");
+        eprintln!("GPU example requires 'wgpu-backend' and 'codec' features.");
+        eprintln!(
+            "Compile with: cargo run --example gpu_rendering --features \"wgpu-backend,codec\""
+        );
     }
 
     println!("\nExample complete!");

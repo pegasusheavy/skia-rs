@@ -5,15 +5,27 @@
 //! - Drawing shapes on a PDF canvas
 //! - Adding metadata to the PDF
 //! - Saving the PDF to a file
-
-use skia_rs_core::{Color, Point, Rect};
-use skia_rs_paint::{Paint, Style};
-use skia_rs_path::PathBuilder;
-use skia_rs_pdf::{PdfDocument, PdfMetadata};
-use std::fs::File;
-use std::io::BufWriter;
+//!
+//! Run with: cargo run --example pdf_generator --features "pdf"
 
 fn main() {
+    #[cfg(feature = "pdf")]
+    pdf_generator_main();
+
+    #[cfg(not(feature = "pdf"))]
+    println!(
+        "This example requires the 'pdf' feature. Run with: cargo run --example pdf_generator --features \"pdf\""
+    );
+}
+
+#[cfg(feature = "pdf")]
+fn pdf_generator_main() {
+    use skia_rs_core::{Color, Point, Rect};
+    use skia_rs_paint::{Paint, Style};
+    use skia_rs_path::PathBuilder;
+    use skia_rs_pdf::{PdfDocument, PdfMetadata};
+    use std::fs::File;
+    use std::io::BufWriter;
     println!("skia-rs PDF Generator Example");
     println!("==============================\n");
 
@@ -247,3 +259,7 @@ fn main() {
 
     println!("\nExample complete!");
 }
+
+#[cfg(feature = "pdf")]
+#[allow(unused_imports)]
+use skia_rs_pdf as _; // For doc visibility

@@ -4,17 +4,29 @@
 //! - Font configuration with Font
 //! - Text blob creation and rendering
 //! - Drawing text with different sizes and colors
-
-use skia_rs_canvas::Surface;
-use skia_rs_codec::{ImageEncoder, PngEncoder};
-use skia_rs_core::{AlphaType, Color, ColorType, Point, Rect};
-use skia_rs_paint::{Paint, Style};
-use skia_rs_text::{Font, TextBlob, TextBlobBuilder, Typeface};
-use std::fs::File;
-use std::io::BufWriter;
-use std::sync::Arc;
+//!
+//! Run with: cargo run --example text_rendering --features "text,codec"
 
 fn main() {
+    #[cfg(all(feature = "text", feature = "codec"))]
+    text_rendering_main();
+
+    #[cfg(not(all(feature = "text", feature = "codec")))]
+    println!(
+        "This example requires the 'text' and 'codec' features. Run with: cargo run --example text_rendering --features \"text,codec\""
+    );
+}
+
+#[cfg(all(feature = "text", feature = "codec"))]
+fn text_rendering_main() {
+    use skia_rs_canvas::Surface;
+    use skia_rs_codec::{ImageEncoder, PngEncoder};
+    use skia_rs_core::{AlphaType, Color, ColorType, Point, Rect};
+    use skia_rs_paint::{Paint, Style};
+    use skia_rs_text::{Font, TextBlob, TextBlobBuilder, Typeface};
+    use std::fs::File;
+    use std::io::BufWriter;
+    use std::sync::Arc;
     println!("skia-rs Text Rendering Example");
     println!("===============================\n");
 
@@ -215,3 +227,6 @@ fn main() {
 
     println!("\nExample complete!");
 }
+
+#[cfg(all(feature = "text", feature = "codec"))]
+use skia_rs_canvas::Canvas;

@@ -446,7 +446,16 @@ mod tests {
         let formatted = report.format();
         assert!(formatted.contains("fast_op"));
         assert!(formatted.contains("slow_op"));
-        assert!(formatted.contains("Faster: 1"));
-        assert!(formatted.contains("Slower: 1"));
+        // Match the actual output format: "**Faster**: 1 operations"
+        assert!(
+            formatted.contains("**Faster**: 1"),
+            "Expected report to contain '**Faster**: 1', got: {}",
+            formatted
+        );
+        assert!(
+            formatted.contains("**Slower**: 1"),
+            "Expected report to contain '**Slower**: 1', got: {}",
+            formatted
+        );
     }
 }
