@@ -7,7 +7,7 @@
 //! - Saving to a file
 
 use skia_rs_canvas::Surface;
-use skia_rs_codec::{PngEncoder, ImageEncoder};
+use skia_rs_codec::{ImageEncoder, PngEncoder};
 use skia_rs_core::{Color, Point, Rect};
 use skia_rs_paint::{Paint, Style};
 use skia_rs_path::PathBuilder;
@@ -17,8 +17,7 @@ fn main() {
     println!("==============================\n");
 
     // Create a 400x300 RGBA surface
-    let mut surface = Surface::new_raster_n32_premul(400, 300)
-        .expect("Failed to create surface");
+    let mut surface = Surface::new_raster_n32_premul(400, 300).expect("Failed to create surface");
 
     println!("Created {}x{} surface", surface.width(), surface.height());
 
@@ -62,7 +61,10 @@ fn main() {
         paint.set_stroke_width(3.0);
 
         canvas.draw_circle(Point::new(230.0, 200.0), 50.0, &paint);
-        println!("Drew yellow stroked circle at ({}, {}) with radius {}", 230, 200, 50);
+        println!(
+            "Drew yellow stroked circle at ({}, {}) with radius {}",
+            230, 200, 50
+        );
 
         // Draw a path (triangle)
         let mut builder = PathBuilder::new();
@@ -102,7 +104,9 @@ fn main() {
         skia_rs_core::AlphaType::Premul,
     );
 
-    if let Some(image) = skia_rs_codec::Image::from_raster_data(img_info, pixels, width as usize * 4) {
+    if let Some(image) =
+        skia_rs_codec::Image::from_raster_data(&img_info, pixels, width as usize * 4)
+    {
         let encoder = PngEncoder::new();
         match encoder.encode_bytes(&image) {
             Ok(png_data) => {

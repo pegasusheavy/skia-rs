@@ -3,6 +3,7 @@
 //! This crate provides benchmark harnesses and test data generators
 //! for performance testing skia-rs components.
 
+pub mod dm;
 pub mod memory;
 pub mod skia_comparison;
 

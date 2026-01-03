@@ -26,6 +26,7 @@
 pub mod atlas;
 pub mod command;
 pub mod context;
+pub mod debug;
 pub mod glyph_cache;
 pub mod gradient;
 pub mod msaa;

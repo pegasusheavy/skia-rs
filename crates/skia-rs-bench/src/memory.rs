@@ -72,11 +72,13 @@ unsafe impl GlobalAlloc for TrackingAllocator {
             DEALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
         }
 
-        self.inner.dealloc(ptr, layout);
+        // SAFETY: We're delegating to the inner allocator
+        unsafe { self.inner.dealloc(ptr, layout) };
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let new_ptr = self.inner.realloc(ptr, layout, new_size);
+        // SAFETY: We're delegating to the inner allocator
+        let new_ptr = unsafe { self.inner.realloc(ptr, layout, new_size) };
 
         if TRACKING_ENABLED.load(Ordering::Relaxed) && !new_ptr.is_null() {
             let old_size = layout.size();

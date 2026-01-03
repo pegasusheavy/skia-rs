@@ -184,6 +184,8 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(non_camel_case_types)] // FFI types follow C naming conventions
 
+pub mod abi;
+
 use std::ffi::{c_char, c_void};
 use std::panic::{self, AssertUnwindSafe};
 use std::ptr;
