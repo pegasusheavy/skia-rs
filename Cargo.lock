@@ -2089,6 +2089,7 @@ dependencies = [
 name = "skia-rs-safe"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.10.0",
  "js-sys",
  "proptest",
  "skia-rs-canvas",

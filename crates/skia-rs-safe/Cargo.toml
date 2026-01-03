@@ -66,6 +66,7 @@ skia-rs-pdf = { workspace = true, optional = true }
 skia-rs-gpu = { workspace = true, optional = true }
 skia-rs-skottie = { workspace = true, optional = true }
 thiserror = { workspace = true }
+bitflags = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

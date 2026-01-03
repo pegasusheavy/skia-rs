@@ -53,9 +53,9 @@ mkdir -p "$OUTPUT_DIR"
 build_wasm() {
     local target="$1"
     echo -e "${BLUE}Building for $target...${NC}"
-    
+
     cd "$WORKSPACE_ROOT/crates/skia-rs-safe"
-    
+
     case "$target" in
         web)
             wasm-pack build \
@@ -79,7 +79,7 @@ build_wasm() {
                 -- --features "std"
             ;;
     esac
-    
+
     echo -e "${GREEN}✓ Built for $target${NC}"
 }
 

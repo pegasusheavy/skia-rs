@@ -10,11 +10,11 @@
 //!
 //! async function main() {
 //!     await init();
-//!     
+//!
 //!     const surface = new WasmSurface(800, 600);
 //!     surface.clear(0xFFFFFFFF);
 //!     surface.draw_circle(400, 300, 100, 0xFFFF0000);
-//!     
+//!
 //!     // Get ImageData for canvas
 //!     const imageData = surface.get_image_data();
 //!     ctx.putImageData(imageData, 0, 0);

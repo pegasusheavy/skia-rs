@@ -582,7 +582,7 @@ void sk_surface_draw_circle(surface, cx, cy, radius, paint);
 
 ## Non-Goals (Out of Scope)
 
-- [ ] ~~Skia's Android-specific APIs~~
+- [x] ~~Skia's Android-specific APIs~~ (Implemented! See `skia-rs-safe::android`)
 - [ ] ~~Skia's deprecated APIs~~
 - [ ] ~~100% binary compatibility (source compatibility only)~~
 - [ ] ~~GPU shader debugging tools~~

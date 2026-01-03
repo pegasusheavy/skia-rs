@@ -61,6 +61,11 @@ mod wasm;
 #[cfg(target_arch = "wasm32")]
 pub use wasm::*;
 
+// Android support
+#[cfg(target_os = "android")]
+#[cfg_attr(docsrs, doc(cfg(target_os = "android")))]
+pub mod android;
+
 /// Convenience prelude for common types.
 pub mod prelude {
     pub use skia_rs_canvas::{RasterCanvas, Surface};
