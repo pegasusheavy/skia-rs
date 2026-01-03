@@ -354,9 +354,9 @@
 - [x] wgpu context creation and device management
 - [x] Surface and texture management
 - [x] Basic render pass execution
-- [ ] Pipeline state management
-- [ ] Shader compilation (WGSL)
-- [ ] Command encoder/buffer recording
+- [x] Pipeline state management - full render/compute pipeline configuration
+- [x] Shader compilation (WGSL) - built-in shaders and validation
+- [x] Command encoder/buffer recording - draw commands, state tracking
 
 ### 7.3 Vulkan Backend (via wgpu)
 - [x] Vulkan support via wgpu abstraction
