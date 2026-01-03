@@ -184,7 +184,7 @@ impl ExpressionEvaluator {
     fn evaluate_math(&self, source: &str, ctx: &ExpressionContext) -> Option<Value> {
         // Very simple math parsing
         // Format: "a + b", "a - b", "a * b", "a / b"
-        
+
         for op in &[" + ", " - ", " * ", " / ", " % "] {
             if let Some(pos) = source.find(op) {
                 let left = source[..pos].trim();
@@ -355,7 +355,7 @@ impl ExpressionEvaluator {
                 if args.len() >= 2 {
                     let freq = ExpressionEvaluator::new(args[0]).evaluate(ctx).as_number()?;
                     let amp = ExpressionEvaluator::new(args[1]).evaluate(ctx).as_number()?;
-                    
+
                     // Simple wiggle approximation
                     let t = ctx.time * freq;
                     let noise = (t.sin() * 0.5 + (t * 2.3).cos() * 0.3 + (t * 5.7).sin() * 0.2);
@@ -462,7 +462,7 @@ mod tests {
     fn test_simple_number() {
         let ctx = ExpressionContext::new();
         let eval = ExpressionEvaluator::new("42");
-        
+
         let result = eval.evaluate(&ctx);
         assert_eq!(result.as_number(), Some(42.0));
     }
@@ -471,7 +471,7 @@ mod tests {
     fn test_time_variable() {
         let mut ctx = ExpressionContext::new();
         ctx.set_time(2.5, 30.0);
-        
+
         let eval = ExpressionEvaluator::new("time");
         let result = eval.evaluate(&ctx);
         assert_eq!(result.as_number(), Some(2.5));
@@ -480,16 +480,16 @@ mod tests {
     #[test]
     fn test_math_operations() {
         let ctx = ExpressionContext::new();
-        
+
         let eval = ExpressionEvaluator::new("10 + 5");
         assert_eq!(eval.evaluate(&ctx).as_number(), Some(15.0));
-        
+
         let eval = ExpressionEvaluator::new("10 - 5");
         assert_eq!(eval.evaluate(&ctx).as_number(), Some(5.0));
-        
+
         let eval = ExpressionEvaluator::new("10 * 5");
         assert_eq!(eval.evaluate(&ctx).as_number(), Some(50.0));
-        
+
         let eval = ExpressionEvaluator::new("10 / 5");
         assert_eq!(eval.evaluate(&ctx).as_number(), Some(2.0));
     }
@@ -497,13 +497,13 @@ mod tests {
     #[test]
     fn test_math_functions() {
         let ctx = ExpressionContext::new();
-        
+
         let eval = ExpressionEvaluator::new("abs(-5)");
         assert_eq!(eval.evaluate(&ctx).as_number(), Some(5.0));
-        
+
         let eval = ExpressionEvaluator::new("floor(3.7)");
         assert_eq!(eval.evaluate(&ctx).as_number(), Some(3.0));
-        
+
         let eval = ExpressionEvaluator::new("ceil(3.2)");
         assert_eq!(eval.evaluate(&ctx).as_number(), Some(4.0));
     }
@@ -511,7 +511,7 @@ mod tests {
     #[test]
     fn test_linear_interpolation() {
         let ctx = ExpressionContext::new();
-        
+
         let eval = ExpressionEvaluator::new("linear(0.5, 0, 1, 0, 100)");
         assert_eq!(eval.evaluate(&ctx).as_number(), Some(50.0));
     }
@@ -519,10 +519,10 @@ mod tests {
     #[test]
     fn test_clamp() {
         let ctx = ExpressionContext::new();
-        
+
         let eval = ExpressionEvaluator::new("clamp(150, 0, 100)");
         assert_eq!(eval.evaluate(&ctx).as_number(), Some(100.0));
-        
+
         let eval = ExpressionEvaluator::new("clamp(-50, 0, 100)");
         assert_eq!(eval.evaluate(&ctx).as_number(), Some(0.0));
     }
@@ -530,7 +530,7 @@ mod tests {
     #[test]
     fn test_array_value() {
         let ctx = ExpressionContext::new();
-        
+
         let eval = ExpressionEvaluator::new("[1, 2, 3]");
         let result = eval.evaluate(&ctx);
         assert_eq!(result.as_array(), Some(&[1.0, 2.0, 3.0][..]));
@@ -540,10 +540,10 @@ mod tests {
     fn test_expression_compiler() {
         let mut compiler = ExpressionCompiler::new();
         let ctx = ExpressionContext::new();
-        
+
         let result = compiler.evaluate("10 + 5", &ctx);
         assert_eq!(result.as_number(), Some(15.0));
-        
+
         // Second call should use cache
         let result = compiler.evaluate("10 + 5", &ctx);
         assert_eq!(result.as_number(), Some(15.0));

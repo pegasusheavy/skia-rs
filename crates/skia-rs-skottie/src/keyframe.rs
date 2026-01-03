@@ -259,7 +259,7 @@ impl PathData {
     /// Interpolate between two paths.
     pub fn lerp(&self, other: &PathData, t: Scalar) -> PathData {
         let len = self.vertices.len().min(other.vertices.len());
-        
+
         PathData {
             vertices: (0..len)
                 .map(|i| {
@@ -391,7 +391,7 @@ impl AnimatedProperty {
         match value {
             AnimatedValue::Animated { keyframes, .. } => {
                 let mut prop = Self::new();
-                
+
                 for (i, kf) in keyframes.iter().enumerate() {
                     let value = if let Some(ref start) = kf.start {
                         parse_keyframe_value(start)
@@ -415,7 +415,7 @@ impl AnimatedProperty {
                         easing,
                     });
                 }
-                
+
                 prop
             }
             AnimatedValue::Static { value, .. } => {
@@ -501,7 +501,7 @@ mod tests {
     fn test_vec2_interpolation() {
         let a = KeyframeValue::Vec2([0.0, 0.0]);
         let b = KeyframeValue::Vec2([100.0, 200.0]);
-        
+
         let result = a.lerp(&b, 0.5);
         assert_eq!(result.as_vec2(), Some([50.0, 100.0]));
     }

@@ -232,7 +232,7 @@ impl Animation {
     /// Advance by a time delta in seconds.
     pub fn advance(&mut self, delta_seconds: Scalar) {
         let new_frame = self.current_frame + delta_seconds * self.frame_rate;
-        
+
         // Loop animation
         if new_frame >= self.out_point {
             self.current_frame = self.in_point + (new_frame - self.out_point) % self.total_frames();
@@ -244,7 +244,7 @@ impl Animation {
     /// Advance by a time delta with optional looping.
     pub fn advance_with_loop(&mut self, delta_seconds: Scalar, should_loop: bool) {
         let new_frame = self.current_frame + delta_seconds * self.frame_rate;
-        
+
         if new_frame >= self.out_point {
             if should_loop {
                 self.current_frame = self.in_point + (new_frame - self.out_point) % self.total_frames();
@@ -465,7 +465,7 @@ mod tests {
     #[test]
     fn test_load_animation() {
         let anim = Animation::from_json(SIMPLE_ANIMATION).unwrap();
-        
+
         assert_eq!(anim.name(), "Test Animation");
         assert_eq!(anim.width(), 200.0);
         assert_eq!(anim.height(), 200.0);
@@ -477,13 +477,13 @@ mod tests {
     #[test]
     fn test_seek() {
         let mut anim = Animation::from_json(SIMPLE_ANIMATION).unwrap();
-        
+
         anim.seek(0.5);
         assert_eq!(anim.current_frame(), 30.0);
-        
+
         anim.seek_frame(45.0);
         assert_eq!(anim.current_frame(), 45.0);
-        
+
         anim.seek_time(1.0);
         assert_eq!(anim.current_frame(), 30.0);
     }
@@ -491,10 +491,10 @@ mod tests {
     #[test]
     fn test_advance() {
         let mut anim = Animation::from_json(SIMPLE_ANIMATION).unwrap();
-        
+
         anim.advance(0.5); // Advance 0.5 seconds = 15 frames
         assert_eq!(anim.current_frame(), 15.0);
-        
+
         // Test looping
         anim.seek_frame(55.0);
         anim.advance(0.5); // Should loop
@@ -505,7 +505,7 @@ mod tests {
     fn test_stats() {
         let anim = Animation::from_json(SIMPLE_ANIMATION).unwrap();
         let stats = anim.stats();
-        
+
         assert_eq!(stats.name, "Test Animation");
         assert_eq!(stats.layer_count, 0);
         assert_eq!(stats.total_frames, 60);
@@ -516,7 +516,7 @@ mod tests {
         let anim = AnimationBuilder::new()
             .load(SIMPLE_ANIMATION)
             .unwrap();
-        
+
         assert_eq!(anim.name(), "Test Animation");
     }
 }

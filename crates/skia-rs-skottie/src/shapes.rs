@@ -212,7 +212,7 @@ impl RectangleShape {
 
         if roundness > 0.0 {
             let r = roundness.min(half_w).min(half_h);
-            
+
             builder.move_to(left + r, top);
             builder.line_to(left + size[0] - r, top);
             builder.quad_to(left + size[0], top, left + size[0], top + r);
@@ -325,7 +325,7 @@ impl PathShape {
     /// Build a path at a specific frame.
     pub fn to_path(&self, frame: Scalar) -> Option<Path> {
         let value = self.path.value_at(frame);
-        
+
         match value {
             KeyframeValue::Path(path_data) => Some(path_data_to_path(&path_data)),
             _ => None,

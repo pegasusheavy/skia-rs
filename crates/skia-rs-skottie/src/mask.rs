@@ -120,7 +120,7 @@ impl Mask {
     /// Get the mask path at a specific frame.
     pub fn path_at(&self, frame: Scalar) -> Option<Path> {
         let value = self.path.value_at(frame);
-        
+
         match value {
             KeyframeValue::Path(path_data) => Some(path_data_to_path(&path_data)),
             _ => None,
@@ -242,7 +242,7 @@ impl MaskGroup {
     /// This performs boolean operations to combine masks.
     pub fn compute_combined_path(&self, frame: Scalar) -> Option<Path> {
         let mask_paths = self.get_mask_paths(frame);
-        
+
         if mask_paths.is_empty() {
             return None;
         }
@@ -278,7 +278,7 @@ fn combine_paths(a: &Path, b: &Path) -> Path {
     // Simple implementation: just append paths
     // A proper implementation would use path boolean operations
     let mut builder = PathBuilder::new();
-    
+
     for element in a.iter() {
         match element {
             skia_rs_path::PathElement::Move(p) => builder.move_to(p.x, p.y),
@@ -291,7 +291,7 @@ fn combine_paths(a: &Path, b: &Path) -> Path {
             skia_rs_path::PathElement::Close => builder.close(),
         };
     }
-    
+
     for element in b.iter() {
         match element {
             skia_rs_path::PathElement::Move(p) => builder.move_to(p.x, p.y),
@@ -304,7 +304,7 @@ fn combine_paths(a: &Path, b: &Path) -> Path {
             skia_rs_path::PathElement::Close => builder.close(),
         };
     }
-    
+
     builder.build()
 }
 
@@ -350,7 +350,7 @@ mod tests {
         let mut group = MaskGroup::new();
         group.add(Mask::new(MaskMode::Add));
         group.add(Mask::new(MaskMode::Subtract));
-        
+
         assert_eq!(group.masks.len(), 2);
     }
 }

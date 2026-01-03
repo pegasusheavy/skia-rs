@@ -155,7 +155,7 @@ impl<'a> RenderContext<'a> {
                 let mut paint = Paint::new();
                 paint.set_color32(content.color);
                 paint.set_style(Style::Fill);
-                
+
                 let color = paint.color();
                 let adjusted_color = Color4f::new(
                     color.r,
@@ -164,7 +164,7 @@ impl<'a> RenderContext<'a> {
                     color.a * self.current_opacity,
                 );
                 paint.set_color(adjusted_color);
-                
+
                 self.draw_rect(&rect, &paint);
             }
             LayerContent::Precomp(content) => {
@@ -197,16 +197,16 @@ impl<'a> RenderContext<'a> {
             match shape {
                 Shape::Group(group) => {
                     self.save();
-                    
+
                     // Apply group transform
                     if let Some(ref transform) = group.transform {
                         let matrix = transform.matrix_at(frame);
                         self.concat(&matrix);
                         self.multiply_opacity(transform.opacity_at(frame));
                     }
-                    
+
                     self.render_shapes(&group.shapes, frame);
-                    
+
                     self.restore();
                 }
                 Shape::Rectangle(rect) => {
@@ -283,7 +283,7 @@ impl<'a> RenderContext<'a> {
             // Simplified gradient - just use first color
             let mut paint = Paint::new();
             paint.set_style(Style::Fill);
-            
+
             let opacity = gf.opacity.value_at(frame).as_scalar().unwrap_or(100.0) / 100.0;
             paint.set_color(Color4f::new(0.5, 0.5, 0.5, opacity * self.current_opacity));
 

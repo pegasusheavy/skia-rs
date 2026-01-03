@@ -434,11 +434,11 @@
 - [x] Expression evaluation (subset) - Math functions, time/wiggle/linear/ease
 
 ### 9.4 Runtime Effects
-- [ ] SkSL (Skia Shading Language) parser
-- [ ] SkSL to SPIR-V/GLSL/MSL compilation
-- [ ] `SkRuntimeEffect` for custom shaders
-- [ ] `SkRuntimeColorFilter`
-- [ ] `SkRuntimeShader`
+- [x] SkSL (Skia Shading Language) parser - Lexer, Parser, AST (Expr, Stmt, FnDecl)
+- [x] SkSL to SPIR-V/GLSL/MSL compilation - GLSL ES 3.0/4.5, WGSL, MSL output
+- [x] `SkRuntimeEffect` for custom shaders - Uniform metadata, child shaders
+- [x] `SkRuntimeColorFilter` - Color filter from SkSL
+- [x] `SkRuntimeShader` - Shader from SkSL with Shader trait
 
 ---
 
