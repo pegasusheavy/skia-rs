@@ -30,6 +30,9 @@ pub mod vulkan_backend;
 #[cfg(feature = "opengl")]
 pub mod opengl_backend;
 
+#[cfg(feature = "metal")]
+pub mod metal_backend;
+
 pub use command::*;
 pub use context::*;
 pub use pipeline::*;
@@ -45,3 +48,6 @@ pub use vulkan_backend::*;
 
 #[cfg(feature = "opengl")]
 pub use opengl_backend::*;
+
+#[cfg(feature = "metal")]
+pub use metal_backend::*;

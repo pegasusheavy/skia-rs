@@ -49,6 +49,7 @@ glam = "0.29"
 ash = "0.38"
 wgpu = "23.0"
 glow = "0.16"
+metal = "0.29"
 pollster = "0.4"
 
 # Text and fonts

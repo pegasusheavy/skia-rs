@@ -2024,6 +2024,7 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "glow 0.16.0",
+ "metal",
  "parking_lot",
  "pollster",
  "proptest",

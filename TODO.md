@@ -369,7 +369,7 @@
 
 ### 7.5 Metal Backend (macOS/iOS, via wgpu)
 - [x] Metal support via wgpu abstraction
-- [ ] Direct Metal API (via `metal-rs`) - optional
+- [x] Direct Metal API (via `metal-rs`) - optional `metal` feature (macOS/iOS only)
 
 ### 7.6 GPU Rendering
 - [ ] Tessellation for paths

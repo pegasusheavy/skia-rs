@@ -17,6 +17,7 @@ readme = "README.md"
 default = ["wgpu-backend"]
 vulkan = ["dep:ash"]
 opengl = ["dep:glow"]
+metal = ["dep:metal"]
 wgpu-backend = ["dep:wgpu", "dep:pollster"]
 
 [dependencies]
@@ -26,6 +27,7 @@ skia-rs-paint = { workspace = true }
 skia-rs-canvas = { workspace = true }
 ash = { workspace = true, optional = true }
 glow = { workspace = true, optional = true }
+metal = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
 parking_lot = { workspace = true }
