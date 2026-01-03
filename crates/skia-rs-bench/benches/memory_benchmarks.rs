@@ -161,7 +161,7 @@ fn bench_drawing_memory(c: &mut Criterion) {
 
     // Pre-create test data
     let mut rng = skia_rs_bench::create_rng();
-    let bounds = Rect::from_wh(1000.0, 1000.0);
+    let bounds = Rect::from_xywh(0.0, 0.0, 1000.0, 1000.0);
 
     let rects_100 = random_rects(&mut rng, 100, &bounds, 50.0);
     let rects_1000 = random_rects(&mut rng, 1000, &bounds, 50.0);
@@ -238,7 +238,7 @@ fn bench_batch_operations(c: &mut Criterion) {
     let mut group = c.benchmark_group("memory/batch");
 
     let mut rng = skia_rs_bench::create_rng();
-    let bounds = Rect::from_wh(1000.0, 1000.0);
+    let bounds = Rect::from_xywh(0.0, 0.0, 1000.0, 1000.0);
 
     // Test point batch allocation
     for &count in &[100, 1000, 10000] {

@@ -150,7 +150,7 @@ impl Rect {
     #[staticmethod]
     fn from_wh(width: f32, height: f32) -> Self {
         Self {
-            inner: RsRect::from_wh(width, height),
+            inner: RsRect::from_xywh(0.0, 0.0, width, height),
         }
     }
 
