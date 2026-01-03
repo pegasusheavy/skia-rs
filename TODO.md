@@ -524,11 +524,11 @@ void sk_surface_draw_circle(surface, cx, cy, radius, paint);
 ## Phase 12: Documentation & Polish
 
 ### 12.1 Documentation
-- [ ] Rustdoc for all public APIs
-- [ ] Migration guide from Skia C++
-- [ ] Architecture documentation
-- [ ] Performance tuning guide
-- [ ] Examples gallery
+- [x] Rustdoc for all public APIs (doc comments throughout codebase)
+- [x] Migration guide from Skia C++ (`docs/src/assets/docs/MIGRATION.md`)
+- [x] Architecture documentation (`docs/src/assets/docs/ARCHITECTURE.md`)
+- [x] Performance tuning guide (`docs/src/assets/docs/PERFORMANCE.md`)
+- [x] Examples gallery (`docs/src/assets/docs/EXAMPLES.md`)
 
 ### 12.2 Examples
 - [x] Basic drawing example (`examples/basic_drawing.rs`)
