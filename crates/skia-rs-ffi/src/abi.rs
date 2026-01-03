@@ -30,7 +30,7 @@ use std::ffi::c_void;
 /// ABI version major number
 pub const SK_ABI_VERSION_MAJOR: u32 = 1;
 
-/// ABI version minor number  
+/// ABI version minor number
 pub const SK_ABI_VERSION_MINOR: u32 = 0;
 
 /// ABI version patch number
@@ -123,7 +123,7 @@ const _: () = assert!(std::mem::size_of::<SkIRectABI>() == 16);
 const _: () = assert!(std::mem::align_of::<SkIRectABI>() == 4);
 
 /// Binary-compatible 3x3 matrix (matches SkMatrix exactly)
-/// 
+///
 /// Layout: [scaleX, skewX, transX, skewY, scaleY, transY, persp0, persp1, persp2]
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
