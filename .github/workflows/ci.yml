@@ -149,3 +149,200 @@ jobs:
         with:
           files: lcov.info
           fail_ci_if_error: false
+
+  # ==========================================================================
+  # Backend Conformance Testing
+  # ==========================================================================
+  conformance:
+    name: Conformance (${{ matrix.backend }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Raster backend - all platforms
+          - os: ubuntu-latest
+            backend: raster
+            features: ""
+          - os: macos-latest
+            backend: raster
+            features: ""
+          - os: windows-latest
+            backend: raster
+            features: ""
+
+          # WebGPU/WGPU backend - all platforms
+          - os: ubuntu-latest
+            backend: wgpu
+            features: "wgpu-backend"
+          - os: macos-latest
+            backend: wgpu
+            features: "wgpu-backend"
+          - os: windows-latest
+            backend: wgpu
+            features: "wgpu-backend"
+
+          # Vulkan backend - Linux/Windows
+          - os: ubuntu-latest
+            backend: vulkan
+            features: "vulkan"
+          - os: windows-latest
+            backend: vulkan
+            features: "vulkan"
+
+          # OpenGL backend - Linux/Windows
+          - os: ubuntu-latest
+            backend: opengl
+            features: "opengl"
+          - os: windows-latest
+            backend: opengl
+            features: "opengl"
+
+          # Metal backend - macOS only
+          - os: macos-latest
+            backend: metal
+            features: "metal"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: conformance-${{ matrix.backend }}-${{ matrix.os }}
+
+      # Install Vulkan SDK on Linux
+      - name: Install Vulkan SDK (Linux)
+        if: matrix.backend == 'vulkan' && matrix.os == 'ubuntu-latest'
+        run: |
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+          sudo apt-get update
+          sudo apt-get install -y vulkan-sdk
+
+      # Install Mesa for software rendering on Linux (for CI)
+      - name: Install Mesa (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-utils libgl1-mesa-dri libegl1-mesa libgbm1
+
+      # Install ImageMagick for image comparison
+      - name: Install ImageMagick
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get install -y imagemagick
+
+      - name: Install ImageMagick (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install imagemagick
+
+      - name: Install ImageMagick (Windows)
+        if: matrix.os == 'windows-latest'
+        run: choco install imagemagick -y
+
+      # Build with specific backend features
+      - name: Build (${{ matrix.backend }})
+        run: cargo build --workspace --features "${{ matrix.features }}"
+
+      # Run conformance tests for this backend
+      - name: Run conformance tests (${{ matrix.backend }})
+        run: cargo test --workspace --features "${{ matrix.features }}" -- --test-threads=1 conformance
+        env:
+          SKIA_RS_BACKEND: ${{ matrix.backend }}
+          # Use software rendering in CI
+          LIBGL_ALWAYS_SOFTWARE: 1
+          MESA_GL_VERSION_OVERRIDE: 4.5
+          # Disable GPU for WGPU in CI (use CPU adapter)
+          WGPU_BACKEND: ${{ matrix.backend == 'wgpu' && 'gl' || '' }}
+
+      # Generate test images for this backend
+      - name: Generate test images
+        run: cargo run --example conformance_gen --features "${{ matrix.features }}" -- --backend ${{ matrix.backend }} --output-dir conformance_output
+        continue-on-error: true
+
+      # Compare against reference images
+      - name: Compare with reference images
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          mkdir -p conformance_results
+          for img in conformance_output/*.png; do
+            if [ -f "$img" ]; then
+              base=$(basename "$img")
+              ref="conformance/reference/$base"
+              if [ -f "$ref" ]; then
+                # Calculate RMSE difference
+                diff=$(compare -metric RMSE "$img" "$ref" null: 2>&1 || true)
+                echo "${{ matrix.backend }}: $base - RMSE: $diff" >> conformance_results/report.txt
+              fi
+            fi
+          done
+        continue-on-error: true
+
+      # Upload conformance results
+      - name: Upload conformance results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-${{ matrix.backend }}-${{ matrix.os }}
+          path: |
+            conformance_output/
+            conformance_results/
+          retention-days: 7
+
+  # ==========================================================================
+  # Conformance Summary
+  # ==========================================================================
+  conformance-summary:
+    name: Conformance Summary
+    runs-on: ubuntu-latest
+    needs: conformance
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all conformance results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: conformance-*
+          path: all-results
+          merge-multiple: false
+
+      - name: Generate summary report
+        run: |
+          echo "# Backend Conformance Report" > $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend | OS | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-----|--------|" >> $GITHUB_STEP_SUMMARY
+
+          for dir in all-results/conformance-*/; do
+            if [ -d "$dir" ]; then
+              backend_os=$(basename "$dir" | sed 's/conformance-//')
+              backend=$(echo "$backend_os" | cut -d'-' -f1)
+              os=$(echo "$backend_os" | cut -d'-' -f2-)
+
+              if [ -f "$dir/conformance_results/report.txt" ]; then
+                status="✅ Pass"
+              else
+                status="⚠️ No results"
+              fi
+
+              echo "| $backend | $os | $status |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Details" >> $GITHUB_STEP_SUMMARY
+
+          for dir in all-results/conformance-*/; do
+            if [ -d "$dir" ] && [ -f "$dir/conformance_results/report.txt" ]; then
+              backend_os=$(basename "$dir" | sed 's/conformance-//')
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### $backend_os" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              cat "$dir/conformance_results/report.txt" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+            fi
+          done

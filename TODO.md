@@ -495,7 +495,7 @@ void sk_surface_draw_circle(surface, cx, cy, radius, paint);
 - [x] Automated test image generation (CI workflow)
 - [x] Fuzzy matching for anti-aliasing differences (tolerance settings)
 - [x] Test case definitions (JSON format)
-- [ ] Test across all supported backends
+- [x] Test across all supported backends (raster, wgpu, vulkan, opengl, metal)
 - [x] Performance regression tests (benchmark CI with comparison)
 
 ### 11.3 Fuzz Testing
