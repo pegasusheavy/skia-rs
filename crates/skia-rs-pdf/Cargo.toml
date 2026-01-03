@@ -20,6 +20,7 @@ skia-rs-paint = { workspace = true }
 skia-rs-canvas = { workspace = true }
 skia-rs-text = { workspace = true }
 pdf-writer = { workspace = true }
+flate2 = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

@@ -125,7 +125,7 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
             output.push_str(&indent);
             output.push_str("<g");
             export_common_attrs(output, node, options);
-            
+
             if node.children.is_empty() {
                 output.push_str("/>");
             } else {
@@ -144,7 +144,7 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
         SvgNodeKind::Rect(rect) => {
             output.push_str(&indent);
             output.push_str("<rect");
-            
+
             write!(
                 output,
                 " x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"",
@@ -169,7 +169,7 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
         SvgNodeKind::Circle(circle) => {
             output.push_str(&indent);
             output.push_str("<circle");
-            
+
             write!(
                 output,
                 " cx=\"{}\" cy=\"{}\" r=\"{}\"",
@@ -186,7 +186,7 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
         SvgNodeKind::Ellipse(ellipse) => {
             output.push_str(&indent);
             output.push_str("<ellipse");
-            
+
             write!(
                 output,
                 " cx=\"{}\" cy=\"{}\" rx=\"{}\" ry=\"{}\"",
@@ -204,7 +204,7 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
         SvgNodeKind::Line(line) => {
             output.push_str(&indent);
             output.push_str("<line");
-            
+
             write!(
                 output,
                 " x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\"",
@@ -238,7 +238,7 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
         SvgNodeKind::Path(path) => {
             output.push_str(&indent);
             output.push_str("<path");
-            
+
             let path_data = export_path_data(path, options);
             write!(output, " d=\"{}\"", path_data).unwrap();
 
@@ -249,7 +249,7 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
         SvgNodeKind::Text(text) => {
             output.push_str(&indent);
             output.push_str("<text");
-            
+
             write!(
                 output,
                 " x=\"{}\" y=\"{}\"",
@@ -261,7 +261,7 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
             if let Some(ref family) = text.font_family {
                 write!(output, " font-family=\"{}\"", escape_xml(family)).unwrap();
             }
-            
+
             write!(output, " font-size=\"{}\"", format_scalar(text.font_size, options.precision)).unwrap();
 
             if text.font_weight != 400 {
@@ -283,7 +283,7 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
         SvgNodeKind::Image(image) => {
             output.push_str(&indent);
             output.push_str("<image");
-            
+
             write!(
                 output,
                 " x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"",
@@ -324,7 +324,7 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
         SvgNodeKind::LinearGradient(grad) => {
             output.push_str(&indent);
             output.push_str("<linearGradient");
-            
+
             if let Some(ref id) = node.id {
                 write!(output, " id=\"{}\"", escape_xml(id)).unwrap();
             }
@@ -340,7 +340,7 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
             .unwrap();
 
             export_gradient_attrs(output, &grad.spread, &grad.units);
-            
+
             if !grad.transform.is_identity() {
                 export_transform_attr(output, &grad.transform, options);
             }
@@ -359,7 +359,7 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
         SvgNodeKind::RadialGradient(grad) => {
             output.push_str(&indent);
             output.push_str("<radialGradient");
-            
+
             if let Some(ref id) = node.id {
                 write!(output, " id=\"{}\"", escape_xml(id)).unwrap();
             }
@@ -417,7 +417,7 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
             output.push_str(&indent);
             write!(output, "<{}", tag).unwrap();
             export_common_attrs(output, node, options);
-            
+
             if node.children.is_empty() {
                 output.push_str("/>");
             } else {
@@ -470,7 +470,7 @@ fn export_common_attrs(output: &mut String, node: &SvgNode, options: &SvgExportO
     // Stroke
     if let Some(ref stroke) = node.stroke {
         write!(output, " stroke=\"{}\"", format_paint(stroke)).unwrap();
-        
+
         if node.stroke_width != 1.0 || options.include_defaults {
             write!(
                 output,
@@ -508,13 +508,13 @@ fn is_standard_attr(key: &str) -> bool {
 
 fn export_transform_attr(output: &mut String, matrix: &Matrix, options: &SvgExportOptions) {
     let v = &matrix.values;
-    
+
     // Check for special cases
     let is_translate = (v[0] - 1.0).abs() < 0.001
         && v[1].abs() < 0.001
         && v[3].abs() < 0.001
         && (v[4] - 1.0).abs() < 0.001;
-    
+
     let is_scale = v[1].abs() < 0.001
         && v[3].abs() < 0.001
         && v[2].abs() < 0.001
@@ -580,9 +580,9 @@ fn export_points_attr(output: &mut String, points: &[skia_rs_core::Point], optio
 
 fn export_path_data(path: &skia_rs_path::Path, options: &SvgExportOptions) -> String {
     use skia_rs_path::PathElement;
-    
+
     let mut data = String::new();
-    
+
     for elem in path.iter() {
         match elem {
             PathElement::Move(p) => {
@@ -645,7 +645,7 @@ fn export_path_data(path: &skia_rs_path::Path, options: &SvgExportOptions) -> St
             }
         }
     }
-    
+
     data
 }
 

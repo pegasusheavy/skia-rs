@@ -73,6 +73,7 @@ usvg = "0.43"
 
 # PDF
 pdf-writer = "0.12"
+flate2 = "1.0"
 
 # FFI
 libc = "0.2"

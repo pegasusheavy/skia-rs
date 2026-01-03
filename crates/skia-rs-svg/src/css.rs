@@ -601,7 +601,7 @@ fn parse_css_color(s: &str) -> Option<Color> {
 
 fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
     let h = h % 360.0 / 360.0;
-    
+
     if s == 0.0 {
         let v = (l * 255.0) as u8;
         return (v, v, v);

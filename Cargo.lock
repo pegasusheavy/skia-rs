@@ -2062,6 +2062,7 @@ dependencies = [
 name = "skia-rs-pdf"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "pdf-writer",
  "proptest",
  "skia-rs-canvas",

@@ -419,10 +419,10 @@
 
 ### 9.2 PDF (`skia-pdf`)
 - [x] PDF document structure (PdfDocument, PdfPage)
-- [ ] Font embedding
-- [ ] Image embedding
+- [x] Font embedding - Type1 (14 standard), TrueType, font subsetting, ToUnicode CMap
+- [x] Image embedding - JPEG (DCTDecode), PNG/RGB (FlateDecode), RGBA soft masks
 - [x] Vector graphics output (PdfCanvas)
-- [ ] Transparency groups
+- [x] Transparency groups - ExtGState, soft masks, TransparencyGroup, blend modes
 - [ ] PDF/A compliance (optional)
 
 ### 9.3 Skottie (Lottie Animation)
