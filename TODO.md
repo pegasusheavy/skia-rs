@@ -372,14 +372,14 @@
 - [x] Direct Metal API (via `metal-rs`) - optional `metal` feature (macOS/iOS only)
 
 ### 7.6 GPU Rendering
-- [ ] Tessellation for paths
-- [ ] Stencil-then-cover for complex paths
-- [ ] Atlas management for small paths
-- [ ] Glyph cache
-- [ ] Gradient texture generation
-- [ ] Image tiling
-- [ ] MSAA support
-- [ ] Distance field rendering (for SDF text)
+- [x] Tessellation for paths (`tessellation.rs`)
+- [x] Stencil-then-cover for complex paths (`stencil_cover.rs`)
+- [x] Atlas management for small paths (`atlas.rs`)
+- [x] Glyph cache (`glyph_cache.rs`)
+- [x] Gradient texture generation (`gradient.rs`)
+- [x] Image tiling (`tiling.rs`)
+- [x] MSAA support (`msaa.rs`)
+- [x] Distance field rendering (for SDF text) (`sdf.rs`)
 
 ---
 
