@@ -100,7 +100,7 @@ web-sys = "0.3"
 getrandom = "0.2"
 
 # Testing & Benchmarking
-criterion = { version = "0.6", features = ["html_reports"] }
+criterion = { version = "0.8.0", features = ["html_reports"] }
 proptest = "1.5"
 rand = "0.8"
 rand_xorshift = "0.3"
