@@ -2,7 +2,7 @@
 
 use crate::dom::*;
 use skia_rs_core::{Color, Matrix, Point, Rect, Scalar};
-use skia_rs_path::{PathBuilder, parse_svg_path};
+use skia_rs_path::parse_svg_path;
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -26,7 +26,6 @@ pub fn parse_svg(svg: &str) -> Result<SvgDom, SvgError> {
 
     // Simple state-machine parser for basic SVG
     // A full implementation would use roxmltree
-    let mut in_element = false;
     let mut current_tag = String::new();
     let mut attributes = HashMap::new();
     let mut node_stack: Vec<SvgNode> = vec![SvgNode::new(SvgNodeKind::Svg)];
@@ -70,7 +69,6 @@ pub fn parse_svg(svg: &str) -> Result<SvgDom, SvgError> {
                 }
             } else {
                 // Opening tag
-                in_element = true;
                 current_tag.clear();
                 attributes.clear();
 
@@ -147,8 +145,6 @@ pub fn parse_svg(svg: &str) -> Result<SvgDom, SvgError> {
                 } else {
                     node_stack.push(node);
                 }
-
-                in_element = false;
             }
         }
     }
@@ -478,6 +474,11 @@ fn parse_color(s: &str) -> Option<Color> {
 
 /// Parse a transform attribute.
 fn parse_transform(s: &str) -> Matrix {
+    parse_transform_str(s)
+}
+
+/// Parse a transform string (public for CSS module).
+pub fn parse_transform_str(s: &str) -> Matrix {
     let mut result = Matrix::IDENTITY;
     let s = s.trim();
 

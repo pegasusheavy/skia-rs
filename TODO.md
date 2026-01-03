@@ -414,8 +414,8 @@
 - [x] SVG DOM parsing (custom parser)
 - [x] `SkSVGDOM` (SvgDom, SvgNode)
 - [x] SVG rendering to canvas
-- [ ] CSS styling support
-- [ ] SVG export
+- [x] CSS styling support - Stylesheet, CssSelector, CssRule, cascading/specificity
+- [x] SVG export - export_svg, SvgExportOptions, pretty/minified output
 
 ### 9.2 PDF (`skia-pdf`)
 - [x] PDF document structure (PdfDocument, PdfPage)
