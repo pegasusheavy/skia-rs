@@ -8,7 +8,7 @@
 //! All FFI functions are inherently unsafe. Callers must ensure:
 //! - Pointers are valid and non-null (unless explicitly documented otherwise)
 //! - Proper lifetime management (using the appropriate `_unref` functions)
-//! - Thread safety when accessing shared objects
+//! - Thread safety requirements are followed (see below)
 //!
 //! # Reference Counting
 //!
@@ -18,11 +18,165 @@
 //! - `sk_*_unref()` decrements the reference count and frees when it reaches 0
 //! - Use `sk_refcnt_get_count()` to query the current count
 //!
+//! Reference counting operations (`ref`/`unref`) are **thread-safe** and use
+//! atomic operations internally.
+//!
+//! # Thread Safety
+//!
+//! skia-rs follows Skia's threading model. Understanding thread safety is
+//! critical for correct usage in multi-threaded applications.
+//!
+//! ## Thread Safety Categories
+//!
+//! | Category | Description | Examples |
+//! |----------|-------------|----------|
+//! | **Thread-Safe** | Can be accessed from any thread concurrently | `sk_*_ref()`, `sk_*_unref()`, `sk_refcnt_*()` |
+//! | **Thread-Compatible** | Safe if each instance accessed by one thread | Most objects |
+//! | **Main-Thread-Only** | Must only be used from main/UI thread | GPU contexts |
+//!
+//! ## Object-Specific Thread Safety
+//!
+//! ### Reference Counting (Thread-Safe)
+//! ```c
+//! // These operations are always thread-safe:
+//! sk_surface_ref(surface);      // Atomic increment
+//! sk_surface_unref(surface);    // Atomic decrement
+//! sk_refcnt_get_count(ptr);     // Atomic read
+//! sk_refcnt_is_unique(ptr);     // Atomic read
+//! ```
+//!
+//! ### Immutable Objects (Thread-Safe after creation)
+//! Once created, these objects are safe to read from multiple threads:
+//! - `sk_path_t` (after building is complete)
+//! - `sk_matrix_t` (value type, copied on use)
+//!
+//! ### Mutable Objects (Thread-Compatible)
+//! These must not be accessed concurrently from multiple threads:
+//! - `sk_surface_t` - Drawing operations are not thread-safe
+//! - `sk_paint_t` - Setters/getters must be externally synchronized
+//! - `sk_pathbuilder_t` - Building operations must be single-threaded
+//!
+//! ### GPU Objects (Special Restrictions)
+//! GPU-related objects have additional constraints:
+//! - Must be created/destroyed on the same thread as the GPU context
+//! - Drawing to GPU surfaces must occur on the GPU context thread
+//! - Flush operations must be called from the same thread
+//!
+//! ## Safe Patterns
+//!
+//! ### Pattern 1: Object-per-Thread
+//! ```c
+//! // Each thread creates its own objects
+//! void* thread_func(void* arg) {
+//!     sk_surface_t* surface = sk_surface_new_raster(800, 600);
+//!     sk_paint_t* paint = sk_paint_new();
+//!     // ... use exclusively in this thread ...
+//!     sk_paint_unref(paint);
+//!     sk_surface_unref(surface);
+//!     return NULL;
+//! }
+//! ```
+//!
+//! ### Pattern 2: Shared Immutable Data
+//! ```c
+//! // Build path on one thread, share read-only
+//! sk_path_t* shared_path;  // Global
+//!
+//! void init() {
+//!     sk_pathbuilder_t* builder = sk_pathbuilder_new();
+//!     sk_pathbuilder_add_circle(builder, 100, 100, 50);
+//!     shared_path = sk_pathbuilder_detach(builder);
+//!     sk_pathbuilder_unref(builder);
+//! }
+//!
+//! void* render_thread(void* arg) {
+//!     // Safe: path is immutable after creation
+//!     sk_rect_t bounds;
+//!     sk_path_get_bounds(shared_path, &bounds);
+//!     sk_path_contains(shared_path, 100, 100);
+//!     return NULL;
+//! }
+//! ```
+//!
+//! ### Pattern 3: Reference Counted Sharing
+//! ```c
+//! // Safe: ref counting is atomic
+//! sk_paint_t* paint = sk_paint_new();
+//!
+//! void share_to_thread(sk_paint_t* p) {
+//!     sk_paint_ref(p);  // Thread-safe increment
+//!     // Pass to another thread...
+//! }
+//!
+//! void* other_thread(void* paint_ptr) {
+//!     sk_paint_t* p = (sk_paint_t*)paint_ptr;
+//!     // Clone for thread-local modifications
+//!     sk_paint_t* local = sk_paint_clone(p);
+//!     sk_paint_unref(p);  // Thread-safe decrement
+//!     // ... use local exclusively ...
+//!     sk_paint_unref(local);
+//!     return NULL;
+//! }
+//! ```
+//!
+//! ## Unsafe Patterns (AVOID)
+//!
+//! ```c
+//! // UNSAFE: Concurrent mutation
+//! sk_paint_t* shared_paint;
+//!
+//! void* thread1(void* arg) {
+//!     sk_paint_set_color(shared_paint, 0xFFFF0000);  // DATA RACE!
+//!     return NULL;
+//! }
+//!
+//! void* thread2(void* arg) {
+//!     sk_paint_set_color(shared_paint, 0xFF0000FF);  // DATA RACE!
+//!     return NULL;
+//! }
+//!
+//! // UNSAFE: Drawing while modifying
+//! void* draw_thread(void* arg) {
+//!     sk_surface_draw_rect(surface, &rect, paint);  // DATA RACE with modifier!
+//!     return NULL;
+//! }
+//!
+//! void* modify_thread(void* arg) {
+//!     sk_paint_set_stroke_width(paint, 5.0);  // DATA RACE with drawer!
+//!     return NULL;
+//! }
+//! ```
+//!
+//! ## Error Checking
+//!
+//! After any FFI call, check for panics:
+//! ```c
+//! sk_surface_t* surface = sk_surface_new_raster(800, 600);
+//! if (sk_last_call_panicked()) {
+//!     // Handle error - surface may be NULL
+//!     fprintf(stderr, "Surface creation panicked\n");
+//! }
+//! ```
+//!
+//! ## Summary Table
+//!
+//! | Operation | Thread-Safe | Notes |
+//! |-----------|-------------|-------|
+//! | `sk_*_new()` | Yes | Returns unique object |
+//! | `sk_*_ref()` | Yes | Atomic increment |
+//! | `sk_*_unref()` | Yes | Atomic decrement |
+//! | `sk_*_clone()` | Yes* | Input must not be concurrently modified |
+//! | `sk_*_get_*()` | No | Requires external synchronization |
+//! | `sk_*_set_*()` | No | Requires external synchronization |
+//! | `sk_surface_draw_*()` | No | Single-threaded drawing only |
+//! | `sk_path_contains()` | Yes* | After path is immutable |
+//! | `sk_pathbuilder_*()` | No | Single-threaded building |
+//!
 //! # Panic Safety
 //!
 //! All FFI functions catch panics at the boundary to prevent unwinding
 //! into C code. Functions that panic will return a default/null value
-//! and set an error flag if applicable.
+//! and set an error flag. Use `sk_last_call_panicked()` to check.
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
