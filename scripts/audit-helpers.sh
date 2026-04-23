@@ -5,14 +5,14 @@
 find_todos() {
     local crate=$1
     echo "=== TODOs in $crate ==="
-    rg "TODO|FIXME|todo!|unimplemented!" "crates/$crate/src/" -n --color=never
+    rg "TODO|FIXME|todo!|unimplemented!|panic!.*[Nn]ot implemented" "crates/$crate/src/" -n --color=never
 }
 
 # Find placeholder returns
 find_placeholders() {
     local crate=$1
     echo "=== Potential placeholders in $crate ==="
-    # Look for suspicious patterns
+    # Look for suspicious patterns - NOTE: May include false positives, manual review needed
     rg "return None|return false|return 0\.0|return Vec::new\(\)|Some\(self\.clone\(\)\)" \
        "crates/$crate/src/" -n --color=never -A 2 -B 2
 }
@@ -21,7 +21,7 @@ find_placeholders() {
 list_public_apis() {
     local crate=$1
     echo "=== Public APIs in $crate ==="
-    rg "pub (fn|struct|enum|trait)" "crates/$crate/src/" -n --color=never
+    rg "pub (fn|struct|enum|trait|type|const|mod|use)" "crates/$crate/src/" -n --color=never
 }
 
 # Count functions in a file
