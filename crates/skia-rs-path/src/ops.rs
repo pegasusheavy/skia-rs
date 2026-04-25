@@ -130,8 +130,8 @@ impl<'a> PathOps<'a> {
 
     fn compute_polygon_ops(&self) -> Option<Path> {
         // Convert paths to polygons (linearize curves)
-        let polys1 = path_to_polygons(self.path1);
-        let polys2 = path_to_polygons(self.path2);
+        let polys1 = path_to_polygons(self.path1, 0.5);
+        let polys2 = path_to_polygons(self.path2, 0.5);
 
         // Perform the boolean operation
         let result_polys = match self.op {
@@ -246,7 +246,7 @@ fn is_left(p0: Point, p1: Point, p2: Point) -> Scalar {
 }
 
 /// Convert a path to a list of polygons.
-fn path_to_polygons(path: &Path) -> Vec<Polygon> {
+fn path_to_polygons(path: &Path, tolerance: Scalar) -> Vec<Polygon> {
     let mut polygons = Vec::new();
     let mut current_poly = Polygon::new();
     let mut current_point = Point::new(0.0, 0.0);
@@ -269,17 +269,17 @@ fn path_to_polygons(path: &Path) -> Vec<Polygon> {
             }
             PathElement::Quad(c, p) => {
                 // Linearize quadratic bezier
-                linearize_quad(&mut current_poly, current_point, c, p, 0.5);
+                linearize_quad(&mut current_poly, current_point, c, p, tolerance);
                 current_point = p;
             }
             PathElement::Conic(c, p, w) => {
-                // Approximate conic as quadratic
-                linearize_quad(&mut current_poly, current_point, c, p, 0.5);
+                let pts = linearize_conic(current_point, c, p, w, tolerance);
+                current_poly.points.extend_from_slice(&pts[1..]);
                 current_point = p;
             }
             PathElement::Cubic(c1, c2, p) => {
                 // Linearize cubic bezier
-                linearize_cubic(&mut current_poly, current_point, c1, c2, p, 0.5);
+                linearize_cubic(&mut current_poly, current_point, c1, c2, p, tolerance);
                 current_point = p;
             }
             PathElement::Close => {
@@ -316,6 +316,63 @@ fn linearize_quad(poly: &mut Polygon, p0: Point, p1: Point, p2: Point, tolerance
         linearize_quad(poly, p0, q0, r, tolerance);
         linearize_quad(poly, r, q1, p2, tolerance);
     }
+}
+
+/// Linearize a conic (rational quadratic Bezier) into line segments.
+///
+/// Uses adaptive subdivision based on chord-midpoint deviation. The conic
+/// curve is defined as B(t) = (start*(1-t)² + 2*ctrl*w*t*(1-t) + end*t²) /
+/// ((1-t)² + 2*w*t*(1-t) + t²).
+fn linearize_conic(
+    start: Point,
+    ctrl: Point,
+    end: Point,
+    weight: Scalar,
+    tolerance: Scalar,
+) -> Vec<Point> {
+    fn eval_conic(start: Point, ctrl: Point, end: Point, w: Scalar, t: Scalar) -> Point {
+        let mt = 1.0 - t;
+        let denom = mt * mt + 2.0 * w * t * mt + t * t;
+        let inv_denom = 1.0 / denom;
+        Point::new(
+            (start.x * mt * mt + 2.0 * ctrl.x * w * t * mt + end.x * t * t) * inv_denom,
+            (start.y * mt * mt + 2.0 * ctrl.y * w * t * mt + end.y * t * t) * inv_denom,
+        )
+    }
+
+    fn subdivide(
+        start: Point,
+        ctrl: Point,
+        end: Point,
+        w: Scalar,
+        t0: Scalar,
+        t1: Scalar,
+        tolerance: Scalar,
+        depth: u32,
+        output: &mut Vec<Point>,
+    ) {
+        if depth >= 8 {
+            output.push(eval_conic(start, ctrl, end, w, t1));
+            return;
+        }
+        let tm = (t0 + t1) * 0.5;
+        let p0 = eval_conic(start, ctrl, end, w, t0);
+        let p1 = eval_conic(start, ctrl, end, w, t1);
+        let pm = eval_conic(start, ctrl, end, w, tm);
+        let chord_mid = Point::new((p0.x + p1.x) * 0.5, (p0.y + p1.y) * 0.5);
+        let dx = pm.x - chord_mid.x;
+        let dy = pm.y - chord_mid.y;
+        if dx * dx + dy * dy < tolerance * tolerance {
+            output.push(p1);
+        } else {
+            subdivide(start, ctrl, end, w, t0, tm, tolerance, depth + 1, output);
+            subdivide(start, ctrl, end, w, tm, t1, tolerance, depth + 1, output);
+        }
+    }
+
+    let mut output = vec![start];
+    subdivide(start, ctrl, end, weight, 0.0, 1.0, tolerance, 0, &mut output);
+    output
 }
 
 fn linearize_cubic(
@@ -633,6 +690,49 @@ mod tests {
         assert!(result.is_some());
         let result = result.unwrap();
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_path_to_polygons_handles_conic_weight() {
+        // Quarter circle: M (1,0), conic to (1,1) end (0,1) with weight sqrt(2)/2.
+        // Close back through the origin so the polygon has enough points to be kept.
+        // Linearized points along the arc should lie on the unit circle.
+        let mut builder = PathBuilder::new();
+        builder.move_to(1.0, 0.0);
+        builder.conic_to(1.0, 1.0, 0.0, 1.0, std::f32::consts::FRAC_1_SQRT_2);
+        builder.line_to(0.0, 0.0);
+        builder.close();
+        let path = builder.build();
+
+        // Use a tight tolerance so the arc gets subdivided finely.
+        let polygons = path_to_polygons(&path, 0.01);
+        assert!(!polygons.is_empty(), "Should produce at least one polygon");
+
+        // Filter to points on the arc portion (exclude origin and axes endpoints
+        // that are trivially correct). Check every point that is NOT (0,0):
+        // arc points should be near the unit circle, axis points are at radius 1
+        // already, and the origin is at radius 0 — skip it.
+        let polygon = &polygons[0];
+        let mut arc_point_count = 0;
+        for p in &polygon.points {
+            let dist_sq = p.x * p.x + p.y * p.y;
+            if dist_sq < 0.5 {
+                // Origin — skip
+                continue;
+            }
+            arc_point_count += 1;
+            assert!(
+                (dist_sq - 1.0).abs() < 0.05,
+                "Point ({}, {}) should be near unit circle (dist² = {})",
+                p.x, p.y, dist_sq
+            );
+        }
+        // Verify we actually got subdivided arc points, not just endpoints.
+        assert!(
+            arc_point_count >= 4,
+            "Expected at least 4 arc points from subdivision, got {}",
+            arc_point_count
+        );
     }
 
     #[test]
