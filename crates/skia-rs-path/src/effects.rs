@@ -593,9 +593,82 @@ impl TrimEffect {
 
 impl PathEffect for TrimEffect {
     fn apply(&self, path: &Path) -> Option<Path> {
-        // This is a simplified implementation
-        // A full implementation would use PathMeasure
-        Some(path.clone())
+        let measure = crate::measure::PathMeasure::new(path);
+        let total = measure.length();
+        if total <= 0.0 {
+            return Some(path.clone());
+        }
+
+        let start_dist = self.start * total;
+        let end_dist = self.end * total;
+
+        match self.mode {
+            TrimMode::Normal => {
+                if start_dist >= end_dist {
+                    return Some(Path::new());
+                }
+                measure.get_segment(start_dist, end_dist)
+            }
+            TrimMode::Inverted => {
+                if start_dist >= end_dist {
+                    return Some(path.clone());
+                }
+                let mut builder = PathBuilder::new();
+                if start_dist > 0.0 {
+                    if let Some(before) = measure.get_segment(0.0, start_dist) {
+                        for elem in before.iter() {
+                            match elem {
+                                PathElement::Move(p) => {
+                                    builder.move_to(p.x, p.y);
+                                }
+                                PathElement::Line(p) => {
+                                    builder.line_to(p.x, p.y);
+                                }
+                                PathElement::Quad(p1, p2) => {
+                                    builder.quad_to(p1.x, p1.y, p2.x, p2.y);
+                                }
+                                PathElement::Cubic(p1, p2, p3) => {
+                                    builder.cubic_to(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
+                                }
+                                PathElement::Conic(p1, p2, w) => {
+                                    builder.conic_to(p1.x, p1.y, p2.x, p2.y, w);
+                                }
+                                PathElement::Close => {
+                                    builder.close();
+                                }
+                            }
+                        }
+                    }
+                }
+                if end_dist < total {
+                    if let Some(after) = measure.get_segment(end_dist, total) {
+                        for elem in after.iter() {
+                            match elem {
+                                PathElement::Move(p) => {
+                                    builder.move_to(p.x, p.y);
+                                }
+                                PathElement::Line(p) => {
+                                    builder.line_to(p.x, p.y);
+                                }
+                                PathElement::Quad(p1, p2) => {
+                                    builder.quad_to(p1.x, p1.y, p2.x, p2.y);
+                                }
+                                PathElement::Cubic(p1, p2, p3) => {
+                                    builder.cubic_to(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
+                                }
+                                PathElement::Conic(p1, p2, w) => {
+                                    builder.conic_to(p1.x, p1.y, p2.x, p2.y, w);
+                                }
+                                PathElement::Close => {
+                                    builder.close();
+                                }
+                            }
+                        }
+                    }
+                }
+                Some(builder.build())
+            }
+        }
     }
 
     fn effect_kind(&self) -> PathEffectKind {
@@ -1139,5 +1212,49 @@ mod tests {
         let corner = make_corner(5.0).unwrap();
         let composed = make_compose(dash, corner);
         assert_eq!(composed.effect_kind(), PathEffectKind::Compose);
+    }
+
+    #[test]
+    fn test_trim_effect_normal_extracts_subsegment() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+
+        let effect = TrimEffect::new(0.25, 0.75, TrimMode::Normal).unwrap();
+        let result = effect.apply(&path).unwrap();
+
+        let bounds = result.bounds();
+        assert!(
+            (bounds.left - 25.0).abs() < 0.5,
+            "Trimmed left should be ~25, got {}",
+            bounds.left
+        );
+        assert!(
+            (bounds.right - 75.0).abs() < 0.5,
+            "Trimmed right should be ~75, got {}",
+            bounds.right
+        );
+    }
+
+    #[test]
+    fn test_trim_effect_inverted_keeps_outside_range() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+
+        let effect = TrimEffect::new(0.25, 0.75, TrimMode::Inverted).unwrap();
+        let result = effect.apply(&path).unwrap();
+
+        let bounds = result.bounds();
+        assert!((bounds.left - 0.0).abs() < 0.5);
+        assert!((bounds.right - 100.0).abs() < 0.5);
+        // Should have at least 2 contours (before 25 and after 75)
+        assert_eq!(
+            result.contour_count(),
+            2,
+            "Inverted trim should produce two contours"
+        );
     }
 }
