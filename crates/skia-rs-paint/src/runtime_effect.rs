@@ -34,6 +34,8 @@ pub enum RuntimeEffectError {
         /// Expected signature.
         expected: String,
     },
+    /// Semantic validation (type checking / scope resolution) failed.
+    ValidationFailed(String),
 }
 
 impl std::fmt::Display for RuntimeEffectError {
@@ -49,6 +51,9 @@ impl std::fmt::Display for RuntimeEffectError {
             RuntimeEffectError::MissingMain => write!(f, "Missing main function"),
             RuntimeEffectError::InvalidEntryPoint { expected } => {
                 write!(f, "Invalid entry point signature: expected {}", expected)
+            }
+            RuntimeEffectError::ValidationFailed(msg) => {
+                write!(f, "Semantic validation failed: {}", msg)
             }
         }
     }
@@ -242,6 +247,10 @@ impl RuntimeEffect {
 
         // Validate entry point
         validate_entry_point(&program, kind)?;
+
+        // Semantic validation: type checking, scope resolution, etc.
+        crate::sksl_validate::validate_program(&program)
+            .map_err(|e| RuntimeEffectError::ValidationFailed(e.to_string()))?;
 
         // Extract uniforms
         let mut uniforms = Vec::new();
@@ -2125,5 +2134,52 @@ mod tests {
         let src = "half4 main(half4 src, half4 dst) { return src + dst; }";
         let result = RuntimeEffect::make_for_blender(src);
         assert!(result.is_ok(), "Valid blender main should be accepted");
+    }
+
+    #[test]
+    fn test_validation_rejects_undeclared_variable() {
+        let src = r#"
+            vec4 main(vec2 coord) {
+                return vec4(undeclared, 0.0, 0.0, 1.0);
+            }
+        "#;
+        let result = RuntimeEffect::make_for_shader(src);
+        assert!(
+            matches!(result, Err(RuntimeEffectError::ValidationFailed(_))),
+            "undeclared variable should surface as ValidationFailed, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validation_rejects_arity_mismatch() {
+        let src = r#"
+            float square(float x) { return x * x; }
+            vec4 main(vec2 coord) {
+                return vec4(square(1.0, 2.0), 0.0, 0.0, 1.0);
+            }
+        "#;
+        let result = RuntimeEffect::make_for_shader(src);
+        assert!(
+            matches!(result, Err(RuntimeEffectError::ValidationFailed(_))),
+            "arity mismatch should surface as ValidationFailed, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validation_rejects_type_mismatch_in_initializer() {
+        let src = r#"
+            vec4 main(vec2 coord) {
+                float x = vec2(1.0, 2.0);
+                return vec4(x, 0.0, 0.0, 1.0);
+            }
+        "#;
+        let result = RuntimeEffect::make_for_shader(src);
+        assert!(
+            matches!(result, Err(RuntimeEffectError::ValidationFailed(_))),
+            "type mismatch should surface as ValidationFailed, got {:?}",
+            result
+        );
     }
 }
