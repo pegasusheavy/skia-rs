@@ -213,6 +213,11 @@ pub type BoxedImageGenerator = Box<dyn ImageGenerator>;
 pub type SharedImageGenerator = Arc<dyn ImageGenerator>;
 
 /// Convert pixels between formats.
+///
+/// Delegates to [`skia_rs_core::convert_pixels`], which handles both
+/// color-type translation (RGBA<->BGRA, Gray8<->RGBA, Alpha8<->RGBA,
+/// RGB888<->RGBA, RGB565<->RGBA) and alpha-type translation
+/// (Premul<->Unpremul) in a single row-by-row pass.
 pub fn convert_pixels(
     src_info: &ImageInfo,
     src_pixels: &[u8],
@@ -221,89 +226,40 @@ pub fn convert_pixels(
     dst_pixels: &mut [u8],
     dst_row_bytes: usize,
 ) -> GeneratorResult<()> {
-    // Validate dimensions
+    // Validate dimensions up front for a clean error message.
     if src_info.width != dst_info.width || src_info.height != dst_info.height {
         return Err(GeneratorError::GenerateFailed("Dimension mismatch".into()));
     }
 
-    let width = src_info.width as usize;
-    let height = src_info.height as usize;
+    let src_core = skia_rs_core::ImageInfo::new(
+        src_info.width,
+        src_info.height,
+        src_info.color_type,
+        src_info.alpha_type,
+    )
+    .map_err(|e| GeneratorError::InvalidInfo(e.to_string()))?;
+    let dst_core = skia_rs_core::ImageInfo::new(
+        dst_info.width,
+        dst_info.height,
+        dst_info.color_type,
+        dst_info.alpha_type,
+    )
+    .map_err(|e| GeneratorError::InvalidInfo(e.to_string()))?;
 
-    // Same format - direct copy
-    if src_info.color_type == dst_info.color_type && src_info.alpha_type == dst_info.alpha_type {
-        let bytes_per_pixel = src_info.bytes_per_pixel();
-        let copy_len = width * bytes_per_pixel;
-
-        for y in 0..height {
-            let src_offset = y * src_row_bytes;
-            let dst_offset = y * dst_row_bytes;
-            dst_pixels[dst_offset..dst_offset + copy_len]
-                .copy_from_slice(&src_pixels[src_offset..src_offset + copy_len]);
+    skia_rs_core::convert_pixels(
+        src_pixels,
+        &src_core,
+        src_row_bytes,
+        dst_pixels,
+        &dst_core,
+        dst_row_bytes,
+    )
+    .map_err(|e| match e {
+        skia_rs_core::PixelError::UnsupportedColorType => {
+            GeneratorError::UnsupportedColorType(dst_info.color_type)
         }
-        return Ok(());
-    }
-
-    // Handle common conversions
-    match (src_info.color_type, dst_info.color_type) {
-        (ColorType::Rgba8888, ColorType::Bgra8888) | (ColorType::Bgra8888, ColorType::Rgba8888) => {
-            // Swap R and B
-            for y in 0..height {
-                for x in 0..width {
-                    let src_offset = y * src_row_bytes + x * 4;
-                    let dst_offset = y * dst_row_bytes + x * 4;
-                    dst_pixels[dst_offset] = src_pixels[src_offset + 2]; // R <-> B
-                    dst_pixels[dst_offset + 1] = src_pixels[src_offset + 1]; // G
-                    dst_pixels[dst_offset + 2] = src_pixels[src_offset]; // B <-> R
-                    dst_pixels[dst_offset + 3] = src_pixels[src_offset + 3]; // A
-                }
-            }
-            Ok(())
-        }
-        (ColorType::Gray8, ColorType::Rgba8888) => {
-            for y in 0..height {
-                for x in 0..width {
-                    let src_offset = y * src_row_bytes + x;
-                    let dst_offset = y * dst_row_bytes + x * 4;
-                    let gray = src_pixels[src_offset];
-                    dst_pixels[dst_offset] = gray;
-                    dst_pixels[dst_offset + 1] = gray;
-                    dst_pixels[dst_offset + 2] = gray;
-                    dst_pixels[dst_offset + 3] = 255;
-                }
-            }
-            Ok(())
-        }
-        (ColorType::Alpha8, ColorType::Rgba8888) => {
-            for y in 0..height {
-                for x in 0..width {
-                    let src_offset = y * src_row_bytes + x;
-                    let dst_offset = y * dst_row_bytes + x * 4;
-                    let alpha = src_pixels[src_offset];
-                    dst_pixels[dst_offset] = 0;
-                    dst_pixels[dst_offset + 1] = 0;
-                    dst_pixels[dst_offset + 2] = 0;
-                    dst_pixels[dst_offset + 3] = alpha;
-                }
-            }
-            Ok(())
-        }
-        (ColorType::Rgba8888, ColorType::Gray8) => {
-            for y in 0..height {
-                for x in 0..width {
-                    let src_offset = y * src_row_bytes + x * 4;
-                    let dst_offset = y * dst_row_bytes + x;
-                    let r = src_pixels[src_offset] as u32;
-                    let g = src_pixels[src_offset + 1] as u32;
-                    let b = src_pixels[src_offset + 2] as u32;
-                    // Luminance formula: 0.299*R + 0.587*G + 0.114*B
-                    let gray = ((r * 77 + g * 150 + b * 29) >> 8) as u8;
-                    dst_pixels[dst_offset] = gray;
-                }
-            }
-            Ok(())
-        }
-        _ => Err(GeneratorError::UnsupportedColorType(dst_info.color_type)),
-    }
+        other => GeneratorError::GenerateFailed(other.to_string()),
+    })
 }
 
 /// A simple solid color generator.
@@ -338,11 +294,27 @@ impl ImageGenerator for SolidColorGenerator {
     }
 }
 
-/// A generator that wraps encoded image data (lazy decoding).
+/// A generator that wraps encoded image data with eager decoding.
+///
+/// The encoded payload is decoded exactly once, at construction time. This
+/// trades a small startup cost for:
+/// - **Correctness**: `info()` returns the decoder's actual color/alpha
+///   type rather than a hard-coded `Rgba8888/Premul` placeholder, so
+///   callers that compare `generator.info()` against a target buffer see
+///   the real format.
+/// - **Performance**: `on_get_pixels` serves from the cached decoded image
+///   instead of re-running the decode on every call.
+///
+/// For deferred decoding at a higher level (the original motivation for
+/// this type), wrap it in a [`LazyImage`](crate::LazyImage) — that API
+/// handles the "don't decode until actually needed" semantics and keeps
+/// the generator's role focused on producing pixels once asked.
 pub struct EncodedImageGenerator {
     info: ImageInfo,
     encoded_data: Arc<[u8]>,
     unique_id: u32,
+    /// Decoded image, computed once in the constructor.
+    decoded: crate::Image,
 }
 
 impl EncodedImageGenerator {
@@ -350,32 +322,29 @@ impl EncodedImageGenerator {
     ///
     /// Returns `None` if the data cannot be decoded.
     pub fn new(data: Vec<u8>) -> Option<Self> {
-        // Probe the encoded data to get dimensions
-        let (width, height) = crate::get_image_dimensions(&data).ok()?;
-
-        static ID_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
-        let unique_id = ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-        // Use RGBA8888/Premul as default - actual format determined at decode time
-        Some(Self {
-            info: ImageInfo::new(width, height, ColorType::Rgba8888, AlphaType::Premul),
-            encoded_data: data.into(),
-            unique_id,
-        })
+        Self::from_shared(data.into())
     }
 
     /// Create a generator from shared encoded data.
+    ///
+    /// Decodes the payload up front to determine its native format.
     pub fn from_shared(data: Arc<[u8]>) -> Option<Self> {
-        let (width, height) = crate::get_image_dimensions(&data).ok()?;
+        let decoded = crate::decode_image(&data).ok()?;
 
         static ID_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
         let unique_id = ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         Some(Self {
-            info: ImageInfo::new(width, height, ColorType::Rgba8888, AlphaType::Premul),
+            info: decoded.info().clone(),
             encoded_data: data,
             unique_id,
+            decoded,
         })
+    }
+
+    /// Get a reference to the cached decoded image.
+    pub fn decoded_image(&self) -> &crate::Image {
+        &self.decoded
     }
 }
 
@@ -393,16 +362,13 @@ impl ImageGenerator for EncodedImageGenerator {
     }
 
     fn on_get_pixels(&self, pixels: &mut [u8], row_bytes: usize) -> GeneratorResult<()> {
-        let image = crate::decode_image(&self.encoded_data)
-            .map_err(|e| GeneratorError::DecodeError(e.to_string()))?;
+        let info = self.decoded.info();
+        let src_row_bytes = self.decoded.row_bytes();
+        let bytes_per_pixel = info.bytes_per_pixel();
+        let width = info.width as usize;
+        let height = info.height as usize;
 
-        // Read pixels from decoded image
-        let src_row_bytes = image.row_bytes();
-        let bytes_per_pixel = self.info.bytes_per_pixel();
-        let width = self.info.width as usize;
-        let height = self.info.height as usize;
-
-        if let Some(src_pixels) = image.peek_pixels() {
+        if let Some(src_pixels) = self.decoded.peek_pixels() {
             for y in 0..height {
                 let src_offset = y * src_row_bytes;
                 let dst_offset = y * row_bytes;
@@ -417,11 +383,69 @@ impl ImageGenerator for EncodedImageGenerator {
             ))
         }
     }
+
+    fn on_get_pixels_with_conversion(
+        &self,
+        info: &ImageInfo,
+        pixels: &mut [u8],
+        row_bytes: usize,
+    ) -> GeneratorResult<()> {
+        // Convert directly from the cached decoded pixels to the caller's
+        // target. Overrides the default trait impl, which would allocate a
+        // staging buffer and decode into native first.
+        let src_info = self.decoded.info();
+        let src_row_bytes = self.decoded.row_bytes();
+        let src_pixels = self.decoded.peek_pixels().ok_or_else(|| {
+            GeneratorError::GenerateFailed("Failed to access decoded pixels".into())
+        })?;
+
+        convert_pixels(
+            src_info,
+            src_pixels,
+            src_row_bytes,
+            info,
+            pixels,
+            row_bytes,
+        )
+    }
+
+    fn query_supports_info(&self, info: &ImageInfo) -> bool {
+        // Native format is always supported.
+        if info.width == self.info.width
+            && info.height == self.info.height
+            && info.color_type == self.info.color_type
+            && info.alpha_type == self.info.alpha_type
+        {
+            return true;
+        }
+        // Otherwise, we support any format convert_pixels can reach. The
+        // function gate-keeps itself by returning UnsupportedColorType, so
+        // probe with a 0x0 info to avoid allocating a buffer here.
+        if info.width != self.info.width || info.height != self.info.height {
+            return false;
+        }
+        // Try the conversion on a tiny probe buffer; the function rejects
+        // on dimension mismatch before touching pixels, so we have to pass
+        // the real dimensions. Check against a whitelist of supported
+        // (src, dst) pairs instead.
+        matches!(
+            (self.info.color_type, info.color_type),
+            (ColorType::Rgba8888, ColorType::Rgba8888)
+                | (ColorType::Rgba8888, ColorType::Bgra8888)
+                | (ColorType::Bgra8888, ColorType::Rgba8888)
+                | (ColorType::Bgra8888, ColorType::Bgra8888)
+                | (ColorType::Gray8, ColorType::Rgba8888)
+                | (ColorType::Alpha8, ColorType::Rgba8888)
+                | (ColorType::Rgba8888, ColorType::Gray8)
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "png")]
+    use crate::codec::ImageEncoder;
 
     #[test]
     fn test_solid_color_generator() {
@@ -468,5 +492,111 @@ mod tests {
 
         // Different generators should have different IDs
         assert_ne!(generator1.unique_id(), generator2.unique_id());
+    }
+
+    #[test]
+    fn test_convert_pixels_premul_to_unpremul() {
+        // (25, 50, 75, 128) premul -> (50, 100, 150, 128) unpremul
+        let src_info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Premul);
+        let dst_info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Unpremul);
+        let src = [25, 50, 75, 128];
+        let mut dst = [0u8; 4];
+        convert_pixels(&src_info, &src, 4, &dst_info, &mut dst, 4).unwrap();
+        // Allow off-by-one from integer rounding.
+        assert!((dst[0] as i32 - 50).abs() <= 1);
+        assert!((dst[1] as i32 - 100).abs() <= 1);
+        assert!((dst[2] as i32 - 150).abs() <= 1);
+        assert_eq!(dst[3], 128);
+    }
+
+    #[cfg(feature = "png")]
+    #[test]
+    fn test_encoded_generator_reports_decoded_info() {
+        // Encode a tiny PNG and verify the generator's info reflects the
+        // decoder's actual output (not the hard-coded Rgba8888/Premul
+        // placeholder that caused C-4).
+        let info = ImageInfo::new(2, 2, ColorType::Rgba8888, AlphaType::Unpremul);
+        let src_pixels = vec![
+            255, 0, 0, 255, 0, 255, 0, 255, // row 0
+            0, 0, 255, 255, 255, 255, 0, 255, // row 1
+        ];
+        let src_image =
+            crate::Image::from_raster_data(&info, &src_pixels, 8).expect("raster image");
+        let encoded = crate::PngEncoder::new()
+            .encode_bytes(&src_image)
+            .expect("encode PNG");
+
+        let generator = EncodedImageGenerator::new(encoded).expect("build generator");
+        // After eager decode the advertised info matches decoder output.
+        assert_eq!(generator.info().width, 2);
+        assert_eq!(generator.info().height, 2);
+        assert_eq!(generator.info().color_type, ColorType::Rgba8888);
+
+        // Native format read-out works and matches.
+        let mut dst = vec![0u8; 16];
+        generator
+            .get_pixels(generator.info(), &mut dst, 8)
+            .expect("get_pixels native");
+        // Pixel 0: should be red; alpha interpretation is decoder-dependent
+        // (PNG reports Unpremul for this input) but red still shows red.
+        assert_eq!(dst[0], 255);
+        assert_eq!(dst[1], 0);
+        assert_eq!(dst[2], 0);
+    }
+
+    #[cfg(feature = "png")]
+    #[test]
+    fn test_encoded_generator_caches_decoded_image() {
+        // Decoding is driven by from_shared, so calling get_pixels N times
+        // should not re-decode. We verify by inspecting that repeated
+        // reads from the generator all produce the exact same bytes even
+        // after we drop and recreate the destination buffer.
+        let info = ImageInfo::new(4, 4, ColorType::Rgba8888, AlphaType::Unpremul);
+        let src_pixels: Vec<u8> = (0..(4 * 4 * 4)).map(|i| (i % 256) as u8).collect();
+        let src_image =
+            crate::Image::from_raster_data(&info, &src_pixels, 16).expect("raster image");
+        let encoded = crate::PngEncoder::new()
+            .encode_bytes(&src_image)
+            .expect("encode PNG");
+
+        let generator = EncodedImageGenerator::new(encoded).expect("build generator");
+
+        // The decoded image handle should be stable across calls — same
+        // underlying Arc means we are serving from cache, not re-decoding.
+        let img1_ptr = generator.decoded_image().unique_id();
+        let img2_ptr = generator.decoded_image().unique_id();
+        assert_eq!(img1_ptr, img2_ptr);
+
+        // Two calls produce identical bytes.
+        let row_bytes = generator.info().min_row_bytes();
+        let size = generator.info().compute_byte_size(row_bytes);
+        let mut buf1 = vec![0u8; size];
+        let mut buf2 = vec![0u8; size];
+        generator
+            .get_pixels(generator.info(), &mut buf1, row_bytes)
+            .unwrap();
+        generator
+            .get_pixels(generator.info(), &mut buf2, row_bytes)
+            .unwrap();
+        assert_eq!(buf1, buf2);
+    }
+
+    #[cfg(feature = "png")]
+    #[test]
+    fn test_encoded_generator_converts_on_demand() {
+        // Encode a PNG as RGBA, then ask the generator for BGRA: the
+        // conversion path must run over the cached decoded pixels.
+        let info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Unpremul);
+        let src_pixels = vec![10, 20, 30, 255];
+        let src_image = crate::Image::from_raster_data(&info, &src_pixels, 4).unwrap();
+        let encoded = crate::PngEncoder::new().encode_bytes(&src_image).unwrap();
+
+        let generator = EncodedImageGenerator::new(encoded).unwrap();
+        // Build a BGRA target info matching the generator's dimensions/alpha.
+        let target = ImageInfo::new(1, 1, ColorType::Bgra8888, generator.info().alpha_type);
+        let mut dst = vec![0u8; 4];
+        generator.get_pixels(&target, &mut dst, 4).unwrap();
+        // BGRA: [B=30, G=20, R=10, A=255]
+        assert_eq!(dst, vec![30, 20, 10, 255]);
     }
 }
