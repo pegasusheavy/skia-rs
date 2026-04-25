@@ -633,10 +633,7 @@ impl RuntimeEffect {
     fn stmt_to_wgsl(&self, stmt: &Stmt, indent: usize) -> String {
         let ind = "    ".repeat(indent);
         match stmt {
-            Stmt::Return(Some(expr)) => {
-                format!("{}return {};\n", ind, self.expr_to_wgsl(expr))
-            }
-            Stmt::Return(None) => format!("{}return;\n", ind),
+            Stmt::Expr(expr) => format!("{}{};\n", ind, self.expr_to_wgsl(expr)),
             Stmt::VarDecl { ty, name, init } => {
                 if let Some(init) = init {
                     format!(
@@ -650,8 +647,96 @@ impl RuntimeEffect {
                     format!("{}var {}: {};\n", ind, name, ty.wgsl_name())
                 }
             }
-            Stmt::Expr(expr) => format!("{}{};\n", ind, self.expr_to_wgsl(expr)),
-            _ => format!("{}// Unsupported statement\n", ind),
+            Stmt::Block(stmts) => {
+                let mut output = format!("{}{{\n", ind);
+                for s in stmts {
+                    output.push_str(&self.stmt_to_wgsl(s, indent + 1));
+                }
+                output.push_str(&format!("{}}}\n", ind));
+                output
+            }
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let mut output = format!("{}if ({}) ", ind, self.expr_to_wgsl(cond));
+                output.push_str(&self.stmt_to_wgsl(then_branch, indent));
+                if let Some(else_b) = else_branch {
+                    output.push_str(&format!("{}else ", ind));
+                    output.push_str(&self.stmt_to_wgsl(else_b, indent));
+                }
+                output
+            }
+            Stmt::For {
+                init,
+                cond,
+                update,
+                body,
+            } => {
+                let mut output = format!("{}for (", ind);
+                if let Some(init) = init {
+                    let init_str = self.stmt_to_wgsl(init, 0);
+                    output.push_str(init_str.trim());
+                } else {
+                    output.push(';');
+                }
+                output.push(' ');
+                if let Some(cond) = cond {
+                    output.push_str(&self.expr_to_wgsl(cond));
+                }
+                output.push_str("; ");
+                if let Some(update) = update {
+                    output.push_str(&self.expr_to_wgsl(update));
+                }
+                output.push_str(") ");
+                output.push_str(&self.stmt_to_wgsl(body, indent));
+                output
+            }
+            Stmt::While { cond, body } => {
+                let mut output = format!("{}loop {{\n", ind);
+                output.push_str(&format!(
+                    "{}    if (!{}) {{ break; }}\n",
+                    ind,
+                    self.expr_to_wgsl(cond)
+                ));
+                if let Stmt::Block(stmts) = body.as_ref() {
+                    for s in stmts {
+                        output.push_str(&self.stmt_to_wgsl(s, indent + 1));
+                    }
+                } else {
+                    output.push_str(&self.stmt_to_wgsl(body, indent + 1));
+                }
+                output.push_str(&format!("{}}}\n", ind));
+                output
+            }
+            Stmt::DoWhile { body, cond } => {
+                let mut output = format!("{}loop {{\n", ind);
+                if let Stmt::Block(stmts) = body.as_ref() {
+                    for s in stmts {
+                        output.push_str(&self.stmt_to_wgsl(s, indent + 1));
+                    }
+                } else {
+                    output.push_str(&self.stmt_to_wgsl(body, indent + 1));
+                }
+                output.push_str(&format!(
+                    "{}    if (!{}) {{ break; }}\n",
+                    ind,
+                    self.expr_to_wgsl(cond)
+                ));
+                output.push_str(&format!("{}}}\n", ind));
+                output
+            }
+            Stmt::Return(expr) => {
+                if let Some(expr) = expr {
+                    format!("{}return {};\n", ind, self.expr_to_wgsl(expr))
+                } else {
+                    format!("{}return;\n", ind)
+                }
+            }
+            Stmt::Break => format!("{}break;\n", ind),
+            Stmt::Continue => format!("{}continue;\n", ind),
+            Stmt::Discard => format!("{}discard;\n", ind),
         }
     }
 
@@ -675,18 +760,68 @@ impl RuntimeEffect {
                     self.expr_to_wgsl(right)
                 )
             }
-            Expr::Constructor { ty, args } => {
-                let args_str: Vec<String> = args.iter().map(|a| self.expr_to_wgsl(a)).collect();
-                format!("{}({})", ty.wgsl_name(), args_str.join(", "))
+            Expr::Unary { op, expr } => {
+                format!("({}{})", op.glsl_str(), self.expr_to_wgsl(expr))
             }
             Expr::Call { name, args } => {
                 let args_str: Vec<String> = args.iter().map(|a| self.expr_to_wgsl(a)).collect();
                 format!("{}({})", name, args_str.join(", "))
             }
+            Expr::Constructor { ty, args } => {
+                let args_str: Vec<String> = args.iter().map(|a| self.expr_to_wgsl(a)).collect();
+                format!("{}({})", ty.wgsl_name(), args_str.join(", "))
+            }
             Expr::Field { expr, field } => {
                 format!("{}.{}", self.expr_to_wgsl(expr), field)
             }
-            _ => "/* unsupported */".to_string(),
+            Expr::Index { expr, index } => {
+                format!(
+                    "{}[{}]",
+                    self.expr_to_wgsl(expr),
+                    self.expr_to_wgsl(index)
+                )
+            }
+            Expr::Ternary {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
+                format!(
+                    "select({}, {}, {})",
+                    self.expr_to_wgsl(else_expr),
+                    self.expr_to_wgsl(then_expr),
+                    self.expr_to_wgsl(cond)
+                )
+            }
+            Expr::Assign { target, value } => {
+                format!(
+                    "({} = {})",
+                    self.expr_to_wgsl(target),
+                    self.expr_to_wgsl(value)
+                )
+            }
+            Expr::CompoundAssign { target, op, value } => {
+                format!(
+                    "({} {}= {})",
+                    self.expr_to_wgsl(target),
+                    op.glsl_str(),
+                    self.expr_to_wgsl(value)
+                )
+            }
+            Expr::PostIncDec { expr, inc } => {
+                format!(
+                    "{}{}",
+                    self.expr_to_wgsl(expr),
+                    if *inc { "++" } else { "--" }
+                )
+            }
+            Expr::PreIncDec { expr, inc } => {
+                format!(
+                    "{}{}",
+                    if *inc { "++" } else { "--" },
+                    self.expr_to_wgsl(expr)
+                )
+            }
         }
     }
 
@@ -739,16 +874,7 @@ impl RuntimeEffect {
         let mut output = String::new();
 
         // Use Metal types
-        let ret_type = match &func.return_type {
-            SkslType::Vec4 | SkslType::Half4 => "float4",
-            SkslType::Vec3 | SkslType::Half3 => "float3",
-            SkslType::Vec2 | SkslType::Half2 => "float2",
-            SkslType::Float | SkslType::Half => "float",
-            SkslType::Int => "int",
-            SkslType::Bool => "bool",
-            SkslType::Void => "void",
-            _ => "float4",
-        };
+        let ret_type = self.sksl_type_to_msl(&func.return_type);
 
         output.push_str(ret_type);
         output.push(' ');
@@ -759,22 +885,199 @@ impl RuntimeEffect {
             if i > 0 {
                 output.push_str(", ");
             }
-            let param_type = match &param.ty {
-                SkslType::Vec4 | SkslType::Half4 => "float4",
-                SkslType::Vec3 | SkslType::Half3 => "float3",
-                SkslType::Vec2 | SkslType::Half2 => "float2",
-                SkslType::Float | SkslType::Half => "float",
-                _ => "float",
-            };
-            output.push_str(param_type);
+            output.push_str(self.sksl_type_to_msl(&param.ty));
             output.push(' ');
             output.push_str(&param.name);
         }
 
         output.push_str(") ");
-        output.push_str(&self.stmt_to_glsl(&func.body, 0)); // Reuse GLSL for simplicity
+        output.push_str(&self.stmt_to_msl(&func.body, 0));
 
         output
+    }
+
+    fn sksl_type_to_msl(&self, ty: &SkslType) -> &'static str {
+        match ty {
+            SkslType::Vec4 | SkslType::Half4 => "float4",
+            SkslType::Vec3 | SkslType::Half3 => "float3",
+            SkslType::Vec2 | SkslType::Half2 => "float2",
+            SkslType::Float | SkslType::Half => "float",
+            SkslType::Int => "int",
+            SkslType::Bool => "bool",
+            SkslType::Mat2 => "float2x2",
+            SkslType::Mat3 => "float3x3",
+            SkslType::Mat4 => "float4x4",
+            SkslType::Void => "void",
+            _ => "float4",
+        }
+    }
+
+    fn stmt_to_msl(&self, stmt: &Stmt, indent: usize) -> String {
+        let ind = "    ".repeat(indent);
+        match stmt {
+            Stmt::Expr(expr) => format!("{}{};\n", ind, self.expr_to_msl(expr)),
+            Stmt::VarDecl { ty, name, init } => {
+                if let Some(init) = init {
+                    format!(
+                        "{}{} {} = {};\n",
+                        ind,
+                        self.sksl_type_to_msl(ty),
+                        name,
+                        self.expr_to_msl(init)
+                    )
+                } else {
+                    format!("{}{} {};\n", ind, self.sksl_type_to_msl(ty), name)
+                }
+            }
+            Stmt::Block(stmts) => {
+                let mut output = format!("{}{{\n", ind);
+                for s in stmts {
+                    output.push_str(&self.stmt_to_msl(s, indent + 1));
+                }
+                output.push_str(&format!("{}}}\n", ind));
+                output
+            }
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let mut output = format!("{}if ({}) ", ind, self.expr_to_msl(cond));
+                output.push_str(&self.stmt_to_msl(then_branch, indent));
+                if let Some(else_b) = else_branch {
+                    output.push_str(&format!("{}else ", ind));
+                    output.push_str(&self.stmt_to_msl(else_b, indent));
+                }
+                output
+            }
+            Stmt::For {
+                init,
+                cond,
+                update,
+                body,
+            } => {
+                let mut output = format!("{}for (", ind);
+                if let Some(init) = init {
+                    let init_str = self.stmt_to_msl(init, 0);
+                    output.push_str(init_str.trim());
+                } else {
+                    output.push(';');
+                }
+                output.push(' ');
+                if let Some(cond) = cond {
+                    output.push_str(&self.expr_to_msl(cond));
+                }
+                output.push_str("; ");
+                if let Some(update) = update {
+                    output.push_str(&self.expr_to_msl(update));
+                }
+                output.push_str(") ");
+                output.push_str(&self.stmt_to_msl(body, indent));
+                output
+            }
+            Stmt::While { cond, body } => {
+                let mut output = format!("{}while ({}) ", ind, self.expr_to_msl(cond));
+                output.push_str(&self.stmt_to_msl(body, indent));
+                output
+            }
+            Stmt::DoWhile { body, cond } => {
+                let mut output = format!("{}do ", ind);
+                output.push_str(&self.stmt_to_msl(body, indent));
+                output.push_str(&format!(" while ({});\n", self.expr_to_msl(cond)));
+                output
+            }
+            Stmt::Return(expr) => {
+                if let Some(expr) = expr {
+                    format!("{}return {};\n", ind, self.expr_to_msl(expr))
+                } else {
+                    format!("{}return;\n", ind)
+                }
+            }
+            Stmt::Break => format!("{}break;\n", ind),
+            Stmt::Continue => format!("{}continue;\n", ind),
+            Stmt::Discard => format!("{}discard_fragment();\n", ind),
+        }
+    }
+
+    fn expr_to_msl(&self, expr: &Expr) -> String {
+        match expr {
+            Expr::IntLit(n) => n.to_string(),
+            Expr::FloatLit(n) => {
+                if n.fract() == 0.0 {
+                    format!("{}.0", n)
+                } else {
+                    format!("{}", n)
+                }
+            }
+            Expr::BoolLit(b) => b.to_string(),
+            Expr::Var(name) => name.clone(),
+            Expr::Binary { left, op, right } => {
+                format!(
+                    "({} {} {})",
+                    self.expr_to_msl(left),
+                    op.glsl_str(),
+                    self.expr_to_msl(right)
+                )
+            }
+            Expr::Unary { op, expr } => {
+                format!("({}{})", op.glsl_str(), self.expr_to_msl(expr))
+            }
+            Expr::Call { name, args } => {
+                let args_str: Vec<String> = args.iter().map(|a| self.expr_to_msl(a)).collect();
+                format!("{}({})", name, args_str.join(", "))
+            }
+            Expr::Constructor { ty, args } => {
+                let args_str: Vec<String> = args.iter().map(|a| self.expr_to_msl(a)).collect();
+                format!("{}({})", self.sksl_type_to_msl(ty), args_str.join(", "))
+            }
+            Expr::Field { expr, field } => {
+                format!("{}.{}", self.expr_to_msl(expr), field)
+            }
+            Expr::Index { expr, index } => {
+                format!("{}[{}]", self.expr_to_msl(expr), self.expr_to_msl(index))
+            }
+            Expr::Ternary {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
+                format!(
+                    "({} ? {} : {})",
+                    self.expr_to_msl(cond),
+                    self.expr_to_msl(then_expr),
+                    self.expr_to_msl(else_expr)
+                )
+            }
+            Expr::Assign { target, value } => {
+                format!(
+                    "({} = {})",
+                    self.expr_to_msl(target),
+                    self.expr_to_msl(value)
+                )
+            }
+            Expr::CompoundAssign { target, op, value } => {
+                format!(
+                    "({} {}= {})",
+                    self.expr_to_msl(target),
+                    op.glsl_str(),
+                    self.expr_to_msl(value)
+                )
+            }
+            Expr::PostIncDec { expr, inc } => {
+                format!(
+                    "{}{}",
+                    self.expr_to_msl(expr),
+                    if *inc { "++" } else { "--" }
+                )
+            }
+            Expr::PreIncDec { expr, inc } => {
+                format!(
+                    "{}{}",
+                    if *inc { "++" } else { "--" },
+                    self.expr_to_msl(expr)
+                )
+            }
+        }
     }
 
     /// Create a RuntimeShader from this effect.
@@ -1032,5 +1335,145 @@ mod tests {
 
         let shader = effect.make_shader(&data, &[]).unwrap();
         assert!(shader.effect().uniforms().len() == 2);
+    }
+
+    #[test]
+    fn test_wgsl_if_statement() {
+        let src = r#"
+            vec4 main(vec2 fragCoord) {
+                float result = 0.0;
+                if (fragCoord.x > 0.5) {
+                    result = 1.0;
+                } else {
+                    result = 0.5;
+                }
+                return vec4(result, 0.0, 0.0, 1.0);
+            }
+        "#;
+        let effect = RuntimeEffect::make_for_shader(src).unwrap();
+        let wgsl = effect.compile_to(ShaderTarget::Wgsl).unwrap();
+
+        assert!(wgsl.contains("if ("), "WGSL should contain if statement");
+        assert!(wgsl.contains("else"), "WGSL should contain else branch");
+        assert!(!wgsl.contains("Unsupported"), "WGSL should not contain unsupported stubs: {}", wgsl);
+    }
+
+    #[test]
+    fn test_wgsl_for_loop() {
+        let src = r#"
+            vec4 main(vec2 fragCoord) {
+                float sum = 0.0;
+                for (int i = 0; i < 4; i = i + 1) {
+                    sum = sum + 1.0;
+                }
+                return vec4(sum, 0.0, 0.0, 1.0);
+            }
+        "#;
+        let effect = RuntimeEffect::make_for_shader(src).unwrap();
+        let wgsl = effect.compile_to(ShaderTarget::Wgsl).unwrap();
+
+        assert!(wgsl.contains("for ("), "WGSL should contain for loop");
+        assert!(!wgsl.contains("Unsupported"), "WGSL for loop should compile: {}", wgsl);
+    }
+
+    #[test]
+    fn test_wgsl_while_loop() {
+        let src = r#"
+            vec4 main(vec2 fragCoord) {
+                int i = 0;
+                while (i < 3) {
+                    i = i + 1;
+                }
+                return vec4(0.0, 0.0, 0.0, 1.0);
+            }
+        "#;
+        let effect = RuntimeEffect::make_for_shader(src).unwrap();
+        let wgsl = effect.compile_to(ShaderTarget::Wgsl).unwrap();
+
+        assert!(wgsl.contains("loop {"), "WGSL should translate while to loop");
+        assert!(wgsl.contains("break;"), "WGSL loop should contain break");
+        assert!(!wgsl.contains("Unsupported"), "WGSL while should compile: {}", wgsl);
+    }
+
+    #[test]
+    fn test_wgsl_ternary() {
+        let src = r#"
+            vec4 main(vec2 fragCoord) {
+                float x = fragCoord.x > 0.5 ? 1.0 : 0.0;
+                return vec4(x, 0.0, 0.0, 1.0);
+            }
+        "#;
+        let effect = RuntimeEffect::make_for_shader(src).unwrap();
+        let wgsl = effect.compile_to(ShaderTarget::Wgsl).unwrap();
+
+        assert!(wgsl.contains("select("), "WGSL should translate ternary to select()");
+        assert!(!wgsl.contains("?"), "WGSL should not use ternary operator");
+        assert!(!wgsl.contains("unsupported"), "WGSL ternary should compile: {}", wgsl);
+    }
+
+    #[test]
+    fn test_msl_uses_float4() {
+        let src = r#"
+            vec4 main(vec2 fragCoord) {
+                return vec4(1.0, 0.0, 0.0, 1.0);
+            }
+        "#;
+        let effect = RuntimeEffect::make_for_shader(src).unwrap();
+        let msl = effect.compile_to(ShaderTarget::Msl).unwrap();
+
+        assert!(msl.contains("float4"), "MSL should use float4 instead of vec4: {}", msl);
+        assert!(!msl.contains("vec4"), "MSL should not contain vec4: {}", msl);
+    }
+
+    #[test]
+    fn test_msl_if_statement() {
+        let src = r#"
+            vec4 main(vec2 fragCoord) {
+                if (fragCoord.x > 0.5) {
+                    return vec4(1.0, 0.0, 0.0, 1.0);
+                }
+                return vec4(0.0, 0.0, 0.0, 1.0);
+            }
+        "#;
+        let effect = RuntimeEffect::make_for_shader(src).unwrap();
+        let msl = effect.compile_to(ShaderTarget::Msl).unwrap();
+
+        assert!(msl.contains("if ("), "MSL should contain if statement");
+        assert!(msl.contains("return"), "MSL should contain return statements");
+    }
+
+    #[test]
+    fn test_msl_for_loop() {
+        let src = r#"
+            vec4 main(vec2 fragCoord) {
+                float sum = 0.0;
+                for (int i = 0; i < 3; i = i + 1) {
+                    sum = sum + 1.0;
+                }
+                return vec4(sum, 0.0, 0.0, 1.0);
+            }
+        "#;
+        let effect = RuntimeEffect::make_for_shader(src).unwrap();
+        let msl = effect.compile_to(ShaderTarget::Msl).unwrap();
+
+        assert!(msl.contains("for ("), "MSL should contain for loop");
+        assert!(msl.contains("float4"), "MSL should use float4");
+    }
+
+    #[test]
+    fn test_msl_discard() {
+        let src = r#"
+            vec4 main(vec2 fragCoord) {
+                if (fragCoord.x < 0.0) {
+                    discard;
+                }
+                return vec4(1.0, 0.0, 0.0, 1.0);
+            }
+        "#;
+        let effect = RuntimeEffect::make_for_shader(src).unwrap();
+        let msl = effect.compile_to(ShaderTarget::Msl).unwrap();
+
+        assert!(msl.contains("discard_fragment()"), "MSL should translate discard to discard_fragment(): {}", msl);
+        assert!(!msl.contains("discard;"), "MSL should not use GLSL discard syntax");
     }
 }
