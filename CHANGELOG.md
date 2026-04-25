@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-04-25
+
+### Fixed - skia-rs-core
+
+- `Matrix::map_point` now guards against divide-by-zero in perspective transforms (GAP-C4)
+- `Region::contains_rect` correctly handles rects spanning multiple components (GAP-C2)
+- `Region::union` merges overlapping rectangles to prevent unbounded growth (GAP-C3)
+- `Matrix::skew` uses raw skew factors matching Skia's API (GAP-N1)
+- `Matrix::invert` uses f32-appropriate singularity threshold (GAP-N5)
+- `RRect::from_rect_xy` clamps radii to half-dimensions (GAP-N2)
+
+### Added - skia-rs-core
+
+- `Matrix44::ortho_checked` and `perspective_checked` variants returning `Option` (GAP-N4)
+- `Matrix44::get`/`set` now have explicit bounds-check messages (GAP-N3)
+- `convert_pixels` handles alpha type conversion (Premul ↔ Unpremul) (GAP-N6)
+- Documented limitation in `IccProfile::from_bytes` regarding non-sRGB profiles (GAP-C1)
+
+### Removed - skia-rs-core
+
+- Orphan source files `matrix.rs` and `scalar.rs` (dead code) (GAP-C5, GAP-N7)
+
+### Known Limitations - skia-rs-core
+
+- `IccProfile::from_bytes` does not yet parse tag tables; non-sRGB profiles will
+  report incorrect color space metadata. Tracked as GAP-C1, deferred to a
+  future release for full ICC support.
+
 ## [0.1.0] - 2026-01-02
 
 ### 🎉 Initial Release

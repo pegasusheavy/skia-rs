@@ -1967,7 +1967,7 @@ checksum = "56199f7ddabf13fe5074ce809e7d3f42b42ae711800501b5b16ea82ad029c39d"
 
 [[package]]
 name = "skia-rs"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "skia-rs-canvas",
  "skia-rs-codec",
@@ -1985,7 +1985,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-bench"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "criterion",
  "rand 0.8.5",
@@ -2000,7 +2000,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-canvas"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "proptest",
  "skia-rs-codec",
@@ -2014,7 +2014,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-codec"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "avif-decode",
  "gif",
@@ -2032,7 +2032,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bitflags 2.10.0",
  "bytemuck",
@@ -2047,7 +2047,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-ffi"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "skia-rs-canvas",
@@ -2061,7 +2061,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-gpu"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ash",
  "glow 0.16.0",
@@ -2078,7 +2078,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-paint"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bitflags 2.10.0",
  "proptest",
@@ -2090,7 +2090,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-path"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "arrayvec",
  "proptest",
@@ -2102,7 +2102,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-pdf"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "flate2",
  "pdf-writer",
@@ -2117,7 +2117,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-safe"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bitflags 2.10.0",
  "js-sys",
@@ -2139,7 +2139,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-skottie"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "proptest",
  "serde",
@@ -2153,7 +2153,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-svg"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "proptest",
  "roxmltree",
@@ -2167,7 +2167,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-text"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "fontdb",
  "proptest",
