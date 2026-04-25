@@ -240,7 +240,9 @@ impl RuntimeEffect {
     }
 
     fn compile(source: &str, kind: EffectKind) -> Result<Self, RuntimeEffectError> {
-        let mut parser = Parser::new(source);
+        // Preprocess the source to handle #define, #ifdef, etc.
+        let preprocessed = crate::sksl::preprocess(source);
+        let mut parser = Parser::new(&preprocessed);
         let program = parser
             .parse_program()
             .map_err(RuntimeEffectError::ParseError)?;
@@ -2181,5 +2183,12 @@ mod tests {
             "type mismatch should surface as ValidationFailed, got {:?}",
             result
         );
+    }
+
+    #[test]
+    fn test_parse_accepts_layout_qualifier() {
+        let src = "layout(color) uniform half4 tint;\nhalf4 main(float2 p) { return tint; }";
+        let result = RuntimeEffect::make_for_shader(src);
+        assert!(result.is_ok(), "layout(color) should parse, got {:?}", result.err());
     }
 }
