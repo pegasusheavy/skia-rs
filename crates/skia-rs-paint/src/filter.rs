@@ -94,6 +94,14 @@ pub enum BlurStyle {
 pub trait MaskFilter: Send + Sync + std::fmt::Debug {
     /// Get the blur radius if this is a blur filter.
     fn blur_radius(&self) -> Option<Scalar>;
+
+    /// Apply the filter to an alpha mask in place.
+    ///
+    /// `mask` is a row-major `width * height` bytes of alpha values.
+    /// Default implementation is a no-op — concrete filters override.
+    fn apply_mask(&self, mask: &mut [u8], width: usize, height: usize) {
+        let _ = (mask, width, height);
+    }
 }
 
 /// A blur mask filter.
@@ -124,12 +132,36 @@ impl MaskFilter for BlurMaskFilter {
     fn blur_radius(&self) -> Option<Scalar> {
         Some(self.sigma)
     }
+
+    fn apply_mask(&self, mask: &mut [u8], width: usize, height: usize) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        let radius = self.sigma.max(0.0) as usize;
+        if radius == 0 {
+            return;
+        }
+        // Two-pass separable box blur (horizontal then vertical),
+        // repeated twice for a better Gaussian approximation.
+        for _ in 0..2 {
+            box_blur_horizontal(mask, width, height, radius);
+            box_blur_vertical(mask, width, height, radius);
+        }
+    }
 }
 
 /// An image filter.
 pub trait ImageFilter: Send + Sync + std::fmt::Debug {
     /// Get the bounds that this filter affects.
     fn filter_bounds(&self, src: &Rect) -> Rect;
+
+    /// Apply the filter to an RGBA8 image buffer in place.
+    ///
+    /// `pixels` is a row-major `width * height * 4` byte buffer.
+    /// Default implementation is a no-op — concrete filters override.
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        let _ = (pixels, width, height);
+    }
 }
 
 /// A blur image filter.
@@ -157,6 +189,25 @@ impl ImageFilter for BlurImageFilter {
         let dx = self.sigma_x * 3.0;
         let dy = self.sigma_y * 3.0;
         Rect::new(src.left - dx, src.top - dy, src.right + dx, src.bottom + dy)
+    }
+
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        let rx = self.sigma_x.max(0.0) as usize;
+        let ry = self.sigma_y.max(0.0) as usize;
+        if rx == 0 && ry == 0 {
+            return;
+        }
+        for _ in 0..2 {
+            if rx > 0 {
+                rgba_box_blur_horizontal(pixels, width, height, rx);
+            }
+            if ry > 0 {
+                rgba_box_blur_vertical(pixels, width, height, ry);
+            }
+        }
     }
 }
 
@@ -398,6 +449,33 @@ impl ImageFilter for ColorFilterImageFilter {
         // Color filters don't change bounds
         *src
     }
+
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        // Apply inner filter first if present
+        if let Some(ref input) = self.input {
+            input.apply(pixels, width, height);
+        }
+        // Apply color filter to each pixel
+        for y in 0..height {
+            for x in 0..width {
+                let idx = (y * width + x) * 4;
+                let color = Color4f {
+                    r: pixels[idx] as f32 / 255.0,
+                    g: pixels[idx + 1] as f32 / 255.0,
+                    b: pixels[idx + 2] as f32 / 255.0,
+                    a: pixels[idx + 3] as f32 / 255.0,
+                };
+                let filtered = self.color_filter.filter_color(color);
+                pixels[idx] = (filtered.r * 255.0).clamp(0.0, 255.0) as u8;
+                pixels[idx + 1] = (filtered.g * 255.0).clamp(0.0, 255.0) as u8;
+                pixels[idx + 2] = (filtered.b * 255.0).clamp(0.0, 255.0) as u8;
+                pixels[idx + 3] = (filtered.a * 255.0).clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
 }
 
 /// A displacement map image filter.
@@ -566,6 +644,12 @@ impl ImageFilter for ComposeImageFilter {
         let inner_bounds = self.inner.filter_bounds(src);
         self.outer.filter_bounds(&inner_bounds)
     }
+
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        // Apply inner filter first, then outer
+        self.inner.apply(pixels, width, height);
+        self.outer.apply(pixels, width, height);
+    }
 }
 
 /// A merge image filter that combines multiple inputs.
@@ -621,6 +705,37 @@ impl ImageFilter for OffsetImageFilter {
             src.right + self.dx,
             src.bottom + self.dy,
         )
+    }
+
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        // Apply input filter first if present
+        if let Some(ref input) = self.input {
+            input.apply(pixels, width, height);
+        }
+        // Shift pixels with clamp-to-edge
+        let offset_x = self.dx.round() as i32;
+        let offset_y = self.dy.round() as i32;
+        if offset_x == 0 && offset_y == 0 {
+            return;
+        }
+
+        // Create a copy to read from
+        let mut copy = vec![0u8; width * height * 4];
+        copy.copy_from_slice(pixels);
+
+        // Fill with shifted pixels
+        for y in 0..height {
+            for x in 0..width {
+                let src_x = (x as i32 - offset_x).clamp(0, width as i32 - 1) as usize;
+                let src_y = (y as i32 - offset_y).clamp(0, height as i32 - 1) as usize;
+                let dst_idx = (y * width + x) * 4;
+                let src_idx = (src_y * width + src_x) * 4;
+                pixels[dst_idx..dst_idx + 4].copy_from_slice(&copy[src_idx..src_idx + 4]);
+            }
+        }
     }
 }
 
@@ -808,3 +923,244 @@ pub type ColorFilterRef = Arc<dyn ColorFilter + Send + Sync>;
 pub type MaskFilterRef = Arc<dyn MaskFilter + Send + Sync>;
 /// Boxed image filter type.
 pub type ImageFilterRef = Arc<dyn ImageFilter + Send + Sync>;
+
+// =============================================================================
+// Box Blur Helpers
+// =============================================================================
+
+fn box_blur_horizontal(buf: &mut [u8], width: usize, height: usize, radius: usize) {
+    if width == 0 {
+        return;
+    }
+    let mut row_copy = vec![0u8; width];
+    let r = radius;
+    let window = (2 * r + 1) as u32;
+    for y in 0..height {
+        let row_start = y * width;
+        // Copy current row
+        row_copy.copy_from_slice(&buf[row_start..row_start + width]);
+        // Initialize sum with edge clamping
+        let mut sum: u32 = 0;
+        for i in 0..=r {
+            sum += row_copy[i.min(width - 1)] as u32;
+        }
+        sum += row_copy[0] as u32 * r as u32; // clamp left edge
+        buf[row_start] = (sum / window) as u8;
+
+        for x in 1..width {
+            // Slide window: add right, remove left
+            let right_idx = (x + r).min(width - 1);
+            let left_idx = if x > r { x - r - 1 } else { 0 };
+            sum = sum.saturating_add(row_copy[right_idx] as u32);
+            sum = sum.saturating_sub(row_copy[left_idx] as u32);
+            buf[row_start + x] = (sum / window) as u8;
+        }
+    }
+}
+
+fn box_blur_vertical(buf: &mut [u8], width: usize, height: usize, radius: usize) {
+    if height == 0 {
+        return;
+    }
+    let mut col_copy = vec![0u8; height];
+    let r = radius;
+    let window = (2 * r + 1) as u32;
+    for x in 0..width {
+        // Copy column
+        for y in 0..height {
+            col_copy[y] = buf[y * width + x];
+        }
+        // Initialize sum with top edge clamping
+        let mut sum: u32 = 0;
+        for i in 0..=r {
+            sum += col_copy[i.min(height - 1)] as u32;
+        }
+        sum += col_copy[0] as u32 * r as u32;
+        buf[x] = (sum / window) as u8;
+
+        for y in 1..height {
+            let bottom_idx = (y + r).min(height - 1);
+            let top_idx = if y > r { y - r - 1 } else { 0 };
+            sum = sum.saturating_add(col_copy[bottom_idx] as u32);
+            sum = sum.saturating_sub(col_copy[top_idx] as u32);
+            buf[y * width + x] = (sum / window) as u8;
+        }
+    }
+}
+
+fn rgba_box_blur_horizontal(pixels: &mut [u8], width: usize, height: usize, radius: usize) {
+    if width == 0 {
+        return;
+    }
+    let stride = width * 4;
+    let window = (2 * radius + 1) as u32;
+    let mut row_copy = vec![0u8; stride];
+    for y in 0..height {
+        let row_start = y * stride;
+        row_copy.copy_from_slice(&pixels[row_start..row_start + stride]);
+        // 4 channels: track sum per channel
+        let mut sums: [u32; 4] = [0; 4];
+        for i in 0..=radius {
+            let idx = i.min(width - 1) * 4;
+            for c in 0..4 {
+                sums[c] += row_copy[idx + c] as u32;
+            }
+        }
+        for c in 0..4 {
+            sums[c] += row_copy[c] as u32 * radius as u32;
+        }
+        for c in 0..4 {
+            pixels[row_start + c] = (sums[c] / window) as u8;
+        }
+
+        for x in 1..width {
+            let right_idx = (x + radius).min(width - 1) * 4;
+            let left_idx = if x > radius {
+                (x - radius - 1) * 4
+            } else {
+                0
+            };
+            for c in 0..4 {
+                sums[c] = sums[c].saturating_add(row_copy[right_idx + c] as u32);
+                sums[c] = sums[c].saturating_sub(row_copy[left_idx + c] as u32);
+                pixels[row_start + x * 4 + c] = (sums[c] / window) as u8;
+            }
+        }
+    }
+}
+
+fn rgba_box_blur_vertical(pixels: &mut [u8], width: usize, height: usize, radius: usize) {
+    if height == 0 {
+        return;
+    }
+    let stride = width * 4;
+    let window = (2 * radius + 1) as u32;
+    let mut col_copy = vec![0u8; height * 4];
+    for x in 0..width {
+        for y in 0..height {
+            for c in 0..4 {
+                col_copy[y * 4 + c] = pixels[y * stride + x * 4 + c];
+            }
+        }
+        let mut sums: [u32; 4] = [0; 4];
+        for i in 0..=radius {
+            let idx = i.min(height - 1) * 4;
+            for c in 0..4 {
+                sums[c] += col_copy[idx + c] as u32;
+            }
+        }
+        for c in 0..4 {
+            sums[c] += col_copy[c] as u32 * radius as u32;
+        }
+        for c in 0..4 {
+            pixels[x * 4 + c] = (sums[c] / window) as u8;
+        }
+
+        for y in 1..height {
+            let bottom_idx = (y + radius).min(height - 1) * 4;
+            let top_idx = if y > radius { (y - radius - 1) * 4 } else { 0 };
+            for c in 0..4 {
+                sums[c] = sums[c].saturating_add(col_copy[bottom_idx + c] as u32);
+                sums[c] = sums[c].saturating_sub(col_copy[top_idx + c] as u32);
+                pixels[y * stride + x * 4 + c] = (sums[c] / window) as u8;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_blur_mask_filter_blurs() {
+        let filter = BlurMaskFilter::new(BlurStyle::Normal, 3.0);
+        // 5x5 mask with a single bright pixel in the center
+        let mut mask = vec![0u8; 25];
+        mask[12] = 255;
+        filter.apply_mask(&mut mask, 5, 5);
+        // Center should be less than 255 (blurred)
+        assert!(
+            mask[12] < 255,
+            "center should be blurred lower, got {}",
+            mask[12]
+        );
+        // Should have spread to neighbors
+        let has_spread = mask.iter().any(|&v| v > 0 && v < 255);
+        assert!(has_spread, "blur should produce intermediate values");
+    }
+
+    #[test]
+    fn test_blur_image_filter_blurs_rgba() {
+        let filter = BlurImageFilter::new(3.0, 3.0, crate::shader::TileMode::Clamp);
+        // 5x5 RGBA image, white pixel in center, rest black
+        let mut pixels = vec![0u8; 25 * 4];
+        pixels[12 * 4] = 255;
+        pixels[12 * 4 + 1] = 255;
+        pixels[12 * 4 + 2] = 255;
+        pixels[12 * 4 + 3] = 255;
+        filter.apply(&mut pixels, 5, 5);
+        // Center should dim
+        assert!(pixels[12 * 4] < 255);
+        // Neighbor should brighten
+        let neighbor_r = pixels[11 * 4];
+        assert!(neighbor_r > 0);
+    }
+
+    #[test]
+    fn test_color_filter_image_filter() {
+        let color_filter = Arc::new(ColorMatrixFilter::saturation(0.0)) as ColorFilterRef;
+        let filter = ColorFilterImageFilter::new(color_filter, None);
+        // 2x2 RGBA image with various colors
+        let mut pixels = vec![
+            255, 0, 0, 255, // red
+            0, 255, 0, 255, // green
+            0, 0, 255, 255, // blue
+            128, 128, 128, 255, // gray
+        ];
+        filter.apply(&mut pixels, 2, 2);
+        // Saturation 0.0 should produce grayscale
+        // Red pixel should have equal RGB
+        let r = pixels[0];
+        let g = pixels[1];
+        let b = pixels[2];
+        assert!(
+            (r as i32 - g as i32).abs() < 5,
+            "red pixel should be grayscale"
+        );
+        assert!(
+            (g as i32 - b as i32).abs() < 5,
+            "red pixel should be grayscale"
+        );
+    }
+
+    #[test]
+    fn test_compose_image_filter() {
+        let inner = Arc::new(BlurImageFilter::new(2.0, 2.0, crate::shader::TileMode::Clamp))
+            as ImageFilterRef;
+        let outer_color = Arc::new(ColorMatrixFilter::saturation(0.0)) as ColorFilterRef;
+        let outer = Arc::new(ColorFilterImageFilter::new(outer_color, None)) as ImageFilterRef;
+        let compose = ComposeImageFilter::new(outer, inner);
+
+        let mut pixels = vec![0u8; 25 * 4];
+        pixels[12 * 4] = 255; // red center
+        pixels[12 * 4 + 3] = 255;
+        compose.apply(&mut pixels, 5, 5);
+        // Should be blurred and grayscale
+        assert!(pixels[12 * 4] < 255, "should be blurred");
+        // Check a neighbor got some color
+        assert!(pixels[11 * 4] > 0, "should have spread");
+    }
+
+    #[test]
+    fn test_offset_image_filter() {
+        let filter = OffsetImageFilter::new(1.0, 1.0, None);
+        let mut pixels = vec![0u8; 16 * 4]; // 4x4
+        pixels[0] = 255; // red at top-left
+        pixels[3] = 255; // alpha
+        filter.apply(&mut pixels, 4, 4);
+        // Pixel should have shifted right and down
+        // Top-left should now be clamped from what was at (-1, -1) = top-left
+        assert_eq!(pixels[0], 255, "clamp-to-edge should preserve top-left");
+    }
+}
