@@ -757,7 +757,7 @@ mod tests {
         let info = ImageInfo::new(3, 3, ColorType::Rgba8888, AlphaType::Premul);
         let mut pixels = vec![0u8; 3 * 3 * 4];
         // Set center pixel (1,1) to red.
-        let center_off = (1 * 3 + 1) * 4;
+        let center_off = (3 + 1) * 4;
         pixels[center_off] = 255;
         pixels[center_off + 3] = 255;
         let image = Image::from_raster_data(&info, &pixels, 12).unwrap();
