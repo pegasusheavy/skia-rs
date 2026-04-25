@@ -168,18 +168,66 @@ impl Region {
             return true;
         }
 
-        // For complex regions, we'd need a more sophisticated algorithm
-        // This is a simplified check that may have false negatives
+        // For complex regions: verify each y-band of the query rect is
+        // x-covered by the union of region rects active in that band.
+        let query_top = rect.top;
+        let query_bottom = rect.bottom;
+
+        // Collect y-edges from region rects that overlap the query range
+        let mut y_edges: Vec<i32> = vec![query_top, query_bottom];
         for r in &self.rects {
-            if r.left <= rect.left
-                && r.top <= rect.top
-                && r.right >= rect.right
-                && r.bottom >= rect.bottom
-            {
-                return true;
+            if r.top < query_bottom && r.bottom > query_top {
+                if r.top > query_top && r.top < query_bottom {
+                    y_edges.push(r.top);
+                }
+                if r.bottom > query_top && r.bottom < query_bottom {
+                    y_edges.push(r.bottom);
+                }
             }
         }
-        false
+        y_edges.sort_unstable();
+        y_edges.dedup();
+
+        // Process each y-band
+        for window in y_edges.windows(2) {
+            let band_top = window[0];
+            let band_bottom = window[1];
+
+            if band_top >= query_bottom || band_bottom <= query_top {
+                continue;
+            }
+
+            // Find all rects that cover this entire band vertically
+            let mut x_intervals: Vec<(i32, i32)> = self
+                .rects
+                .iter()
+                .filter(|r| r.top <= band_top && r.bottom >= band_bottom)
+                .map(|r| (r.left, r.right))
+                .collect();
+
+            if x_intervals.is_empty() {
+                return false;
+            }
+
+            // Sort and check x-coverage spans [rect.left, rect.right)
+            x_intervals.sort_unstable_by_key(|&(l, _)| l);
+
+            let mut covered_right = rect.left;
+            for (l, r) in x_intervals {
+                if l > covered_right {
+                    return false; // Gap in coverage
+                }
+                covered_right = covered_right.max(r);
+                if covered_right >= rect.right {
+                    break;
+                }
+            }
+            if covered_right < rect.right {
+                return false;
+            }
+        }
+
+        true
     }
 
     /// Returns true if this region intersects with a rectangle.
@@ -502,5 +550,36 @@ mod tests {
         assert!(region.is_complex());
         // Should have 4 fragments around the hole
         assert_eq!(region.rect_count(), 4);
+    }
+
+    #[test]
+    fn test_region_contains_rect_spanning_two_components() {
+        // Build a complex region from two adjacent rectangles
+        // [0,0,10,10] and [10,0,20,10] - together they form [0,0,20,10]
+        let mut region = Region::from_rect(IRect::new(0, 0, 10, 10));
+        let other = Region::from_rect(IRect::new(10, 0, 20, 10));
+        region.op_region(&other, RegionOp::Union);
+
+        // A query rect [5,2,15,8] is contained by the union but not by
+        // either individual rect
+        let query = IRect::new(5, 2, 15, 8);
+        assert!(
+            region.contains_rect(&query),
+            "Region should contain rect spanning multiple components"
+        );
+    }
+
+    #[test]
+    fn test_region_contains_rect_truly_outside() {
+        let region = Region::from_rect(IRect::new(0, 0, 10, 10));
+        let query = IRect::new(20, 20, 30, 30);
+        assert!(!region.contains_rect(&query));
+    }
+
+    #[test]
+    fn test_region_contains_rect_partial_overlap_not_contained() {
+        let region = Region::from_rect(IRect::new(0, 0, 10, 10));
+        let query = IRect::new(5, 5, 15, 15); // half outside
+        assert!(!region.contains_rect(&query));
     }
 }
