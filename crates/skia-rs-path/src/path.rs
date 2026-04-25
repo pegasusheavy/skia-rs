@@ -274,14 +274,70 @@ impl Path {
         None
     }
 
-    /// Check if the path represents an oval.
+    /// Returns true if this path is a simple oval (ellipse).
+    ///
+    /// Verifies both verb structure (Move, 4 curves, Close) AND that the
+    /// curve endpoints lie on the cardinal points of the bounding ellipse
+    /// (left, right, top, bottom). This rejects 4-cubic paths that share
+    /// the verb pattern but have arbitrary geometry.
     pub fn is_oval(&self) -> bool {
-        // Ovals typically have 4 cubic curves or 4 conics
-        let cubic_count = self.verbs.iter().filter(|v| **v == Verb::Cubic).count();
-        let conic_count = self.verbs.iter().filter(|v| **v == Verb::Conic).count();
+        let elements: Vec<_> = self.iter().collect();
+        if elements.len() != 6 {
+            return false;
+        }
 
-        (cubic_count == 4 && self.verbs.len() == 6) // Move + 4 Cubic + Close
-            || (conic_count == 4 && self.verbs.len() == 6) // Move + 4 Conic + Close
+        let start = match elements[0] {
+            PathElement::Move(p) => p,
+            _ => return false,
+        };
+        if !matches!(elements[5], PathElement::Close) {
+            return false;
+        }
+
+        let all_cubic = elements[1..5]
+            .iter()
+            .all(|e| matches!(e, PathElement::Cubic(_, _, _)));
+        let all_conic = elements[1..5]
+            .iter()
+            .all(|e| matches!(e, PathElement::Conic(_, _, _)));
+        if !all_cubic && !all_conic {
+            return false;
+        }
+
+        let bounds = self.bounds();
+        let cx = (bounds.left + bounds.right) * 0.5;
+        let cy = (bounds.top + bounds.bottom) * 0.5;
+        if bounds.right - bounds.left <= 0.0 || bounds.bottom - bounds.top <= 0.0 {
+            return false;
+        }
+
+        let tolerance = ((bounds.right - bounds.left) + (bounds.bottom - bounds.top)) * 1e-4;
+        let on_cardinal = |p: Point| -> bool {
+            let on_h = (p.y - cy).abs() < tolerance
+                && ((p.x - bounds.left).abs() < tolerance
+                    || (p.x - bounds.right).abs() < tolerance);
+            let on_v = (p.x - cx).abs() < tolerance
+                && ((p.y - bounds.top).abs() < tolerance
+                    || (p.y - bounds.bottom).abs() < tolerance);
+            on_h || on_v
+        };
+
+        if !on_cardinal(start) {
+            return false;
+        }
+
+        for elem in &elements[1..5] {
+            let end = match *elem {
+                PathElement::Cubic(_, _, p) => p,
+                PathElement::Conic(_, p, _) => p,
+                _ => return false,
+            };
+            if !on_cardinal(end) {
+                return false;
+            }
+        }
+
+        true
     }
 
     /// Get the convexity of the path.
@@ -638,5 +694,33 @@ impl<'a> Iterator for PathIter<'a> {
         };
 
         Some(element)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::PathBuilder;
+
+    #[test]
+    fn test_is_oval_true_for_actual_oval() {
+        let mut builder = PathBuilder::new();
+        builder.add_oval(&Rect::new(0.0, 0.0, 100.0, 50.0));
+        let path = builder.build();
+        assert!(path.is_oval(), "add_oval result should report is_oval=true");
+    }
+
+    #[test]
+    fn test_is_oval_false_for_random_cubics() {
+        // 4 cubics with arbitrary control points — should NOT be detected.
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.cubic_to(10.0, 0.0, 20.0, 5.0, 30.0, 10.0);
+        builder.cubic_to(40.0, 15.0, 50.0, 20.0, 60.0, 25.0);
+        builder.cubic_to(70.0, 30.0, 80.0, 35.0, 90.0, 40.0);
+        builder.cubic_to(95.0, 45.0, 100.0, 47.0, 0.0, 0.0);
+        builder.close();
+        let path = builder.build();
+        assert!(!path.is_oval(), "Random 4-cubic path should not be detected as oval");
     }
 }
