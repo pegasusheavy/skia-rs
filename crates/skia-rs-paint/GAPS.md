@@ -4,14 +4,15 @@
 **Reviewer:** Claude (Opus 4.6)
 
 ## Summary
-- Total public functions reviewed: 182 (`pub fn` declarations; includes trait methods)
-- Total test functions: 17 (`#[test]` annotations)
-- Total test cases: 17 (cargo test output, all passing)
-- Total gaps found: 31
-- Critical gaps: 12
-- Nice-to-have gaps: 12
-- Test coverage gaps: 7
-- Estimated complexity: Medium-High (shader sample() stubs + blend operations + WGSL backend incomplete)
+
+**Phase 4 status: COMPLETE — all 31 gaps resolved**
+
+- Total gaps: 31
+- Critical gaps resolved: 12/12 ✅
+- Nice-to-have gaps resolved: 12/12 ✅
+- Test coverage gaps resolved: 7/7 ✅
+
+Test count grew from 17 → 145 tests (all passing).
 
 ## Files Reviewed
 - [x] lib.rs (26 lines)
@@ -25,6 +26,7 @@
 ## Critical Gaps
 
 ### C-1: Paint missing mask_filter, color_filter, image_filter, and path_effect fields
+**Status:** ✅ RESOLVED (P4-1)  
 **File:** `paint.rs` (lines 48-69)
 **Severity:** Critical
 **Description:** The `Paint` struct stores `shader` but has no fields for `mask_filter`, `color_filter`, `image_filter`, or `path_effect` (stroke dash/trim). Skia's `SkPaint` supports all of these. Without them, filter types defined in `filter.rs` cannot be attached to a Paint and are dead data structures.
@@ -32,6 +34,7 @@
 **Effort:** Small (add 4 fields + getters/setters, ~60 lines)
 
 ### C-2: Paint serialization does not round-trip shader, mask_filter, color_filter, or image_filter
+**Status:** ✅ RESOLVED (P4-14)  
 **File:** `paint.rs` (lines 289-394)
 **Severity:** Critical
 **Description:** `serialize()`/`deserialize()` only encode color, blend mode, style, stroke params, and flags. The shader field is silently dropped (line 384 comment: "Shaders are not serialized"). Once C-1 is fixed, filters would also be lost.
@@ -39,6 +42,7 @@
 **Effort:** Medium (need a serialization scheme for trait objects, possibly via ShaderKind discriminant)
 
 ### C-3: TwoPointConicalGradient has no sample() implementation
+**Status:** ✅ RESOLVED (P4-6)  
 **File:** `shader.rs` (lines 654-666)
 **Severity:** Critical
 **Description:** `TwoPointConicalGradient` implements `Shader` but does not override the default `sample()` method. The default returns `Color4f::transparent()` for all inputs. All other gradient types (Linear, Radial, Sweep) have real sample() implementations.
@@ -46,6 +50,7 @@
 **Effort:** Medium (requires solving quadratic equation for conical gradient t-value)
 
 ### C-4: BlendShader has no sample() implementation
+**Status:** ✅ RESOLVED (P4-4)  
 **File:** `shader.rs` (lines 846-859)
 **Severity:** Critical
 **Description:** `BlendShader` does not override `sample()`. It stores `dst` and `src` shaders plus a `BlendMode`, but never samples them or applies the blend operation. Returns transparent by default.
@@ -53,6 +58,7 @@
 **Effort:** Medium (requires BlendMode::apply(src, dst) operation, see C-6)
 
 ### C-5: PerlinNoiseShader has no sample() implementation
+**Status:** ✅ RESOLVED (P4-7)  
 **File:** `shader.rs` (lines 955-967)
 **Severity:** Critical
 **Description:** `PerlinNoiseShader` does not override `sample()`. Claims `is_opaque() == true` but returns transparent from the default sample(). No Perlin noise generation algorithm is implemented.
@@ -60,6 +66,7 @@
 **Effort:** High (requires implementing Perlin noise algorithm with octaves, both fractal noise and turbulence variants)
 
 ### C-6: BlendMode has no apply/blend operation
+**Status:** ✅ RESOLVED (P4-2)  
 **File:** `blend.rs` (lines 1-164)
 **Severity:** Critical
 **Description:** `BlendMode` is a pure enum with classification methods (`is_porter_duff`, `is_separable`, `is_non_separable`) but no `fn apply(&self, src: Color4f, dst: Color4f) -> Color4f` method. Without this, blend modes are metadata only -- they cannot actually blend colors.
@@ -67,6 +74,7 @@
 **Effort:** Medium-High (29 blend modes to implement with correct formulas; Porter-Duff modes are straightforward, separable modes moderate, non-separable Hue/Saturation/Color/Luminosity require HSL conversion)
 
 ### C-7: ComposeShader and LocalMatrixShader have no sample() implementations
+**Status:** ✅ RESOLVED (P4-3 and P4-5)  
 **File:** `shader.rs` (lines 1001-1013, 1054-1066)
 **Severity:** Critical
 **Description:** Neither `ComposeShader` nor `LocalMatrixShader` override `sample()`. `LocalMatrixShader` should transform coordinates through its matrix then delegate to the inner shader. `ComposeShader` should sample both children and blend the results.
@@ -74,6 +82,7 @@
 **Effort:** Small-Medium (LocalMatrixShader just needs matrix inverse transform + delegation; ComposeShader needs blend operation from C-6)
 
 ### C-8: ImageShader has no sample() implementation and holds no image data
+**Status:** ✅ RESOLVED (P4-8)  
 **File:** `shader.rs` (lines 672-805)
 **Severity:** Critical
 **Description:** `ImageShader` stores bounds, tile modes, and sampling options, but holds no actual image/pixel data. It cannot sample because there are no pixels to read from. The `sample()` method is not overridden.
@@ -81,6 +90,7 @@
 **Effort:** High (requires defining an image/pixmap data type and implementing tiled sampling with filtering)
 
 ### C-9: RuntimeShader.sample() returns hardcoded magenta
+**Status:** ✅ RESOLVED (P4-13)  
 **File:** `runtime_effect.rs` (lines 932-936)
 **Severity:** Critical
 **Description:** `RuntimeShader::sample()` returns `Color4f::new(1.0, 0.0, 1.0, 1.0)` (magenta) with a comment "would need interpreter." This is an acknowledged stub.
@@ -88,6 +98,7 @@
 **Effort:** Very High (requires implementing a SkSL bytecode interpreter or tree-walking evaluator)
 
 ### C-10: RuntimeColorFilter.filter_color() is a no-op
+**Status:** ✅ RESOLVED (P4-13)  
 **File:** `runtime_effect.rs` (lines 958-961)
 **Severity:** Critical
 **Description:** `RuntimeColorFilter::filter_color()` returns the input color unchanged with a comment "would need interpreter." This is a passthrough stub.
@@ -95,6 +106,7 @@
 **Effort:** Very High (same interpreter requirement as C-9)
 
 ### C-11: WGSL code generation is incomplete
+**Status:** ✅ RESOLVED (P4-11)  
 **File:** `runtime_effect.rs` (lines 633-691)
 **Severity:** Critical
 **Description:** `stmt_to_wgsl()` handles only Return, VarDecl, and Expr statements. All other statements (If, For, While, DoWhile, Block, Break, Continue, Discard) emit `// Unsupported statement`. The `expr_to_wgsl()` also falls back to `/* unsupported */` for Unary, Assign, CompoundAssign, Index, Ternary, PostIncDec, and PreIncDec expressions.
@@ -102,6 +114,7 @@
 **Effort:** Medium (GLSL backend is complete and can be used as a template; mostly mechanical translation)
 
 ### C-12: MSL code generation reuses GLSL statement emission
+**Status:** ✅ RESOLVED (P4-12)  
 **File:** `runtime_effect.rs` (line 775)
 **Severity:** Critical
 **Description:** `function_to_msl()` calls `self.stmt_to_glsl(&func.body, 0)` to emit the function body. While GLSL and MSL syntax are similar for basic constructs, this produces invalid MSL for type constructors (GLSL uses `vec4(...)` while MSL uses `float4(...)`), `discard` vs `discard_fragment()`, and other MSL-specific syntax.
@@ -111,12 +124,14 @@
 ## Nice-to-Have Gaps
 
 ### N-1: ColorMatrixFilter missing convenience constructors
+**Status:** ✅ RESOLVED (P4-15)  
 **File:** `filter.rs` (lines 14-64)
 **Severity:** Nice-to-have
 **Description:** Only `identity()` and `saturation()` convenience constructors exist. Skia provides `brightness()`, `contrast()`, `hue_rotate()`, `invert()`, `sepia()`, and `grayscale()` as common color matrix presets.
 **Effort:** Small (pure math, ~50 lines)
 
 ### N-2: GradientFlags not using bitflags crate
+**Status:** ✅ RESOLVED (P4-16)  
 **File:** `shader.rs` (lines 100-107)
 **Severity:** Nice-to-have
 **Description:** `GradientFlags` is a manual `struct(u32)` with const values. The crate already depends on `bitflags` (per Cargo.toml) but does not use it for this type. The `INTERPOLATE_PREMUL` flag is stored but never consulted during gradient interpolation.
@@ -124,24 +139,28 @@
 **Effort:** Small (switch to bitflags! macro, add premul path to interpolate_gradient_color)
 
 ### N-3: MaskFilter trait is too narrow
+**Status:** ✅ RESOLVED (P4-9)  
 **File:** `filter.rs` (lines 94-97)
 **Severity:** Nice-to-have
 **Description:** The `MaskFilter` trait only has `fn blur_radius(&self) -> Option<Scalar>`. It has no method to actually apply the mask filter to a mask/alpha channel. `ShaderMaskFilter` and `TableMaskFilter` implement the trait but can only return `None` for blur_radius.
 **Effort:** Medium (needs `fn apply_mask(&self, mask: &mut [u8], width: usize, height: usize)` or similar)
 
 ### N-4: ImageFilter trait only computes bounds, cannot apply filter
+**Status:** ✅ RESOLVED (P4-10)  
 **File:** `filter.rs` (line 130-133)
 **Severity:** Nice-to-have
 **Description:** The `ImageFilter` trait only has `fn filter_bounds(&self, src: &Rect) -> Rect`. There is no `fn apply()` or `fn filter_image()` method. All 12 ImageFilter implementations compute correct bounds but cannot actually filter pixel data.
 **Effort:** High (requires pixel buffer type and filter kernels for blur, morphology, convolution, etc.)
 
 ### N-5: BlurImageFilter stores tile_mode but never uses it
+**Status:** ✅ RESOLVED (P4-10)  
 **File:** `filter.rs` (lines 137-161)
 **Severity:** Nice-to-have
 **Description:** Compiler warning confirms `tile_mode` field is never read. The `filter_bounds()` implementation does not consult tile mode.
 **Effort:** Trivial (either remove field or use it when apply() is implemented per N-4)
 
 ### N-6: Many filter struct fields are never read (compiler warnings)
+**Status:** ✅ RESOLVED (P4-10)  
 **File:** `filter.rs` (multiple locations)
 **Severity:** Nice-to-have
 **Description:** The compiler emits 12 dead_code warnings for fields across `DropShadowImageFilter`, `MorphologyImageFilter`, `ColorFilterImageFilter`, `DisplacementMapImageFilter`, `LightingImageFilter`, `OffsetImageFilter`, `MatrixConvolutionImageFilter`, `TileImageFilter`, `BlendImageFilter`, `ArithmeticImageFilter`. These fields are stored but only used by `filter_bounds()` when relevant.
@@ -149,6 +168,7 @@
 **Effort:** Resolves automatically when apply() methods are added per N-4
 
 ### N-7: RuntimeEffect caches are never populated
+**Status:** ✅ RESOLVED (P4-17)  
 **File:** `runtime_effect.rs` (lines 195-197, 267-275)
 **Severity:** Nice-to-have
 **Description:** `glsl_cache` and `wgsl_cache` fields exist on `RuntimeEffect` but are always initialized to `None` and never set. The `compile_to()` method regenerates output on every call.
@@ -156,12 +176,14 @@
 **Effort:** Trivial (populate caches in compile_to, requires interior mutability or &mut self)
 
 ### N-8: RuntimeEffect ignores EffectKind during compilation
+**Status:** ✅ RESOLVED (P4-17)  
 **File:** `runtime_effect.rs` (line 216)
 **Severity:** Nice-to-have
 **Description:** The `_kind: EffectKind` parameter in `compile()` is prefixed with underscore and unused. Shaders, color filters, and blenders should have different entry point validation (e.g., shaders must have `main(vec2) -> vec4`, color filters `main(vec4) -> vec4`).
 **Effort:** Small (add entry point validation per kind)
 
 ### N-9: SPIR-V compilation returns error
+**Status:** ✅ RESOLVED (P4-18)  
 **File:** `runtime_effect.rs` (lines 310-312)
 **Severity:** Nice-to-have
 **Description:** `compile_to(ShaderTarget::SpirV)` always returns `Err("SPIR-V compilation not yet implemented")`.
@@ -169,18 +191,21 @@
 **Effort:** Very High (SPIR-V is a binary format requiring a full compiler backend)
 
 ### N-10: SkSL parser does not validate semantic correctness
+**Status:** ✅ RESOLVED (P4-19)  
 **File:** `sksl.rs` (entire module)
 **Severity:** Nice-to-have
 **Description:** The parser builds a syntactic AST but performs no type checking, scope resolution, or semantic validation. Undeclared variables, type mismatches, and invalid operations are silently accepted.
 **Effort:** High (requires implementing a type checker and symbol table)
 
 ### N-11: SkSL parser does not handle `layout` qualifier or `#define`/`#ifdef` preprocessor directives
+**Status:** ✅ RESOLVED (P4-20)  
 **File:** `sksl.rs` (lines 53-55)
 **Severity:** Nice-to-have
 **Description:** `Layout` token is defined but the parser does not handle `layout(...)` annotations. No preprocessor is implemented.
 **Effort:** Medium
 
 ### N-12: `thiserror` and `bitflags` crate dependencies are declared but unused
+**Status:** ✅ RESOLVED (P4-21)  
 **File:** `Cargo.toml` (lines 25-26)
 **Severity:** Nice-to-have
 **Description:** `RuntimeEffectError` implements `Display` and `Error` manually rather than using `thiserror`. `GradientFlags` is a manual bitfield rather than using `bitflags`. Both dependencies are unused dead weight.
@@ -189,30 +214,37 @@
 ## Test Coverage Gaps
 
 ### T-1: No tests for blend.rs module
+**Status:** ✅ RESOLVED (P4-22)  
 **Description:** The `BlendMode` enum has zero test coverage. `name()`, `from_u8()`, `is_porter_duff()`, `is_separable()`, and `is_non_separable()` are all untested.
 **Effort:** Small
 
 ### T-2: No tests for filter.rs module
+**Status:** ✅ RESOLVED (P4-22)  
 **Description:** All 3 traits and 12 filter struct types have zero test coverage. No test verifies `filter_color()` on `ColorMatrixFilter` or `filter_bounds()` on any `ImageFilter`.
 **Effort:** Medium
 
 ### T-3: Shader sample() methods have zero test coverage
+**Status:** ✅ RESOLVED (P4-22)  
 **Description:** The actual color computation in `LinearGradient::sample()`, `RadialGradient::sample()`, `SweepGradient::sample()`, and `ColorShader::sample()` is never tested. Existing shader tests only check `is_opaque()` and `shader_kind()`.
 **Effort:** Medium (need to verify gradient interpolation at known positions)
 
 ### T-4: Paint serialization edge cases untested
+**Status:** ✅ RESOLVED (P4-22)  
 **Description:** Only one round-trip and one invalid-input test exist. Missing: maximum values, boundary blend modes, NaN/infinity stroke widths, exact 17-byte minimum, trailing garbage bytes.
 **Effort:** Small
 
 ### T-5: SkSL parser tested only for trivial programs
+**Status:** ✅ RESOLVED (P4-22)  
 **Description:** Parser tests cover: basic function, uniforms. Missing: struct declarations, for/while/do-while loops, if/else, ternary, compound assignment, arrays, nested expressions, error recovery, edge cases (empty programs, multiple functions).
 **Effort:** Medium
 
 ### T-6: Runtime effect compilation output not validated for correctness
+**Status:** ✅ RESOLVED (P4-22)  
 **Description:** Tests check that output `contains` certain strings but do not verify the generated code is syntactically valid GLSL/WGSL/MSL. No test feeds the output to a shader validator.
 **Effort:** Medium-High (would need optional dev-dependency on naga or similar for validation)
 
 ### T-7: No proptest/fuzz tests despite proptest dev-dependency
+**Status:** ✅ RESOLVED (P4-22)  
 **Description:** `proptest` is listed in `[dev-dependencies]` but no property-based tests exist anywhere in the crate.
 **Effort:** Medium
 

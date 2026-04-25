@@ -5,6 +5,65 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-04-25
+
+### Added (skia-rs-paint)
+
+- **Full filter pipeline**: Paint now carries `mask_filter`, `color_filter`,
+  and `image_filter` fields with getter/setter pairs (GAP-C1)
+- **BlendMode::apply** for all 29 blend modes — Porter-Duff (Clear/Src/Dst/
+  SrcOver/DstOver/SrcIn/DstIn/SrcOut/DstOut/SrcATop/DstATop/Xor/Plus/Modulate),
+  separable (Screen/Overlay/Darken/Lighten/ColorDodge/ColorBurn/HardLight/
+  SoftLight/Difference/Exclusion/Multiply), and non-separable HSL
+  (Hue/Saturation/Color/Luminosity) (GAP-C6)
+- **All shader sample() implementations**: LocalMatrixShader, BlendShader,
+  ComposeShader, TwoPointConicalGradient, PerlinNoiseShader, ImageShader
+  (with pixel data) (GAP-C3/C4/C5/C7/C8)
+- **MaskFilter::apply_mask** for separable box-blur approximation of
+  Gaussian blur (GAP-N3)
+- **ImageFilter::apply** for all 14 concrete filter types: Blur, DropShadow,
+  Morphology, ColorFilter, DisplacementMap, Lighting, Compose, Merge,
+  Offset, MatrixConvolution, Tile (and three multi-input types with
+  documented limitations) (GAP-N4/N5/N6)
+- **SkSL tree-walking interpreter**: RuntimeShader::sample and
+  RuntimeColorFilter::filter_color now evaluate SkSL at runtime with
+  full Stmt/Expr coverage and approximately 35 built-in functions (GAP-C9/C10)
+- **Full WGSL code generation**: every Stmt and Expr variant now emits
+  valid WGSL (GAP-C11)
+- **Dedicated MSL code generation**: separate emitters using MSL type
+  syntax (float4, discard_fragment, etc.) (GAP-C12)
+- **SPIR-V compilation**: compile_to(SpirV) and compile_to_spirv() via
+  naga WGSL to SPIR-V path (GAP-N9)
+- **SkSL semantic validation**: type checking, scope resolution, arity
+  checks, return-type validation, builtin signatures (GAP-N10)
+- **SkSL preprocessor**: #define, #undef, #ifdef, #ifndef, #else, #endif
+  with whole-identifier text substitution (GAP-N11)
+- **SkSL layout qualifier parsing**: layout(color) uniform and similar
+  annotations now parse cleanly (GAP-N11)
+- **ColorMatrixFilter convenience constructors**: brightness, contrast,
+  hue_rotate, invert, sepia, grayscale (GAP-N1)
+- **EffectKind entry-point validation**: main(vec2)->vec4 for Shader,
+  main(vec4)->vec4 for ColorFilter, main(vec4,vec4)->vec4 for Blender
+  (GAP-N8)
+- **RuntimeEffect compilation caches**: GLSL/WGSL/MSL/SPIR-V results
+  cached via OnceLock (GAP-N7)
+- **Paint serialization** now round-trips shader, mask_filter, color_filter,
+  and image_filter (GAP-C2)
+
+### Changed (skia-rs-paint)
+
+- GradientFlags now uses the bitflags crate (GAP-N2)
+- GradientFlags::INTERPOLATE_PREMUL flag is honored in gradient
+  interpolation (GAP-N2)
+- RuntimeEffectError now uses thiserror derive (GAP-N12)
+
+### Tests (skia-rs-paint)
+
+- Test count grew from 17 to 145+ across skia-rs-paint
+- Added property-based tests via proptest for blend mode finiteness
+  and serialization round-trips
+- All 31 audit gaps have test coverage
+
 ## [0.2.2] - 2026-04-25
 
 ### Added (skia-rs-path)
