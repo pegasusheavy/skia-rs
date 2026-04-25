@@ -279,9 +279,37 @@ fn stroke_contour(
                     ));
                 }
                 StrokeJoin::Round => {
-                    // Simplified: use multiple points to approximate round join
-                    left_side.push(Point::new(points[i].x + offset.x, points[i].y + offset.y));
-                    right_side.push(Point::new(points[i].x - offset.x, points[i].y - offset.y));
+                    // Generate arc segments for the outer side of the join.
+                    // Both the left and right sides sweep from their incoming
+                    // normal offset to their outgoing normal offset around the
+                    // join vertex, using line subdivision scaled to the angular
+                    // sweep (minimum 4 segments).
+                    let left_start_angle =
+                        (n1.y * half_width).atan2(n1.x * half_width);
+                    let left_end_angle =
+                        (n2.y * half_width).atan2(n2.x * half_width);
+                    let mut left_delta = left_end_angle - left_start_angle;
+                    if left_delta > std::f32::consts::PI {
+                        left_delta -= std::f32::consts::TAU;
+                    } else if left_delta < -std::f32::consts::PI {
+                        left_delta += std::f32::consts::TAU;
+                    }
+                    let n_segs = ((left_delta.abs()
+                        / std::f32::consts::FRAC_PI_4)
+                        .ceil() as usize)
+                        .max(4);
+                    for k in 0..=n_segs {
+                        let t = k as Scalar / n_segs as Scalar;
+                        let a = left_start_angle + left_delta * t;
+                        left_side.push(Point::new(
+                            points[i].x + a.cos() * half_width,
+                            points[i].y + a.sin() * half_width,
+                        ));
+                        right_side.push(Point::new(
+                            points[i].x - a.cos() * half_width,
+                            points[i].y - a.sin() * half_width,
+                        ));
+                    }
                 }
             }
         } else {
@@ -498,5 +526,30 @@ mod tests {
         assert_eq!(params.cap, StrokeCap::Round);
         assert_eq!(params.join, StrokeJoin::Bevel);
         assert_eq!(params.miter_limit, 10.0);
+    }
+
+    #[test]
+    fn test_stroke_to_fill_round_join_generates_arc() {
+        // Two perpendicular lines meeting at right angle.
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(50.0, 0.0);
+        builder.line_to(50.0, 50.0);
+        let path = builder.build();
+
+        let params = StrokeParams::new(10.0).with_join(StrokeJoin::Round);
+        let result = stroke_to_fill(&path, &params);
+        assert!(result.is_some());
+
+        let stroked = result.unwrap();
+        let count = stroked.iter().count();
+        // Round join should produce more verbs than a straight-line join.
+        // For 90-degree turn with default segment count, expect at least 8+ extra verbs
+        // beyond the basic 5-6 a miter would emit.
+        assert!(
+            count > 10,
+            "Round join should generate arc segments, got {} verbs",
+            count
+        );
     }
 }
