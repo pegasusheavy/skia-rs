@@ -17,7 +17,7 @@
 //! composed of multiple rectangles. This is efficient for non-anti-aliased
 //! clips with complex shapes.
 
-use skia_rs_core::{IRect, Point, Rect, Region, Scalar};
+use skia_rs_core::{IRect, Point, Rect, Region, RegionOp, Scalar};
 use skia_rs_path::Path;
 
 /// A coverage mask for anti-aliased clipping.
@@ -534,6 +534,14 @@ impl ClipStack {
                 m.intersect(&mask);
             }
             ClipState::RegionAndMask(r, m) => {
+                // Intersect both the region and the mask
+                let rounded_rect = IRect::new(
+                    rect.left.floor() as i32,
+                    rect.top.floor() as i32,
+                    rect.right.ceil() as i32,
+                    rect.bottom.ceil() as i32,
+                );
+                r.op_rect(rounded_rect, RegionOp::Intersect);
                 m.intersect(&mask);
             }
         }
@@ -820,5 +828,40 @@ mod tests {
         // Partial coverage (50% horizontal)
         let coverage = compute_rect_coverage(9.0, 5.0, 0.0, 0.0, 9.5, 10.0);
         assert!(coverage > 0 && coverage < 255);
+    }
+
+    #[test]
+    fn test_clip_rect_aa_preserves_region_on_region_and_mask() {
+        use skia_rs_path::PathBuilder;
+
+        // Create a clip stack with a RegionAndMask state and verify that
+        // clip_rect_aa intersects both the region and the mask components
+        let device_bounds = Rect::from_xywh(0.0, 0.0, 100.0, 100.0);
+        let device_bounds_i = IRect::new(0, 0, 100, 100);
+        let mut stack = ClipStack::new(&device_bounds);
+
+        // Set up an initial rect clip
+        let initial_rect = Rect::from_xywh(10.0, 10.0, 50.0, 50.0);
+        stack.clip_rect(&initial_rect);
+
+        // Apply a path clip to force RegionAndMask state
+        let mut builder = PathBuilder::new();
+        builder.add_rect(&Rect::from_xywh(15.0, 15.0, 40.0, 40.0));
+        let path = builder.build();
+        stack.clip_path(&path, &device_bounds_i, true);
+
+        // Now apply an AA rect clip
+        let aa_rect = Rect::from_xywh(20.0, 20.0, 30.0, 30.0);
+        stack.clip_rect_aa(&aa_rect, &device_bounds_i);
+
+        // Test points that should be clipped based on the region intersection
+        // Point outside the AA rect but inside the mask should be clipped
+        assert!(!stack.contains(5, 5), "Point outside AA rect should be clipped");
+
+        // Point inside the AA rect intersection should be included
+        assert!(stack.contains(25, 25), "Point inside intersection should be included");
+
+        // Point outside the AA rect should be clipped even if mask would include it
+        assert!(!stack.contains(55, 55), "Point outside AA rect should be clipped");
     }
 }

@@ -373,4 +373,20 @@ mod tests {
         assert_eq!(pixel.green(), 255);
         assert_eq!(pixel.blue(), 255);
     }
+
+    #[test]
+    fn test_raster_canvas_alias_clip_rect_full_signature() {
+        // Verify that the deprecated RasterCanvas alias still accepts the full
+        // Canvas::clip_rect signature (op, anti_alias) after P5-1 unification
+        use crate::ClipOp;
+
+        let mut surface = Surface::new_raster_n32_premul(10, 10).unwrap();
+        {
+            #[allow(deprecated)]
+            let mut canvas: RasterCanvas = surface.canvas();
+            canvas.clip_rect(&Rect::from_xywh(0.0, 0.0, 5.0, 5.0), ClipOp::Intersect, false);
+            canvas.clip_rect(&Rect::from_xywh(2.0, 2.0, 8.0, 8.0), ClipOp::Intersect, true);
+        }
+        // If this compiles and runs without error, the signature is correct
+    }
 }
