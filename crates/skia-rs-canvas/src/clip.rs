@@ -388,6 +388,48 @@ impl ClipState {
             }
         }
     }
+
+    /// Subtract a rectangle from the current clip (difference operation).
+    pub fn difference_rect(&mut self, rect: &Rect) {
+        match self {
+            ClipState::Rect(r) => {
+                // Convert to region for difference operation
+                let mut region = Region::from_rect_f(r);
+                region.op_rect(rect.round_out(), skia_rs_core::RegionOp::Difference);
+                *self = ClipState::Region(region);
+            }
+            ClipState::Region(r) => {
+                r.op_rect(rect.round_out(), skia_rs_core::RegionOp::Difference);
+            }
+            ClipState::Mask(m) => {
+                // Zero out coverage in the rect area
+                let irect = rect.round_out();
+                for y in 0..m.height {
+                    for x in 0..m.width {
+                        let dx = x + m.bounds.left;
+                        let dy = y + m.bounds.top;
+                        if irect.contains(dx, dy) {
+                            m.set_coverage(x, y, 0);
+                        }
+                    }
+                }
+            }
+            ClipState::RegionAndMask(r, m) => {
+                r.op_rect(rect.round_out(), skia_rs_core::RegionOp::Difference);
+                // Also zero out coverage in the rect area
+                let irect = rect.round_out();
+                for y in 0..m.height {
+                    for x in 0..m.width {
+                        let dx = x + m.bounds.left;
+                        let dy = y + m.bounds.top;
+                        if irect.contains(dx, dy) {
+                            m.set_coverage(x, y, 0);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// A stack of clip states for save/restore semantics.
@@ -457,6 +499,15 @@ impl ClipStack {
         self.current.intersect_rect(rect);
     }
 
+    /// Apply a clip operation with a rectangle.
+    pub fn clip_rect_op(&mut self, rect: &Rect, op: super::ClipOp) {
+        use super::ClipOp;
+        match op {
+            ClipOp::Intersect => self.current.intersect_rect(rect),
+            ClipOp::Difference => self.current.difference_rect(rect),
+        }
+    }
+
     /// Intersect the current clip with a rectangle (anti-aliased).
     pub fn clip_rect_aa(&mut self, rect: &Rect, device_bounds: &IRect) {
         let mask = ClipMask::from_rect_aa(rect, device_bounds);
@@ -493,6 +544,37 @@ impl ClipStack {
         self.current.intersect_region(region);
     }
 
+    /// Apply a clip operation with a rectangle, optionally anti-aliased.
+    pub fn clip_rect_with_op(&mut self, rect: &Rect, op: super::ClipOp, device_bounds: &IRect, anti_alias: bool) {
+        use super::ClipOp;
+        if anti_alias {
+            // For AA clips, we need to create a mask
+            self.clip_rect_aa(rect, device_bounds);
+            // Note: Difference with AA is approximated via mask zeroing
+            if op == ClipOp::Difference {
+                // The AA path already created a mask; now apply difference
+                match &mut self.current {
+                    ClipState::Mask(m) => {
+                        // Invert the mask coverage (AA difference approximation)
+                        let irect = rect.round_out();
+                        for y in 0..m.height {
+                            for x in 0..m.width {
+                                let dx = x + m.bounds.left;
+                                let dy = y + m.bounds.top;
+                                if irect.contains(dx, dy) {
+                                    m.set_coverage(x, y, 0);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        } else {
+            self.clip_rect_op(rect, op);
+        }
+    }
+
     /// Intersect the current clip with a path.
     pub fn clip_path(&mut self, path: &Path, device_bounds: &IRect, anti_alias: bool) {
         if anti_alias {
@@ -521,6 +603,82 @@ impl ClipStack {
         }
     }
 
+    /// Apply a clip operation with a path, optionally anti-aliased.
+    pub fn clip_path_with_op(&mut self, path: &Path, device_bounds: &IRect, op: super::ClipOp, anti_alias: bool) {
+        use super::ClipOp;
+        match op {
+            ClipOp::Intersect => self.clip_path(path, device_bounds, anti_alias),
+            ClipOp::Difference => {
+                // For difference, we need to handle path clipping differently
+                // Currently only intersect is fully supported for paths
+                // Difference with paths requires more complex region operations
+                // For now, approximate with bounds
+                if anti_alias {
+                    // Create a mask and invert it in the path area
+                    let mask = ClipMask::from_path_aa(path, device_bounds);
+                    // Apply difference by zeroing coverage where path is
+                    match &mut self.current {
+                        ClipState::Rect(r) => {
+                            let mut region = Region::from_rect_f(r);
+                            let path_region = Region::from_rect_f(&path.bounds());
+                            region.op_region(&path_region, skia_rs_core::RegionOp::Difference);
+                            *self = ClipStack {
+                                stack: self.stack.clone(),
+                                current: ClipState::RegionAndMask(region, mask),
+                            };
+                        }
+                        ClipState::Region(r) => {
+                            let path_region = Region::from_rect_f(&path.bounds());
+                            r.op_region(&path_region, skia_rs_core::RegionOp::Difference);
+                        }
+                        ClipState::Mask(m) => {
+                            // Zero out coverage where the path mask is non-zero
+                            for y in 0..m.height.min(mask.height) {
+                                for x in 0..m.width.min(mask.width) {
+                                    if mask.get_coverage(x, y) > 0 {
+                                        m.set_coverage(x, y, 0);
+                                    }
+                                }
+                            }
+                        }
+                        ClipState::RegionAndMask(r, m) => {
+                            let path_region = Region::from_rect_f(&path.bounds());
+                            r.op_region(&path_region, skia_rs_core::RegionOp::Difference);
+                            // Zero out coverage where the path mask is non-zero
+                            for y in 0..m.height.min(mask.height) {
+                                for x in 0..m.width.min(mask.width) {
+                                    if mask.get_coverage(x, y) > 0 {
+                                        m.set_coverage(x, y, 0);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    let bounds = path.bounds();
+                    let region = Region::from_rect_f(&bounds);
+                    match &mut self.current {
+                        ClipState::Rect(r) => {
+                            let mut new_region = Region::from_rect_f(r);
+                            new_region.op_region(&region, skia_rs_core::RegionOp::Difference);
+                            *self = ClipStack {
+                                stack: self.stack.clone(),
+                                current: ClipState::Region(new_region),
+                            };
+                        }
+                        ClipState::Region(r) => {
+                            r.op_region(&region, skia_rs_core::RegionOp::Difference);
+                        }
+                        ClipState::Mask(_) | ClipState::RegionAndMask(_, _) => {
+                            // Can't directly difference region from mask
+                            // This is a limitation we'll document
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Check if the current clip is anti-aliased.
     pub fn is_anti_aliased(&self) -> bool {
         self.current.is_anti_aliased()
@@ -530,6 +688,12 @@ impl ClipStack {
     pub fn reset(&mut self, device_bounds: &Rect) {
         self.stack.clear();
         self.current = ClipState::Rect(*device_bounds);
+    }
+
+    /// Check if a rectangle is completely outside the current clip.
+    pub fn quick_reject(&self, rect: &Rect) -> bool {
+        let clip_bounds = self.bounds();
+        !clip_bounds.intersects(rect)
     }
 }
 
