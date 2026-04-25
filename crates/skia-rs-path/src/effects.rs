@@ -3,7 +3,10 @@
 //! Path effects modify how a path is stroked or filled. They can be applied
 //! to create dashed lines, rounded corners, jittery edges, and more.
 
-use crate::{Path, PathBuilder, PathElement};
+use crate::{
+    flatten::{flatten_conic_adaptive, flatten_cubic_adaptive, flatten_quad_adaptive},
+    Path, PathBuilder, PathElement,
+};
 use skia_rs_core::{Point, Scalar};
 use std::sync::Arc;
 
@@ -47,6 +50,59 @@ pub type PathEffectRef = Arc<dyn PathEffect>;
 // =============================================================================
 // Dash Effect
 // =============================================================================
+
+/// Convert a path with curves to a path containing only lines,
+/// using adaptive tolerance for curve flattening. Used by DashEffect
+/// so dash intervals can transition mid-curve.
+fn flatten_path_to_lines(path: &Path, tolerance: Scalar) -> Path {
+    let mut builder = PathBuilder::new();
+    let mut current = Point::new(0.0, 0.0);
+    let mut contour_start = Point::new(0.0, 0.0);
+
+    for elem in path.iter() {
+        match elem {
+            PathElement::Move(p) => {
+                builder.move_to(p.x, p.y);
+                current = p;
+                contour_start = p;
+            }
+            PathElement::Line(p) => {
+                builder.line_to(p.x, p.y);
+                current = p;
+            }
+            PathElement::Quad(c, e) => {
+                let mut points = Vec::new();
+                flatten_quad_adaptive(&mut points, current, c, e, tolerance);
+                for p in points {
+                    builder.line_to(p.x, p.y);
+                }
+                current = e;
+            }
+            PathElement::Cubic(c1, c2, e) => {
+                let mut points = Vec::new();
+                flatten_cubic_adaptive(&mut points, current, c1, c2, e, tolerance);
+                for p in points {
+                    builder.line_to(p.x, p.y);
+                }
+                current = e;
+            }
+            PathElement::Conic(c, e, w) => {
+                let mut points = Vec::new();
+                flatten_conic_adaptive(&mut points, current, c, e, w, tolerance);
+                for p in points {
+                    builder.line_to(p.x, p.y);
+                }
+                current = e;
+            }
+            PathElement::Close => {
+                builder.close();
+                current = contour_start;
+            }
+        }
+    }
+
+    builder.build()
+}
 
 /// Dash effect that creates dashed/dotted lines.
 ///
@@ -125,6 +181,10 @@ impl PathEffect for DashEffect {
         if path.is_empty() {
             return None;
         }
+
+        // Pre-flatten curves to lines so dash logic can transition mid-curve.
+        let flattened = flatten_path_to_lines(path, 0.5);
+        let path = &flattened;
 
         let mut builder = PathBuilder::new();
         let mut current_pos = Point::zero();
@@ -1183,6 +1243,28 @@ mod tests {
         let dash = DashEffect::new(vec![10.0, 5.0, 3.0], 0.0).unwrap();
         // Should be doubled to make even
         assert_eq!(dash.intervals().len(), 6);
+    }
+
+    #[test]
+    fn test_dash_effect_on_curve_produces_dashes_along_curve() {
+        // A long quadratic curve with a 10-on/10-off dash.
+        // Dash transitions should occur along the curve, not just at endpoints.
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.quad_to(50.0, 100.0, 100.0, 0.0);
+        let path = builder.build();
+
+        let effect = DashEffect::new(vec![10.0, 10.0], 0.0).unwrap();
+        let result = effect.apply(&path).unwrap();
+
+        // Each dash starts with a Move. On a curved path with length ~140,
+        // we should get multiple dashes (not just one at start and one at end).
+        let moves = result.iter().filter(|e| matches!(e, PathElement::Move(_))).count();
+        assert!(
+            moves >= 3,
+            "Expected at least 3 dashes on curved path (curve length ~140, dash period 20), got {}",
+            moves
+        );
     }
 
     #[test]
