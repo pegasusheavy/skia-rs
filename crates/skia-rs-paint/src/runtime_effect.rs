@@ -8,19 +8,25 @@ use crate::sksl::{Expr, FnDecl, Parser, SkslProgram, SkslType, Stmt};
 use crate::sksl_interp::{Interp, Value as SkslValue};
 use skia_rs_core::{Color4f, Matrix, Scalar};
 use std::sync::{Arc, OnceLock};
+use thiserror::Error;
 
 /// Error type for runtime effect operations.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Error)]
 pub enum RuntimeEffectError {
     /// SkSL parsing error.
+    #[error("Parse error: {0}")]
     ParseError(String),
     /// Compilation error.
+    #[error("Compile error: {0}")]
     CompileError(String),
     /// Missing uniform.
+    #[error("Missing uniform: {0}")]
     MissingUniform(String),
     /// Type mismatch.
+    #[error("Type mismatch: {0}")]
     TypeMismatch(String),
     /// Invalid child count.
+    #[error("Invalid child count: expected {expected}, got {got}")]
     InvalidChildCount {
         /// Expected number of children.
         expected: usize,
@@ -28,38 +34,19 @@ pub enum RuntimeEffectError {
         got: usize,
     },
     /// Missing main function.
+    #[error("Missing main function")]
     MissingMain,
     /// Invalid entry point signature.
+    #[error("Invalid entry point signature: expected {expected}")]
     InvalidEntryPoint {
         /// Expected signature.
         expected: String,
     },
     /// Semantic validation (type checking / scope resolution) failed.
+    #[error("Semantic validation failed: {0}")]
     ValidationFailed(String),
 }
 
-impl std::fmt::Display for RuntimeEffectError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RuntimeEffectError::ParseError(msg) => write!(f, "Parse error: {}", msg),
-            RuntimeEffectError::CompileError(msg) => write!(f, "Compile error: {}", msg),
-            RuntimeEffectError::MissingUniform(name) => write!(f, "Missing uniform: {}", name),
-            RuntimeEffectError::TypeMismatch(msg) => write!(f, "Type mismatch: {}", msg),
-            RuntimeEffectError::InvalidChildCount { expected, got } => {
-                write!(f, "Invalid child count: expected {}, got {}", expected, got)
-            }
-            RuntimeEffectError::MissingMain => write!(f, "Missing main function"),
-            RuntimeEffectError::InvalidEntryPoint { expected } => {
-                write!(f, "Invalid entry point signature: expected {}", expected)
-            }
-            RuntimeEffectError::ValidationFailed(msg) => {
-                write!(f, "Semantic validation failed: {}", msg)
-            }
-        }
-    }
-}
-
-impl std::error::Error for RuntimeEffectError {}
 
 /// Uniform metadata.
 #[derive(Debug, Clone)]
