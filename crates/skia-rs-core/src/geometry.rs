@@ -1227,9 +1227,16 @@ impl Matrix {
     }
 
     /// Computes the inverse matrix, or None if singular.
+    ///
+    /// Uses a singularity threshold appropriate for f32 precision. Matrices with
+    /// determinants below `Scalar::EPSILON * 256` are rejected to avoid producing
+    /// numerically meaningless inverses due to limited floating-point precision.
     pub fn invert(&self) -> Option<Self> {
         let det = self.determinant();
-        if det.abs() < 1e-10 {
+        // Skia uses 1/4096 ≈ 2.44e-4. We use a tighter bound that's
+        // still well above f32 epsilon (~1.19e-7).
+        const SINGULARITY_THRESHOLD: Scalar = Scalar::EPSILON * 256.0;
+        if det.abs() < SINGULARITY_THRESHOLD {
             return None;
         }
 
@@ -1379,5 +1386,32 @@ mod tests {
         let rrect = RRect::from_rect_xy(rect, 10.0, 5.0);
         assert_eq!(rrect.radii[0].x, 10.0);
         assert_eq!(rrect.radii[0].y, 5.0);
+    }
+
+    #[test]
+    fn test_matrix_invert_uses_appropriate_epsilon_for_f32() {
+        // Determinant ~1e-6 (above old 1e-10 but below f32 epsilon * 256 (~3e-5))
+        // This matrix should be considered singular for f32 precision, rejecting
+        // garbage inverses, but the old 1e-10 threshold would incorrectly pass it
+        let too_small = Matrix {
+            values: [
+                1e-3, 0.0, 0.0,
+                0.0, 1e-3, 0.0,  // det = 1e-6, above 1e-10 but below f32 safe threshold
+                0.0, 0.0, 1.0,
+            ],
+        };
+        assert!(too_small.invert().is_none(),
+                "Matrix with det 1e-6 should be singular for f32");
+
+        // Well above f32 epsilon * 256 - should invert successfully
+        let invertible = Matrix {
+            values: [
+                0.1, 0.0, 0.0,
+                0.0, 0.1, 0.0,  // det = 0.01
+                0.0, 0.0, 1.0,
+            ],
+        };
+        assert!(invertible.invert().is_some(),
+                "Matrix with determinant 0.01 should be invertible");
     }
 }
