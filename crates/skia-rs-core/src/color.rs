@@ -669,10 +669,24 @@ impl IccProfile {
         }
     }
 
-    /// Parse an ICC profile from raw bytes.
+    /// Parse an ICC profile from a byte buffer.
     ///
-    /// This performs basic validation and extracts key information.
-    /// Returns `None` if the data is not a valid ICC profile.
+    /// Reads the 128-byte ICC header to extract profile class, color space,
+    /// and PCS information.
+    ///
+    /// # Limitations
+    ///
+    /// **The current implementation does not parse the ICC tag table.**
+    /// All parsed profiles report `embedded_color_space` as sRGB regardless
+    /// of their actual transfer function and gamut. For accurate color
+    /// management with Display P3, Adobe RGB, or other non-sRGB profiles,
+    /// this function will produce incorrect color space metadata.
+    ///
+    /// Full tag table parsing (rTRC/gTRC/bTRC for transfer functions and
+    /// rXYZ/gXYZ/bXYZ for gamut) is planned for a future release. Track
+    /// progress in the foundation audit (GAP-C1).
+    ///
+    /// Returns `None` if the profile bytes are malformed or too short.
     pub fn from_bytes(data: &[u8]) -> Option<Self> {
         // ICC profile header is 128 bytes
         if data.len() < 128 {
