@@ -78,6 +78,97 @@ fn interpolate_gradient_color(
     }
 }
 
+// =============================================================================
+// Helper Functions for Image Sampling
+// =============================================================================
+
+/// Map a coordinate into the image range [0, size) using the given tile mode.
+///
+/// Returns NaN if the coordinate is outside the range under Decal mode —
+/// callers should treat NaN results as transparent pixels.
+fn apply_image_tile(coord: Scalar, size: Scalar, mode: TileMode) -> Scalar {
+    if size <= 0.0 {
+        return Scalar::NAN;
+    }
+    match mode {
+        TileMode::Clamp => coord.clamp(0.0, size - 1e-4),
+        TileMode::Repeat => {
+            let m = coord.rem_euclid(size);
+            if m < 0.0 {
+                m + size
+            } else {
+                m
+            }
+        }
+        TileMode::Mirror => {
+            let n = coord.rem_euclid(2.0 * size);
+            if n < size {
+                n
+            } else {
+                2.0 * size - n - 1e-4
+            }
+        }
+        TileMode::Decal => {
+            if coord < 0.0 || coord >= size {
+                Scalar::NAN
+            } else {
+                coord
+            }
+        }
+    }
+}
+
+/// Read a single RGBA8 pixel at integer coordinates.
+///
+/// Returns premultiplied Color4f in [0, 1]. For non-RGBA8 color types,
+/// the read is simplified (baseline support).
+fn read_pixel_rgba8(
+    pixels: &[u8],
+    info: &skia_rs_core::pixel::ImageInfo,
+    x: i32,
+    y: i32,
+) -> Color4f {
+    use skia_rs_core::color::ColorType;
+    let bpp = info.bytes_per_pixel();
+    let row_bytes = info.min_row_bytes();
+    let offset = (y as usize) * row_bytes + (x as usize) * bpp;
+    if offset + bpp > pixels.len() {
+        return Color4f::new(0.0, 0.0, 0.0, 0.0);
+    }
+
+    match info.color_type {
+        ColorType::Rgba8888 => {
+            let r = pixels[offset] as f32 / 255.0;
+            let g = pixels[offset + 1] as f32 / 255.0;
+            let b = pixels[offset + 2] as f32 / 255.0;
+            let a = pixels[offset + 3] as f32 / 255.0;
+            Color4f::new(r, g, b, a)
+        }
+        ColorType::Bgra8888 => {
+            let b = pixels[offset] as f32 / 255.0;
+            let g = pixels[offset + 1] as f32 / 255.0;
+            let r = pixels[offset + 2] as f32 / 255.0;
+            let a = pixels[offset + 3] as f32 / 255.0;
+            Color4f::new(r, g, b, a)
+        }
+        ColorType::Rgb888x => {
+            let r = pixels[offset] as f32 / 255.0;
+            let g = pixels[offset + 1] as f32 / 255.0;
+            let b = pixels[offset + 2] as f32 / 255.0;
+            Color4f::new(r, g, b, 1.0)
+        }
+        ColorType::Alpha8 => {
+            let a = pixels[offset] as f32 / 255.0;
+            Color4f::new(a, a, a, a) // premultiplied white
+        }
+        ColorType::Gray8 => {
+            let g = pixels[offset] as f32 / 255.0;
+            Color4f::new(g, g, g, 1.0)
+        }
+        _ => Color4f::new(0.0, 0.0, 0.0, 0.0),
+    }
+}
+
 /// Tile mode for shaders.
 ///
 /// Determines how a shader handles coordinates outside its bounds.
@@ -753,6 +844,11 @@ pub struct ImageShader {
     sampling: SamplingOptions,
     /// Local matrix.
     local_matrix: Option<Matrix>,
+    /// Owned pixel data (RGBA8 premultiplied, row-major).
+    /// None if the shader was created without pixels (metadata-only).
+    pixels: Option<Arc<Vec<u8>>>,
+    /// Image info describing pixel layout.
+    image_info: Option<skia_rs_core::pixel::ImageInfo>,
 }
 
 /// Sampling options for image shaders.
@@ -822,12 +918,43 @@ impl ImageShader {
             tile_mode_y,
             sampling,
             local_matrix: None,
+            pixels: None,
+            image_info: None,
         }
     }
 
     /// Create an image shader with the same tile mode for both axes.
     pub fn with_tile_mode(bounds: Rect, tile_mode: TileMode, sampling: SamplingOptions) -> Self {
         Self::new(bounds, tile_mode, tile_mode, sampling)
+    }
+
+    /// Create an ImageShader with owned pixel data.
+    ///
+    /// Pixels are treated as premultiplied RGBA8 in the sRGB color space.
+    /// The image_info should describe the width, height, color type, and
+    /// row bytes of the pixel buffer.
+    pub fn with_pixels(
+        pixels: Arc<Vec<u8>>,
+        image_info: skia_rs_core::pixel::ImageInfo,
+        tile_mode_x: TileMode,
+        tile_mode_y: TileMode,
+        sampling: SamplingOptions,
+    ) -> Self {
+        let bounds = Rect::from_xywh(
+            0.0,
+            0.0,
+            image_info.width() as Scalar,
+            image_info.height() as Scalar,
+        );
+        Self {
+            bounds,
+            tile_mode_x,
+            tile_mode_y,
+            sampling,
+            local_matrix: None,
+            pixels: Some(pixels),
+            image_info: Some(image_info),
+        }
     }
 
     /// Set the local matrix.
@@ -864,6 +991,33 @@ impl ImageShader {
 impl Shader for ImageShader {
     fn local_matrix(&self) -> Option<&Matrix> {
         self.local_matrix.as_ref()
+    }
+
+    fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
+        let (pixels, info) = match (&self.pixels, &self.image_info) {
+            (Some(p), Some(i)) => (p.as_ref(), i),
+            _ => return Color4f::new(0.0, 0.0, 0.0, 0.0),
+        };
+
+        let width = info.width();
+        let height = info.height();
+        if width <= 0 || height <= 0 {
+            return Color4f::new(0.0, 0.0, 0.0, 0.0);
+        }
+
+        // Apply tile mode to map arbitrary (x, y) into [0, width) x [0, height).
+        let sx = apply_image_tile(x, width as Scalar, self.tile_mode_x);
+        let sy = apply_image_tile(y, height as Scalar, self.tile_mode_y);
+
+        if !sx.is_finite() || !sy.is_finite() || sx < 0.0 || sy < 0.0 {
+            return Color4f::new(0.0, 0.0, 0.0, 0.0);
+        }
+
+        // Nearest-neighbor sampling: round down to integer pixel.
+        let ix = (sx as i32).clamp(0, width - 1);
+        let iy = (sy as i32).clamp(0, height - 1);
+
+        read_pixel_rgba8(pixels, info, ix, iy)
     }
 
     fn is_opaque(&self) -> bool {
@@ -1660,5 +1814,119 @@ mod tests {
         let c1 = shader.sample(10.0, 10.0);
         let c2 = shader.sample(10.0, 10.0);
         assert!((c1.r - c2.r).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_image_shader_samples_rgba8_pixel() {
+        use skia_rs_core::color::AlphaType;
+        use skia_rs_core::color::ColorType;
+        use skia_rs_core::pixel::ImageInfo;
+        // 2x2 image: red, green, blue, white
+        let pixels: Arc<Vec<u8>> = Arc::new(vec![
+            255, 0, 0, 255,    // (0,0) red
+            0, 255, 0, 255,    // (1,0) green
+            0, 0, 255, 255,    // (0,1) blue
+            255, 255, 255, 255, // (1,1) white
+        ]);
+        let info = ImageInfo::new(2, 2, ColorType::Rgba8888, AlphaType::Premul).unwrap();
+        let shader = ImageShader::with_pixels(
+            pixels,
+            info,
+            TileMode::Clamp,
+            TileMode::Clamp,
+            SamplingOptions::default(),
+        );
+
+        // Sample exact pixel positions
+        let c_00 = shader.sample(0.5, 0.5);
+        assert!((c_00.r - 1.0).abs() < 1e-3, "expected red at (0.5, 0.5), got {:?}", c_00);
+
+        let c_11 = shader.sample(1.5, 1.5);
+        assert!((c_11.r - 1.0).abs() < 1e-3 && (c_11.g - 1.0).abs() < 1e-3, "expected white at (1.5, 1.5), got {:?}", c_11);
+    }
+
+    #[test]
+    fn test_image_shader_without_pixels_returns_transparent() {
+        // Using the existing constructor (no pixels), sample should return transparent
+        let shader = ImageShader::new(
+            Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+            TileMode::Clamp,
+            TileMode::Clamp,
+            SamplingOptions::default(),
+        );
+        let c = shader.sample(50.0, 50.0);
+        assert_eq!(c.a, 0.0, "expected transparent for shader without pixels");
+    }
+
+    #[test]
+    fn test_image_shader_clamp_tile_mode() {
+        use skia_rs_core::color::AlphaType;
+        use skia_rs_core::color::ColorType;
+        use skia_rs_core::pixel::ImageInfo;
+        let pixels: Arc<Vec<u8>> = Arc::new(vec![
+            0, 0, 0, 255,
+            255, 255, 255, 255,
+        ]);
+        let info = ImageInfo::new(2, 1, ColorType::Rgba8888, AlphaType::Premul).unwrap();
+        let shader = ImageShader::with_pixels(
+            pixels,
+            info,
+            TileMode::Clamp,
+            TileMode::Clamp,
+            SamplingOptions::default(),
+        );
+
+        // Sampling far outside should clamp to nearest edge pixel
+        let c_right = shader.sample(100.0, 0.5);
+        assert!((c_right.r - 1.0).abs() < 1e-3, "clamp should return white from right edge, got {:?}", c_right);
+    }
+
+    #[test]
+    fn test_image_shader_repeat_tile_mode() {
+        use skia_rs_core::color::AlphaType;
+        use skia_rs_core::color::ColorType;
+        use skia_rs_core::pixel::ImageInfo;
+        let pixels: Arc<Vec<u8>> = Arc::new(vec![
+            255, 0, 0, 255,    // red
+            0, 255, 0, 255,    // green
+        ]);
+        let info = ImageInfo::new(2, 1, ColorType::Rgba8888, AlphaType::Premul).unwrap();
+        let shader = ImageShader::with_pixels(
+            pixels,
+            info,
+            TileMode::Repeat,
+            TileMode::Repeat,
+            SamplingOptions::default(),
+        );
+
+        // Sampling beyond width should wrap
+        let c = shader.sample(2.5, 0.5); // Should wrap to 0.5
+        assert!((c.r - 1.0).abs() < 1e-3, "repeat should wrap to red pixel, got {:?}", c);
+    }
+
+    #[test]
+    fn test_image_shader_decal_tile_mode() {
+        use skia_rs_core::color::AlphaType;
+        use skia_rs_core::color::ColorType;
+        use skia_rs_core::pixel::ImageInfo;
+        let pixels: Arc<Vec<u8>> = Arc::new(vec![
+            255, 0, 0, 255,
+        ]);
+        let info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Premul).unwrap();
+        let shader = ImageShader::with_pixels(
+            pixels,
+            info,
+            TileMode::Decal,
+            TileMode::Decal,
+            SamplingOptions::default(),
+        );
+
+        // Inside bounds should return color
+        let c_in = shader.sample(0.5, 0.5);
+        assert!((c_in.r - 1.0).abs() < 1e-3, "inside should return red");
+
+        // Outside bounds should return transparent
+        let c_out = shader.sample(2.0, 0.5);
+        assert_eq!(c_out.a, 0.0, "decal outside bounds should be transparent");
     }
 }
