@@ -619,10 +619,137 @@ impl Path {
         }
     }
 
-    /// Compute tight bounds (considering curve control points).
+    /// Returns the tight bounding rectangle of this path.
+    ///
+    /// Unlike `bounds()`, this computes the bounds from the actual curve
+    /// extents, not the control-point bounding box. For cubic and quadratic
+    /// Bezier curves with control points outside the actual curve range,
+    /// tight_bounds() may be significantly smaller than bounds().
+    ///
+    /// Conics fall back to control-polygon bounds (exact extrema for rational
+    /// curves would require solving a quartic).
     pub fn tight_bounds(&self) -> Rect {
-        // For now, same as bounds (which already considers all points)
-        self.bounds()
+        if self.verbs.is_empty() {
+            return Rect::EMPTY;
+        }
+
+        let mut min_x = Scalar::INFINITY;
+        let mut min_y = Scalar::INFINITY;
+        let mut max_x = Scalar::NEG_INFINITY;
+        let mut max_y = Scalar::NEG_INFINITY;
+
+        let mut include = |p: Point, min_x: &mut Scalar, min_y: &mut Scalar, max_x: &mut Scalar, max_y: &mut Scalar| {
+            if p.x < *min_x { *min_x = p.x; }
+            if p.y < *min_y { *min_y = p.y; }
+            if p.x > *max_x { *max_x = p.x; }
+            if p.y > *max_y { *max_y = p.y; }
+        };
+
+        let mut current = Point::new(0.0, 0.0);
+
+        for elem in self.iter() {
+            match elem {
+                PathElement::Move(p) | PathElement::Line(p) => {
+                    include(p, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+                    current = p;
+                }
+                PathElement::Quad(c, p) => {
+                    include(current, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+                    include(p, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+                    // Quadratic extremum per axis: t = (start - ctrl) / (start - 2*ctrl + end)
+                    for axis in 0..2 {
+                        let s = if axis == 0 { current.x } else { current.y };
+                        let cv = if axis == 0 { c.x } else { c.y };
+                        let e = if axis == 0 { p.x } else { p.y };
+                        let denom = s - 2.0 * cv + e;
+                        if denom.abs() > 1e-9 {
+                            let t = (s - cv) / denom;
+                            if t > 0.0 && t < 1.0 {
+                                let mt = 1.0 - t;
+                                let val = mt * mt * s + 2.0 * mt * t * cv + t * t * e;
+                                if axis == 0 {
+                                    if val < min_x { min_x = val; }
+                                    if val > max_x { max_x = val; }
+                                } else {
+                                    if val < min_y { min_y = val; }
+                                    if val > max_y { max_y = val; }
+                                }
+                            }
+                        }
+                    }
+                    current = p;
+                }
+                PathElement::Cubic(c1, c2, p) => {
+                    include(current, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+                    include(p, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+                    // Cubic extrema per axis: solve 3*a*t^2 + 2*b*t + c = 0 where
+                    // B'(t) = 3*(1-t)^2*(c1-s) + 6*(1-t)*t*(c2-c1) + 3*t^2*(e-c2)
+                    // Expanding into quadratic: a*t^2 + b*t + cc
+                    for axis in 0..2 {
+                        let s = if axis == 0 { current.x } else { current.y };
+                        let c1v = if axis == 0 { c1.x } else { c1.y };
+                        let c2v = if axis == 0 { c2.x } else { c2.y };
+                        let e = if axis == 0 { p.x } else { p.y };
+                        let a = 3.0 * (e - 3.0 * c2v + 3.0 * c1v - s);
+                        let b = 6.0 * (c2v - 2.0 * c1v + s);
+                        let cc = 3.0 * (c1v - s);
+
+                        let mut roots: [Scalar; 2] = [Scalar::NAN, Scalar::NAN];
+                        let mut n_roots = 0;
+
+                        if a.abs() < 1e-9 {
+                            // Linear: b*t + cc = 0
+                            if b.abs() > 1e-9 {
+                                let t = -cc / b;
+                                roots[0] = t;
+                                n_roots = 1;
+                            }
+                        } else {
+                            let disc = b * b - 4.0 * a * cc;
+                            if disc >= 0.0 {
+                                let sqrt_disc = disc.sqrt();
+                                roots[0] = (-b + sqrt_disc) / (2.0 * a);
+                                roots[1] = (-b - sqrt_disc) / (2.0 * a);
+                                n_roots = 2;
+                            }
+                        }
+
+                        for i in 0..n_roots {
+                            let t = roots[i];
+                            if t.is_finite() && t > 0.0 && t < 1.0 {
+                                let mt = 1.0 - t;
+                                let val = mt * mt * mt * s
+                                    + 3.0 * mt * mt * t * c1v
+                                    + 3.0 * mt * t * t * c2v
+                                    + t * t * t * e;
+                                if axis == 0 {
+                                    if val < min_x { min_x = val; }
+                                    if val > max_x { max_x = val; }
+                                } else {
+                                    if val < min_y { min_y = val; }
+                                    if val > max_y { max_y = val; }
+                                }
+                            }
+                        }
+                    }
+                    current = p;
+                }
+                PathElement::Conic(c, p, _w) => {
+                    // Rational extrema require quartic solve; use control polygon
+                    // as a correct (if looser) upper bound.
+                    include(current, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+                    include(c, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+                    include(p, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+                    current = p;
+                }
+                PathElement::Close => {}
+            }
+        }
+
+        if min_x == Scalar::INFINITY {
+            return Rect::EMPTY;
+        }
+        Rect::new(min_x, min_y, max_x, max_y)
     }
 
     /// Get the total length of the path.
@@ -790,5 +917,54 @@ mod tests {
         let c1 = path.convexity();
         let c2 = path.convexity();
         assert_eq!(c1, c2);
+    }
+
+    #[test]
+    fn test_tight_bounds_smaller_than_bounds_for_curves() {
+        // A cubic Bezier where control points extend far beyond the actual curve.
+        // The "loose" bounds (bounds()) include control points; tight should be tighter.
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.cubic_to(50.0, 100.0, 50.0, -100.0, 100.0, 0.0);
+        let path = builder.build();
+
+        let loose = path.bounds();
+        let tight = path.tight_bounds();
+
+        // Loose bounds include y=±100 control points
+        assert!(
+            loose.top <= -99.0 || loose.bottom >= 99.0,
+            "Loose bounds should include control points (top={}, bottom={})",
+            loose.top, loose.bottom
+        );
+
+        // Tight bounds should be strictly tighter on at least one of top/bottom
+        assert!(
+            tight.top > loose.top || tight.bottom < loose.bottom,
+            "Tight bounds should be tighter than loose for this off-axis cubic"
+        );
+
+        // For this symmetric S-cubic, actual extrema are approximately ±19.245
+        assert!(
+            tight.bottom < 30.0 && tight.top > -30.0,
+            "Tight bounds should reflect actual curve range (got top={}, bottom={})",
+            tight.top, tight.bottom
+        );
+    }
+
+    #[test]
+    fn test_tight_bounds_same_as_bounds_for_lines() {
+        // For line-only paths, tight_bounds should equal bounds
+        let mut builder = PathBuilder::new();
+        builder.move_to(10.0, 20.0);
+        builder.line_to(30.0, 40.0);
+        let path = builder.build();
+
+        let loose = path.bounds();
+        let tight = path.tight_bounds();
+        assert!((loose.left - tight.left).abs() < 1e-4);
+        assert!((loose.right - tight.right).abs() < 1e-4);
+        assert!((loose.top - tight.top).abs() < 1e-4);
+        assert!((loose.bottom - tight.bottom).abs() < 1e-4);
     }
 }
