@@ -1116,21 +1116,29 @@ impl<'a> Canvas<'a> {
 
     /// Draw glyphs at specified positions.
     ///
-    /// Tracked by P5-10. Currently a no-op placeholder.
+    /// Each glyph's outline is extracted from `font` and drawn as a path at
+    /// `origin + positions[i]` (baseline position for glyph `i`). Glyphs
+    /// with no outline (e.g. space, .notdef without data) are skipped.
     #[cfg(feature = "text")]
     pub fn draw_glyphs(
         &mut self,
-        _glyph_ids: &[u16],
-        _positions: &[Point],
-        _origin: Point,
-        _font: &skia_rs_text::Font,
-        _paint: &Paint,
+        glyph_ids: &[u16],
+        positions: &[Point],
+        origin: Point,
+        font: &skia_rs_text::Font,
+        paint: &Paint,
     ) {
+        for (i, &glyph) in glyph_ids.iter().enumerate() {
+            let pos = positions.get(i).copied().unwrap_or(Point::zero());
+            if let Some(path) = font.glyph_path(glyph) {
+                let m = skia_rs_core::Matrix::translate(origin.x + pos.x, origin.y + pos.y);
+                let transformed = path.transformed(&m);
+                self.draw_path(&transformed, paint);
+            }
+        }
     }
 
     /// Draw positioned text with alignment.
-    ///
-    /// Tracked by P5-10.
     #[cfg(feature = "text")]
     pub fn draw_text_aligned(
         &mut self,
@@ -1150,18 +1158,59 @@ impl<'a> Canvas<'a> {
         self.draw_string(text, adjusted_x, y, font, paint);
     }
 
-    /// Draw a string.
+    /// Draw a string with its baseline at `(x, y)`.
     ///
-    /// Tracked by P5-10. Currently a no-op placeholder.
+    /// The text is first shaped (when font data is available) by rustybuzz
+    /// into positioned glyphs; when no font data is present we fall back to
+    /// a simple char-to-glyph mapping with per-glyph advances from
+    /// [`skia_rs_text::Font::glyph_advance`]. For each shaped glyph the
+    /// outline is extracted via [`skia_rs_text::Font::glyph_path`] and drawn
+    /// as a path using the current paint, matrix, and clip stack. Glyphs
+    /// with no outline (space, non-printing, dataless default typeface) are
+    /// silently skipped.
     #[cfg(feature = "text")]
     pub fn draw_string(
         &mut self,
-        _text: &str,
-        _x: Scalar,
-        _y: Scalar,
-        _font: &skia_rs_text::Font,
-        _paint: &Paint,
+        text: &str,
+        x: Scalar,
+        y: Scalar,
+        font: &skia_rs_text::Font,
+        paint: &Paint,
     ) {
+        // Prefer rustybuzz shaping when the typeface has real font data.
+        // It handles ligatures, kerning, complex scripts correctly.
+        let shaper = skia_rs_text::Shaper::new();
+        if let Some(runs) = shaper.shape_auto(text, font) {
+            let mut pen_x = x;
+            let mut pen_y = y;
+            for run in runs {
+                for g in run.glyphs {
+                    let glyph_x = pen_x + g.x_offset;
+                    let glyph_y = pen_y + g.y_offset;
+                    if let Some(path) = font.glyph_path(g.glyph_id.0) {
+                        let m = skia_rs_core::Matrix::translate(glyph_x, glyph_y);
+                        let transformed = path.transformed(&m);
+                        self.draw_path(&transformed, paint);
+                    }
+                    pen_x += g.x_advance;
+                    pen_y += g.y_advance;
+                }
+            }
+            return;
+        }
+
+        // Fallback path: no shape output (dataless typeface). Walk the
+        // characters, advancing by font.glyph_advance per glyph.
+        let mut pen_x = x;
+        for c in text.chars() {
+            let glyph = font.char_to_glyph(c);
+            if let Some(path) = font.glyph_path(glyph) {
+                let m = skia_rs_core::Matrix::translate(pen_x, y);
+                let transformed = path.transformed(&m);
+                self.draw_path(&transformed, paint);
+            }
+            pen_x += font.glyph_advance(glyph);
+        }
     }
 
     /// Flush any pending drawing operations.
@@ -1643,9 +1692,14 @@ impl<'a> Canvas<'a> {
         }
     }
 
-    /// Draw a text blob.
+    /// Draw a text blob at `(x, y)`.
     ///
-    /// Placeholder implementation; full glyph rendering is tracked by P5-10.
+    /// Iterates over the blob's pre-shaped runs and draws each glyph's
+    /// outline as a path. The blob already stores positioned glyphs, so no
+    /// reshaping happens here — this is the fast path for repeatedly
+    /// drawing the same string.
+    ///
+    /// Glyphs with no outline (space, missing glyphs) are silently skipped.
     #[cfg(feature = "text")]
     pub fn draw_text_blob(
         &mut self,
@@ -1654,65 +1708,21 @@ impl<'a> Canvas<'a> {
         y: Scalar,
         paint: &Paint,
     ) {
-        let matrix = *self.total_matrix();
-        let clip = self.clip_bounds();
-        let color = paint.color32();
-        let blend_mode = paint.blend_mode();
-
-        let (buffer, buf_offset_x, buf_offset_y): (&mut PixelBuffer, i32, i32) =
-            if let Some(layer) = self.layer_stack.last_mut() {
-                let (ox, oy) = match layer.bounds {
-                    Some(b) => (b.left.floor() as i32, b.top.floor() as i32),
-                    None => (0, 0),
-                };
-                (&mut layer.buffer, ox, oy)
-            } else {
-                match &mut self.backing {
-                    Backing::Raster(b) => (*b, 0, 0),
-                    _ => return,
-                }
-            };
-
         for run in blob.runs() {
             let font = &run.font;
-            let char_width = font.size() * 0.5;
-            let char_height = font.size();
-
             for (i, &glyph) in run.glyphs.iter().enumerate() {
-                if glyph == 0 {
-                    continue;
-                }
+                let pos = run
+                    .positions
+                    .get(i)
+                    .copied()
+                    .unwrap_or_else(|| Point::new(i as Scalar * font.size() * 0.5, 0.0));
 
-                let pos = if i < run.positions.len() {
-                    run.positions[i]
-                } else {
-                    Point::new(i as Scalar * char_width, 0.0)
-                };
-
-                let world_pos = matrix.map_point(Point::new(
-                    x + run.origin.x + pos.x,
-                    y + run.origin.y + pos.y - char_height * 0.8,
-                ));
-
-                let rect = Rect::from_xywh(
-                    world_pos.x,
-                    world_pos.y,
-                    char_width * matrix.scale_x().abs(),
-                    char_height * matrix.scale_y().abs(),
-                );
-
-                if let Some(clipped) = rect.intersect(&clip) {
-                    let r = clipped.round_out();
-                    for py in r.top..r.bottom {
-                        for px in r.left..r.right {
-                            buffer.blend_pixel(
-                                px - buf_offset_x,
-                                py - buf_offset_y,
-                                color,
-                                blend_mode,
-                            );
-                        }
-                    }
+                if let Some(path) = font.glyph_path(glyph) {
+                    let gx = x + run.origin.x + pos.x;
+                    let gy = y + run.origin.y + pos.y;
+                    let m = skia_rs_core::Matrix::translate(gx, gy);
+                    let transformed = path.transformed(&m);
+                    self.draw_path(&transformed, paint);
                 }
             }
         }

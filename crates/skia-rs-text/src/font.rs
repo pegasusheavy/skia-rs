@@ -300,11 +300,14 @@ impl Font {
     }
 
     /// Measure the width of text.
+    ///
+    /// Sums `glyph_advance` across each character's glyph so that fonts with
+    /// real `hmtx` data measure correctly. Falls back to the crude
+    /// `size * 0.5 * char_count` estimate for the dataless default typeface.
     pub fn measure_text(&self, text: &str) -> Scalar {
-        // Simple approximation: each character is about half the font size
-        // A real implementation would use glyph advances
-        let char_count = text.chars().count();
-        char_count as Scalar * self.size * 0.5 * self.scale_x
+        text.chars()
+            .map(|c| self.glyph_advance(self.char_to_glyph(c)))
+            .sum()
     }
 
     /// Get glyph widths for text.
@@ -350,14 +353,26 @@ impl Font {
 
     /// Get the advance width for a glyph.
     ///
-    /// The advance is the horizontal distance to move after drawing this glyph.
+    /// The advance is the horizontal distance to move after drawing this
+    /// glyph. When font data is available the value comes from the font's
+    /// `hmtx` table scaled by `size / units_per_em`; otherwise a crude
+    /// `size * 0.5` approximation is used for the dataless default
+    /// typeface.
     pub fn glyph_advance(&self, glyph: u16) -> Scalar {
-        // Simple approximation - real implementation would query the font
         if glyph == 0 {
-            0.0
-        } else {
-            self.size * 0.5 * self.scale_x
+            return 0.0;
         }
+        if let Some(data) = self.typeface.font_data() {
+            if let Ok(face) = ttf_parser::Face::parse(data, 0) {
+                let upem = face.units_per_em();
+                if upem > 0 {
+                    if let Some(adv) = face.glyph_hor_advance(ttf_parser::GlyphId(glyph)) {
+                        return adv as Scalar * self.size / upem as Scalar * self.scale_x;
+                    }
+                }
+            }
+        }
+        self.size * 0.5 * self.scale_x
     }
 
     /// Get advance widths for multiple glyphs.
@@ -391,25 +406,37 @@ impl Font {
 
     /// Get the path outline for a glyph.
     ///
-    /// Returns a path that can be filled to render the glyph.
-    /// This is useful for vector text rendering or text effects.
+    /// Returns a path that can be filled to render the glyph. The path is in
+    /// local coordinates with the glyph origin at (0, 0), scaled by
+    /// `size / units_per_em`, and y-flipped from font-space (y-up) into
+    /// screen-space (y-down) so that drawing it at the baseline position
+    /// produces correctly oriented glyphs.
+    ///
+    /// Returns `None` if:
+    /// - `glyph` is 0 (.notdef)
+    /// - the underlying typeface has no font data (e.g. the default typeface)
+    /// - the font data fails to parse
+    /// - the glyph has no outline (e.g. space, non-printing characters)
     pub fn glyph_path(&self, glyph: u16) -> Option<skia_rs_path::Path> {
         if glyph == 0 {
             return None;
         }
 
-        // Placeholder - returns a simple rectangle
-        // Real implementation would extract the actual glyph outline from the font
-        let bounds = self.glyph_bounds(glyph);
+        let data = self.typeface.font_data()?;
+        let face = ttf_parser::Face::parse(data, 0).ok()?;
 
-        let mut builder = skia_rs_path::PathBuilder::new();
-        builder.move_to(bounds.left, bounds.top);
-        builder.line_to(bounds.right, bounds.top);
-        builder.line_to(bounds.right, bounds.bottom);
-        builder.line_to(bounds.left, bounds.bottom);
-        builder.close();
+        let upem = face.units_per_em();
+        if upem == 0 {
+            return None;
+        }
+        let scale = self.size / upem as Scalar;
 
-        Some(builder.build())
+        let mut builder = GlyphOutlineBuilder {
+            builder: skia_rs_path::PathBuilder::new(),
+            scale,
+        };
+        face.outline_glyph(ttf_parser::GlyphId(glyph), &mut builder)?;
+        Some(builder.builder.build())
     }
 
     /// Get paths for multiple glyphs.
@@ -531,6 +558,51 @@ impl Font {
         }
 
         intercepts
+    }
+}
+
+/// Adapts `ttf_parser::OutlineBuilder` onto `skia_rs_path::PathBuilder`.
+///
+/// Fonts store outlines with y-axis pointing up; our Path lives in screen
+/// space (y-down). The builder flips `y` and scales both axes by
+/// `size / units_per_em` so the produced path is already in pixel units
+/// relative to the glyph origin.
+struct GlyphOutlineBuilder {
+    builder: skia_rs_path::PathBuilder,
+    scale: Scalar,
+}
+
+impl ttf_parser::OutlineBuilder for GlyphOutlineBuilder {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.builder.move_to(x * self.scale, -y * self.scale);
+    }
+
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.builder.line_to(x * self.scale, -y * self.scale);
+    }
+
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        self.builder.quad_to(
+            x1 * self.scale,
+            -y1 * self.scale,
+            x * self.scale,
+            -y * self.scale,
+        );
+    }
+
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        self.builder.cubic_to(
+            x1 * self.scale,
+            -y1 * self.scale,
+            x2 * self.scale,
+            -y2 * self.scale,
+            x * self.scale,
+            -y * self.scale,
+        );
+    }
+
+    fn close(&mut self) {
+        self.builder.close();
     }
 }
 

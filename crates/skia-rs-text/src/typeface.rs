@@ -168,6 +168,10 @@ impl Typeface {
     }
 
     /// Create a typeface from font data.
+    ///
+    /// The data is parsed with `ttf_parser` to extract real `units_per_em`,
+    /// glyph count, family name, and style flags. Returns `None` if the data
+    /// is not a valid OpenType/TrueType font (or collection, index 0).
     pub fn from_data(data: Vec<u8>) -> Option<Self> {
         static NEXT_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 
@@ -175,13 +179,39 @@ impl Typeface {
             return None;
         }
 
+        let face = ttf_parser::Face::parse(&data, 0).ok()?;
+        let units_per_em = face.units_per_em();
+        let glyph_count = face.number_of_glyphs();
+
+        // Pull the first English family name from the name table if present.
+        let family_name = face
+            .names()
+            .into_iter()
+            .find(|n| n.name_id == ttf_parser::name_id::FAMILY && n.is_unicode())
+            .and_then(|n| n.to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        let weight = FontWeight(face.weight().to_number());
+        let slant = if face.is_italic() {
+            FontSlant::Italic
+        } else if face.is_oblique() {
+            FontSlant::Oblique
+        } else {
+            FontSlant::Upright
+        };
+        let width = FontWidth(face.width().to_number() as u8);
+
         Some(Self {
-            family_name: "Unknown".to_string(),
-            style: FontStyle::NORMAL,
+            family_name,
+            style: FontStyle {
+                weight,
+                width,
+                slant,
+            },
             id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             data: Some(Arc::new(data)),
-            units_per_em: 2048,
-            glyph_count: 256,
+            units_per_em,
+            glyph_count,
         })
     }
 
@@ -235,13 +265,23 @@ impl Typeface {
     }
 
     /// Get the glyph ID for a character.
+    ///
+    /// Uses the font's cmap table via `ttf_parser` when font data is loaded.
+    /// Falls back to returning the character code for ASCII when no font
+    /// data is available (the default typeface has no backing font).
     pub fn char_to_glyph(&self, c: char) -> u16 {
-        // Simple ASCII mapping for now
-        // A real implementation would use font tables
+        if let Some(data) = self.font_data() {
+            if let Ok(face) = ttf_parser::Face::parse(data, 0) {
+                return face.glyph_index(c).map(|g| g.0).unwrap_or(0);
+            }
+        }
+        // Fallback for the dataless default typeface — just use the codepoint
+        // for ASCII so existing non-data tests continue to produce non-zero
+        // glyph IDs.
         if c.is_ascii() {
             c as u16
         } else {
-            0 // .notdef glyph
+            0
         }
     }
 
