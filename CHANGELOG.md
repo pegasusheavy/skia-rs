@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-04-25
+
+### Added (skia-rs-path)
+
+- **PathMeasure fully implemented**: `compute_lengths`, `get_point_at`,
+  `get_tangent_at`, `get_matrix_at`, `get_segment`, `contour_count`,
+  `contour_length` now functional (GAP-C1)
+- Adaptive curve flattening utilities (`flatten_quad_adaptive`,
+  `flatten_cubic_adaptive`, `flatten_conic_adaptive`) in internal
+  `flatten` module
+- `StrokeJoin::Round` now generates actual arc segments instead of a
+  straight-line midpoint approximation (GAP-N7)
+- `Path::tight_bounds()` now computes from quadratic and cubic curve
+  extrema, not control points (GAP-N1)
+- `Path::is_oval()` verifies cardinal-point endpoint geometry rather
+  than only counting verb types (GAP-N4)
+- `Path::convexity()` result is now cached via `AtomicU8` for repeat
+  calls — Send+Sync compatible (GAP-N5)
+
+### Fixed (skia-rs-path)
+
+- `TrimEffect::apply` now extracts the actual sub-segment using
+  `PathMeasure::get_segment` (GAP-C2). `Path1DEffect` (GAP-C3)
+  auto-fixed by the same PathMeasure implementation.
+- `DashEffect` now flattens curves before applying dash intervals,
+  allowing dash transitions mid-curve (GAP-C6)
+- `stroke_to_fill` tracks `is_closed` per contour, fixing multi-contour
+  paths with mixed open/closed states (GAP-N8)
+- Conic weight is now honored in `path_to_polygons` via the
+  rational-quadratic evaluator (GAP-N6)
+- Removed unused dependencies (`thiserror`, `arrayvec`, `proptest`)
+- Cleaned up compiler warnings (unused `Verb` import, unnecessary `mut`)
+
+### Known Limitations (skia-rs-path)
+
+- Boolean operations (`PathOp::Difference`, `Intersect`, `Xor`) still
+  have known correctness issues for non-convex inputs and partial
+  overlaps. Tracked as GAP-C4 and GAP-C5. Limitations documented in
+  the public rustdoc. Planned for a future release with a proper
+  polygon-clipping algorithm (Weiler-Atherton or sweep-line).
+- `Path::length()` and `Path::contains()` use control-polygon
+  approximations for curves. Acceptable for typical use; tracked for
+  incremental improvement.
+
 ## [0.2.1] - 2026-04-25
 
 ### Fixed - skia-rs-core
