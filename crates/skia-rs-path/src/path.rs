@@ -155,6 +155,29 @@ impl PartialEq for Path {
     }
 }
 
+#[inline]
+fn axis_of(p: Point, axis: usize) -> Scalar {
+    if axis == 0 { p.x } else { p.y }
+}
+
+#[inline]
+fn record_axis_bound(
+    axis: usize,
+    val: Scalar,
+    min_x: &mut Scalar,
+    max_x: &mut Scalar,
+    min_y: &mut Scalar,
+    max_y: &mut Scalar,
+) {
+    if axis == 0 {
+        if val < *min_x { *min_x = val; }
+        if val > *max_x { *max_x = val; }
+    } else {
+        if val < *min_y { *min_y = val; }
+        if val > *max_y { *max_y = val; }
+    }
+}
+
 impl Path {
     /// Create a new empty path.
     #[inline]
@@ -658,22 +681,16 @@ impl Path {
                     include(p, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
                     // Quadratic extremum per axis: t = (start - ctrl) / (start - 2*ctrl + end)
                     for axis in 0..2 {
-                        let s = if axis == 0 { current.x } else { current.y };
-                        let cv = if axis == 0 { c.x } else { c.y };
-                        let e = if axis == 0 { p.x } else { p.y };
+                        let s = axis_of(current, axis);
+                        let cv = axis_of(c, axis);
+                        let e = axis_of(p, axis);
                         let denom = s - 2.0 * cv + e;
                         if denom.abs() > 1e-9 {
                             let t = (s - cv) / denom;
                             if t > 0.0 && t < 1.0 {
                                 let mt = 1.0 - t;
                                 let val = mt * mt * s + 2.0 * mt * t * cv + t * t * e;
-                                if axis == 0 {
-                                    if val < min_x { min_x = val; }
-                                    if val > max_x { max_x = val; }
-                                } else {
-                                    if val < min_y { min_y = val; }
-                                    if val > max_y { max_y = val; }
-                                }
+                                record_axis_bound(axis, val, &mut min_x, &mut max_x, &mut min_y, &mut max_y);
                             }
                         }
                     }
@@ -686,10 +703,10 @@ impl Path {
                     // B'(t) = 3*(1-t)^2*(c1-s) + 6*(1-t)*t*(c2-c1) + 3*t^2*(e-c2)
                     // Expanding into quadratic: a*t^2 + b*t + cc
                     for axis in 0..2 {
-                        let s = if axis == 0 { current.x } else { current.y };
-                        let c1v = if axis == 0 { c1.x } else { c1.y };
-                        let c2v = if axis == 0 { c2.x } else { c2.y };
-                        let e = if axis == 0 { p.x } else { p.y };
+                        let s = axis_of(current, axis);
+                        let c1v = axis_of(c1, axis);
+                        let c2v = axis_of(c2, axis);
+                        let e = axis_of(p, axis);
                         let a = 3.0 * (e - 3.0 * c2v + 3.0 * c1v - s);
                         let b = 6.0 * (c2v - 2.0 * c1v + s);
                         let cc = 3.0 * (c1v - s);
@@ -722,13 +739,7 @@ impl Path {
                                     + 3.0 * mt * mt * t * c1v
                                     + 3.0 * mt * t * t * c2v
                                     + t * t * t * e;
-                                if axis == 0 {
-                                    if val < min_x { min_x = val; }
-                                    if val > max_x { max_x = val; }
-                                } else {
-                                    if val < min_y { min_y = val; }
-                                    if val > max_y { max_y = val; }
-                                }
+                                record_axis_bound(axis, val, &mut min_x, &mut max_x, &mut min_y, &mut max_y);
                             }
                         }
                     }

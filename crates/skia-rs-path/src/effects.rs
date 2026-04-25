@@ -58,6 +58,7 @@ fn flatten_path_to_lines(path: &Path, tolerance: Scalar) -> Path {
     let mut builder = PathBuilder::new();
     let mut current = Point::new(0.0, 0.0);
     let mut contour_start = Point::new(0.0, 0.0);
+    let mut points: Vec<Point> = Vec::with_capacity(16);
 
     for elem in path.iter() {
         match elem {
@@ -71,25 +72,25 @@ fn flatten_path_to_lines(path: &Path, tolerance: Scalar) -> Path {
                 current = p;
             }
             PathElement::Quad(c, e) => {
-                let mut points = Vec::new();
+                points.clear();
                 flatten_quad_adaptive(&mut points, current, c, e, tolerance);
-                for p in points {
+                for p in &points {
                     builder.line_to(p.x, p.y);
                 }
                 current = e;
             }
             PathElement::Cubic(c1, c2, e) => {
-                let mut points = Vec::new();
+                points.clear();
                 flatten_cubic_adaptive(&mut points, current, c1, c2, e, tolerance);
-                for p in points {
+                for p in &points {
                     builder.line_to(p.x, p.y);
                 }
                 current = e;
             }
             PathElement::Conic(c, e, w) => {
-                let mut points = Vec::new();
+                points.clear();
                 flatten_conic_adaptive(&mut points, current, c, e, w, tolerance);
-                for p in points {
+                for p in &points {
                     builder.line_to(p.x, p.y);
                 }
                 current = e;

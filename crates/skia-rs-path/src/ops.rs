@@ -338,10 +338,6 @@ fn linearize_quad(poly: &mut Polygon, p0: Point, p1: Point, p2: Point, tolerance
 }
 
 /// Linearize a conic (rational quadratic Bezier) into line segments.
-///
-/// Uses adaptive subdivision based on chord-midpoint deviation. The conic
-/// curve is defined as B(t) = (start*(1-t)² + 2*ctrl*w*t*(1-t) + end*t²) /
-/// ((1-t)² + 2*w*t*(1-t) + t²).
 fn linearize_conic(
     start: Point,
     ctrl: Point,
@@ -349,48 +345,8 @@ fn linearize_conic(
     weight: Scalar,
     tolerance: Scalar,
 ) -> Vec<Point> {
-    fn eval_conic(start: Point, ctrl: Point, end: Point, w: Scalar, t: Scalar) -> Point {
-        let mt = 1.0 - t;
-        let denom = mt * mt + 2.0 * w * t * mt + t * t;
-        let inv_denom = 1.0 / denom;
-        Point::new(
-            (start.x * mt * mt + 2.0 * ctrl.x * w * t * mt + end.x * t * t) * inv_denom,
-            (start.y * mt * mt + 2.0 * ctrl.y * w * t * mt + end.y * t * t) * inv_denom,
-        )
-    }
-
-    fn subdivide(
-        start: Point,
-        ctrl: Point,
-        end: Point,
-        w: Scalar,
-        t0: Scalar,
-        t1: Scalar,
-        tolerance: Scalar,
-        depth: u32,
-        output: &mut Vec<Point>,
-    ) {
-        if depth >= 8 {
-            output.push(eval_conic(start, ctrl, end, w, t1));
-            return;
-        }
-        let tm = (t0 + t1) * 0.5;
-        let p0 = eval_conic(start, ctrl, end, w, t0);
-        let p1 = eval_conic(start, ctrl, end, w, t1);
-        let pm = eval_conic(start, ctrl, end, w, tm);
-        let chord_mid = Point::new((p0.x + p1.x) * 0.5, (p0.y + p1.y) * 0.5);
-        let dx = pm.x - chord_mid.x;
-        let dy = pm.y - chord_mid.y;
-        if dx * dx + dy * dy < tolerance * tolerance {
-            output.push(p1);
-        } else {
-            subdivide(start, ctrl, end, w, t0, tm, tolerance, depth + 1, output);
-            subdivide(start, ctrl, end, w, tm, t1, tolerance, depth + 1, output);
-        }
-    }
-
     let mut output = vec![start];
-    subdivide(start, ctrl, end, weight, 0.0, 1.0, tolerance, 0, &mut output);
+    crate::flatten::flatten_conic_adaptive(&mut output, start, ctrl, end, weight, tolerance);
     output
 }
 

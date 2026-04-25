@@ -9,24 +9,24 @@ const FLATTEN_TOLERANCE: Scalar = 0.25;
 
 /// A line segment with cumulative length up to its endpoint.
 #[derive(Debug, Clone)]
-pub(crate) struct Segment {
-    pub(crate) start: Point,
-    pub(crate) end: Point,
-    pub(crate) length: Scalar,
+struct Segment {
+    start: Point,
+    end: Point,
+    length: Scalar,
     /// Cumulative length within the contour up to and including this segment.
-    pub(crate) cumulative: Scalar,
+    cumulative: Scalar,
 }
 
 #[derive(Debug)]
-pub(crate) struct Contour {
-    pub(crate) segments: Vec<Segment>,
-    pub(crate) length: Scalar,
+struct Contour {
+    segments: Vec<Segment>,
+    length: Scalar,
 }
 
 /// Measures the length of a path and allows querying points along it.
 #[derive(Debug)]
 pub struct PathMeasure {
-    pub(crate) contours: Vec<Contour>,
+    contours: Vec<Contour>,
     contour_lengths: Vec<Scalar>,
     total_length: Scalar,
 }
@@ -205,6 +205,7 @@ impl PathMeasure {
         let mut current_contour: Option<Contour> = None;
         let mut current_pt = Point::new(0.0, 0.0);
         let mut contour_start = Point::new(0.0, 0.0);
+        let mut points: Vec<Point> = Vec::with_capacity(16);
 
         let push_segment = |contour: &mut Contour, start: Point, end: Point| {
             let dx = end.x - start.x;
@@ -246,36 +247,36 @@ impl PathMeasure {
                 }
                 PathElement::Quad(ctrl, end) => {
                     if let Some(c) = current_contour.as_mut() {
-                        let mut points = Vec::new();
+                        points.clear();
                         flatten_quad_adaptive(&mut points, current_pt, ctrl, end, FLATTEN_TOLERANCE);
                         let mut prev = current_pt;
-                        for p in points {
-                            push_segment(c, prev, p);
-                            prev = p;
+                        for p in &points {
+                            push_segment(c, prev, *p);
+                            prev = *p;
                         }
                     }
                     current_pt = end;
                 }
                 PathElement::Cubic(c1, c2, end) => {
                     if let Some(c) = current_contour.as_mut() {
-                        let mut points = Vec::new();
+                        points.clear();
                         flatten_cubic_adaptive(&mut points, current_pt, c1, c2, end, FLATTEN_TOLERANCE);
                         let mut prev = current_pt;
-                        for p in points {
-                            push_segment(c, prev, p);
-                            prev = p;
+                        for p in &points {
+                            push_segment(c, prev, *p);
+                            prev = *p;
                         }
                     }
                     current_pt = end;
                 }
                 PathElement::Conic(ctrl, end, w) => {
                     if let Some(c) = current_contour.as_mut() {
-                        let mut points = Vec::new();
+                        points.clear();
                         flatten_conic_adaptive(&mut points, current_pt, ctrl, end, w, FLATTEN_TOLERANCE);
                         let mut prev = current_pt;
-                        for p in points {
-                            push_segment(c, prev, p);
-                            prev = p;
+                        for p in &points {
+                            push_segment(c, prev, *p);
+                            prev = *p;
                         }
                     }
                     current_pt = end;
