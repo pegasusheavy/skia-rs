@@ -1171,13 +1171,19 @@ impl<'a> Canvas<'a> {
 
         match mode {
             VertexMode::Triangles => {
-                for chunk in positions.chunks(3) {
+                for (tri_idx, chunk) in positions.chunks(3).enumerate() {
                     if chunk.len() == 3 {
+                        let base_idx = tri_idx * 3;
+                        let c0 = colors.and_then(|c| c.get(base_idx).copied());
+                        let c1 = colors.and_then(|c| c.get(base_idx + 1).copied());
+                        let c2 = colors.and_then(|c| c.get(base_idx + 2).copied());
                         self.draw_triangle(
                             matrix.map_point(chunk[0]),
                             matrix.map_point(chunk[1]),
                             matrix.map_point(chunk[2]),
-                            colors.and_then(|c| c.first().copied()),
+                            c0,
+                            c1,
+                            c2,
                             paint,
                         );
                     }
@@ -1185,16 +1191,32 @@ impl<'a> Canvas<'a> {
             }
             VertexMode::TriangleStrip => {
                 for i in 0..positions.len().saturating_sub(2) {
-                    let (p0, p1, p2) = if i % 2 == 0 {
-                        (positions[i], positions[i + 1], positions[i + 2])
+                    let (p0, p1, p2, c0, c1, c2) = if i % 2 == 0 {
+                        (
+                            positions[i],
+                            positions[i + 1],
+                            positions[i + 2],
+                            colors.and_then(|c| c.get(i).copied()),
+                            colors.and_then(|c| c.get(i + 1).copied()),
+                            colors.and_then(|c| c.get(i + 2).copied()),
+                        )
                     } else {
-                        (positions[i + 1], positions[i], positions[i + 2])
+                        (
+                            positions[i + 1],
+                            positions[i],
+                            positions[i + 2],
+                            colors.and_then(|c| c.get(i + 1).copied()),
+                            colors.and_then(|c| c.get(i).copied()),
+                            colors.and_then(|c| c.get(i + 2).copied()),
+                        )
                     };
                     self.draw_triangle(
                         matrix.map_point(p0),
                         matrix.map_point(p1),
                         matrix.map_point(p2),
-                        colors.and_then(|c| c.get(i).copied()),
+                        c0,
+                        c1,
+                        c2,
                         paint,
                     );
                 }
@@ -1202,11 +1224,16 @@ impl<'a> Canvas<'a> {
             VertexMode::TriangleFan => {
                 let center = positions[0];
                 for i in 1..positions.len().saturating_sub(1) {
+                    let c0 = colors.and_then(|c| c.get(0).copied());
+                    let c1 = colors.and_then(|c| c.get(i).copied());
+                    let c2 = colors.and_then(|c| c.get(i + 1).copied());
                     self.draw_triangle(
                         matrix.map_point(center),
                         matrix.map_point(positions[i]),
                         matrix.map_point(positions[i + 1]),
-                        colors.and_then(|c| c.get(i).copied()),
+                        c0,
+                        c1,
+                        c2,
                         paint,
                     );
                 }
@@ -1214,13 +1241,15 @@ impl<'a> Canvas<'a> {
         }
     }
 
-    /// Draw a single filled triangle.
+    /// Draw a single filled triangle with per-vertex color interpolation.
     fn draw_triangle(
         &mut self,
         p0: Point,
         p1: Point,
         p2: Point,
-        color: Option<Color>,
+        c0: Option<Color>,
+        c1: Option<Color>,
+        c2: Option<Color>,
         paint: &Paint,
     ) {
         let (buffer, buf_offset_x, buf_offset_y): (&mut PixelBuffer, i32, i32) =
@@ -1237,63 +1266,123 @@ impl<'a> Canvas<'a> {
                 }
             };
 
-        let color = color.unwrap_or_else(|| paint.color32());
         let blend_mode = paint.blend_mode();
 
-        let mut verts = [(p0.x, p0.y), (p1.x, p1.y), (p2.x, p2.y)];
-        verts.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        // Convert to Color4f for interpolation
+        let default_color = paint.color32().to_color4f();
+        let col0 = c0.map(|c| c.to_color4f()).unwrap_or(default_color);
+        let col1 = c1.map(|c| c.to_color4f()).unwrap_or(default_color);
+        let col2 = c2.map(|c| c.to_color4f()).unwrap_or(default_color);
 
-        let (x0, y0) = verts[0];
-        let (x1, y1) = verts[1];
-        let (x2, y2) = verts[2];
+        // Check if all colors are the same - use fast path
+        let uniform = c0 == c1 && c1 == c2;
 
-        let inv_slope_02 = if (y2 - y0).abs() > 0.001 {
-            (x2 - x0) / (y2 - y0)
-        } else {
-            0.0
-        };
-        let inv_slope_01 = if (y1 - y0).abs() > 0.001 {
-            (x1 - x0) / (y1 - y0)
-        } else {
-            0.0
-        };
-        let inv_slope_12 = if (y2 - y1).abs() > 0.001 {
-            (x2 - x1) / (y2 - y1)
-        } else {
-            0.0
-        };
+        if uniform {
+            // Fast path: flat shading
+            let color = c0.unwrap_or_else(|| paint.color32());
+            let mut verts = [(p0.x, p0.y), (p1.x, p1.y), (p2.x, p2.y)];
+            verts.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 
-        let y_start = y0.ceil() as i32;
-        let y_mid = y1.ceil() as i32;
-        let y_end = y2.ceil() as i32;
+            let (x0, y0) = verts[0];
+            let (x1, y1) = verts[1];
+            let (x2, y2) = verts[2];
 
-        for y in y_start..y_mid {
-            let x_left = x0 + (y as Scalar - y0) * inv_slope_02;
-            let x_right = x0 + (y as Scalar - y0) * inv_slope_01;
-
-            let (xa, xb) = if x_left < x_right {
-                (x_left, x_right)
+            let inv_slope_02 = if (y2 - y0).abs() > 0.001 {
+                (x2 - x0) / (y2 - y0)
             } else {
-                (x_right, x_left)
+                0.0
+            };
+            let inv_slope_01 = if (y1 - y0).abs() > 0.001 {
+                (x1 - x0) / (y1 - y0)
+            } else {
+                0.0
+            };
+            let inv_slope_12 = if (y2 - y1).abs() > 0.001 {
+                (x2 - x1) / (y2 - y1)
+            } else {
+                0.0
             };
 
-            for x in (xa.ceil() as i32)..(xb.floor() as i32) {
-                buffer.blend_pixel(x - buf_offset_x, y - buf_offset_y, color, blend_mode);
+            let y_start = y0.ceil() as i32;
+            let y_mid = y1.ceil() as i32;
+            let y_end = y2.ceil() as i32;
+
+            for y in y_start..y_mid {
+                let x_left = x0 + (y as Scalar - y0) * inv_slope_02;
+                let x_right = x0 + (y as Scalar - y0) * inv_slope_01;
+
+                let (xa, xb) = if x_left < x_right {
+                    (x_left, x_right)
+                } else {
+                    (x_right, x_left)
+                };
+
+                for x in (xa.ceil() as i32)..(xb.floor() as i32) {
+                    buffer.blend_pixel(x - buf_offset_x, y - buf_offset_y, color, blend_mode);
+                }
             }
-        }
 
-        for y in y_mid..y_end {
-            let x_left = x0 + (y as Scalar - y0) * inv_slope_02;
-            let x_right = x1 + (y as Scalar - y1) * inv_slope_12;
+            for y in y_mid..y_end {
+                let x_left = x0 + (y as Scalar - y0) * inv_slope_02;
+                let x_right = x1 + (y as Scalar - y1) * inv_slope_12;
 
-            let (xa, xb) = if x_left < x_right {
-                (x_left, x_right)
-            } else {
-                (x_right, x_left)
-            };
+                let (xa, xb) = if x_left < x_right {
+                    (x_left, x_right)
+                } else {
+                    (x_right, x_left)
+                };
 
-            for x in (xa.ceil() as i32)..(xb.floor() as i32) {
-                buffer.blend_pixel(x - buf_offset_x, y - buf_offset_y, color, blend_mode);
+                for x in (xa.ceil() as i32)..(xb.floor() as i32) {
+                    buffer.blend_pixel(x - buf_offset_x, y - buf_offset_y, color, blend_mode);
+                }
+            }
+        } else {
+            // Slow path: barycentric interpolation
+            // Compute bounding box
+            let min_x = p0.x.min(p1.x).min(p2.x).floor() as i32;
+            let max_x = p0.x.max(p1.x).max(p2.x).ceil() as i32;
+            let min_y = p0.y.min(p1.y).min(p2.y).floor() as i32;
+            let max_y = p0.y.max(p1.y).max(p2.y).ceil() as i32;
+
+            // Compute triangle edge vectors
+            let denom = (p1.y - p2.y) * (p0.x - p2.x) + (p2.x - p1.x) * (p0.y - p2.y);
+            if denom.abs() < 1e-7 {
+                return; // degenerate triangle
+            }
+
+            for y in min_y..=max_y {
+                for x in min_x..=max_x {
+                    let px = x as Scalar + 0.5;
+                    let py = y as Scalar + 0.5;
+
+                    // Compute barycentric coordinates
+                    let w0 = ((p1.y - p2.y) * (px - p2.x) + (p2.x - p1.x) * (py - p2.y)) / denom;
+                    let w1 = ((p2.y - p0.y) * (px - p2.x) + (p0.x - p2.x) * (py - p2.y)) / denom;
+                    let w2 = 1.0 - w0 - w1;
+
+                    // Check if point is inside triangle
+                    if w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0 {
+                        // Interpolate color components
+                        let r = col0.r * w0 + col1.r * w1 + col2.r * w2;
+                        let g = col0.g * w0 + col1.g * w1 + col2.g * w2;
+                        let b = col0.b * w0 + col1.b * w1 + col2.b * w2;
+                        let a = col0.a * w0 + col1.a * w1 + col2.a * w2;
+
+                        // Convert back to Color
+                        let r_u8 = (r * 255.0).clamp(0.0, 255.0) as u8;
+                        let g_u8 = (g * 255.0).clamp(0.0, 255.0) as u8;
+                        let b_u8 = (b * 255.0).clamp(0.0, 255.0) as u8;
+                        let a_u8 = (a * 255.0).clamp(0.0, 255.0) as u8;
+                        let color = Color::from_argb(a_u8, r_u8, g_u8, b_u8);
+
+                        buffer.blend_pixel(
+                            x - buf_offset_x,
+                            y - buf_offset_y,
+                            color,
+                            blend_mode,
+                        );
+                    }
+                }
             }
         }
     }
@@ -2116,5 +2205,168 @@ mod tests {
 
         let mut canvas = Canvas::new_null(10, 10);
         canvas.flush();
+    }
+
+    #[test]
+    fn test_draw_vertices_triangles_per_vertex_color() {
+        // Triangle with red, green, blue at vertices should show color
+        // interpolation: pixels near each vertex are dominated by that
+        // vertex's color.
+        let mut buffer = PixelBuffer::new(100, 100);
+        buffer.clear(Color::from_argb(255, 0, 0, 0));
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        let paint = Paint::new();
+
+        canvas.draw_vertices(
+            VertexMode::Triangles,
+            &[
+                Point::new(50.0, 10.0),
+                Point::new(90.0, 90.0),
+                Point::new(10.0, 90.0),
+            ],
+            Some(&[
+                Color::from_rgb(255, 0, 0),    // red at top
+                Color::from_rgb(0, 255, 0),    // green at bottom-right
+                Color::from_rgb(0, 0, 255),    // blue at bottom-left
+            ]),
+            &paint,
+        );
+        drop(canvas);
+
+        // Near vertex 0 (50, 10) should be mostly red
+        let near_v0 = buffer.get_pixel(50, 15).unwrap();
+        assert!(
+            near_v0.red() > 150,
+            "near v0 should be red-dominated, got r={}",
+            near_v0.red()
+        );
+
+        // Near vertex 1 (90, 90) should be mostly green
+        let near_v1 = buffer.get_pixel(88, 88).unwrap();
+        assert!(
+            near_v1.green() > 150,
+            "near v1 should be green-dominated, got g={}",
+            near_v1.green()
+        );
+
+        // Near vertex 2 (10, 90) should be mostly blue
+        let near_v2 = buffer.get_pixel(12, 88).unwrap();
+        assert!(
+            near_v2.blue() > 150,
+            "near v2 should be blue-dominated, got b={}",
+            near_v2.blue()
+        );
+    }
+
+    #[test]
+    fn test_draw_vertices_flat_when_no_colors() {
+        // Without colors, should use paint's color for entire triangle
+        let mut buffer = PixelBuffer::new(100, 100);
+        buffer.clear(Color::from_argb(255, 0, 0, 0));
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_rgb(255, 128, 64));
+
+        canvas.draw_vertices(
+            VertexMode::Triangles,
+            &[
+                Point::new(10.0, 10.0),
+                Point::new(90.0, 10.0),
+                Point::new(50.0, 90.0),
+            ],
+            None,
+            &paint,
+        );
+        drop(canvas);
+
+        let c = buffer.get_pixel(50, 50).unwrap();
+        assert!(
+            (c.red() as i32 - 255).abs() < 10,
+            "Expected ~255 red, got {}",
+            c.red()
+        );
+        assert!(
+            (c.green() as i32 - 128).abs() < 10,
+            "Expected ~128 green, got {}",
+            c.green()
+        );
+        assert!(
+            (c.blue() as i32 - 64).abs() < 10,
+            "Expected ~64 blue, got {}",
+            c.blue()
+        );
+    }
+
+    #[test]
+    fn test_draw_vertices_triangle_strip() {
+        // TriangleStrip with alternating red/green should interpolate
+        let mut buffer = PixelBuffer::new(100, 100);
+        buffer.clear(Color::from_argb(255, 0, 0, 0));
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        let paint = Paint::new();
+
+        // Strip: vertices 0,1,2 form first triangle; 1,2,3 form second
+        canvas.draw_vertices(
+            VertexMode::TriangleStrip,
+            &[
+                Point::new(10.0, 10.0),
+                Point::new(50.0, 10.0),
+                Point::new(10.0, 50.0),
+                Point::new(50.0, 50.0),
+            ],
+            Some(&[
+                Color::from_rgb(255, 0, 0),
+                Color::from_rgb(0, 255, 0),
+                Color::from_rgb(0, 0, 255),
+                Color::from_rgb(255, 255, 0),
+            ]),
+            &paint,
+        );
+        drop(canvas);
+
+        // First triangle (0,1,2): red, green, blue
+        let c0 = buffer.get_pixel(15, 15).unwrap();
+        assert!(c0.red() > 100, "Expected red contribution in first triangle");
+
+        // Second triangle (1,2,3): green, blue, yellow
+        let c1 = buffer.get_pixel(45, 45).unwrap();
+        assert!(
+            c1.green() > 100 || c1.red() > 100,
+            "Expected yellow-ish in second triangle"
+        );
+    }
+
+    #[test]
+    fn test_draw_vertices_triangle_fan() {
+        // TriangleFan shares vertex 0 (center)
+        let mut buffer = PixelBuffer::new(100, 100);
+        buffer.clear(Color::from_argb(255, 0, 0, 0));
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        let paint = Paint::new();
+
+        canvas.draw_vertices(
+            VertexMode::TriangleFan,
+            &[
+                Point::new(50.0, 50.0), // center - white
+                Point::new(10.0, 10.0), // top-left - red
+                Point::new(90.0, 10.0), // top-right - green
+                Point::new(90.0, 90.0), // bottom-right - blue
+            ],
+            Some(&[
+                Color::from_rgb(255, 255, 255),
+                Color::from_rgb(255, 0, 0),
+                Color::from_rgb(0, 255, 0),
+                Color::from_rgb(0, 0, 255),
+            ]),
+            &paint,
+        );
+        drop(canvas);
+
+        // Center should be bright (white vertex)
+        let center = buffer.get_pixel(50, 50).unwrap();
+        assert!(
+            center.red() > 200 && center.green() > 200 && center.blue() > 200,
+            "Center should be bright white"
+        );
     }
 }
