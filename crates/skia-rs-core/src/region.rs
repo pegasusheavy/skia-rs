@@ -338,11 +338,15 @@ impl Region {
             return self.set_region(other);
         }
 
-        // Simple implementation: just combine all rectangles
-        // A proper implementation would merge overlapping rectangles
-        self.rects.extend(other.rects.iter().cloned());
-        self.bounds = self.bounds.union(&other.bounds);
-        true
+        // Combine all rects, then canonicalize to scanline form so overlapping
+        // and adjacent rects are merged.  Without this the rect list grows
+        // without bound on repeated unions, making all O(n) region ops slow.
+        let mut all_rects: Vec<IRect> = self.rects.clone();
+        all_rects.extend(other.rects.iter().cloned());
+
+        self.rects = canonicalize_rects(&all_rects);
+        self.recompute_bounds();
+        !self.is_empty()
     }
 
     /// XOR this region with another.
@@ -444,6 +448,112 @@ fn subtract_rect(rect1: &IRect, rect2: &IRect) -> Vec<IRect> {
             if !right.is_empty() {
                 result.push(right);
             }
+        }
+    }
+
+    result
+}
+
+/// Canonicalize a list of rectangles into scanline form.
+///
+/// Returns a minimal list of non-overlapping rectangles whose union equals
+/// the union of the input rectangles.  The algorithm works in three passes:
+///
+/// 1. Collect all unique horizontal y-edges from the input rects.
+/// 2. For each consecutive pair of y-edges (a "band"), collect the
+///    x-intervals contributed by every input rect that spans the full band
+///    height, then merge overlapping/adjacent intervals into a sorted,
+///    non-overlapping list.
+/// 3. Attempt to extend the previous output band downward when the current
+///    band has an identical x-interval list, eliminating redundant splits.
+///
+/// The result is equivalent to Skia's canonical SkRegion scanline format.
+fn canonicalize_rects(input: &[IRect]) -> Vec<IRect> {
+    if input.is_empty() {
+        return Vec::new();
+    }
+
+    // Collect all unique y-edges, skipping empty rects.
+    let mut y_edges: Vec<i32> = Vec::with_capacity(input.len() * 2);
+    for r in input {
+        if r.is_empty() {
+            continue;
+        }
+        y_edges.push(r.top);
+        y_edges.push(r.bottom);
+    }
+    if y_edges.is_empty() {
+        return Vec::new();
+    }
+    y_edges.sort_unstable();
+    y_edges.dedup();
+
+    let mut result: Vec<IRect> = Vec::new();
+    // prev_band holds (top, bottom, x-intervals) for the last emitted/pending band.
+    let mut prev_band: Option<(i32, i32, Vec<(i32, i32)>)> = None;
+
+    for window in y_edges.windows(2) {
+        let band_top = window[0];
+        let band_bottom = window[1];
+
+        // Collect x-intervals from all rects that fully span this band vertically.
+        let mut intervals: Vec<(i32, i32)> = input
+            .iter()
+            .filter(|r| !r.is_empty() && r.top <= band_top && r.bottom >= band_bottom)
+            .map(|r| (r.left, r.right))
+            .collect();
+
+        if intervals.is_empty() {
+            // No coverage in this band — flush any pending band.
+            if let Some((top, bottom, ints)) = prev_band.take() {
+                for (l, r) in ints {
+                    result.push(IRect::new(l, top, r, bottom));
+                }
+            }
+            continue;
+        }
+
+        // Merge overlapping/adjacent x-intervals within this band.
+        intervals.sort_unstable_by_key(|&(l, _)| l);
+        let mut merged: Vec<(i32, i32)> = Vec::with_capacity(intervals.len());
+        let mut cur = intervals[0];
+        for &(l, r) in &intervals[1..] {
+            if l <= cur.1 {
+                // Overlapping or touching — extend.
+                if r > cur.1 {
+                    cur.1 = r;
+                }
+            } else {
+                merged.push(cur);
+                cur = (l, r);
+            }
+        }
+        merged.push(cur);
+
+        // Try to extend the previous band downward when x-intervals are identical.
+        match prev_band.take() {
+            Some((prev_top, prev_bottom, ref prev_intervals))
+                if prev_bottom == band_top && prev_intervals == &merged =>
+            {
+                prev_band = Some((prev_top, band_bottom, merged));
+            }
+            Some((prev_top, prev_bottom, prev_intervals)) => {
+                // Flush the old band, then record the current one.
+                for (l, r) in prev_intervals {
+                    result.push(IRect::new(l, prev_top, r, prev_bottom));
+                }
+                prev_band = Some((band_top, band_bottom, merged));
+            }
+            None => {
+                prev_band = Some((band_top, band_bottom, merged));
+            }
+        }
+    }
+
+    // Flush the final pending band.
+    if let Some((top, bottom, intervals)) = prev_band {
+        for (l, r) in intervals {
+            result.push(IRect::new(l, top, r, bottom));
         }
     }
 
@@ -581,5 +691,64 @@ mod tests {
         let region = Region::from_rect(IRect::new(0, 0, 10, 10));
         let query = IRect::new(5, 5, 15, 15); // half outside
         assert!(!region.contains_rect(&query));
+    }
+
+    #[test]
+    fn test_region_union_merges_adjacent_horizontal() {
+        // [0,0,10,10] union [10,0,20,10] should produce a single rect [0,0,20,10]
+        let mut region = Region::from_rect(IRect::new(0, 0, 10, 10));
+        let other = Region::from_rect(IRect::new(10, 0, 20, 10));
+        region.op_region(&other, RegionOp::Union);
+
+        let rects = region.rects();
+        assert_eq!(rects.len(), 1, "Adjacent horizontal rects should merge");
+        assert_eq!(rects[0], IRect::new(0, 0, 20, 10));
+    }
+
+    #[test]
+    fn test_region_union_merges_overlapping() {
+        // [0,0,10,10] union [5,0,15,10] should produce [0,0,15,10]
+        let mut region = Region::from_rect(IRect::new(0, 0, 10, 10));
+        let other = Region::from_rect(IRect::new(5, 0, 15, 10));
+        region.op_region(&other, RegionOp::Union);
+
+        let rects = region.rects();
+        assert_eq!(rects.len(), 1, "Overlapping rects should merge");
+        assert_eq!(rects[0], IRect::new(0, 0, 15, 10));
+    }
+
+    #[test]
+    fn test_region_union_disjoint_keeps_both() {
+        // [0,0,10,10] union [20,20,30,30] should keep both
+        let mut region = Region::from_rect(IRect::new(0, 0, 10, 10));
+        let other = Region::from_rect(IRect::new(20, 20, 30, 30));
+        region.op_region(&other, RegionOp::Union);
+
+        let rects = region.rects();
+        assert_eq!(rects.len(), 2, "Disjoint rects should not merge");
+    }
+
+    #[test]
+    fn test_region_union_repeated_does_not_grow_unboundedly() {
+        let mut region = Region::from_rect(IRect::new(0, 0, 10, 10));
+        let other = Region::from_rect(IRect::new(0, 0, 10, 10));
+
+        for _ in 0..100 {
+            region.op_region(&other, RegionOp::Union);
+        }
+
+        let rects = region.rects();
+        assert_eq!(rects.len(), 1, "Repeated union with same rect should stay at 1");
+    }
+
+    #[test]
+    fn test_region_union_repeated_disjoint_grows_linearly() {
+        let mut region = Region::new();
+        for i in 0..50 {
+            let other = Region::from_rect(IRect::new(i * 20, 0, i * 20 + 10, 10));
+            region.op_region(&other, RegionOp::Union);
+        }
+        let rects = region.rects();
+        assert_eq!(rects.len(), 50, "50 disjoint rects should remain 50 rects");
     }
 }
