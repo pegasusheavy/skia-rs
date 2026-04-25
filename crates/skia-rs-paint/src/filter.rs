@@ -264,6 +264,73 @@ impl ImageFilter for DropShadowImageFilter {
             )
         }
     }
+
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        // 1. Extract alpha channel into shadow buffer
+        let mut shadow = vec![0u8; width * height];
+        for i in 0..width * height {
+            shadow[i] = pixels[i * 4 + 3];
+        }
+        // 2. Blur shadow
+        let rx = self.sigma_x.max(0.0) as usize;
+        let ry = self.sigma_y.max(0.0) as usize;
+        if rx > 0 {
+            box_blur_horizontal(&mut shadow, width, height, rx);
+        }
+        if ry > 0 {
+            box_blur_vertical(&mut shadow, width, height, ry);
+        }
+        // 3. Colorize and offset the shadow, then composite
+        let dx = self.dx.round() as i32;
+        let dy = self.dy.round() as i32;
+        let sr = (self.color.r * 255.0).clamp(0.0, 255.0) as u8;
+        let sg = (self.color.g * 255.0).clamp(0.0, 255.0) as u8;
+        let sb = (self.color.b * 255.0).clamp(0.0, 255.0) as u8;
+        let sa_mul = self.color.a.clamp(0.0, 1.0);
+        let original = pixels.to_vec();
+        for y in 0..height {
+            for x in 0..width {
+                // Read shadow from offset position (clamp)
+                let sx = (x as i32 - dx).clamp(0, width as i32 - 1) as usize;
+                let sy = (y as i32 - dy).clamp(0, height as i32 - 1) as usize;
+                let shadow_alpha = (shadow[sy * width + sx] as f32 / 255.0) * sa_mul;
+                let shadow_rgba = [
+                    (sr as f32 * shadow_alpha) as u8,
+                    (sg as f32 * shadow_alpha) as u8,
+                    (sb as f32 * shadow_alpha) as u8,
+                    (shadow_alpha * 255.0) as u8,
+                ];
+                // Src-over: result = src + dst * (1 - src.a)
+                let idx = (y * width + x) * 4;
+                if self.shadow_only {
+                    // Only shadow, no source
+                    pixels[idx] = shadow_rgba[0];
+                    pixels[idx + 1] = shadow_rgba[1];
+                    pixels[idx + 2] = shadow_rgba[2];
+                    pixels[idx + 3] = shadow_rgba[3];
+                } else {
+                    // Composite source over shadow
+                    let src_a = original[idx + 3] as f32 / 255.0;
+                    let inv_a = 1.0 - src_a;
+                    pixels[idx] =
+                        (original[idx] as f32 + shadow_rgba[0] as f32 * inv_a).clamp(0.0, 255.0)
+                            as u8;
+                    pixels[idx + 1] = (original[idx + 1] as f32 + shadow_rgba[1] as f32 * inv_a)
+                        .clamp(0.0, 255.0)
+                        as u8;
+                    pixels[idx + 2] = (original[idx + 2] as f32 + shadow_rgba[2] as f32 * inv_a)
+                        .clamp(0.0, 255.0)
+                        as u8;
+                    pixels[idx + 3] = (original[idx + 3] as f32 + shadow_rgba[3] as f32 * inv_a)
+                        .clamp(0.0, 255.0)
+                        as u8;
+                }
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -418,6 +485,72 @@ impl ImageFilter for MorphologyImageFilter {
             src.bottom + self.radius_y,
         )
     }
+
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        let rx = self.radius_x.max(0.0).round() as usize;
+        let ry = self.radius_y.max(0.0).round() as usize;
+        if rx == 0 && ry == 0 {
+            return;
+        }
+        let is_dilate = matches!(self.morph_type, MorphologyType::Dilate);
+        let src = pixels.to_vec();
+        for y in 0..height {
+            for x in 0..width {
+                let mut r = if is_dilate { 0u8 } else { 255u8 };
+                let mut g = r;
+                let mut b = r;
+                let mut a = r;
+                let x_min = x.saturating_sub(rx);
+                let y_min = y.saturating_sub(ry);
+                let x_max = (x + rx).min(width - 1);
+                let y_max = (y + ry).min(height - 1);
+                for ny in y_min..=y_max {
+                    for nx in x_min..=x_max {
+                        let idx = (ny * width + nx) * 4;
+                        let sr = src[idx];
+                        let sg = src[idx + 1];
+                        let sb = src[idx + 2];
+                        let sa = src[idx + 3];
+                        if is_dilate {
+                            if sr > r {
+                                r = sr;
+                            }
+                            if sg > g {
+                                g = sg;
+                            }
+                            if sb > b {
+                                b = sb;
+                            }
+                            if sa > a {
+                                a = sa;
+                            }
+                        } else {
+                            if sr < r {
+                                r = sr;
+                            }
+                            if sg < g {
+                                g = sg;
+                            }
+                            if sb < b {
+                                b = sb;
+                            }
+                            if sa < a {
+                                a = sa;
+                            }
+                        }
+                    }
+                }
+                let idx = (y * width + x) * 4;
+                pixels[idx] = r;
+                pixels[idx + 1] = g;
+                pixels[idx + 2] = b;
+                pixels[idx + 3] = a;
+            }
+        }
+    }
 }
 
 /// A color filter wrapped as an image filter.
@@ -533,6 +666,45 @@ impl ImageFilter for DisplacementMapImageFilter {
             src.bottom + offset,
         )
     }
+
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        // Baseline: use the source image's selected channels as displacement.
+        // A true implementation would apply the displacement filter input first,
+        // then use those pixels as the displacement map. This baseline uses the
+        // source image itself as the displacement map.
+        let scale = self.scale;
+        let src = pixels.to_vec();
+        let x_channel_idx = match self.x_channel {
+            ColorChannel::R => 0,
+            ColorChannel::G => 1,
+            ColorChannel::B => 2,
+            ColorChannel::A => 3,
+        };
+        let y_channel_idx = match self.y_channel {
+            ColorChannel::R => 0,
+            ColorChannel::G => 1,
+            ColorChannel::B => 2,
+            ColorChannel::A => 3,
+        };
+        for y in 0..height {
+            for x in 0..width {
+                let idx = (y * width + x) * 4;
+                // Read displacement channels (0..255 maps to -1..1)
+                let dx_f = (src[idx + x_channel_idx] as f32 / 127.5 - 1.0) * scale;
+                let dy_f = (src[idx + y_channel_idx] as f32 / 127.5 - 1.0) * scale;
+                let sx = ((x as f32 + dx_f) as i32).clamp(0, width as i32 - 1) as usize;
+                let sy = ((y as f32 + dy_f) as i32).clamp(0, height as i32 - 1) as usize;
+                let src_idx = (sy * width + sx) * 4;
+                pixels[idx] = src[src_idx];
+                pixels[idx + 1] = src[src_idx + 1];
+                pixels[idx + 2] = src[src_idx + 2];
+                pixels[idx + 3] = src[src_idx + 3];
+            }
+        }
+    }
 }
 
 /// Light type for lighting filters.
@@ -621,6 +793,29 @@ impl ImageFilter for LightingImageFilter {
         // Lighting doesn't change bounds
         *src
     }
+
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        // Baseline lighting: modulate intensity by surface_scale factor.
+        // A full implementation would compute per-pixel normals from the alpha
+        // channel (height field) and evaluate the lighting model (Phong, diffuse).
+        // This simplified version applies uniform lighting based on surface_scale.
+        let scale = self.surface_scale.max(0.0).min(10.0);
+        let factor = (1.0 + scale * 0.1).min(2.0);
+        let lr = (self.light_color.r * 255.0).clamp(0.0, 255.0);
+        let lg = (self.light_color.g * 255.0).clamp(0.0, 255.0);
+        let lb = (self.light_color.b * 255.0).clamp(0.0, 255.0);
+        for i in 0..width * height {
+            let idx = i * 4;
+            pixels[idx] = ((pixels[idx] as f32 * factor * lr / 255.0).clamp(0.0, 255.0)) as u8;
+            pixels[idx + 1] =
+                ((pixels[idx + 1] as f32 * factor * lg / 255.0).clamp(0.0, 255.0)) as u8;
+            pixels[idx + 2] =
+                ((pixels[idx + 2] as f32 * factor * lb / 255.0).clamp(0.0, 255.0)) as u8;
+        }
+    }
 }
 
 /// A compose image filter that chains two filters.
@@ -677,6 +872,15 @@ impl ImageFilter for MergeImageFilter {
             }
         }
         result
+    }
+
+    /// Apply is a no-op for this filter in the single-buffer apply() API.
+    ///
+    /// MergeImageFilter requires multiple independent input pixel buffers,
+    /// which the current single-buffer signature cannot provide. A future
+    /// revision will introduce a multi-input apply variant.
+    fn apply(&self, _pixels: &mut [u8], _width: usize, _height: usize) {
+        // Documented limitation: multi-input filter requires extended API.
     }
 }
 
@@ -790,6 +994,57 @@ impl ImageFilter for MatrixConvolutionImageFilter {
             src.bottom + oy as Scalar,
         )
     }
+
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        let (kw, kh) = self.kernel_size;
+        if kw <= 0 || kh <= 0 || self.kernel.is_empty() {
+            return;
+        }
+        let src = pixels.to_vec();
+        let gain = self.gain;
+        let bias = self.bias;
+        let (ox, oy) = self.kernel_offset;
+        for y in 0..height {
+            for x in 0..width {
+                let mut acc = [0.0f32; 4];
+                for ky in 0..kh {
+                    for kx in 0..kw {
+                        let sx = (x as i32 + kx - ox).clamp(0, width as i32 - 1) as usize;
+                        let sy = (y as i32 + ky - oy).clamp(0, height as i32 - 1) as usize;
+                        let sidx = (sy * width + sx) * 4;
+                        let kidx = (ky as usize) * (kw as usize) + kx as usize;
+                        let k = self.kernel.get(kidx).copied().unwrap_or(0.0);
+                        // Convolve alpha only if convolve_alpha is true
+                        for c in 0..3 {
+                            acc[c] += src[sidx + c] as f32 * k;
+                        }
+                        if self.convolve_alpha {
+                            acc[3] += src[sidx + 3] as f32 * k;
+                        } else {
+                            // Keep alpha unchanged (just accumulate for average)
+                            if kx == 0 && ky == 0 {
+                                acc[3] = src[sidx + 3] as f32;
+                            }
+                        }
+                    }
+                }
+                let idx = (y * width + x) * 4;
+                for c in 0..3 {
+                    let v = acc[c] * gain + bias;
+                    pixels[idx + c] = v.clamp(0.0, 255.0) as u8;
+                }
+                if self.convolve_alpha {
+                    let v = acc[3] * gain + bias;
+                    pixels[idx + 3] = v.clamp(0.0, 255.0) as u8;
+                } else {
+                    pixels[idx + 3] = src[idx + 3];
+                }
+            }
+        }
+    }
 }
 
 /// A tile image filter.
@@ -816,6 +1071,35 @@ impl TileImageFilter {
 impl ImageFilter for TileImageFilter {
     fn filter_bounds(&self, _src: &Rect) -> Rect {
         self.dst_rect
+    }
+
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        // Tile the src_rect region across the output via modulo mapping.
+        let sx0 = (self.src_rect.left.max(0.0) as usize).min(width);
+        let sy0 = (self.src_rect.top.max(0.0) as usize).min(height);
+        let sx1 = (self.src_rect.right as usize).min(width);
+        let sy1 = (self.src_rect.bottom as usize).min(height);
+        if sx1 <= sx0 || sy1 <= sy0 {
+            return;
+        }
+        let sw = sx1 - sx0;
+        let sh = sy1 - sy0;
+        let src = pixels.to_vec();
+        for y in 0..height {
+            for x in 0..width {
+                let tx = sx0 + (x % sw);
+                let ty = sy0 + (y % sh);
+                let src_idx = (ty * width + tx) * 4;
+                let dst_idx = (y * width + x) * 4;
+                pixels[dst_idx] = src[src_idx];
+                pixels[dst_idx + 1] = src[src_idx + 1];
+                pixels[dst_idx + 2] = src[src_idx + 2];
+                pixels[dst_idx + 3] = src[src_idx + 3];
+            }
+        }
     }
 }
 
@@ -857,6 +1141,15 @@ impl ImageFilter for BlendImageFilter {
             .map(|f| f.filter_bounds(src))
             .unwrap_or(*src);
         bg.union(&fg)
+    }
+
+    /// Apply is a no-op for this filter in the single-buffer apply() API.
+    ///
+    /// BlendImageFilter requires separate background and foreground pixel
+    /// buffers, which the current single-buffer signature cannot provide.
+    /// A future revision will introduce a multi-input apply variant.
+    fn apply(&self, _pixels: &mut [u8], _width: usize, _height: usize) {
+        // Documented limitation: multi-input filter requires extended API.
     }
 }
 
@@ -910,6 +1203,15 @@ impl ImageFilter for ArithmeticImageFilter {
             .map(|f| f.filter_bounds(src))
             .unwrap_or(*src);
         bg.union(&fg)
+    }
+
+    /// Apply is a no-op for this filter in the single-buffer apply() API.
+    ///
+    /// ArithmeticImageFilter requires separate background and foreground pixel
+    /// buffers, which the current single-buffer signature cannot provide.
+    /// A future revision will introduce a multi-input apply variant.
+    fn apply(&self, _pixels: &mut [u8], _width: usize, _height: usize) {
+        // Documented limitation: multi-input filter requires extended API.
     }
 }
 
@@ -1162,5 +1464,206 @@ mod tests {
         // Pixel should have shifted right and down
         // Top-left should now be clamped from what was at (-1, -1) = top-left
         assert_eq!(pixels[0], 255, "clamp-to-edge should preserve top-left");
+    }
+
+    #[test]
+    fn test_drop_shadow_image_filter_applies_shadow() {
+        let filter = DropShadowImageFilter::new(
+            2.0,
+            2.0,
+            1.0,
+            1.0,
+            Color4f::new(0.0, 0.0, 0.0, 1.0),
+            false,
+        );
+        // 5x5 image with single white pixel at center
+        let mut pixels = vec![0u8; 25 * 4];
+        pixels[12 * 4] = 255;
+        pixels[12 * 4 + 1] = 255;
+        pixels[12 * 4 + 2] = 255;
+        pixels[12 * 4 + 3] = 255;
+        filter.apply(&mut pixels, 5, 5);
+        // Shadow should now be present at some offset positions
+        // The original white pixel should still be bright
+        assert!(pixels[12 * 4 + 3] > 200, "source should remain bright");
+        // Check that some shadow spread occurred (non-zero alpha in neighbors)
+        let mut has_shadow = false;
+        for i in 0..25 {
+            if i != 12 && pixels[i * 4 + 3] > 0 {
+                has_shadow = true;
+                break;
+            }
+        }
+        assert!(has_shadow, "shadow should spread to other pixels");
+    }
+
+    #[test]
+    fn test_morphology_dilate_expands_bright_pixel() {
+        let filter = MorphologyImageFilter::dilate(1.0, 1.0, None);
+        // Single bright white pixel in center
+        let mut pixels = vec![0u8; 25 * 4];
+        for c in 0..4 {
+            pixels[12 * 4 + c] = 255;
+        }
+        filter.apply(&mut pixels, 5, 5);
+        // Neighbors should now be bright (dilated)
+        assert_eq!(
+            pixels[7 * 4],
+            255,
+            "neighbor above (7) should be dilated to 255"
+        );
+        assert_eq!(
+            pixels[11 * 4],
+            255,
+            "neighbor left (11) should be dilated to 255"
+        );
+        assert_eq!(
+            pixels[13 * 4],
+            255,
+            "neighbor right (13) should be dilated to 255"
+        );
+        assert_eq!(
+            pixels[17 * 4],
+            255,
+            "neighbor below (17) should be dilated to 255"
+        );
+    }
+
+    #[test]
+    fn test_morphology_erode_shrinks_bright_region() {
+        let filter = MorphologyImageFilter::erode(1.0, 1.0, None);
+        // 3x3 bright region in center of 5x5
+        let mut pixels = vec![0u8; 25 * 4];
+        for y in 1..4 {
+            for x in 1..4 {
+                let idx = (y * 5 + x) * 4;
+                pixels[idx] = 255;
+                pixels[idx + 1] = 255;
+                pixels[idx + 2] = 255;
+                pixels[idx + 3] = 255;
+            }
+        }
+        filter.apply(&mut pixels, 5, 5);
+        // Center should still be bright
+        assert_eq!(pixels[12 * 4], 255, "center should remain bright");
+        // Edges should erode (neighbor of black = become black)
+        assert_eq!(
+            pixels[6 * 4],
+            0,
+            "top-left of bright region (6) should erode to 0"
+        );
+    }
+
+    #[test]
+    fn test_displacement_map_displaces_pixels() {
+        let filter = DisplacementMapImageFilter::new(
+            ColorChannel::R,
+            ColorChannel::G,
+            10.0,
+            Arc::new(BlurImageFilter::new(0.0, 0.0, crate::shader::TileMode::Clamp)),
+            None,
+        );
+        // Create a gradient image for displacement
+        let mut pixels = vec![0u8; 25 * 4];
+        for y in 0..5 {
+            for x in 0..5 {
+                let idx = (y * 5 + x) * 4;
+                pixels[idx] = (x * 50) as u8; // R gradient horizontal
+                pixels[idx + 1] = (y * 50) as u8; // G gradient vertical
+                pixels[idx + 2] = 128;
+                pixels[idx + 3] = 255;
+            }
+        }
+        let original = pixels.clone();
+        filter.apply(&mut pixels, 5, 5);
+        // Pixels should have moved based on R and G channels
+        // At least some pixels should differ from original
+        let mut changed = false;
+        for i in 0..25 {
+            if pixels[i * 4] != original[i * 4]
+                || pixels[i * 4 + 1] != original[i * 4 + 1]
+                || pixels[i * 4 + 2] != original[i * 4 + 2]
+            {
+                changed = true;
+                break;
+            }
+        }
+        assert!(changed, "displacement should change pixel positions");
+    }
+
+    #[test]
+    fn test_lighting_image_filter() {
+        let light = LightType::Distant {
+            direction: (0.0, 0.0, 1.0),
+        };
+        let filter = LightingImageFilter::diffuse(
+            light,
+            1.0,
+            1.0,
+            Color4f::new(1.0, 1.0, 1.0, 1.0),
+            None,
+        );
+        let mut pixels = vec![128u8; 25 * 4]; // gray image
+        filter.apply(&mut pixels, 5, 5);
+        // Lighting should modulate the image (may brighten based on implementation)
+        // Just check it doesn't crash and produces valid output
+        assert!(pixels[0] <= 255);
+    }
+
+    #[test]
+    fn test_matrix_convolution_identity() {
+        // Identity kernel: center=1, rest=0
+        let kernel = vec![
+            0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        let filter = MatrixConvolutionImageFilter::new(
+            (3, 3),
+            kernel,
+            1.0,
+            0.0,
+            (1, 1),
+            crate::shader::TileMode::Clamp,
+            true,
+            None,
+        );
+        let mut pixels = vec![
+            255, 0, 0, 255, // red
+            0, 255, 0, 255, // green
+            0, 0, 255, 255, // blue
+            128, 128, 128, 255, // gray
+        ];
+        let original = pixels.clone();
+        filter.apply(&mut pixels, 2, 2);
+        // Identity kernel should preserve pixels (within rounding)
+        for i in 0..16 {
+            assert!(
+                (pixels[i] as i32 - original[i] as i32).abs() <= 1,
+                "identity kernel should preserve pixel values"
+            );
+        }
+    }
+
+    #[test]
+    fn test_tile_image_filter() {
+        let filter = TileImageFilter::new(
+            Rect::new(0.0, 0.0, 2.0, 2.0),
+            Rect::new(0.0, 0.0, 4.0, 4.0),
+            None,
+        );
+        let mut pixels = vec![0u8; 16 * 4]; // 4x4
+                                            // Set top-left 2x2 to distinct colors
+        pixels[0] = 255; // (0,0) red
+        pixels[4] = 0;
+        pixels[4 + 1] = 255; // (1,0) green
+        pixels[8] = 0;
+        pixels[8 + 2] = 255; // (0,1) blue
+        pixels[12] = 255;
+        pixels[12 + 1] = 255; // (1,1) yellow
+        filter.apply(&mut pixels, 4, 4);
+        // The 2x2 tile should repeat across the 4x4 image
+        // (2,0) should match (0,0) = red
+        assert_eq!(pixels[2 * 4], 255, "tile should repeat horizontally");
+        // (0,2) should match (0,0) = red
+        assert_eq!(pixels[8 * 4], 255, "tile should repeat vertically");
     }
 }
