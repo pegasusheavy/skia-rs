@@ -425,14 +425,32 @@ impl<'a> Canvas<'a> {
         }
     }
 
-    /// Draw points.
+    /// Draw points in the specified mode.
     ///
-    /// Full `PointMode` dispatch is tracked by P5-3. This currently draws
-    /// each point individually (equivalent to `PointMode::Points`).
+    /// Empty input produces no output. Odd-count input in `Lines` mode
+    /// drops the orphan trailing point.
     pub fn draw_points(&mut self, mode: PointMode, points: &[Point], paint: &Paint) {
-        let _ = mode; // TODO(P5-3): dispatch on PointMode::Lines/Polygon.
-        for p in points {
-            self.draw_point(*p, paint);
+        if points.is_empty() {
+            return;
+        }
+        match mode {
+            PointMode::Points => {
+                for &p in points {
+                    self.draw_point(p, paint);
+                }
+            }
+            PointMode::Lines => {
+                // Consecutive pairs form lines
+                for chunk in points.chunks_exact(2) {
+                    self.draw_line(chunk[0], chunk[1], paint);
+                }
+            }
+            PointMode::Polygon => {
+                // Consecutive points form a polyline
+                for pair in points.windows(2) {
+                    self.draw_line(pair[0], pair[1], paint);
+                }
+            }
         }
     }
 
@@ -1500,5 +1518,131 @@ mod tests {
         c.restore();
         let restored_bounds = c.clip_bounds();
         assert_eq!(restored_bounds, initial_bounds);
+    }
+
+    #[test]
+    fn test_draw_points_points_mode_draws_each() {
+        let mut buffer = PixelBuffer::new(100, 100);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        let mut paint = Paint::new();
+        paint.set_color32(Color::WHITE);
+        paint.set_stroke_width(3.0);
+        canvas.draw_points(PointMode::Points, &[
+            Point::new(10.0, 10.0),
+            Point::new(50.0, 50.0),
+            Point::new(90.0, 90.0),
+        ], &paint);
+        // Three distinct bright pixels should exist
+        drop(canvas);
+        assert_ne!(buffer.get_pixel(10, 10).unwrap_or(Color::TRANSPARENT), Color::TRANSPARENT);
+        assert_ne!(buffer.get_pixel(50, 50).unwrap_or(Color::TRANSPARENT), Color::TRANSPARENT);
+        assert_ne!(buffer.get_pixel(90, 90).unwrap_or(Color::TRANSPARENT), Color::TRANSPARENT);
+    }
+
+    #[test]
+    fn test_draw_points_lines_mode_connects_pairs() {
+        let mut buffer = PixelBuffer::new(100, 100);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        let mut paint = Paint::new();
+        paint.set_color32(Color::WHITE);
+        // Two pairs: horizontal and vertical line
+        canvas.draw_points(PointMode::Lines, &[
+            Point::new(0.0, 50.0),
+            Point::new(100.0, 50.0),   // pair 1: horizontal line
+            Point::new(50.0, 0.0),
+            Point::new(50.0, 100.0),   // pair 2: vertical line
+        ], &paint);
+        // Verify by sampling midpoints of both lines
+        drop(canvas);
+        assert_ne!(buffer.get_pixel(50, 50).unwrap_or(Color::TRANSPARENT), Color::TRANSPARENT);
+    }
+
+    #[test]
+    fn test_draw_points_polygon_mode_connects_consecutive() {
+        let mut buffer = PixelBuffer::new(100, 100);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        let mut paint = Paint::new();
+        paint.set_color32(Color::WHITE);
+        // Triangle perimeter: three lines should be drawn
+        canvas.draw_points(PointMode::Polygon, &[
+            Point::new(50.0, 10.0),
+            Point::new(90.0, 90.0),
+            Point::new(10.0, 90.0),
+        ], &paint);
+        drop(canvas);
+        // Lines connect 50,10->90,90 and 90,90->10,90
+        // Sample a point on the second line
+        assert_ne!(buffer.get_pixel(50, 90).unwrap_or(Color::TRANSPARENT), Color::TRANSPARENT);
+    }
+
+    #[test]
+    fn test_draw_points_empty_slice() {
+        let mut buffer = PixelBuffer::new(10, 10);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        let paint = Paint::new();
+        canvas.draw_points(PointMode::Points, &[], &paint);  // should not panic
+        // Verify no pixels were drawn (buffer should be all transparent)
+        drop(canvas);
+        assert_eq!(buffer.get_pixel(5, 5).unwrap_or(Color::TRANSPARENT), Color::TRANSPARENT);
+    }
+
+    #[test]
+    fn test_draw_points_lines_mode_odd_count_drops_last() {
+        // Lines mode requires pairs; odd count drops the last point.
+        let mut buffer = PixelBuffer::new(100, 100);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        let mut paint = Paint::new();
+        paint.set_color32(Color::WHITE);
+        canvas.draw_points(PointMode::Lines, &[
+            Point::new(0.0, 50.0),
+            Point::new(100.0, 50.0),
+            Point::new(50.0, 50.0),  // orphan, should be ignored
+        ], &paint);
+        // Should not panic; one line should be drawn
+        drop(canvas);
+        assert_ne!(buffer.get_pixel(50, 50).unwrap_or(Color::TRANSPARENT), Color::TRANSPARENT);
+    }
+
+    #[test]
+    fn test_draw_points_recording_backs_up_all_modes() {
+        // Verify recording captures all PointMode variants properly.
+        let mut cmds: Vec<DrawCommand> = Vec::new();
+        {
+            let mut c = Canvas::new_recording(&mut cmds, 100, 100);
+            let paint = Paint::new();
+            c.draw_points(PointMode::Points, &[
+                Point::new(10.0, 10.0),
+                Point::new(20.0, 20.0),
+            ], &paint);
+        }
+        // Two DrawPoint commands should be recorded
+        assert_eq!(cmds.iter().filter(|cmd| matches!(cmd, DrawCommand::DrawPoint { .. })).count(), 2);
+
+        let mut cmds = Vec::new();
+        {
+            let mut c = Canvas::new_recording(&mut cmds, 100, 100);
+            let paint = Paint::new();
+            c.draw_points(PointMode::Lines, &[
+                Point::new(0.0, 0.0),
+                Point::new(10.0, 10.0),
+                Point::new(20.0, 20.0),
+                Point::new(30.0, 30.0),
+            ], &paint);
+        }
+        // Two DrawLine commands should be recorded (one per pair)
+        assert_eq!(cmds.iter().filter(|cmd| matches!(cmd, DrawCommand::DrawLine { .. })).count(), 2);
+
+        let mut cmds = Vec::new();
+        {
+            let mut c = Canvas::new_recording(&mut cmds, 100, 100);
+            let paint = Paint::new();
+            c.draw_points(PointMode::Polygon, &[
+                Point::new(0.0, 0.0),
+                Point::new(10.0, 10.0),
+                Point::new(20.0, 0.0),
+            ], &paint);
+        }
+        // Two DrawLine commands should be recorded (n-1 for polygon)
+        assert_eq!(cmds.iter().filter(|cmd| matches!(cmd, DrawCommand::DrawLine { .. })).count(), 2);
     }
 }
