@@ -937,6 +937,137 @@ impl Shader for BlendShader {
     }
 }
 
+/// Perlin noise generator based on Ken Perlin's classic algorithm.
+///
+/// Produces smoothly-varying pseudo-random values in the range roughly [-1, 1]
+/// for noise, or [0, 1] for turbulence (which uses abs()). The classic Perlin
+/// noise uses a 256-entry permutation table and interpolates gradients at
+/// integer lattice points.
+struct PerlinNoiseGenerator {
+    /// Permutation table seeded from the shader seed.
+    perm: [u16; 512],
+    /// Gradient lookup table. Each gradient is an 8-valued direction on a
+    /// unit square (Skia style: simpler than classic Perlin gradients).
+    grad_x: [f32; 256],
+    grad_y: [f32; 256],
+}
+
+impl PerlinNoiseGenerator {
+    fn new(seed: u32) -> Self {
+        // Linear-congruential generator for reproducibility.
+        let mut state = if seed == 0 { 0xdeadbeef } else { seed };
+        let mut rand_u8 = || -> u8 {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            ((state >> 16) & 0xff) as u8
+        };
+
+        let mut perm_table = [0u16; 256];
+        for i in 0..256 {
+            perm_table[i] = i as u16;
+        }
+        // Fisher-Yates shuffle
+        for i in (1..256).rev() {
+            let j = (rand_u8() as usize) % (i + 1);
+            perm_table.swap(i, j);
+        }
+
+        let mut perm = [0u16; 512];
+        for i in 0..512 {
+            perm[i] = perm_table[i & 255];
+        }
+
+        // Gradient table: unit vectors at 8 directions
+        let mut grad_x = [0.0f32; 256];
+        let mut grad_y = [0.0f32; 256];
+        for i in 0..256 {
+            let angle = (i as f32) * std::f32::consts::TAU / 256.0;
+            grad_x[i] = angle.cos();
+            grad_y[i] = angle.sin();
+        }
+
+        Self { perm, grad_x, grad_y }
+    }
+
+    /// Evaluate classic 2D Perlin noise at (x, y). Returns approximately [-1, 1].
+    fn noise_2d(&self, x: f32, y: f32) -> f32 {
+        let xi = x.floor() as i32;
+        let yi = y.floor() as i32;
+        let xf = x - (xi as f32);
+        let yf = y - (yi as f32);
+
+        let u = fade(xf);
+        let v = fade(yf);
+
+        let xi0 = (xi & 255) as usize;
+        let yi0 = (yi & 255) as usize;
+        let xi1 = ((xi + 1) & 255) as usize;
+        let yi1 = ((yi + 1) & 255) as usize;
+
+        let g00 = self.perm[(self.perm[xi0] as usize + yi0) & 511] as usize;
+        let g10 = self.perm[(self.perm[xi1] as usize + yi0) & 511] as usize;
+        let g01 = self.perm[(self.perm[xi0] as usize + yi1) & 511] as usize;
+        let g11 = self.perm[(self.perm[xi1] as usize + yi1) & 511] as usize;
+
+        let d00 = self.grad_x[g00] * xf + self.grad_y[g00] * yf;
+        let d10 = self.grad_x[g10] * (xf - 1.0) + self.grad_y[g10] * yf;
+        let d01 = self.grad_x[g01] * xf + self.grad_y[g01] * (yf - 1.0);
+        let d11 = self.grad_x[g11] * (xf - 1.0) + self.grad_y[g11] * (yf - 1.0);
+
+        let ix0 = lerp(d00, d10, u);
+        let ix1 = lerp(d01, d11, u);
+        lerp(ix0, ix1, v)
+    }
+
+    /// Fractal (summed octaves with decreasing amplitude).
+    fn fractal_2d(&self, x: f32, y: f32, octaves: u32) -> f32 {
+        let mut total = 0.0_f32;
+        let mut freq = 1.0_f32;
+        let mut amp = 1.0_f32;
+        let mut max_val = 0.0_f32;
+        for _ in 0..octaves {
+            total += self.noise_2d(x * freq, y * freq) * amp;
+            max_val += amp;
+            freq *= 2.0;
+            amp *= 0.5;
+        }
+        if max_val > 0.0 {
+            total / max_val
+        } else {
+            0.0
+        }
+    }
+
+    /// Turbulence (absolute value of octave sum).
+    fn turbulence_2d(&self, x: f32, y: f32, octaves: u32) -> f32 {
+        let mut total = 0.0_f32;
+        let mut freq = 1.0_f32;
+        let mut amp = 1.0_f32;
+        let mut max_val = 0.0_f32;
+        for _ in 0..octaves {
+            total += self.noise_2d(x * freq, y * freq).abs() * amp;
+            max_val += amp;
+            freq *= 2.0;
+            amp *= 0.5;
+        }
+        if max_val > 0.0 {
+            (total / max_val).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+}
+
+#[inline]
+fn fade(t: f32) -> f32 {
+    // Ken Perlin's improved fade: 6t^5 - 15t^4 + 10t^3
+    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+}
+
+#[inline]
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
 /// Perlin noise shader.
 ///
 /// Corresponds to Skia's `SkPerlinNoiseShader`.
@@ -1042,6 +1173,25 @@ impl Shader for PerlinNoiseShader {
 
     fn shader_kind(&self) -> ShaderKind {
         ShaderKind::PerlinNoise
+    }
+
+    fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
+        let generator = PerlinNoiseGenerator::new(self.seed as u32);
+        let fx = x * self.base_frequency_x;
+        let fy = y * self.base_frequency_y;
+        let octaves = self.num_octaves.max(1) as u32;
+
+        let value = match self.noise_type {
+            NoiseType::FractalNoise => {
+                // Map fractal noise from [-1, 1] to [0, 1]
+                (generator.fractal_2d(fx, fy, octaves) * 0.5 + 0.5).clamp(0.0, 1.0)
+            }
+            NoiseType::Turbulence => generator.turbulence_2d(fx, fy, octaves),
+        };
+
+        // Return grayscale with full alpha. Skia uses separate per-channel noise
+        // in production, but grayscale is an acceptable baseline.
+        Color4f::new(value, value, value, 1.0)
     }
 }
 
@@ -1462,5 +1612,53 @@ mod tests {
         let c = gradient.sample(200.0, 200.0);
         // Should be bounded, not NaN
         assert!(c.r.is_finite() && c.g.is_finite() && c.b.is_finite() && c.a.is_finite());
+    }
+
+    #[test]
+    fn test_perlin_fractal_noise_in_range() {
+        let shader = PerlinNoiseShader::fractal_noise(0.1, 0.1, 4, 42.0);
+        for x in 0..10 {
+            for y in 0..10 {
+                let c = shader.sample(x as f32, y as f32);
+                assert!(c.r >= 0.0 && c.r <= 1.0, "r out of range: {}", c.r);
+                assert!(c.a >= 0.99, "alpha should be 1: {}", c.a);
+            }
+        }
+    }
+
+    #[test]
+    fn test_perlin_turbulence_in_range() {
+        let shader = PerlinNoiseShader::turbulence(0.1, 0.1, 4, 42.0);
+        for x in 0..10 {
+            for y in 0..10 {
+                let c = shader.sample(x as f32, y as f32);
+                assert!(c.r >= 0.0 && c.r <= 1.0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_perlin_different_seeds_produce_different_noise() {
+        let a = PerlinNoiseShader::fractal_noise(0.5, 0.5, 2, 1.0);
+        let b = PerlinNoiseShader::fractal_noise(0.5, 0.5, 2, 999.0);
+        // At least one of a few sample points should differ
+        let mut differ = false;
+        for k in 0..10 {
+            let ra = a.sample(k as f32, k as f32).r;
+            let rb = b.sample(k as f32, k as f32).r;
+            if (ra - rb).abs() > 1e-4 {
+                differ = true;
+                break;
+            }
+        }
+        assert!(differ, "Different seeds should produce different output");
+    }
+
+    #[test]
+    fn test_perlin_deterministic_per_seed() {
+        let shader = PerlinNoiseShader::fractal_noise(0.3, 0.3, 3, 12345.0);
+        let c1 = shader.sample(10.0, 10.0);
+        let c2 = shader.sample(10.0, 10.0);
+        assert!((c1.r - c2.r).abs() < 1e-5);
     }
 }
