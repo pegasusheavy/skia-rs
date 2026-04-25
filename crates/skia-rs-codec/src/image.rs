@@ -463,10 +463,43 @@ impl Image {
         Self::from_raster_data_owned(new_info, new_pixels, new_row_bytes)
     }
 
-    /// Create a transformed version of this image.
-    pub fn make_with_filter(&self) -> Option<Self> {
-        // TODO: Implement matrix transformation
-        Some(self.clone())
+    /// Apply an image filter to this image and return a new filtered image.
+    ///
+    /// The filter is applied in-place on an RGBA8 copy of the image. If the
+    /// source image is not already `Rgba8888/Premul`, the pixels are
+    /// converted via [`skia_rs_core::convert_pixels`] before filtering and
+    /// the returned image reports `Rgba8888/Premul`.
+    ///
+    /// Multi-input filters (such as [`skia_rs_paint::MergeImageFilter`] and
+    /// [`skia_rs_paint::DisplacementMapImageFilter`]'s displacement input)
+    /// cannot be expressed through the single-buffer `apply(pixels)` API and
+    /// will return the unfiltered copy — the paint crate's filter trait has
+    /// a documented limitation there that will be lifted when the
+    /// multi-input API lands.
+    ///
+    /// Returns `None` if pixel extraction or conversion fails.
+    pub fn make_with_filter(
+        &self,
+        filter: &dyn skia_rs_paint::ImageFilter,
+    ) -> Option<Self> {
+        let width = self.width();
+        let height = self.height();
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+
+        // Build a fresh RGBA8 Premul buffer, converting if necessary.
+        let rgba_row_bytes = (width as usize) * 4;
+        let mut rgba = vec![0u8; (height as usize) * rgba_row_bytes];
+        let dst_info = ImageInfo::new(width, height, ColorType::Rgba8888, AlphaType::Premul);
+        if !self.read_pixels(&dst_info, &mut rgba, rgba_row_bytes, 0, 0) {
+            return None;
+        }
+
+        // Apply the filter in place.
+        filter.apply(&mut rgba, width as usize, height as usize);
+
+        Self::from_raster_data_owned(dst_info, rgba, rgba_row_bytes)
     }
 }
 
@@ -585,6 +618,31 @@ mod tests {
         assert_eq!(dst[1], 50);
         assert_eq!(dst[2], 75);
         assert_eq!(dst[3], 128);
+    }
+
+    #[test]
+    fn test_make_with_filter_offset_shifts_pixels() {
+        // A red pixel in a 3x3 black field.
+        let info = ImageInfo::new(3, 3, ColorType::Rgba8888, AlphaType::Premul);
+        let mut pixels = vec![0u8; 3 * 3 * 4];
+        // Set center pixel (1,1) to red.
+        let center_off = (1 * 3 + 1) * 4;
+        pixels[center_off] = 255;
+        pixels[center_off + 3] = 255;
+        let image = Image::from_raster_data(&info, &pixels, 12).unwrap();
+
+        // Offset by +1 in both axes: red should land at (2, 2).
+        let filter = skia_rs_paint::OffsetImageFilter::new(1.0, 1.0, None);
+        let filtered = image.make_with_filter(&filter).unwrap();
+        assert_eq!(filtered.dimensions(), (3, 3));
+
+        let color = filtered.read_pixel(2, 2).unwrap();
+        assert!((color.r - 1.0).abs() < 1e-3);
+
+        // Original center (1, 1) should now be black (clamp-to-edge fill
+        // comes from outside the left/top edge, which is also black).
+        let center = filtered.read_pixel(1, 1).unwrap();
+        assert!(center.r < 0.01);
     }
 
     #[test]

@@ -2026,6 +2026,7 @@ dependencies = [
  "ravif",
  "rawloader",
  "skia-rs-core",
+ "skia-rs-paint",
  "thiserror 2.0.17",
  "webp",
 ]
