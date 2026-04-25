@@ -1909,4 +1909,81 @@ mod tests {
         let out = preprocess(src);
         assert!(out.contains("both"));
     }
+
+    #[test]
+    fn test_parse_empty_program() {
+        let mut parser = Parser::new("");
+        let result = parser.parse_program();
+        // Should parse as empty program or return clean error — not panic
+        let _ = result;
+    }
+
+    #[test]
+    fn test_parse_only_whitespace() {
+        let mut parser = Parser::new("   \n\t  \n");
+        let result = parser.parse_program();
+        let _ = result;
+    }
+
+    #[test]
+    fn test_parse_multiple_functions() {
+        let src =
+            "float square(float x) { return x * x; }\nhalf4 main(float2 p) { return half4(square(p.x), 0.0, 0.0, 1.0); }";
+        let mut parser = Parser::new(src);
+        let program = parser.parse_program();
+        assert!(
+            program.is_ok(),
+            "multi-function program should parse: {:?}",
+            program.err()
+        );
+    }
+
+    #[test]
+    fn test_parse_if_else() {
+        let src = "half4 main(float2 p) { if (p.x > 0.0) { return half4(1.0, 0.0, 0.0, 1.0); } else { return half4(0.0, 1.0, 0.0, 1.0); } }";
+        let mut parser = Parser::new(src);
+        let program = parser.parse_program();
+        assert!(
+            program.is_ok(),
+            "if/else program should parse: {:?}",
+            program.err()
+        );
+    }
+
+    #[test]
+    fn test_parse_for_loop() {
+        let src = "half4 main(float2 p) { float sum = 0.0; for (int i = 0; i < 4; i = i + 1) { sum = sum + 1.0; } return half4(sum, 0.0, 0.0, 1.0); }";
+        let mut parser = Parser::new(src);
+        let program = parser.parse_program();
+        assert!(
+            program.is_ok(),
+            "for loop program should parse: {:?}",
+            program.err()
+        );
+    }
+
+    #[test]
+    fn test_parse_compound_assign() {
+        let src =
+            "half4 main(float2 p) { float x = 1.0; x += 2.0; return half4(x, 0.0, 0.0, 1.0); }";
+        let mut parser = Parser::new(src);
+        let program = parser.parse_program();
+        assert!(
+            program.is_ok(),
+            "compound assign should parse: {:?}",
+            program.err()
+        );
+    }
+
+    #[test]
+    fn test_parse_ternary() {
+        let src = "half4 main(float2 p) { float x = p.x > 0.0 ? 1.0 : 0.0; return half4(x, 0.0, 0.0, 1.0); }";
+        let mut parser = Parser::new(src);
+        let program = parser.parse_program();
+        assert!(
+            program.is_ok(),
+            "ternary should parse: {:?}",
+            program.err()
+        );
+    }
 }

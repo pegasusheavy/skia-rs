@@ -894,4 +894,103 @@ mod tests {
         assert!(restored.color_filter().is_some());
         assert!(restored.image_filter().is_some());
     }
+
+    #[test]
+    fn test_paint_serialize_all_blend_modes() {
+        use crate::blend::BlendMode;
+        for i in 0..29u8 {
+            if let Some(mode) = BlendMode::from_u8(i) {
+                let mut paint = Paint::new();
+                paint.set_blend_mode(mode);
+                let bytes = paint.serialize();
+                let restored = Paint::deserialize(&bytes).unwrap();
+                assert_eq!(
+                    restored.blend_mode(),
+                    mode,
+                    "round-trip failed for {:?}",
+                    mode
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_paint_serialize_extreme_stroke_widths() {
+        let mut paint = Paint::new();
+        for w in &[
+            0.0,
+            0.001,
+            100.0,
+            10_000.0,
+            f32::MIN_POSITIVE,
+            f32::EPSILON,
+        ] {
+            paint.set_stroke_width(*w);
+            let bytes = paint.serialize();
+            let restored = Paint::deserialize(&bytes).unwrap();
+            assert_eq!(
+                restored.stroke_width(),
+                *w,
+                "stroke width {} failed round-trip",
+                w
+            );
+        }
+    }
+
+    #[test]
+    fn test_paint_deserialize_truncated_buffer_is_safe() {
+        // Truncated at various lengths should return None, not panic
+        let paint = Paint::new();
+        let bytes = paint.serialize();
+        for cutoff in 0..bytes.len() {
+            let truncated = &bytes[..cutoff];
+            let _ = Paint::deserialize(truncated); // must not panic
+        }
+    }
+
+    #[test]
+    fn test_paint_deserialize_trailing_garbage_is_ignored() {
+        let paint = Paint::new();
+        let mut bytes = paint.serialize();
+        bytes.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        // Should still deserialize successfully (trailing bytes are simply unread)
+        // OR return error safely — either is acceptable, must not panic
+        let _ = Paint::deserialize(&bytes);
+    }
+}
+
+// Property-based tests for T-7
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn test_paint_stroke_width_round_trip(width in 0.0_f32..1e6) {
+            let mut paint = Paint::new();
+            paint.set_stroke_width(width);
+            let bytes = paint.serialize();
+            let restored = Paint::deserialize(&bytes).unwrap();
+            prop_assert_eq!(restored.stroke_width(), width);
+        }
+
+        #[test]
+        fn test_blend_mode_apply_never_nan(
+            sr in 0.0_f32..=1.0, sg in 0.0_f32..=1.0, sb in 0.0_f32..=1.0, sa in 0.0_f32..=1.0,
+            dr in 0.0_f32..=1.0, dg in 0.0_f32..=1.0, db in 0.0_f32..=1.0, da in 0.0_f32..=1.0,
+            mode_u8 in 0u8..29
+        ) {
+            use crate::blend::BlendMode;
+            if let Some(mode) = BlendMode::from_u8(mode_u8) {
+                let src = Color4f::new(sr, sg, sb, sa);
+                let dst = Color4f::new(dr, dg, db, da);
+                let result = mode.apply(src, dst);
+                prop_assert!(result.r.is_finite());
+                prop_assert!(result.g.is_finite());
+                prop_assert!(result.b.is_finite());
+                prop_assert!(result.a.is_finite());
+            }
+        }
+    }
 }
