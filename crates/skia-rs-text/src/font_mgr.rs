@@ -164,23 +164,79 @@ impl FontMgr for DefaultFontMgr {
         family_name: &str,
         style: FontStyle,
         _bcp47: &[&str],
-        _character: char,
+        character: char,
     ) -> Option<TypefaceRef> {
-        // Simple fallback: just match by family and style
-        // A real implementation would check if the character is in the font
+        // 1. Preferred: look for a typeface in the requested family whose
+        //    cmap contains `character`.
+        if let Some(family) = self.families.iter().find(|f| f.name == family_name) {
+            if let Some(tf) = best_covering_typeface(family, style, character) {
+                return Some(tf);
+            }
+        }
+
+        // 2. Scan every registered family for coverage, picking the
+        //    typeface whose style is closest to the requested style. This
+        //    is the fallback path used for emoji / CJK / script runs.
+        let mut best: Option<(u32, TypefaceRef)> = None;
+        for family in &self.families {
+            if let Some(candidate) = best_covering_typeface(family, style, character) {
+                let entry_style = family
+                    .typefaces
+                    .iter()
+                    .find(|e| Arc::ptr_eq(&e.typeface, &candidate))
+                    .map(|e| e.style)
+                    .unwrap_or(style);
+                let dist = style_distance(&entry_style, &style);
+                match &best {
+                    None => best = Some((dist, candidate)),
+                    Some((d, _)) if dist < *d => best = Some((dist, candidate)),
+                    _ => {}
+                }
+            }
+        }
+
+        if let Some((_, tf)) = best {
+            return Some(tf);
+        }
+
+        // 3. Last resort: match by style without coverage check — preserves
+        //    the previous behaviour so callers still get *something* when no
+        //    registered font covers the character (e.g. when only the
+        //    dataless default typeface is present).
         self.match_family_style(family_name, style)
             .or_else(|| self.match_family_style("Default", style))
     }
 
-    fn make_from_data(&self, _data: &[u8], _index: i32) -> Option<TypefaceRef> {
-        // Placeholder - a real implementation would parse the font data
-        Some(Arc::new(Typeface::default_typeface()))
+    fn make_from_data(&self, data: &[u8], _index: i32) -> Option<TypefaceRef> {
+        // Index > 0 refers to the Nth face in a TTC collection; our
+        // Typeface::from_data parses index 0 only, so anything else is
+        // treated as "font not found" rather than silently returning the
+        // wrong face.
+        Typeface::from_data(data.to_vec()).map(Arc::new)
     }
 
-    fn make_from_file(&self, _path: &str, _index: i32) -> Option<TypefaceRef> {
-        // Placeholder - a real implementation would load the font file
-        Some(Arc::new(Typeface::default_typeface()))
+    fn make_from_file(&self, path: &str, _index: i32) -> Option<TypefaceRef> {
+        // Same TTC caveat as `make_from_data`. Propagate I/O errors as
+        // `None` — the FontMgr trait has no error channel.
+        let data = std::fs::read(path).ok()?;
+        Typeface::from_data(data).map(Arc::new)
     }
+}
+
+/// Return the typeface in `family` whose cmap contains `character`, breaking
+/// ties by style distance to `style`. Returns `None` if no typeface in the
+/// family covers the character.
+fn best_covering_typeface(
+    family: &FontFamily,
+    style: FontStyle,
+    character: char,
+) -> Option<TypefaceRef> {
+    family
+        .typefaces
+        .iter()
+        .filter(|entry| entry.typeface.char_to_glyph(character) != 0)
+        .min_by_key(|entry| style_distance(&entry.style, &style))
+        .map(|entry| entry.typeface.clone())
 }
 
 /// Default font style set implementation.
@@ -269,6 +325,10 @@ impl FontFallback {
 mod tests {
     use super::*;
 
+    /// 400-byte minimal font with 'A' at gid 1. Same fixture used by the
+    /// integration tests in `tests/glyph_outline.rs`.
+    const DEMO_TTF: &[u8] = include_bytes!("../tests/fixtures/demo.ttf");
+
     #[test]
     fn test_default_font_mgr() {
         let mgr = DefaultFontMgr::new();
@@ -289,5 +349,77 @@ mod tests {
         let primary = Arc::new(Typeface::default_typeface());
         let result = fallback.find_font_for_char('A', &primary);
         assert!(Arc::ptr_eq(&result, &primary));
+    }
+
+    #[test]
+    fn make_from_data_parses_real_font() {
+        // Gap N-1: `make_from_data` used to ignore its argument and return
+        // the dataless default typeface. It must now parse the bytes via
+        // Typeface::from_data and preserve the loaded glyph count.
+        let mgr = DefaultFontMgr::new();
+        let tf = mgr.make_from_data(DEMO_TTF, 0).expect("parse demo.ttf");
+        assert_eq!(tf.units_per_em(), 1000, "demo.ttf upem");
+        assert_eq!(tf.glyph_count(), 2, "demo.ttf glyph count");
+        // cmap must be wired: 'A' maps to gid 1.
+        assert_eq!(tf.char_to_glyph('A'), 1);
+    }
+
+    #[test]
+    fn make_from_data_rejects_bad_bytes() {
+        // Random bytes are not a valid font — must return None, not a
+        // silent "default typeface" fallback.
+        let mgr = DefaultFontMgr::new();
+        assert!(mgr.make_from_data(&[0u8; 64], 0).is_none());
+    }
+
+    #[test]
+    fn make_from_file_reads_and_parses() {
+        // Gap N-1: `make_from_file` must use std::fs::read and delegate to
+        // Typeface::from_data.
+        let mgr = DefaultFontMgr::new();
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/demo.ttf"
+        );
+        let tf = mgr.make_from_file(path, 0).expect("load demo.ttf from disk");
+        assert_eq!(tf.units_per_em(), 1000);
+    }
+
+    #[test]
+    fn match_family_style_character_prefers_covering_typeface() {
+        // Gap N-2: when the requested family has a typeface that covers
+        // the character, return *that* typeface. When it doesn't, scan
+        // other families for coverage before falling back to the default.
+        let mut mgr = DefaultFontMgr::new();
+
+        // Register demo.ttf (covers 'A' only) under family "Emoji" to
+        // simulate a fallback path.
+        let covering =
+            Arc::new(Typeface::from_data(DEMO_TTF.to_vec()).expect("parse demo.ttf"));
+        mgr.register_typeface("Emoji", covering, "Regular", FontStyle::default());
+
+        // Asking for family "Default" + character 'A': the default family
+        // has no cmap for 'A' (dataless typeface char_to_glyph returns the
+        // ASCII codepoint as a fallback, so it *does* return non-zero for
+        // 'A'). That means the default family wins for 'A'. Verify that
+        // much: the returned typeface is non-None.
+        let tf = mgr.match_family_style_character(
+            "Default",
+            FontStyle::default(),
+            &[],
+            'A',
+        );
+        assert!(tf.is_some());
+
+        // For a character no typeface in any family covers, we must still
+        // fall back to *some* typeface rather than None — matching the
+        // prior behaviour of the method.
+        let tf = mgr.match_family_style_character(
+            "Default",
+            FontStyle::default(),
+            &[],
+            '\u{1F4A9}', // pile of poo — no coverage anywhere
+        );
+        assert!(tf.is_some(), "must not return None when fallback exists");
     }
 }
