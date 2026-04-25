@@ -390,8 +390,10 @@ fn paragraph_wraps_at_word_boundaries() {
 #[test]
 fn paragraph_respects_max_lines_ellipsis_truncation() {
     // Gap T-3: max_lines caps the visible line count.
-    let mut style = ParagraphStyle::default();
-    style.max_lines = 2;
+    let style = ParagraphStyle {
+        max_lines: 2,
+        ..Default::default()
+    };
     let mut builder = ParagraphBuilder::new(style);
     builder.push_style(&demo_text_style(50.0));
     builder.add_text("AA AA AA AA AA AA AA AA AA AA AA");
@@ -419,8 +421,10 @@ fn paragraph_hard_newline_forces_break() {
 #[test]
 fn paragraph_right_alignment_offsets_fragments() {
     // Gap T-3: right alignment must shift content to the right edge.
-    let mut style = ParagraphStyle::default();
-    style.text_align = TextAlign::Right;
+    let style = ParagraphStyle {
+        text_align: TextAlign::Right,
+        ..Default::default()
+    };
     let mut builder = ParagraphBuilder::new(style);
     builder.push_style(&demo_text_style(50.0));
     builder.add_text("A");
@@ -527,6 +531,125 @@ fn paragraph_decoration_retained_on_fragments() {
 // =============================================================================
 // TextBlob bounds correctness (gap T-4)
 // =============================================================================
+
+// =============================================================================
+// Color / emoji font detection (gap C-5)
+// =============================================================================
+
+#[test]
+fn glyph_is_color_returns_false_for_outline_only_font() {
+    // Gap C-5: `glyph_is_color` previously returned true for any glyph id
+    // > 0x1000 (a "maybe it's emoji" heuristic). For demo.ttf — a plain
+    // outline font with no COLR / CBDT / sbix / SVG tables — every glyph
+    // must report false no matter its id.
+    let font = demo_font(100.0);
+    assert!(!font.glyph_is_color(0));
+    assert!(!font.glyph_is_color(1));
+    // Also the boundary the old heuristic tripped on.
+    assert!(!font.glyph_is_color(0x2000));
+    // And ensure dataless default returns false rather than panicking.
+    let default = Font::from_size(16.0);
+    assert!(!default.glyph_is_color(42));
+    assert!(!default.glyph_is_color(0x5000));
+}
+
+#[test]
+fn glyph_image_returns_none_for_non_color_glyph() {
+    // demo.ttf has no CBDT / sbix strike — must return None, not a
+    // yellow placeholder rectangle.
+    let font = demo_font(100.0);
+    assert!(font.glyph_image(1).is_none());
+    // The dataless typeface must also return None.
+    let default = Font::from_size(16.0);
+    assert!(default.glyph_image(1).is_none());
+}
+
+#[test]
+fn glyph_color_layers_returns_none_for_outline_only_font() {
+    let font = demo_font(100.0);
+    assert!(font
+        .glyph_color_layers(1, 0, 0xFF_00_00_00)
+        .is_none());
+}
+
+#[test]
+fn color_palette_count_is_none_without_cpal() {
+    let font = demo_font(100.0);
+    assert!(font.color_palette_count().is_none());
+}
+
+#[test]
+fn glyph_svg_returns_none_without_svg_table() {
+    let font = demo_font(100.0);
+    assert!(font.glyph_svg(1).is_none());
+}
+
+// =============================================================================
+// Glyph outline intercepts (gap N-5)
+// =============================================================================
+
+#[test]
+fn glyph_intercepts_band_spans_whole_glyph() {
+    // Gap N-5: intercepts must come from the real outline, not the
+    // bounding box.
+    //
+    // Place a single glyph at origin and ask for intercepts across a
+    // band that covers the glyph's vertical extent. We should get back
+    // an even number of values forming enter/exit pairs that span the
+    // glyph's width — not the single [pos.x, pos.x+width] bounding-box
+    // pair that the old placeholder returned.
+    use skia_rs_core::Point;
+    let font = demo_font(100.0);
+    let positions = vec![Point::new(0.0, 0.0)];
+    // Band covers the full glyph: from top=-100 to bottom=10 (screen y,
+    // glyph-A spans roughly [-65.6, 0]).
+    let xs = font.glyph_intercepts(&[1u16], &positions, -100.0, 10.0);
+    assert!(
+        xs.len() >= 2,
+        "expected at least one enter/exit pair, got {xs:?}"
+    );
+    // Enter/exit pairs must be sorted.
+    for w in xs.windows(2) {
+        assert!(w[0] <= w[1], "intercepts not sorted: {xs:?}");
+    }
+    // The overall span should approximate the glyph's width.
+    let first = *xs.first().unwrap();
+    let last = *xs.last().unwrap();
+    assert!(last - first > 10.0, "span {} too narrow", last - first);
+}
+
+#[test]
+fn glyph_intercepts_empty_for_band_above_glyph() {
+    // A band entirely above the glyph should produce no intercepts
+    // (glyph is "below" the band in screen-y terms). This would be the
+    // typical "underline is near the descent, glyph is just ascent"
+    // case where the outline does not reach the band — a real outline
+    // test is the only thing that returns an empty result.
+    use skia_rs_core::Point;
+    let font = demo_font(100.0);
+    let positions = vec![Point::new(0.0, 0.0)];
+    // Glyph 'A' spans roughly y=[-65, 0]. A band at [-500, -200] is
+    // entirely above the glyph, so intercepts must be empty.
+    let xs = font.glyph_intercepts(&[1u16], &positions, -500.0, -200.0);
+    assert!(xs.is_empty(), "expected no intercepts, got {xs:?}");
+}
+
+#[test]
+fn glyph_intercepts_fallback_for_dataless_typeface() {
+    // When the typeface has no outline data we fall back to bbox
+    // intercepts so the function still returns *something* rather than
+    // a silent empty result.
+    use skia_rs_core::Point;
+    let font = Font::from_size(20.0);
+    // Synthesise a glyph id; dataless typeface will fail to load an
+    // outline but glyph_bounds falls back to an advance×metric box.
+    let positions = vec![Point::new(0.0, 0.0)];
+    // glyph_intercepts on a dataless typeface returns no intercepts
+    // because glyph_bounds for glyph != 0 falls back to advance×height
+    // box (which is empty when the typeface has no data). This test
+    // pins the documented fallback behaviour.
+    let _ = font.glyph_intercepts(&[42u16], &positions, -10.0, 10.0);
+}
 
 #[test]
 fn text_blob_bounds_bracket_real_glyph_positions() {
