@@ -405,14 +405,35 @@ impl Paint {
             None => data.push(0), // absent
         }
 
-        // MaskFilter section (not yet implemented - always absent)
-        data.push(0);
+        // MaskFilter section
+        match self.mask_filter.as_ref().and_then(|f| f.serialize()) {
+            Some(filter_data) => {
+                data.push(1);
+                data.extend_from_slice(&(filter_data.len() as u32).to_le_bytes());
+                data.extend_from_slice(&filter_data);
+            }
+            None => data.push(0),
+        }
 
-        // ColorFilter section (not yet implemented - always absent)
-        data.push(0);
+        // ColorFilter section
+        match self.color_filter.as_ref().and_then(|f| f.serialize()) {
+            Some(filter_data) => {
+                data.push(1);
+                data.extend_from_slice(&(filter_data.len() as u32).to_le_bytes());
+                data.extend_from_slice(&filter_data);
+            }
+            None => data.push(0),
+        }
 
-        // ImageFilter section (not yet implemented - always absent)
-        data.push(0);
+        // ImageFilter section
+        match self.image_filter.as_ref().and_then(|f| f.serialize()) {
+            Some(filter_data) => {
+                data.push(1);
+                data.extend_from_slice(&(filter_data.len() as u32).to_le_bytes());
+                data.extend_from_slice(&filter_data);
+            }
+            None => data.push(0),
+        }
 
         data
     }
@@ -523,34 +544,93 @@ impl Paint {
             None
         };
 
-        // Skip mask_filter, color_filter, image_filter sections (not yet implemented)
-        // If they're present, consume them but don't deserialize
-        for _ in 0..3 {
-            if offset < data.len() {
-                if data[offset] == 1 {
-                    offset += 1;
-                    if offset + 4 > data.len() {
-                        return None;
-                    }
-                    let len = u32::from_le_bytes([
-                        data[offset],
-                        data[offset + 1],
-                        data[offset + 2],
-                        data[offset + 3],
-                    ]) as usize;
-                    offset += 4 + len;
-                } else {
-                    offset += 1;
-                }
+        // MaskFilter section
+        let mask_filter = if offset < data.len() && data[offset] == 1 {
+            offset += 1;
+            if offset + 4 > data.len() {
+                return None;
             }
-        }
+            let len = u32::from_le_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ]) as usize;
+            offset += 4;
+            if offset + len > data.len() {
+                return None;
+            }
+            let filter_bytes = &data[offset..offset + len];
+            offset += len;
+            let mut filter_offset = 0;
+            crate::filter::deserialize_mask_filter(filter_bytes, &mut filter_offset)
+        } else {
+            if offset < data.len() {
+                offset += 1;
+            }
+            None
+        };
+
+        // ColorFilter section
+        let color_filter = if offset < data.len() && data[offset] == 1 {
+            offset += 1;
+            if offset + 4 > data.len() {
+                return None;
+            }
+            let len = u32::from_le_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ]) as usize;
+            offset += 4;
+            if offset + len > data.len() {
+                return None;
+            }
+            let filter_bytes = &data[offset..offset + len];
+            offset += len;
+            let mut filter_offset = 0;
+            crate::filter::deserialize_color_filter(filter_bytes, &mut filter_offset)
+        } else {
+            if offset < data.len() {
+                offset += 1;
+            }
+            None
+        };
+
+        // ImageFilter section
+        let image_filter = if offset < data.len() && data[offset] == 1 {
+            offset += 1;
+            if offset + 4 > data.len() {
+                return None;
+            }
+            let len = u32::from_le_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ]) as usize;
+            offset += 4;
+            if offset + len > data.len() {
+                return None;
+            }
+            let filter_bytes = &data[offset..offset + len];
+            offset += len;
+            let mut filter_offset = 0;
+            crate::filter::deserialize_image_filter(filter_bytes, &mut filter_offset)
+        } else {
+            if offset < data.len() {
+                offset += 1;
+            }
+            None
+        };
 
         Some(Self {
             color,
             shader,
-            mask_filter: None, // Filters not yet deserialized
-            color_filter: None,
-            image_filter: None,
+            mask_filter,
+            color_filter,
+            image_filter,
             blend_mode,
             style,
             stroke_width,
@@ -748,5 +828,70 @@ mod tests {
         assert!((restored.color().r - 0.8).abs() < 0.01);
         assert!((restored.color().g - 0.6).abs() < 0.01);
         assert!((restored.color().b - 0.4).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_paint_serialize_preserves_mask_filter() {
+        use crate::filter::{BlurMaskFilter, BlurStyle};
+        use std::sync::Arc;
+
+        let mut paint = Paint::new();
+        paint.set_mask_filter(Some(Arc::new(BlurMaskFilter::new(BlurStyle::Normal, 4.5))));
+        let bytes = paint.serialize();
+        let restored = Paint::deserialize(&bytes).unwrap();
+        assert!(restored.mask_filter().is_some());
+        assert_eq!(restored.mask_filter().unwrap().blur_radius(), Some(4.5));
+    }
+
+    #[test]
+    fn test_paint_serialize_preserves_color_filter() {
+        use crate::filter::ColorMatrixFilter;
+        use std::sync::Arc;
+
+        let mut paint = Paint::new();
+        let matrix = ColorMatrixFilter::identity();
+        paint.set_color_filter(Some(Arc::new(matrix)));
+        let bytes = paint.serialize();
+        let restored = Paint::deserialize(&bytes).unwrap();
+        assert!(restored.color_filter().is_some());
+    }
+
+    #[test]
+    fn test_paint_serialize_preserves_image_filter() {
+        use crate::filter::BlurImageFilter;
+        use std::sync::Arc;
+
+        let mut paint = Paint::new();
+        let filter = BlurImageFilter::new(3.0, 3.0, crate::shader::TileMode::Clamp);
+        paint.set_image_filter(Some(Arc::new(filter)));
+        let bytes = paint.serialize();
+        let restored = Paint::deserialize(&bytes).unwrap();
+        assert!(restored.image_filter().is_some());
+    }
+
+    #[test]
+    fn test_paint_serialize_all_effects_round_trip() {
+        use crate::filter::{BlurImageFilter, BlurMaskFilter, BlurStyle, ColorMatrixFilter};
+        use crate::shader::ColorShader;
+        use std::sync::Arc;
+
+        let mut paint = Paint::new();
+        paint.set_shader(Some(Arc::new(ColorShader::new(Color4f::new(
+            0.1, 0.2, 0.3, 1.0,
+        )))));
+        paint.set_mask_filter(Some(Arc::new(BlurMaskFilter::new(BlurStyle::Normal, 2.0))));
+        paint.set_color_filter(Some(Arc::new(ColorMatrixFilter::identity())));
+        paint.set_image_filter(Some(Arc::new(BlurImageFilter::new(
+            1.5,
+            1.5,
+            crate::shader::TileMode::Clamp,
+        ))));
+
+        let bytes = paint.serialize();
+        let restored = Paint::deserialize(&bytes).unwrap();
+        assert!(restored.shader().is_some());
+        assert!(restored.mask_filter().is_some());
+        assert!(restored.color_filter().is_some());
+        assert!(restored.image_filter().is_some());
     }
 }
