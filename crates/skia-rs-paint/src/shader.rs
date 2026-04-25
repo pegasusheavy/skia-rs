@@ -856,6 +856,12 @@ impl Shader for BlendShader {
     fn shader_kind(&self) -> ShaderKind {
         ShaderKind::Blend
     }
+
+    fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
+        let src = self.src.sample(x, y);
+        let dst = self.dst.sample(x, y);
+        self.blend_mode.apply(src, dst)
+    }
 }
 
 /// Perlin noise shader.
@@ -1010,6 +1016,22 @@ impl Shader for LocalMatrixShader {
     fn shader_kind(&self) -> ShaderKind {
         ShaderKind::LocalMatrix
     }
+
+    fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
+        // Apply the inverse of the local matrix to map destination coords
+        // back into the inner shader's coordinate space. If the matrix is
+        // not invertible, fall back to sampling the inner shader at the
+        // untransformed coordinates.
+        let inv = self.matrix.invert();
+        let (sx, sy) = match inv {
+            Some(m) => {
+                let p = m.map_point(Point::new(x, y));
+                (p.x, p.y)
+            }
+            None => (x, y),
+        };
+        self.inner.sample(sx, sy)
+    }
 }
 
 /// Compose shader that chains two shaders together.
@@ -1062,6 +1084,12 @@ impl Shader for ComposeShader {
 
     fn shader_kind(&self) -> ShaderKind {
         ShaderKind::Compose
+    }
+
+    fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
+        let dst = self.inner.sample(x, y);
+        let src = self.outer.sample(x, y);
+        self.blend_mode.apply(src, dst)
     }
 }
 
@@ -1273,5 +1301,38 @@ mod tests {
             TileMode::Clamp,
         );
         assert_eq!(linear.shader_kind(), ShaderKind::LinearGradient);
+    }
+
+    #[test]
+    fn test_local_matrix_shader_translates() {
+        let base: Arc<dyn Shader> = Arc::new(ColorShader::new(Color4f::new(1.0, 0.0, 0.0, 1.0)));
+        // LocalMatrixShader with translate(50, 0) should still return red
+        // regardless of query point (ColorShader ignores coords).
+        let matrix = Matrix::translate(50.0, 0.0);
+        let wrapped = LocalMatrixShader::new(base, matrix);
+        let c = wrapped.sample(0.0, 0.0);
+        assert!((c.r - 1.0).abs() < 1e-5);
+        assert!((c.g - 0.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_blend_shader_uses_blend_mode() {
+        let red: Arc<dyn Shader> = Arc::new(ColorShader::new(Color4f::new(1.0, 0.0, 0.0, 1.0)));
+        let green: Arc<dyn Shader> = Arc::new(ColorShader::new(Color4f::new(0.0, 1.0, 0.0, 1.0)));
+        let blend = BlendShader::new(crate::BlendMode::Src, red.clone(), green.clone());
+        let c = blend.sample(0.0, 0.0);
+        // Src mode returns src; with BlendShader(mode, dst, src), src is green
+        assert!((c.g - 1.0).abs() < 1e-5, "Expected green component = 1.0");
+        assert!((c.r - 0.0).abs() < 1e-5, "Expected red component = 0.0");
+    }
+
+    #[test]
+    fn test_compose_shader_blends_children() {
+        let solid: Arc<dyn Shader> = Arc::new(ColorShader::new(Color4f::new(1.0, 1.0, 1.0, 1.0)));
+        let half: Arc<dyn Shader> = Arc::new(ColorShader::new(Color4f::new(0.5, 0.5, 0.5, 1.0)));
+        // ComposeShader(outer, inner, mode) blends them
+        let compose = ComposeShader::new(solid.clone(), half.clone(), crate::BlendMode::SrcOver);
+        let c = compose.sample(0.0, 0.0);
+        assert!(c.a > 0.5, "ComposeShader should not produce transparent output");
     }
 }
