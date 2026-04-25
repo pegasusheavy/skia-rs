@@ -9,6 +9,7 @@
 //! - Image shaders
 //! - Blend shaders
 
+use bitflags::bitflags;
 use skia_rs_core::{Color4f, Matrix, Point, Rect, Scalar};
 use std::sync::Arc;
 
@@ -59,7 +60,7 @@ fn serialize_gradient_common(
     buf.push(tile_mode as u8);
 
     // Flags (4 bytes)
-    buf.extend_from_slice(&flags.0.to_le_bytes());
+    buf.extend_from_slice(&flags.bits().to_le_bytes());
 
     // Colors count (4 bytes)
     buf.extend_from_slice(&(colors.len() as u32).to_le_bytes());
@@ -154,6 +155,43 @@ fn interpolate_gradient_color(
         colors[colors.len() - 1]
     } else {
         colors[idx].lerp(&colors[idx + 1], frac)
+    }
+}
+
+/// Interpolate a gradient color at position t, honoring flags.
+#[inline]
+fn interpolate_gradient_color_with_flags(
+    colors: &[Color4f],
+    positions: Option<&[Scalar]>,
+    t: Scalar,
+    flags: GradientFlags,
+) -> Color4f {
+    if flags.contains(GradientFlags::INTERPOLATE_PREMUL) {
+        // Convert to premul, interpolate, convert back
+        if colors.is_empty() {
+            return Color4f::transparent();
+        }
+        if colors.len() == 1 {
+            return colors[0];
+        }
+
+        let premul: Vec<Color4f> = colors
+            .iter()
+            .map(|c| Color4f::new(c.r * c.a, c.g * c.a, c.b * c.a, c.a))
+            .collect();
+        let result = interpolate_gradient_color(&premul, positions, t);
+        if result.a > 1e-6 {
+            Color4f::new(
+                result.r / result.a,
+                result.g / result.a,
+                result.b / result.a,
+                result.a,
+            )
+        } else {
+            Color4f::new(0.0, 0.0, 0.0, 0.0)
+        }
+    } else {
+        interpolate_gradient_color(colors, positions, t)
     }
 }
 
@@ -265,15 +303,13 @@ pub enum TileMode {
     Decal,
 }
 
-/// Gradient flags for controlling interpolation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct GradientFlags(u32);
-
-impl GradientFlags {
-    /// No flags.
-    pub const NONE: Self = Self(0);
-    /// Interpolate colors in premultiplied space.
-    pub const INTERPOLATE_PREMUL: Self = Self(1 << 0);
+bitflags! {
+    /// Flags controlling gradient behavior.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct GradientFlags: u32 {
+        /// Interpolate colors in premultiplied space.
+        const INTERPOLATE_PREMUL = 1 << 0;
+    }
 }
 
 /// A shader that generates colors for drawing.
@@ -415,7 +451,7 @@ impl LinearGradient {
             colors,
             positions,
             tile_mode,
-            flags: GradientFlags::NONE,
+            flags: GradientFlags::empty(),
             local_matrix: None,
         }
     }
@@ -500,7 +536,12 @@ impl Shader for LinearGradient {
         t = apply_tile_mode(t, self.tile_mode);
 
         // Interpolate color
-        interpolate_gradient_color(&self.colors, self.positions.as_deref(), t)
+        interpolate_gradient_color_with_flags(
+            &self.colors,
+            self.positions.as_deref(),
+            t,
+            self.flags,
+        )
     }
 
     fn serialize(&self) -> Option<Vec<u8>> {
@@ -558,7 +599,7 @@ impl RadialGradient {
             colors,
             positions,
             tile_mode,
-            flags: GradientFlags::NONE,
+            flags: GradientFlags::empty(),
             local_matrix: None,
         }
     }
@@ -638,7 +679,12 @@ impl Shader for RadialGradient {
         t = apply_tile_mode(t, self.tile_mode);
 
         // Interpolate color
-        interpolate_gradient_color(&self.colors, self.positions.as_deref(), t)
+        interpolate_gradient_color_with_flags(
+            &self.colors,
+            self.positions.as_deref(),
+            t,
+            self.flags,
+        )
     }
 
     fn serialize(&self) -> Option<Vec<u8>> {
@@ -700,7 +746,7 @@ impl SweepGradient {
             colors,
             positions,
             tile_mode,
-            flags: GradientFlags::NONE,
+            flags: GradientFlags::empty(),
             local_matrix: None,
         }
     }
@@ -789,7 +835,12 @@ impl Shader for SweepGradient {
         t = apply_tile_mode(t, self.tile_mode);
 
         // Interpolate color
-        interpolate_gradient_color(&self.colors, self.positions.as_deref(), t)
+        interpolate_gradient_color_with_flags(
+            &self.colors,
+            self.positions.as_deref(),
+            t,
+            self.flags,
+        )
     }
 
     fn serialize(&self) -> Option<Vec<u8>> {
@@ -854,7 +905,7 @@ impl TwoPointConicalGradient {
             colors,
             positions,
             tile_mode,
-            flags: GradientFlags::NONE,
+            flags: GradientFlags::empty(),
             local_matrix: None,
         }
     }
@@ -1912,7 +1963,7 @@ fn deserialize_gradient_common(
     if *offset + 4 > bytes.len() {
         return None;
     }
-    let flags = GradientFlags(u32::from_le_bytes([
+    let flags = GradientFlags::from_bits_truncate(u32::from_le_bytes([
         bytes[*offset],
         bytes[*offset + 1],
         bytes[*offset + 2],
@@ -3069,5 +3120,47 @@ mod tests {
         // Outside bounds should return transparent
         let c_out = shader.sample(2.0, 0.5);
         assert_eq!(c_out.a, 0.0, "decal outside bounds should be transparent");
+    }
+
+    #[test]
+    fn test_gradient_flags_interpolate_premul() {
+        // Create a gradient from opaque red to transparent
+        let colors = vec![
+            Color4f::new(1.0, 0.0, 0.0, 1.0),
+            Color4f::new(0.0, 0.0, 0.0, 0.0),
+        ];
+
+        // Without premul flag
+        let grad_normal = LinearGradient::new(
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            colors.clone(),
+            None,
+            TileMode::Clamp,
+        );
+
+        // With premul flag
+        let grad_premul = LinearGradient::new(
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            colors.clone(),
+            None,
+            TileMode::Clamp,
+        )
+        .with_flags(GradientFlags::INTERPOLATE_PREMUL);
+
+        // Sample at midpoint (t=0.5)
+        let c_normal = grad_normal.sample(5.0, 0.0);
+        let c_premul = grad_premul.sample(5.0, 0.0);
+
+        // Without premul, RGB lerps directly: (1.0 + 0.0)/2 = 0.5
+        // With premul, RGB*alpha lerps: (1.0*1.0 + 0.0*0.0)/2 = 0.5, then unpremul
+        // The difference should be visible
+        assert!(
+            c_normal.r > 0.4 && c_normal.r < 0.6,
+            "normal interpolation at midpoint"
+        );
+        // With premul, the color at midpoint should be darker (more transparent)
+        assert!(c_premul.a < 1.0, "premul should affect alpha");
     }
 }

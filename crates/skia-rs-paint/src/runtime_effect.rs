@@ -7,7 +7,7 @@ use crate::shader::{Shader, ShaderKind};
 use crate::sksl::{Expr, FnDecl, Parser, SkslProgram, SkslType, Stmt};
 use crate::sksl_interp::{Interp, Value as SkslValue};
 use skia_rs_core::{Color4f, Matrix, Scalar};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// Error type for runtime effect operations.
 #[derive(Debug, Clone)]
@@ -27,6 +27,13 @@ pub enum RuntimeEffectError {
         /// Number of children supplied.
         got: usize,
     },
+    /// Missing main function.
+    MissingMain,
+    /// Invalid entry point signature.
+    InvalidEntryPoint {
+        /// Expected signature.
+        expected: String,
+    },
 }
 
 impl std::fmt::Display for RuntimeEffectError {
@@ -38,6 +45,10 @@ impl std::fmt::Display for RuntimeEffectError {
             RuntimeEffectError::TypeMismatch(msg) => write!(f, "Type mismatch: {}", msg),
             RuntimeEffectError::InvalidChildCount { expected, got } => {
                 write!(f, "Invalid child count: expected {}, got {}", expected, got)
+            }
+            RuntimeEffectError::MissingMain => write!(f, "Missing main function"),
+            RuntimeEffectError::InvalidEntryPoint { expected } => {
+                write!(f, "Invalid entry point signature: expected {}", expected)
             }
         }
     }
@@ -185,7 +196,7 @@ pub enum ShaderTarget {
 }
 
 /// A compiled runtime effect.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RuntimeEffect {
     /// Original SkSL source.
     source: String,
@@ -198,9 +209,11 @@ pub struct RuntimeEffect {
     /// Total uniform data size.
     uniform_size: usize,
     /// Compiled GLSL (cached).
-    glsl_cache: Option<String>,
+    glsl_cache: OnceLock<String>,
     /// Compiled WGSL (cached).
-    wgsl_cache: Option<String>,
+    wgsl_cache: OnceLock<String>,
+    /// Compiled MSL (cached).
+    msl_cache: OnceLock<String>,
 }
 
 impl RuntimeEffect {
@@ -219,11 +232,14 @@ impl RuntimeEffect {
         Self::compile(source, EffectKind::Blender)
     }
 
-    fn compile(source: &str, _kind: EffectKind) -> Result<Self, RuntimeEffectError> {
+    fn compile(source: &str, kind: EffectKind) -> Result<Self, RuntimeEffectError> {
         let mut parser = Parser::new(source);
         let program = parser
             .parse_program()
             .map_err(RuntimeEffectError::ParseError)?;
+
+        // Validate entry point
+        validate_entry_point(&program, kind)?;
 
         // Extract uniforms
         let mut uniforms = Vec::new();
@@ -276,8 +292,9 @@ impl RuntimeEffect {
             uniforms,
             children,
             uniform_size: offset,
-            glsl_cache: None,
-            wgsl_cache: None,
+            glsl_cache: OnceLock::new(),
+            wgsl_cache: OnceLock::new(),
+            msl_cache: OnceLock::new(),
         })
     }
 
@@ -309,10 +326,30 @@ impl RuntimeEffect {
     /// Compile to target language.
     pub fn compile_to(&self, target: ShaderTarget) -> Result<String, RuntimeEffectError> {
         match target {
-            ShaderTarget::GlslEs300 => Ok(self.to_glsl(true)),
-            ShaderTarget::Glsl450 => Ok(self.to_glsl(false)),
-            ShaderTarget::Wgsl => Ok(self.to_wgsl()),
-            ShaderTarget::Msl => Ok(self.to_msl()),
+            ShaderTarget::GlslEs300 | ShaderTarget::Glsl450 => {
+                if let Some(cached) = self.glsl_cache.get() {
+                    return Ok(cached.clone());
+                }
+                let output = self.to_glsl(target == ShaderTarget::GlslEs300);
+                let _ = self.glsl_cache.set(output.clone());
+                Ok(output)
+            }
+            ShaderTarget::Wgsl => {
+                if let Some(cached) = self.wgsl_cache.get() {
+                    return Ok(cached.clone());
+                }
+                let output = self.to_wgsl();
+                let _ = self.wgsl_cache.set(output.clone());
+                Ok(output)
+            }
+            ShaderTarget::Msl => {
+                if let Some(cached) = self.msl_cache.get() {
+                    return Ok(cached.clone());
+                }
+                let output = self.to_msl();
+                let _ = self.msl_cache.set(output.clone());
+                Ok(output)
+            }
             ShaderTarget::SpirV => Err(RuntimeEffectError::CompileError(
                 "SPIR-V compilation not yet implemented".to_string(),
             )),
@@ -1229,6 +1266,87 @@ enum EffectKind {
     Blender,
 }
 
+/// Validate the entry point for the given effect kind.
+fn validate_entry_point(program: &SkslProgram, kind: EffectKind) -> Result<(), RuntimeEffectError> {
+    let main = program
+        .functions
+        .iter()
+        .find(|f| f.name == "main")
+        .ok_or(RuntimeEffectError::MissingMain)?;
+
+    match kind {
+        EffectKind::Shader => {
+            // Expect main(vec2) -> vec4 or main(half2) -> half4
+            if main.params.len() != 1 {
+                return Err(RuntimeEffectError::InvalidEntryPoint {
+                    expected: "main(vec2) -> vec4".into(),
+                });
+            }
+            // Check param is vec2 or half2
+            let param_ok = matches!(&main.params[0].ty, SkslType::Vec2 | SkslType::Half2);
+            if !param_ok {
+                return Err(RuntimeEffectError::InvalidEntryPoint {
+                    expected: "main(vec2) -> vec4".into(),
+                });
+            }
+            // Check return is vec4 or half4
+            let return_ok = matches!(&main.return_type, SkslType::Vec4 | SkslType::Half4);
+            if !return_ok {
+                return Err(RuntimeEffectError::InvalidEntryPoint {
+                    expected: "main(vec2) -> vec4".into(),
+                });
+            }
+        }
+        EffectKind::ColorFilter => {
+            // Expect main(vec4) -> vec4 or main(half4) -> half4
+            if main.params.len() != 1 {
+                return Err(RuntimeEffectError::InvalidEntryPoint {
+                    expected: "main(vec4) -> vec4".into(),
+                });
+            }
+            // Check param is vec4 or half4
+            let param_ok = matches!(&main.params[0].ty, SkslType::Vec4 | SkslType::Half4);
+            if !param_ok {
+                return Err(RuntimeEffectError::InvalidEntryPoint {
+                    expected: "main(vec4) -> vec4".into(),
+                });
+            }
+            // Check return is vec4 or half4
+            let return_ok = matches!(&main.return_type, SkslType::Vec4 | SkslType::Half4);
+            if !return_ok {
+                return Err(RuntimeEffectError::InvalidEntryPoint {
+                    expected: "main(vec4) -> vec4".into(),
+                });
+            }
+        }
+        EffectKind::Blender => {
+            // Expect main(vec4, vec4) -> vec4 or main(half4, half4) -> half4
+            if main.params.len() != 2 {
+                return Err(RuntimeEffectError::InvalidEntryPoint {
+                    expected: "main(vec4, vec4) -> vec4".into(),
+                });
+            }
+            // Check both params are vec4 or half4
+            let param0_ok = matches!(&main.params[0].ty, SkslType::Vec4 | SkslType::Half4);
+            let param1_ok = matches!(&main.params[1].ty, SkslType::Vec4 | SkslType::Half4);
+            if !param0_ok || !param1_ok {
+                return Err(RuntimeEffectError::InvalidEntryPoint {
+                    expected: "main(vec4, vec4) -> vec4".into(),
+                });
+            }
+            // Check return is vec4 or half4
+            let return_ok = matches!(&main.return_type, SkslType::Vec4 | SkslType::Half4);
+            if !return_ok {
+                return Err(RuntimeEffectError::InvalidEntryPoint {
+                    expected: "main(vec4, vec4) -> vec4".into(),
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Uniform data builder.
 #[derive(Debug, Clone, Default)]
 pub struct UniformData {
@@ -1668,5 +1786,75 @@ mod tests {
 
         assert!(msl.contains("discard_fragment()"), "MSL should translate discard to discard_fragment(): {}", msl);
         assert!(!msl.contains("discard;"), "MSL should not use GLSL discard syntax");
+    }
+
+    #[test]
+    fn test_runtime_effect_caches_glsl() {
+        let src = "half4 main(float2 p) { return half4(1.0, 0.0, 0.0, 1.0); }";
+        let effect = RuntimeEffect::make_for_shader(src).unwrap();
+        let a = effect.compile_to(ShaderTarget::GlslEs300).unwrap();
+        let b = effect.compile_to(ShaderTarget::GlslEs300).unwrap();
+        assert_eq!(a, b, "Cached GLSL should be identical");
+    }
+
+    #[test]
+    fn test_runtime_effect_caches_wgsl() {
+        let src = "half4 main(float2 p) { return half4(1.0, 0.0, 0.0, 1.0); }";
+        let effect = RuntimeEffect::make_for_shader(src).unwrap();
+        let a = effect.compile_to(ShaderTarget::Wgsl).unwrap();
+        let b = effect.compile_to(ShaderTarget::Wgsl).unwrap();
+        assert_eq!(a, b, "Cached WGSL should be identical");
+    }
+
+    #[test]
+    fn test_runtime_effect_caches_msl() {
+        let src = "half4 main(float2 p) { return half4(1.0, 0.0, 0.0, 1.0); }";
+        let effect = RuntimeEffect::make_for_shader(src).unwrap();
+        let a = effect.compile_to(ShaderTarget::Msl).unwrap();
+        let b = effect.compile_to(ShaderTarget::Msl).unwrap();
+        assert_eq!(a, b, "Cached MSL should be identical");
+    }
+
+    #[test]
+    fn test_runtime_effect_rejects_wrong_main_for_color_filter() {
+        // main(vec2) but declared as ColorFilter (should want main(vec4))
+        let src = "half4 main(float2 p) { return half4(0.0); }";
+        let result = RuntimeEffect::make_for_color_filter(src);
+        assert!(
+            result.is_err(),
+            "ColorFilter main with vec2 param should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_runtime_effect_rejects_wrong_main_for_blender() {
+        // main(vec2) but declared as Blender (should want main(vec4, vec4))
+        let src = "half4 main(float2 p) { return half4(0.0); }";
+        let result = RuntimeEffect::make_for_blender(src);
+        assert!(
+            result.is_err(),
+            "Blender main with vec2 param should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_runtime_effect_accepts_valid_shader() {
+        let src = "half4 main(float2 p) { return half4(1.0, 0.0, 0.0, 1.0); }";
+        let result = RuntimeEffect::make_for_shader(src);
+        assert!(result.is_ok(), "Valid shader main should be accepted");
+    }
+
+    #[test]
+    fn test_runtime_effect_accepts_valid_color_filter() {
+        let src = "half4 main(half4 color) { return color * 0.5; }";
+        let result = RuntimeEffect::make_for_color_filter(src);
+        assert!(result.is_ok(), "Valid color filter main should be accepted");
+    }
+
+    #[test]
+    fn test_runtime_effect_accepts_valid_blender() {
+        let src = "half4 main(half4 src, half4 dst) { return src + dst; }";
+        let result = RuntimeEffect::make_for_blender(src);
+        assert!(result.is_ok(), "Valid blender main should be accepted");
     }
 }

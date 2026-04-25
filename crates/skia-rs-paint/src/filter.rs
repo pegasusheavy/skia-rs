@@ -94,6 +94,101 @@ impl ColorMatrixFilter {
             0.0,
         ])
     }
+
+    /// Create a color matrix filter that adjusts brightness.
+    ///
+    /// A value of 0.0 is no change; positive values brighten, negative darken.
+    /// Implemented as adding `amount` to the RGB bias (translation column).
+    pub fn brightness(amount: Scalar) -> Self {
+        let mut m = [0.0f32; 20];
+        m[0] = 1.0;
+        m[6] = 1.0;
+        m[12] = 1.0;
+        m[18] = 1.0;
+        m[4] = amount;
+        m[9] = amount;
+        m[14] = amount;
+        Self::new(m)
+    }
+
+    /// Create a color matrix filter that adjusts contrast.
+    ///
+    /// A value of 1.0 is no change; values > 1 increase contrast, < 1 decrease.
+    pub fn contrast(amount: Scalar) -> Self {
+        // result = (src - 0.5) * amount + 0.5
+        //        = src * amount + (0.5 - 0.5 * amount)
+        let bias = 0.5 - 0.5 * amount;
+        let mut m = [0.0f32; 20];
+        m[0] = amount;
+        m[6] = amount;
+        m[12] = amount;
+        m[18] = 1.0;
+        m[4] = bias;
+        m[9] = bias;
+        m[14] = bias;
+        Self::new(m)
+    }
+
+    /// Create a color matrix filter that rotates hue by `degrees`.
+    pub fn hue_rotate(degrees: Scalar) -> Self {
+        let r = degrees.to_radians();
+        let cos_a = r.cos();
+        let sin_a = r.sin();
+        // Reference: W3C feColorMatrix hueRotate
+        let m = [
+            0.213 + cos_a * 0.787 - sin_a * 0.213,
+            0.715 - cos_a * 0.715 - sin_a * 0.715,
+            0.072 - cos_a * 0.072 + sin_a * 0.928,
+            0.0,
+            0.0,
+            0.213 - cos_a * 0.213 + sin_a * 0.143,
+            0.715 + cos_a * 0.285 + sin_a * 0.140,
+            0.072 - cos_a * 0.072 - sin_a * 0.283,
+            0.0,
+            0.0,
+            0.213 - cos_a * 0.213 - sin_a * 0.787,
+            0.715 - cos_a * 0.715 + sin_a * 0.715,
+            0.072 + cos_a * 0.928 + sin_a * 0.072,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+        ];
+        Self::new(m)
+    }
+
+    /// Create a color matrix filter that inverts RGB channels.
+    pub fn invert() -> Self {
+        let m = [
+            -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+        ];
+        Self::new(m)
+    }
+
+    /// Create a color matrix filter that applies a sepia tone.
+    pub fn sepia() -> Self {
+        let m = [
+            0.393, 0.769, 0.189, 0.0, 0.0, 0.349, 0.686, 0.168, 0.0, 0.0, 0.272, 0.534, 0.131,
+            0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+        ];
+        Self::new(m)
+    }
+
+    /// Create a color matrix filter that converts to grayscale using
+    /// luminance weights (Rec. 601).
+    pub fn grayscale() -> Self {
+        let r = 0.299;
+        let g = 0.587;
+        let b = 0.114;
+        let m = [
+            r, g, b, 0.0, 0.0, r, g, b, 0.0, 0.0, r, g, b, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+        ];
+        Self::new(m)
+    }
 }
 
 impl ColorFilter for ColorMatrixFilter {
@@ -2324,5 +2419,69 @@ mod tests {
         assert_eq!(pixels[2 * 4], 255, "tile should repeat horizontally");
         // (0,2) should match (0,0) = red
         assert_eq!(pixels[8 * 4], 255, "tile should repeat vertically");
+    }
+
+    #[test]
+    fn test_color_matrix_invert() {
+        let filter = ColorMatrixFilter::invert();
+        let result = filter.filter_color(Color4f::new(0.2, 0.4, 0.8, 1.0));
+        assert!((result.r - 0.8).abs() < 1e-3);
+        assert!((result.g - 0.6).abs() < 1e-3);
+        assert!((result.b - 0.2).abs() < 1e-3);
+        assert!((result.a - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_color_matrix_grayscale() {
+        let filter = ColorMatrixFilter::grayscale();
+        let result = filter.filter_color(Color4f::new(1.0, 0.0, 0.0, 1.0));
+        // R -> 0.299, G -> 0.299, B -> 0.299 (all channels become luminance)
+        assert!((result.r - 0.299).abs() < 1e-3);
+        assert!((result.g - 0.299).abs() < 1e-3);
+        assert!((result.b - 0.299).abs() < 1e-3);
+        assert!((result.a - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_color_matrix_brightness_zero_is_identity() {
+        let filter = ColorMatrixFilter::brightness(0.0);
+        let input = Color4f::new(0.3, 0.4, 0.5, 0.7);
+        let result = filter.filter_color(input);
+        assert!((result.r - 0.3).abs() < 1e-3);
+        assert!((result.g - 0.4).abs() < 1e-3);
+        assert!((result.b - 0.5).abs() < 1e-3);
+        assert!((result.a - 0.7).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_color_matrix_sepia() {
+        let filter = ColorMatrixFilter::sepia();
+        let result = filter.filter_color(Color4f::new(1.0, 0.0, 0.0, 1.0));
+        // Red through sepia matrix
+        assert!(result.r > 0.3);
+        assert!(result.g > 0.3);
+        assert!(result.b > 0.1);
+        assert!((result.a - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_color_matrix_contrast() {
+        let filter = ColorMatrixFilter::contrast(2.0);
+        let result = filter.filter_color(Color4f::new(0.75, 0.25, 0.5, 1.0));
+        // (0.75 - 0.5) * 2.0 + 0.5 = 1.0
+        assert!((result.r - 1.0).abs() < 1e-3);
+        // (0.25 - 0.5) * 2.0 + 0.5 = 0.0
+        assert!((result.g - 0.0).abs() < 1e-3);
+        // (0.5 - 0.5) * 2.0 + 0.5 = 0.5
+        assert!((result.b - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_color_matrix_hue_rotate() {
+        let filter = ColorMatrixFilter::hue_rotate(180.0);
+        let result = filter.filter_color(Color4f::new(1.0, 0.0, 0.0, 1.0));
+        // Red rotated 180 degrees should be cyan-ish (low R, high G/B)
+        assert!(result.r < 0.5);
+        assert!((result.a - 1.0).abs() < 1e-3);
     }
 }
