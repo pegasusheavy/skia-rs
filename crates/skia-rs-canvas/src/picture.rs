@@ -639,4 +639,266 @@ mod tests {
 
         assert_eq!(outer.approximate_op_count(), 1);
     }
+
+    // =========================================================================
+    // T-5: Picture playback round-trip tests for DrawCommand variants
+    // =========================================================================
+
+    #[test]
+    fn test_picture_playback_circle() {
+        // Record draw_circle, replay, and verify pixels match direct draw.
+        use crate::Surface;
+        use skia_rs_core::Color;
+
+        let center = Point::new(50.0, 50.0);
+        let radius = 20.0;
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_rgb(255, 0, 0));
+
+        // Record
+        let mut recorder = PictureRecorder::new();
+        let rc = recorder.begin_recording(Rect::from_xywh(0.0, 0.0, 100.0, 100.0));
+        rc.draw_circle(center, radius, &paint);
+        let picture = recorder.finish_recording().unwrap();
+
+        // Playback
+        let mut surface_playback = Surface::new_raster_n32_premul(100, 100).unwrap();
+        {
+            let mut canvas = surface_playback.canvas();
+            picture.playback(&mut canvas);
+        }
+
+        // Direct
+        let mut surface_direct = Surface::new_raster_n32_premul(100, 100).unwrap();
+        {
+            let mut canvas = surface_direct.canvas();
+            canvas.draw_circle(center, radius, &paint);
+        }
+
+        // Compare center pixel (should be red in both)
+        let pixel_playback = surface_playback.pixel_buffer().get_pixel(50, 50).unwrap();
+        let pixel_direct = surface_direct.pixel_buffer().get_pixel(50, 50).unwrap();
+        assert_eq!(pixel_playback.red(), pixel_direct.red());
+        assert_eq!(pixel_playback.green(), pixel_direct.green());
+        assert_eq!(pixel_playback.blue(), pixel_direct.blue());
+    }
+
+    #[test]
+    fn test_picture_playback_path() {
+        // Record draw_path, replay, and verify output.
+        use crate::Surface;
+        use skia_rs_core::Color;
+        use skia_rs_path::PathBuilder;
+
+        let mut builder = PathBuilder::new();
+        builder.move_to(10.0, 10.0);
+        builder.line_to(90.0, 10.0);
+        builder.line_to(50.0, 90.0);
+        builder.close();
+        let path = builder.build();
+
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_rgb(0, 255, 0));
+
+        // Record
+        let mut recorder = PictureRecorder::new();
+        let rc = recorder.begin_recording(Rect::from_xywh(0.0, 0.0, 100.0, 100.0));
+        rc.draw_path(&path, &paint);
+        let picture = recorder.finish_recording().unwrap();
+
+        // Playback
+        let mut surface = Surface::new_raster_n32_premul(100, 100).unwrap();
+        {
+            let mut canvas = surface.canvas();
+            picture.playback(&mut canvas);
+        }
+
+        // Verify center pixel has green contribution
+        let pixel = surface.pixel_buffer().get_pixel(50, 50).unwrap();
+        assert!(pixel.green() > 100, "center should have green from triangle");
+    }
+
+    #[test]
+    fn test_picture_playback_with_transforms() {
+        // Record: save, translate, draw_rect, restore. Verify rect appears
+        // at translated position.
+        use crate::Surface;
+        use skia_rs_core::Color;
+
+        let mut recorder = PictureRecorder::new();
+        let rc = recorder.begin_recording(Rect::from_xywh(0.0, 0.0, 100.0, 100.0));
+        rc.save();
+        rc.translate(25.0, 25.0);
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_rgb(255, 255, 0));
+        rc.draw_rect(&Rect::from_xywh(0.0, 0.0, 10.0, 10.0), &paint);
+        rc.restore();
+        let picture = recorder.finish_recording().unwrap();
+
+        let mut surface = Surface::new_raster_n32_premul(100, 100).unwrap();
+        {
+            let mut canvas = surface.canvas();
+            picture.playback(&mut canvas);
+        }
+
+        // Pixel at (30, 30) should be yellow (inside translated rect)
+        let pixel = surface.pixel_buffer().get_pixel(30, 30).unwrap();
+        assert!(pixel.red() > 200 && pixel.green() > 200, "pixel should be yellow");
+
+        // Pixel at (5, 5) should be background (not in translated rect)
+        let bg = surface.pixel_buffer().get_pixel(5, 5).unwrap();
+        assert_eq!(bg, Color::TRANSPARENT, "pixel outside rect should be transparent");
+    }
+
+    #[test]
+    fn test_picture_playback_oval() {
+        // Record draw_oval, verify playback draws pixels.
+        use crate::Surface;
+        use skia_rs_core::Color;
+
+        let mut recorder = PictureRecorder::new();
+        let rc = recorder.begin_recording(Rect::from_xywh(0.0, 0.0, 100.0, 100.0));
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_rgb(0, 0, 255));
+        rc.draw_oval(&Rect::from_xywh(25.0, 25.0, 50.0, 50.0), &paint);
+        let picture = recorder.finish_recording().unwrap();
+
+        let mut surface = Surface::new_raster_n32_premul(100, 100).unwrap();
+        {
+            let mut canvas = surface.canvas();
+            picture.playback(&mut canvas);
+        }
+
+        // Center of oval should be blue
+        let pixel = surface.pixel_buffer().get_pixel(50, 50).unwrap();
+        assert!(pixel.blue() > 200, "oval center should be blue");
+    }
+
+    #[test]
+    fn test_picture_playback_arc() {
+        // Record draw_arc, verify playback doesn't panic.
+        use crate::Surface;
+        use skia_rs_core::Color;
+
+        let mut recorder = PictureRecorder::new();
+        let rc = recorder.begin_recording(Rect::from_xywh(0.0, 0.0, 100.0, 100.0));
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_rgb(128, 0, 128));
+        rc.draw_arc(&Rect::from_xywh(10.0, 10.0, 80.0, 80.0), 0.0, 90.0, true, &paint);
+        let picture = recorder.finish_recording().unwrap();
+
+        let mut surface = Surface::new_raster_n32_premul(100, 100).unwrap();
+        {
+            let mut canvas = surface.canvas();
+            picture.playback(&mut canvas);
+        }
+
+        // Arc playback should complete without panicking. Exact pixel verification
+        // depends on arc implementation details (whether it fills, strokes, etc).
+        // For now, verify the command was recorded and executed.
+        assert_eq!(picture.approximate_op_count(), 1);
+    }
+
+    #[test]
+    fn test_picture_playback_round_rect() {
+        // Record draw_round_rect, verify playback.
+        use crate::Surface;
+        use skia_rs_core::Color;
+
+        let mut recorder = PictureRecorder::new();
+        let rc = recorder.begin_recording(Rect::from_xywh(0.0, 0.0, 100.0, 100.0));
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_rgb(255, 128, 0));
+        rc.draw_round_rect(&Rect::from_xywh(20.0, 20.0, 60.0, 60.0), 10.0, 10.0, &paint);
+        let picture = recorder.finish_recording().unwrap();
+
+        let mut surface = Surface::new_raster_n32_premul(100, 100).unwrap();
+        {
+            let mut canvas = surface.canvas();
+            picture.playback(&mut canvas);
+        }
+
+        // Center should be orange
+        let pixel = surface.pixel_buffer().get_pixel(50, 50).unwrap();
+        assert!(pixel.red() > 200 && pixel.green() > 50, "round rect center should be orange");
+    }
+
+    #[test]
+    fn test_picture_playback_line() {
+        // Record draw_line, verify playback.
+        use crate::Surface;
+        use skia_rs_core::Color;
+
+        let mut recorder = PictureRecorder::new();
+        let rc = recorder.begin_recording(Rect::from_xywh(0.0, 0.0, 100.0, 100.0));
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_rgb(255, 255, 255));
+        paint.set_stroke_width(2.0);
+        rc.draw_line(Point::new(10.0, 10.0), Point::new(90.0, 90.0), &paint);
+        let picture = recorder.finish_recording().unwrap();
+
+        let mut surface = Surface::new_raster_n32_premul(100, 100).unwrap();
+        {
+            let mut canvas = surface.canvas();
+            picture.playback(&mut canvas);
+        }
+
+        // Pixel near the line midpoint should be white
+        let pixel = surface.pixel_buffer().get_pixel(50, 50).unwrap();
+        assert!(pixel.red() > 200, "line midpoint should be white");
+    }
+
+    #[test]
+    fn test_picture_playback_clip_rect() {
+        // Record: clip_rect, then draw outside the clip. Verify clipping worked.
+        use crate::Surface;
+        use skia_rs_core::Color;
+
+        let mut recorder = PictureRecorder::new();
+        let rc = recorder.begin_recording(Rect::from_xywh(0.0, 0.0, 100.0, 100.0));
+        rc.clip_rect(&Rect::from_xywh(25.0, 25.0, 50.0, 50.0), false);
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_rgb(200, 200, 200));
+        rc.draw_rect(&Rect::from_xywh(0.0, 0.0, 100.0, 100.0), &paint);
+        let picture = recorder.finish_recording().unwrap();
+
+        let mut surface = Surface::new_raster_n32_premul(100, 100).unwrap();
+        {
+            let mut canvas = surface.canvas();
+            picture.playback(&mut canvas);
+        }
+
+        // Pixel at (50, 50) inside clip should be gray
+        let inside = surface.pixel_buffer().get_pixel(50, 50).unwrap();
+        assert!(inside.red() > 150, "inside clip should be drawn");
+
+        // Pixel at (10, 10) outside clip should be transparent
+        let outside = surface.pixel_buffer().get_pixel(10, 10).unwrap();
+        assert_eq!(outside, Color::TRANSPARENT, "outside clip should not be drawn");
+    }
+
+    #[test]
+    fn test_picture_playback_scale() {
+        // Record: scale, draw_rect. Verify scaling is applied.
+        use crate::Surface;
+        use skia_rs_core::Color;
+
+        let mut recorder = PictureRecorder::new();
+        let rc = recorder.begin_recording(Rect::from_xywh(0.0, 0.0, 100.0, 100.0));
+        rc.scale(2.0, 2.0);
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_rgb(100, 100, 255));
+        rc.draw_rect(&Rect::from_xywh(10.0, 10.0, 10.0, 10.0), &paint);
+        let picture = recorder.finish_recording().unwrap();
+
+        let mut surface = Surface::new_raster_n32_premul(100, 100).unwrap();
+        {
+            let mut canvas = surface.canvas();
+            picture.playback(&mut canvas);
+        }
+
+        // With scale(2, 2), rect at (10, 10) size 10x10 → (20, 20) size 20x20
+        let pixel = surface.pixel_buffer().get_pixel(30, 30).unwrap();
+        assert!(pixel.blue() > 200, "scaled rect should draw at scaled position");
+    }
 }

@@ -2811,4 +2811,223 @@ mod tests {
 
         // Should draw sprite at (10, 10) without panicking
     }
+
+    // =========================================================================
+    // T-1: Matrix stack operation tests
+    // =========================================================================
+
+    #[test]
+    fn test_save_count_increments_and_restore_decrements() {
+        let mut buffer = PixelBuffer::new(10, 10);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        let initial = canvas.save_count();
+        assert_eq!(initial, 1);
+        canvas.save();
+        assert_eq!(canvas.save_count(), initial + 1);
+        canvas.save();
+        assert_eq!(canvas.save_count(), initial + 2);
+        canvas.restore();
+        assert_eq!(canvas.save_count(), initial + 1);
+        canvas.restore();
+        assert_eq!(canvas.save_count(), initial);
+    }
+
+    #[test]
+    fn test_restore_to_count_pops_multiple_levels() {
+        let mut buffer = PixelBuffer::new(10, 10);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        let base = canvas.save_count();
+        canvas.save();
+        canvas.save();
+        canvas.save();
+        assert_eq!(canvas.save_count(), base + 3);
+        canvas.restore_to_count(base);
+        assert_eq!(canvas.save_count(), base);
+    }
+
+    #[test]
+    fn test_translate_accumulates() {
+        let mut buffer = PixelBuffer::new(10, 10);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        canvas.translate(5.0, 10.0);
+        canvas.translate(3.0, 2.0);
+        let m = canvas.total_matrix();
+        let p = m.map_point(Point::new(0.0, 0.0));
+        assert!((p.x - 8.0).abs() < 1e-4, "expected tx=8, got {}", p.x);
+        assert!((p.y - 12.0).abs() < 1e-4, "expected ty=12, got {}", p.y);
+    }
+
+    #[test]
+    fn test_save_then_translate_then_restore_undoes() {
+        let mut buffer = PixelBuffer::new(10, 10);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        canvas.save();
+        canvas.translate(10.0, 10.0);
+        canvas.restore();
+        let p = canvas.total_matrix().map_point(Point::new(0.0, 0.0));
+        assert!(p.x.abs() < 1e-4 && p.y.abs() < 1e-4, "restore should undo translate");
+    }
+
+    #[test]
+    fn test_scale_accumulates() {
+        let mut buffer = PixelBuffer::new(10, 10);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        canvas.scale(2.0, 3.0);
+        let p = canvas.total_matrix().map_point(Point::new(5.0, 5.0));
+        assert!((p.x - 10.0).abs() < 1e-4, "expected x scaled by 2");
+        assert!((p.y - 15.0).abs() < 1e-4, "expected y scaled by 3");
+    }
+
+    #[test]
+    fn test_rotate_90_degrees() {
+        let mut buffer = PixelBuffer::new(10, 10);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        canvas.rotate(90.0);
+        let p = canvas.total_matrix().map_point(Point::new(1.0, 0.0));
+        // (1, 0) rotated 90° CCW → (0, 1)
+        assert!(p.x.abs() < 1e-3, "x should be ~0, got {}", p.x);
+        assert!((p.y - 1.0).abs() < 1e-3, "y should be ~1, got {}", p.y);
+    }
+
+    #[test]
+    fn test_reset_matrix_clears_all_transforms() {
+        let mut buffer = PixelBuffer::new(10, 10);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        canvas.translate(100.0, 100.0);
+        canvas.scale(2.0, 2.0);
+        canvas.reset_matrix();
+        let m = canvas.total_matrix();
+        assert!(m.is_identity(), "reset_matrix should produce identity");
+        let p = m.map_point(Point::new(5.0, 5.0));
+        assert!((p.x - 5.0).abs() < 1e-4);
+        assert!((p.y - 5.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_concat_composes_matrices() {
+        let mut buffer = PixelBuffer::new(10, 10);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        canvas.concat(&Matrix::translate(3.0, 4.0));
+        let p = canvas.total_matrix().map_point(Point::new(1.0, 1.0));
+        assert!((p.x - 4.0).abs() < 1e-4, "expected p.x = 1+3 = 4");
+        assert!((p.y - 5.0).abs() < 1e-4, "expected p.y = 1+4 = 5");
+    }
+
+    #[test]
+    fn test_set_matrix_replaces_ctm() {
+        let mut buffer = PixelBuffer::new(10, 10);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        canvas.translate(100.0, 100.0);
+        canvas.set_matrix(&Matrix::scale(2.0, 2.0));
+        let p = canvas.total_matrix().map_point(Point::new(5.0, 5.0));
+        // translate was discarded, only scale remains
+        assert!((p.x - 10.0).abs() < 1e-4);
+        assert!((p.y - 10.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_total_matrix_reflects_current_transform() {
+        let mut buffer = PixelBuffer::new(10, 10);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        assert!(canvas.total_matrix().is_identity());
+        canvas.translate(5.0, 10.0);
+        let m = canvas.total_matrix();
+        let p = m.map_point(Point::new(0.0, 0.0));
+        assert!((p.x - 5.0).abs() < 1e-4);
+        assert!((p.y - 10.0).abs() < 1e-4);
+    }
+
+    // =========================================================================
+    // T-2: SaveLayerRec and SaveLayerFlags tests
+    // =========================================================================
+
+    #[test]
+    fn test_save_layer_rec_default_has_none_fields() {
+        let rec = SaveLayerRec::default();
+        assert!(rec.bounds.is_none());
+        assert!(rec.paint.is_none());
+    }
+
+    #[test]
+    fn test_save_layer_flags_none() {
+        let flags = SaveLayerFlags::NONE;
+        assert_eq!(flags.0, 0);
+    }
+
+    #[test]
+    fn test_save_layer_flags_preserve_lcd_text() {
+        let flags = SaveLayerFlags::PRESERVE_LCD_TEXT;
+        assert_ne!(flags.0, 0);
+    }
+
+    #[test]
+    fn test_save_layer_flags_init_with_previous() {
+        let flags = SaveLayerFlags::INIT_WITH_PREVIOUS;
+        assert_ne!(flags.0, 0);
+    }
+
+    // =========================================================================
+    // T-3: Supporting types tests
+    // =========================================================================
+
+    #[test]
+    fn test_rsxform_identity() {
+        let xform = RSXform::from_scale_translate(1.0, 0.0, 0.0);
+        assert_eq!(xform.scos, 1.0);
+        assert_eq!(xform.ssin, 0.0);
+        assert_eq!(xform.tx, 0.0);
+        assert_eq!(xform.ty, 0.0);
+    }
+
+    #[test]
+    fn test_rsxform_translation() {
+        let xform = RSXform::from_scale_translate(1.0, 10.0, 20.0);
+        let m = xform.to_matrix();
+        let p = m.map_point(Point::new(0.0, 0.0));
+        assert!((p.x - 10.0).abs() < 1e-4, "expected tx=10");
+        assert!((p.y - 20.0).abs() < 1e-4, "expected ty=20");
+    }
+
+    #[test]
+    fn test_rsxform_from_radians_identity() {
+        let xform = RSXform::from_radians(1.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let m = xform.to_matrix();
+        let p = m.map_point(Point::new(5.0, 5.0));
+        assert!((p.x - 5.0).abs() < 1e-4, "identity should not transform");
+        assert!((p.y - 5.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_rsxform_from_radians_90_degrees() {
+        use std::f32::consts::FRAC_PI_2;
+        let xform = RSXform::from_radians(1.0, FRAC_PI_2, 0.0, 0.0, 0.0, 0.0);
+        let m = xform.to_matrix();
+        let p = m.map_point(Point::new(1.0, 0.0));
+        // (1, 0) rotated 90° → (0, 1)
+        assert!(p.x.abs() < 1e-3, "x should be ~0");
+        assert!((p.y - 1.0).abs() < 1e-3, "y should be ~1");
+    }
+
+    #[test]
+    fn test_rsxform_with_scale() {
+        let xform = RSXform::from_scale_translate(2.0, 0.0, 0.0);
+        let m = xform.to_matrix();
+        let p = m.map_point(Point::new(5.0, 5.0));
+        assert!((p.x - 10.0).abs() < 1e-4, "x should be scaled by 2");
+        assert!((p.y - 10.0).abs() < 1e-4, "y should be scaled by 2");
+    }
+
+    #[test]
+    fn test_filter_mode_variants() {
+        let _ = FilterMode::Nearest;
+        let _ = FilterMode::Linear;
+        assert_eq!(FilterMode::default(), FilterMode::Nearest);
+    }
+
+    #[test]
+    fn test_point_mode_variants() {
+        let _ = PointMode::Points;
+        let _ = PointMode::Lines;
+        let _ = PointMode::Polygon;
+    }
 }
