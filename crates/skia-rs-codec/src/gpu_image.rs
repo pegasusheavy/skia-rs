@@ -76,6 +76,70 @@ impl GpuTextureFormat {
     }
 }
 
+/// Errors from GPU image backend operations.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum GpuImageError {
+    /// Upload failed.
+    #[error("GPU upload failed: {0}")]
+    UploadFailed(String),
+    /// Read-back failed.
+    #[error("GPU read-back failed: {0}")]
+    ReadBackFailed(String),
+    /// Backend unavailable (no texture handle, no context).
+    #[error("GPU backend unavailable: {0}")]
+    BackendUnavailable(String),
+    /// Color format not supported by backend.
+    #[error("Unsupported format: {0:?}")]
+    UnsupportedFormat(GpuTextureFormat),
+}
+
+/// Backend contract for wiring raster pixels to/from GPU textures.
+///
+/// Implementors live in the `skia-rs-gpu` crate (or a user-provided
+/// shim) and install themselves on a `GpuImage` via
+/// [`GpuImage::set_backend`]. When installed, `GpuImage::upload` and
+/// `GpuImage::read_pixels_from_gpu` delegate to the backend; when no
+/// backend is installed, both methods fall back to the raster cache
+/// (if present) so offline construction and testing remain possible
+/// without a GPU context.
+///
+/// # Thread safety
+///
+/// Implementations must be `Send + Sync` because `GpuImage` is `Clone`
+/// and may be passed between threads. Backends that hold a GPU device
+/// handle typically already satisfy this contract.
+pub trait GpuImageBackend: Send + Sync + std::fmt::Debug {
+    /// Upload raster pixels to a new GPU texture, returning the backend
+    /// handle. Called at most once per `GpuImage` when the raster cache
+    /// is pushed to GPU.
+    fn upload(
+        &self,
+        info: &ImageInfo,
+        format: GpuTextureFormat,
+        pixels: &[u8],
+        row_bytes: usize,
+    ) -> Result<GpuTextureHandle, GpuImageError>;
+
+    /// Read back pixels from the GPU texture into the destination
+    /// buffer in the specified info's layout.
+    fn read_back(
+        &self,
+        handle: &GpuTextureHandle,
+        info: &ImageInfo,
+        format: GpuTextureFormat,
+        dst: &mut [u8],
+        dst_row_bytes: usize,
+    ) -> Result<(), GpuImageError>;
+
+    /// Release a GPU texture. Called when the `GpuImage` is dropped
+    /// or when `clear_texture_handle` is invoked. Backends should
+    /// free device memory here.
+    fn release(&self, handle: &GpuTextureHandle);
+}
+
+/// A shared GPU image backend.
+pub type GpuImageBackendRef = Arc<dyn GpuImageBackend>;
+
 /// A GPU-backed image.
 ///
 /// Unlike raster `Image`, `GpuImage` is designed to store pixels in GPU memory.
@@ -90,7 +154,13 @@ impl GpuTextureFormat {
 /// - Raster pixel data (to be uploaded to GPU)
 /// - Backend-specific texture handles
 ///
-/// The actual GPU upload is handled by the `skia-rs-gpu` crate.
+/// GPU upload/read-back is delegated to a [`GpuImageBackend`] installed
+/// via [`GpuImage::set_backend`]. The `skia-rs-gpu` crate provides
+/// concrete backends for Vulkan, Metal, OpenGL, D3D12, and WebGPU; the
+/// wiring between those backends and this trait is scheduled as part
+/// of the skia-rs-gpu completion work (Phase 6F). Until then,
+/// `GpuImage` still exposes a fully functional raster-cache fast path,
+/// sufficient for rendering tests and non-GPU consumers.
 ///
 /// # Memory Model
 ///
@@ -113,6 +183,8 @@ struct GpuImageInner {
     /// Cached raster copy for upload and read-back.
     raster_cache: parking_lot::RwLock<Option<Vec<u8>>>,
     row_bytes: usize,
+    /// Backend driver, if installed.
+    backend: parking_lot::RwLock<Option<GpuImageBackendRef>>,
 }
 
 /// A backend-agnostic GPU texture handle.
@@ -182,6 +254,7 @@ impl GpuImage {
                 texture_handle: parking_lot::RwLock::new(None),
                 raster_cache: parking_lot::RwLock::new(Some(pixels[..expected_size].to_vec())),
                 row_bytes,
+                backend: parking_lot::RwLock::new(None),
             }),
         })
     }
@@ -215,6 +288,7 @@ impl GpuImage {
                 texture_handle: parking_lot::RwLock::new(None),
                 raster_cache: parking_lot::RwLock::new(Some(pixels)),
                 row_bytes,
+                backend: parking_lot::RwLock::new(None),
             }),
         })
     }
@@ -246,6 +320,7 @@ impl GpuImage {
                 texture_handle: parking_lot::RwLock::new(Some(handle)),
                 raster_cache: parking_lot::RwLock::new(None),
                 row_bytes,
+                backend: parking_lot::RwLock::new(None),
             }),
         })
     }
@@ -336,9 +411,15 @@ impl GpuImage {
         *self.inner.texture_handle.write() = Some(handle);
     }
 
-    /// Clear the texture handle (texture was destroyed).
+    /// Clear the texture handle, calling the backend's `release` if a
+    /// backend is installed. Safe to call multiple times.
     pub fn clear_texture_handle(&self) {
-        *self.inner.texture_handle.write() = None;
+        let handle = self.inner.texture_handle.write().take();
+        if let Some(handle) = handle {
+            if let Some(backend) = self.inner.backend.read().clone() {
+                backend.release(&handle);
+            }
+        }
     }
 
     /// Check if raster data is available.
@@ -356,9 +437,87 @@ impl GpuImage {
         self.inner.row_bytes
     }
 
+    /// Install a GPU backend driver. When set, `upload` and
+    /// `read_pixels` will delegate to the backend; otherwise both use
+    /// the raster cache.
+    pub fn set_backend(&self, backend: GpuImageBackendRef) {
+        *self.inner.backend.write() = Some(backend);
+    }
+
+    /// Get the installed backend, if any.
+    pub fn backend(&self) -> Option<GpuImageBackendRef> {
+        self.inner.backend.read().clone()
+    }
+
+    /// Upload raster pixels to GPU via the installed backend.
+    ///
+    /// Returns `Ok(())` on success. Fails with `BackendUnavailable` if
+    /// no backend is installed; fails with `UploadFailed` if the
+    /// backend rejects the upload. On success the texture handle is
+    /// stored and `has_texture()` returns true.
+    pub fn upload(&self) -> Result<(), GpuImageError> {
+        let backend = self
+            .inner
+            .backend
+            .read()
+            .clone()
+            .ok_or_else(|| GpuImageError::BackendUnavailable("no backend set".into()))?;
+
+        let cache = self.inner.raster_cache.read();
+        let cached = cache
+            .as_ref()
+            .ok_or_else(|| GpuImageError::UploadFailed("no raster data to upload".into()))?;
+
+        let handle = backend.upload(
+            &self.inner.info,
+            self.inner.texture_format,
+            cached,
+            self.inner.row_bytes,
+        )?;
+        *self.inner.texture_handle.write() = Some(handle);
+        Ok(())
+    }
+
+    /// Read pixels from the GPU texture via the installed backend.
+    ///
+    /// Prefer this over `read_pixels` when the image is GPU-resident;
+    /// `read_pixels` favors the raster cache which may be stale after
+    /// a GPU-side modification.
+    pub fn read_pixels_from_gpu(
+        &self,
+        dst: &mut [u8],
+        dst_row_bytes: usize,
+    ) -> Result<(), GpuImageError> {
+        let backend = self
+            .inner
+            .backend
+            .read()
+            .clone()
+            .ok_or_else(|| GpuImageError::BackendUnavailable("no backend set".into()))?;
+
+        let handle = self
+            .inner
+            .texture_handle
+            .read()
+            .clone()
+            .ok_or_else(|| GpuImageError::BackendUnavailable("no texture handle".into()))?;
+
+        backend.read_back(
+            &handle,
+            &self.inner.info,
+            self.inner.texture_format,
+            dst,
+            dst_row_bytes,
+        )
+    }
+
     /// Read pixels from the GPU image back to CPU memory.
     ///
-    /// Uses cached raster data if available.
+    /// Resolution order:
+    /// 1. If the raster cache is populated, copy from it (fast path).
+    /// 2. If a backend is installed and a texture handle is set, call
+    ///    the backend's `read_back`.
+    /// 3. Otherwise return `false`.
     pub fn read_pixels(&self, dst: &mut [u8], dst_row_bytes: usize) -> bool {
         let cache = self.inner.raster_cache.read();
         if let Some(ref cached) = *cache {
@@ -379,9 +538,10 @@ impl GpuImage {
             }
             return true;
         }
+        drop(cache);
 
-        // GPU read-back would be triggered here by GPU backend
-        false
+        // Fall back to backend read-back.
+        self.read_pixels_from_gpu(dst, dst_row_bytes).is_ok()
     }
 
     /// Store raster data read back from GPU.
@@ -441,6 +601,20 @@ impl GpuImage {
             Self::from_raster_data_owned(new_info, new_pixels, new_row_bytes)
         } else {
             None
+        }
+    }
+}
+
+impl Drop for GpuImageInner {
+    fn drop(&mut self) {
+        // Release the GPU handle through the backend, if both are set.
+        // The inner values are dropped exclusively when the last Arc
+        // drops, so no locking race is possible here.
+        if let (Some(handle), Some(backend)) = (
+            self.texture_handle.get_mut().take(),
+            self.backend.get_mut().clone(),
+        ) {
+            backend.release(&handle);
         }
     }
 }
@@ -516,5 +690,158 @@ mod tests {
 
         let format = GpuTextureFormat::from_color_type(ColorType::Rgba8888).unwrap();
         assert_eq!(format, GpuTextureFormat::Rgba8Unorm);
+    }
+
+    /// An in-memory mock backend that round-trips pixels through a
+    /// virtual "GPU store" indexed by handle id. Used to verify that
+    /// GpuImage correctly delegates to the backend trait for upload,
+    /// read-back, and release.
+    #[derive(Debug)]
+    struct MockBackend {
+        store: parking_lot::Mutex<std::collections::HashMap<u64, Vec<u8>>>,
+        next_id: std::sync::atomic::AtomicU64,
+        release_count: std::sync::atomic::AtomicU64,
+    }
+
+    impl MockBackend {
+        fn new() -> Self {
+            Self {
+                store: parking_lot::Mutex::new(std::collections::HashMap::new()),
+                next_id: std::sync::atomic::AtomicU64::new(1),
+                release_count: std::sync::atomic::AtomicU64::new(0),
+            }
+        }
+
+        fn release_count(&self) -> u64 {
+            self.release_count
+                .load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl GpuImageBackend for MockBackend {
+        fn upload(
+            &self,
+            _info: &ImageInfo,
+            _format: GpuTextureFormat,
+            pixels: &[u8],
+            _row_bytes: usize,
+        ) -> Result<GpuTextureHandle, GpuImageError> {
+            let id = self
+                .next_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.store.lock().insert(id, pixels.to_vec());
+            Ok(GpuTextureHandle {
+                id,
+                backend: GpuBackend::Software,
+            })
+        }
+
+        fn read_back(
+            &self,
+            handle: &GpuTextureHandle,
+            _info: &ImageInfo,
+            _format: GpuTextureFormat,
+            dst: &mut [u8],
+            _dst_row_bytes: usize,
+        ) -> Result<(), GpuImageError> {
+            let store = self.store.lock();
+            let src = store.get(&handle.id).ok_or_else(|| {
+                GpuImageError::ReadBackFailed(format!("unknown handle {}", handle.id))
+            })?;
+            let len = src.len().min(dst.len());
+            dst[..len].copy_from_slice(&src[..len]);
+            Ok(())
+        }
+
+        fn release(&self, handle: &GpuTextureHandle) {
+            self.store.lock().remove(&handle.id);
+            self.release_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn test_backend_upload_and_readback_roundtrip() {
+        let info = ImageInfo::new(2, 2, ColorType::Rgba8888, AlphaType::Premul);
+        let src_pixels = vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160];
+        let image = GpuImage::from_raster_data(&info, &src_pixels, 8).unwrap();
+
+        let backend: Arc<MockBackend> = Arc::new(MockBackend::new());
+        image.set_backend(backend.clone() as Arc<dyn GpuImageBackend>);
+
+        // No texture before upload.
+        assert!(!image.has_texture());
+        image.upload().expect("upload should succeed");
+        assert!(image.has_texture());
+
+        // Read back via GPU path: drop the raster cache first so we
+        // truly exercise the backend.
+        image.discard_raster_cache();
+        assert!(!image.has_raster_data());
+
+        let mut dst = vec![0u8; 16];
+        image
+            .read_pixels_from_gpu(&mut dst, 8)
+            .expect("read_back should succeed");
+        assert_eq!(dst, src_pixels);
+    }
+
+    #[test]
+    fn test_backend_release_on_clear_handle() {
+        let info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Premul);
+        let pixels = vec![0, 0, 0, 0];
+        let image = GpuImage::from_raster_data(&info, &pixels, 4).unwrap();
+
+        let backend: Arc<MockBackend> = Arc::new(MockBackend::new());
+        image.set_backend(backend.clone() as Arc<dyn GpuImageBackend>);
+        image.upload().unwrap();
+        assert_eq!(backend.release_count(), 0);
+
+        image.clear_texture_handle();
+        assert_eq!(backend.release_count(), 1);
+        assert!(!image.has_texture());
+    }
+
+    #[test]
+    fn test_backend_release_on_drop() {
+        let info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Premul);
+        let pixels = vec![0, 0, 0, 0];
+        let backend: Arc<MockBackend> = Arc::new(MockBackend::new());
+
+        {
+            let image = GpuImage::from_raster_data(&info, &pixels, 4).unwrap();
+            image.set_backend(backend.clone() as Arc<dyn GpuImageBackend>);
+            image.upload().unwrap();
+            assert_eq!(backend.release_count(), 0);
+            // image drops here
+        }
+        assert_eq!(backend.release_count(), 1);
+    }
+
+    #[test]
+    fn test_upload_without_backend_errors() {
+        let info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Premul);
+        let pixels = vec![0, 0, 0, 0];
+        let image = GpuImage::from_raster_data(&info, &pixels, 4).unwrap();
+
+        let err = image.upload().expect_err("must fail without backend");
+        assert!(matches!(err, GpuImageError::BackendUnavailable(_)));
+    }
+
+    #[test]
+    fn test_read_pixels_falls_back_to_backend() {
+        // With no raster cache and a backend + texture handle,
+        // read_pixels should serve via the backend.
+        let info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Premul);
+        let pixels = vec![42, 43, 44, 45];
+        let image = GpuImage::from_raster_data(&info, &pixels, 4).unwrap();
+        let backend: Arc<MockBackend> = Arc::new(MockBackend::new());
+        image.set_backend(backend.clone() as Arc<dyn GpuImageBackend>);
+        image.upload().unwrap();
+        image.discard_raster_cache();
+
+        let mut dst = vec![0u8; 4];
+        assert!(image.read_pixels(&mut dst, 4));
+        assert_eq!(dst, pixels);
     }
 }
