@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-04-25
+
+### Added (skia-rs-canvas)
+- **Canvas unified via Backing enum**: `Canvas<'a>` now carries
+  `Backing::Raster(&mut PixelBuffer) | Recording(&mut Vec<DrawCommand>) | Null`.
+  All 11 critical draw methods now dispatch via match and render correctly.
+  Picture playback works end-to-end with pixel-identical round-trip (C-1..C-7)
+- **ClipStack-based clip**: Canvas clip is now full `ClipStack` with
+  Difference ops, AA, and path clipping (C-8, C-9, N-1)
+- **draw_points with PointMode**: Points/Lines/Polygon modes (C-4)
+- **save_layer offscreen composition**: allocates per-layer buffer,
+  composites back on restore with paint alpha + blend mode, nests (C-10)
+- **Barycentric color interpolation in draw_vertices**: per-vertex
+  Gouraud shading for Triangles/Strip/Fan (N-5)
+- **draw_image_lattice + draw_atlas + draw_patch**: real implementations
+  dispatching to draw_image_rect / draw_vertices
+- **Coons patch draw_patch**: full bicubic surface with boundary-curve
+  evaluation and optional corner color interpolation
+- **Real glyph outlines in text rendering** via ttf-parser (N-6):
+  - New `Font::glyph_path()` returns a Path with screen-space scaling
+  - Real `cmap` and `hmtx` parsing in skia-rs-text Typeface
+  - `Canvas::draw_string`, `draw_text_blob`, `draw_glyphs` now render
+    actual character shapes, not rectangles
+
+### Changed (skia-rs-canvas)
+- `Surface::canvas()` now returns a functional raster Canvas (was a stub)
+- `RasterCanvas` is a deprecated type alias for `Canvas<'a>` (migration path)
+- SSE4.1 `fill_span_blend` dispatch disabled — fell back to scalar due
+  to incorrect per-channel alpha handling. AVX2 and NEON paths unchanged.
+
+### Fixed (skia-rs-canvas)
+- `ClipStack::clip_rect_aa` now intersects both region and mask in the
+  `RegionAndMask` branch (N-4)
+- `draw_vertices` flat-shade fallback preserved when no colors provided
+
+### Tests (skia-rs-canvas)
+- Test count grew from 39 to 103 in skia-rs-canvas
+- New pixel-level round-trip tests for Picture playback (Circle, Path,
+  Oval, Arc, RoundRect, Line, ClipRect, Scale)
+- Matrix stack, SaveLayerRec, RSXform, FilterMode, PointMode coverage
+
 ## [0.2.3] - 2026-04-25
 
 ### Added (skia-rs-paint)
