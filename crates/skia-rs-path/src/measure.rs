@@ -65,35 +65,140 @@ impl PathMeasure {
         if distance < 0.0 || distance > self.total_length {
             return None;
         }
-        let _ = distance;
-        None // Implemented in Task 10
+        let (contour, offset) = self.locate(distance)?;
+        let seg = Self::segment_at(contour, offset);
+        let seg_start_cum = seg.cumulative - seg.length;
+        let t = if seg.length > 0.0 {
+            ((offset - seg_start_cum) / seg.length).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        Some(Point::new(
+            seg.start.x + (seg.end.x - seg.start.x) * t,
+            seg.start.y + (seg.end.y - seg.start.y) * t,
+        ))
     }
 
-    /// Get the tangent at a distance along the path.
+    /// Get the tangent (unit direction vector) at a distance along the path.
     pub fn get_tangent_at(&self, distance: Scalar) -> Option<Point> {
         if distance < 0.0 || distance > self.total_length {
             return None;
         }
-        let _ = distance;
-        None // Implemented in Task 11
+        let (contour, offset) = self.locate(distance)?;
+        let seg = Self::segment_at(contour, offset);
+        let dx = seg.end.x - seg.start.x;
+        let dy = seg.end.y - seg.start.y;
+        let len = (dx * dx + dy * dy).sqrt();
+        if len > 0.0 {
+            Some(Point::new(dx / len, dy / len))
+        } else {
+            Some(Point::new(1.0, 0.0))
+        }
     }
 
     /// Get the transformation matrix at a distance along the path.
+    ///
+    /// The returned matrix maps the local origin to the position at the
+    /// given distance, and the local x-axis to the path's tangent
+    /// direction at that distance. Useful for placing text or stamps
+    /// along a path.
     pub fn get_matrix_at(&self, distance: Scalar) -> Option<Matrix> {
-        if distance < 0.0 || distance > self.total_length {
-            return None;
-        }
-        let _ = distance;
-        None // Implemented in Task 12
+        let position = self.get_point_at(distance)?;
+        let tangent = self.get_tangent_at(distance)?;
+        Some(Matrix {
+            values: [
+                tangent.x, -tangent.y, position.x,
+                tangent.y,  tangent.x, position.y,
+                0.0,        0.0,       1.0,
+            ],
+        })
     }
 
-    /// Get a segment of the path.
+    /// Get a segment of the path between the given distances.
+    ///
+    /// Returns a new Path containing the portion from `start` to `end`,
+    /// constructed from line segments (curves in the source path are
+    /// flattened during length computation).
     pub fn get_segment(&self, start: Scalar, end: Scalar) -> Option<Path> {
         if start >= end || start < 0.0 || end > self.total_length {
             return None;
         }
-        let _ = (start, end);
-        None // Implemented in Task 13
+
+        let mut builder = crate::PathBuilder::new();
+        let mut acc = 0.0;
+        let mut started_any = false;
+
+        for contour in &self.contours {
+            let c_start = acc;
+            let c_end = acc + contour.length;
+            acc = c_end;
+
+            if c_end <= start {
+                continue;
+            }
+            if c_start >= end {
+                break;
+            }
+
+            let local_seg_start = (start.max(c_start) - c_start).max(0.0);
+            let local_seg_end = (end.min(c_end) - c_start).min(contour.length);
+
+            let first_pt = interpolate_at(contour, local_seg_start);
+            builder.move_to(first_pt.x, first_pt.y);
+            started_any = true;
+
+            for seg in &contour.segments {
+                let s_start = seg.cumulative - seg.length;
+                let s_end = seg.cumulative;
+                if s_end <= local_seg_start {
+                    continue;
+                }
+                if s_start >= local_seg_end {
+                    break;
+                }
+                let t1 = if s_end > local_seg_end {
+                    ((local_seg_end - s_start) / seg.length).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                let p = Point::new(
+                    seg.start.x + (seg.end.x - seg.start.x) * t1,
+                    seg.start.y + (seg.end.y - seg.start.y) * t1,
+                );
+                builder.line_to(p.x, p.y);
+            }
+        }
+
+        if started_any {
+            Some(builder.build())
+        } else {
+            None
+        }
+    }
+
+    /// Locate the contour containing `distance` and return the offset within it.
+    fn locate(&self, distance: Scalar) -> Option<(&Contour, Scalar)> {
+        let mut remaining = distance;
+        for c in &self.contours {
+            if remaining <= c.length {
+                return Some((c, remaining));
+            }
+            remaining -= c.length;
+        }
+        // At exact total_length, return last contour at its end
+        self.contours.last().map(|c| (c, c.length))
+    }
+
+    /// Find the segment within a contour that contains the given offset.
+    fn segment_at(contour: &Contour, offset: Scalar) -> &Segment {
+        let idx = match contour
+            .segments
+            .binary_search_by(|s| s.cumulative.partial_cmp(&offset).unwrap_or(std::cmp::Ordering::Equal))
+        {
+            Ok(i) => i,
+            Err(i) => i.min(contour.segments.len().saturating_sub(1)),
+        };
+        &contour.segments[idx]
     }
 
     fn compute_lengths(&mut self, path: &Path) {
@@ -196,6 +301,20 @@ impl PathMeasure {
     }
 }
 
+fn interpolate_at(contour: &Contour, offset: Scalar) -> Point {
+    let seg = PathMeasure::segment_at(contour, offset);
+    let seg_start_cum = seg.cumulative - seg.length;
+    let t = if seg.length > 0.0 {
+        ((offset - seg_start_cum) / seg.length).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    Point::new(
+        seg.start.x + (seg.end.x - seg.start.x) * t,
+        seg.start.y + (seg.end.y - seg.start.y) * t,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,5 +398,133 @@ mod tests {
         let measure = PathMeasure::new(&path);
         // Close adds the segment from (0,10) back to (0,0), length 10
         assert!((measure.length() - 40.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_point_at_start() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        let p = measure.get_point_at(0.0).unwrap();
+        assert!((p.x - 0.0).abs() < 0.01);
+        assert!((p.y - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_point_at_midpoint() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        let p = measure.get_point_at(50.0).unwrap();
+        assert!((p.x - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_point_at_end() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        let p = measure.get_point_at(100.0).unwrap();
+        assert!((p.x - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_point_at_out_of_range() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        assert!(measure.get_point_at(-1.0).is_none());
+        assert!(measure.get_point_at(101.0).is_none());
+    }
+
+    #[test]
+    fn test_get_point_at_multi_contour() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(10.0, 0.0); // contour 1: 0..10
+        builder.move_to(20.0, 0.0);
+        builder.line_to(50.0, 0.0); // contour 2: 10..40
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+
+        let p = measure.get_point_at(5.0).unwrap();
+        assert!((p.x - 5.0).abs() < 0.01);
+
+        let p = measure.get_point_at(25.0).unwrap();
+        assert!((p.x - 35.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_tangent_horizontal_line() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        let t = measure.get_tangent_at(50.0).unwrap();
+        assert!((t.x - 1.0).abs() < 0.01);
+        assert!((t.y - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_tangent_diagonal() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(3.0, 4.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        let t = measure.get_tangent_at(2.5).unwrap();
+        assert!((t.x - 0.6).abs() < 0.01);
+        assert!((t.y - 0.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_matrix_horizontal_line() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        let m = measure.get_matrix_at(50.0).unwrap();
+        let mapped = m.map_point(Point::new(0.0, 0.0));
+        assert!((mapped.x - 50.0).abs() < 0.01);
+        assert!((mapped.y - 0.0).abs() < 0.01);
+        let mapped_tangent = m.map_point(Point::new(1.0, 0.0));
+        assert!((mapped_tangent.x - 51.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_segment_subset_of_line() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+
+        let segment = measure.get_segment(25.0, 75.0).unwrap();
+        let bounds = segment.bounds();
+        assert!((bounds.left - 25.0).abs() < 0.5);
+        assert!((bounds.right - 75.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn test_get_segment_invalid_range() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+
+        assert!(measure.get_segment(75.0, 25.0).is_none());
+        assert!(measure.get_segment(-1.0, 50.0).is_none());
+        assert!(measure.get_segment(50.0, 200.0).is_none());
     }
 }
