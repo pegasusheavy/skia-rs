@@ -35,18 +35,13 @@ pub enum RegionOp {
 pub struct Region {
     /// The rectangles composing this region (in scanline order).
     rects: Vec<IRect>,
-    /// Cached bounds of the region.
-    bounds: IRect,
 }
 
 impl Region {
     /// Create an empty region.
     #[inline]
     pub fn new() -> Self {
-        Self {
-            rects: Vec::new(),
-            bounds: IRect::empty(),
-        }
+        Self { rects: Vec::new() }
     }
 
     /// Create a region from a single rectangle.
@@ -54,10 +49,7 @@ impl Region {
         if rect.is_empty() {
             return Self::new();
         }
-        Self {
-            rects: vec![rect],
-            bounds: rect,
-        }
+        Self { rects: vec![rect] }
     }
 
     /// Create a region from a floating-point rectangle (rounds outward).
@@ -83,10 +75,17 @@ impl Region {
         self.rects.len() > 1
     }
 
-    /// Returns the bounds of the region.
+    /// Returns the bounding rectangle of this region.
     #[inline]
     pub fn bounds(&self) -> IRect {
-        self.bounds
+        if self.rects.is_empty() {
+            return IRect::empty();
+        }
+        let mut bounds = self.rects[0];
+        for rect in &self.rects[1..] {
+            bounds = bounds.union(rect);
+        }
+        bounds
     }
 
     /// Returns the number of rectangles in the region.
@@ -110,7 +109,6 @@ impl Region {
     /// Clear the region to empty.
     pub fn set_empty(&mut self) {
         self.rects.clear();
-        self.bounds = IRect::empty();
     }
 
     /// Set the region to a single rectangle.
@@ -121,20 +119,18 @@ impl Region {
         }
         self.rects.clear();
         self.rects.push(rect);
-        self.bounds = rect;
         true
     }
 
     /// Set the region to another region.
     pub fn set_region(&mut self, other: &Region) -> bool {
         self.rects = other.rects.clone();
-        self.bounds = other.bounds;
         !self.is_empty()
     }
 
     /// Returns true if the point is contained in the region.
     pub fn contains(&self, x: i32, y: i32) -> bool {
-        if !self.bounds.contains(x, y) {
+        if !self.bounds().contains(x, y) {
             return false;
         }
         for rect in &self.rects {
@@ -155,7 +151,8 @@ impl Region {
         }
 
         // Quick bounds check
-        if let Some(intersection) = self.bounds.intersect(rect) {
+        let bounds = self.bounds();
+        if let Some(intersection) = bounds.intersect(rect) {
             if intersection != *rect {
                 return false;
             }
@@ -231,7 +228,7 @@ impl Region {
         if self.is_empty() || rect.is_empty() {
             return false;
         }
-        if self.bounds.intersect(rect).is_none() {
+        if self.bounds().intersect(rect).is_none() {
             return false;
         }
         for r in &self.rects {
@@ -247,7 +244,7 @@ impl Region {
         if self.is_empty() || other.is_empty() {
             return false;
         }
-        if self.bounds.intersect(&other.bounds).is_none() {
+        if self.bounds().intersect(&other.bounds()).is_none() {
             return false;
         }
         for r1 in &self.rects {
@@ -265,7 +262,6 @@ impl Region {
         for rect in &mut self.rects {
             *rect = rect.offset(dx, dy);
         }
-        self.bounds = self.bounds.offset(dx, dy);
     }
 
     /// Returns a translated copy of this region.
@@ -306,7 +302,7 @@ impl Region {
         }
 
         // Quick bounds check
-        if self.bounds.intersect(&other.bounds).is_none() {
+        if self.bounds().intersect(&other.bounds()).is_none() {
             self.set_empty();
             return false;
         }
@@ -321,7 +317,6 @@ impl Region {
         }
 
         self.rects = result_rects;
-        self.recompute_bounds();
         !self.is_empty()
     }
 
@@ -341,7 +336,6 @@ impl Region {
         all_rects.extend(other.rects.iter().cloned());
 
         self.rects = canonicalize_rects(&all_rects);
-        self.recompute_bounds();
         !self.is_empty()
     }
 
@@ -366,7 +360,7 @@ impl Region {
         }
 
         // Quick bounds check
-        if self.bounds.intersect(&other.bounds).is_none() {
+        if self.bounds().intersect(&other.bounds()).is_none() {
             return !self.is_empty();
         }
 
@@ -385,21 +379,7 @@ impl Region {
         }
 
         self.rects = result_rects;
-        self.recompute_bounds();
         !self.is_empty()
-    }
-
-    /// Recompute the bounds from the rectangles.
-    fn recompute_bounds(&mut self) {
-        if self.rects.is_empty() {
-            self.bounds = IRect::empty();
-            return;
-        }
-
-        self.bounds = self.rects[0];
-        for rect in &self.rects[1..] {
-            self.bounds = self.bounds.union(rect);
-        }
     }
 }
 
