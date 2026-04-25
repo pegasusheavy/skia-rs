@@ -316,8 +316,47 @@ impl Image {
             return true;
         }
 
-        // TODO: Format conversion
-        false
+        // Format conversion: delegate to skia_rs_core::convert_pixels, which handles
+        // color-type and alpha-type conversion in one pass. To support sub-region
+        // reads, we point the source slice at the subset's first byte and keep the
+        // original row stride — convert_pixels walks rows at `src_row_bytes` each.
+        let src_bpp = self.color_type().bytes_per_pixel();
+        let src_row_bytes = self.inner.row_bytes;
+        let src_start = (src_y as usize) * src_row_bytes + (src_x as usize) * src_bpp;
+
+        // Build source info describing the subset (same color/alpha type as self).
+        let Ok(src_core_info) = skia_rs_core::ImageInfo::new(
+            dst_info.width(),
+            dst_info.height(),
+            self.color_type(),
+            self.alpha_type(),
+        ) else {
+            return false;
+        };
+        let Ok(dst_core_info) = skia_rs_core::ImageInfo::new(
+            dst_info.width(),
+            dst_info.height(),
+            dst_info.color_type(),
+            dst_info.alpha_type(),
+        ) else {
+            return false;
+        };
+
+        // Bounds-check the source slice: we need src_start + (height-1)*row_bytes + min_row_bytes.
+        let src_required = src_core_info.compute_byte_size(src_row_bytes);
+        if src_start + src_required > self.inner.pixels.len() {
+            return false;
+        }
+
+        skia_rs_core::convert_pixels(
+            &self.inner.pixels[src_start..],
+            &src_core_info,
+            src_row_bytes,
+            dst_pixels,
+            &dst_core_info,
+            dst_row_bytes,
+        )
+        .is_ok()
     }
 
     /// Read a single pixel at (x, y).
@@ -476,5 +515,86 @@ mod tests {
         let bounds = image.bounds();
         assert_eq!(bounds.width(), 100.0);
         assert_eq!(bounds.height(), 200.0);
+    }
+
+    #[test]
+    fn test_read_pixels_rgba_to_bgra_converts() {
+        // Source image: 2x2 RGBA, each pixel a distinct R,G,B,A tuple.
+        let info = ImageInfo::new(2, 2, ColorType::Rgba8888, AlphaType::Premul);
+        let src = vec![
+            10, 20, 30, 255, 40, 50, 60, 255, // row 0
+            70, 80, 90, 255, 100, 110, 120, 255, // row 1
+        ];
+        let image = Image::from_raster_data(&info, &src, 8).unwrap();
+
+        let dst_info = ImageInfo::new(2, 2, ColorType::Bgra8888, AlphaType::Premul);
+        let mut dst = vec![0u8; 16];
+        assert!(image.read_pixels(&dst_info, &mut dst, 8, 0, 0));
+
+        // Pixel 0 should be (B=30, G=20, R=10, A=255).
+        assert_eq!(dst[0..4], [30, 20, 10, 255]);
+        assert_eq!(dst[4..8], [60, 50, 40, 255]);
+        assert_eq!(dst[8..12], [90, 80, 70, 255]);
+        assert_eq!(dst[12..16], [120, 110, 100, 255]);
+    }
+
+    #[test]
+    fn test_read_pixels_subset_with_conversion() {
+        // 4x4 RGBA with unique values per pixel.
+        let info = ImageInfo::new(4, 4, ColorType::Rgba8888, AlphaType::Premul);
+        let mut src = vec![0u8; 4 * 4 * 4];
+        for y in 0..4 {
+            for x in 0..4 {
+                let off = (y * 4 + x) * 4;
+                src[off] = (x * 10 + y) as u8;
+                src[off + 1] = (x * 10 + y + 1) as u8;
+                src[off + 2] = (x * 10 + y + 2) as u8;
+                src[off + 3] = 255;
+            }
+        }
+        let image = Image::from_raster_data(&info, &src, 16).unwrap();
+
+        // Read a 2x2 subset at offset (1, 1) as BGRA.
+        let dst_info = ImageInfo::new(2, 2, ColorType::Bgra8888, AlphaType::Premul);
+        let mut dst = vec![0u8; 16];
+        assert!(image.read_pixels(&dst_info, &mut dst, 8, 1, 1));
+
+        // Expected: subset(1,1) = src pixel (1,1) = (r=11, g=12, b=13, a=255)
+        // BGRA form = (13, 12, 11, 255).
+        assert_eq!(dst[0..4], [13, 12, 11, 255]);
+        // subset(1,2) = src (2,1) = (r=21, g=22, b=23) => BGRA (23, 22, 21, 255).
+        assert_eq!(dst[4..8], [23, 22, 21, 255]);
+        // subset(2,1) = src (1,2) = (r=12, g=13, b=14) => BGRA (14, 13, 12, 255).
+        assert_eq!(dst[8..12], [14, 13, 12, 255]);
+        assert_eq!(dst[12..16], [24, 23, 22, 255]);
+    }
+
+    #[test]
+    fn test_read_pixels_alpha_type_conversion() {
+        // Source image: RGBA Unpremul (50, 100, 150, 128).
+        // After premultiplication: c * a/255 = 25, 50, 75.
+        let info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Unpremul);
+        let src = vec![50, 100, 150, 128];
+        let image = Image::from_raster_data(&info, &src, 4).unwrap();
+
+        let dst_info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Premul);
+        let mut dst = vec![0u8; 4];
+        assert!(image.read_pixels(&dst_info, &mut dst, 4, 0, 0));
+
+        assert_eq!(dst[0], 25);
+        assert_eq!(dst[1], 50);
+        assert_eq!(dst[2], 75);
+        assert_eq!(dst[3], 128);
+    }
+
+    #[test]
+    fn test_read_pixels_rejects_out_of_bounds() {
+        let image = Image::from_color(4, 4, 0xFF_FF0000).unwrap();
+        let dst_info = ImageInfo::new(4, 4, ColorType::Bgra8888, AlphaType::Premul);
+        let mut dst = vec![0u8; 64];
+        // Negative src_x.
+        assert!(!image.read_pixels(&dst_info, &mut dst, 16, -1, 0));
+        // Subset exceeds image width.
+        assert!(!image.read_pixels(&dst_info, &mut dst, 16, 1, 0));
     }
 }
