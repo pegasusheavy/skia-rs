@@ -899,8 +899,16 @@ pub enum Corner {
 
 impl RRect {
     /// Creates a rounded rectangle with the same radius for all corners.
+    ///
+    /// Radii are clamped to `[0, width/2]` for x and `[0, height/2]` for y,
+    /// matching Skia's `SkRRect::setRectXY` behavior. Negative radii are clamped
+    /// to zero, and radii exceeding half the rect dimension are reduced to fit.
     #[inline]
     pub fn from_rect_xy(rect: Rect, x_rad: Scalar, y_rad: Scalar) -> Self {
+        let half_w = (rect.right - rect.left) * 0.5;
+        let half_h = (rect.bottom - rect.top) * 0.5;
+        let x_rad = x_rad.max(0.0).min(half_w);
+        let y_rad = y_rad.max(0.0).min(half_h);
         let radius = Point::new(x_rad, y_rad);
         Self {
             rect,
@@ -1343,5 +1351,33 @@ mod tests {
         // x/w = 4/2 = 2, y/w = 6/2 = 3
         assert_eq!(point.x, 2.0);
         assert_eq!(point.y, 3.0);
+    }
+
+    #[test]
+    fn test_rrect_from_rect_xy_clamps_radii() {
+        let rect = Rect::new(0.0, 0.0, 100.0, 50.0);
+
+        // Radii larger than half-dimensions should be clamped
+        let rrect = RRect::from_rect_xy(rect, 60.0, 30.0);
+        assert_eq!(rrect.radii[0].x, 50.0, "rx should clamp to width/2 = 50");
+        assert_eq!(rrect.radii[0].y, 25.0, "ry should clamp to height/2 = 25");
+    }
+
+    #[test]
+    fn test_rrect_from_rect_xy_negative_radii_clamped_to_zero() {
+        let rect = Rect::new(0.0, 0.0, 100.0, 50.0);
+
+        let rrect = RRect::from_rect_xy(rect, -5.0, -10.0);
+        assert_eq!(rrect.radii[0].x, 0.0);
+        assert_eq!(rrect.radii[0].y, 0.0);
+    }
+
+    #[test]
+    fn test_rrect_from_rect_xy_normal_radii_unchanged() {
+        let rect = Rect::new(0.0, 0.0, 100.0, 50.0);
+
+        let rrect = RRect::from_rect_xy(rect, 10.0, 5.0);
+        assert_eq!(rrect.radii[0].x, 10.0);
+        assert_eq!(rrect.radii[0].y, 5.0);
     }
 }
