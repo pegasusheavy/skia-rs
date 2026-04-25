@@ -13,6 +13,85 @@ use skia_rs_core::{Color4f, Matrix, Point, Rect, Scalar};
 use std::sync::Arc;
 
 // =============================================================================
+// Shader Kind Discriminants (for serialization)
+// =============================================================================
+
+pub(crate) const SHADER_KIND_COLOR: u8 = 1;
+pub(crate) const SHADER_KIND_LINEAR_GRADIENT: u8 = 2;
+pub(crate) const SHADER_KIND_RADIAL_GRADIENT: u8 = 3;
+pub(crate) const SHADER_KIND_SWEEP_GRADIENT: u8 = 4;
+pub(crate) const SHADER_KIND_TWO_POINT_CONICAL: u8 = 5;
+pub(crate) const SHADER_KIND_IMAGE: u8 = 6;
+pub(crate) const SHADER_KIND_PERLIN_NOISE: u8 = 7;
+pub(crate) const SHADER_KIND_BLEND: u8 = 8;
+pub(crate) const SHADER_KIND_LOCAL_MATRIX: u8 = 9;
+pub(crate) const SHADER_KIND_COMPOSE: u8 = 10;
+pub(crate) const SHADER_KIND_EMPTY: u8 = 11;
+
+// =============================================================================
+// Helper Functions for Serialization
+// =============================================================================
+
+/// Serialize a child shader (recursively).
+///
+/// Format: [1 byte present] [4 bytes length] [data]
+/// If the shader cannot be serialized, writes 0 for absent.
+fn serialize_child_shader(buf: &mut Vec<u8>, shader: &ShaderRef) {
+    if let Some(child_data) = shader.serialize() {
+        buf.push(1);
+        buf.extend_from_slice(&(child_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&child_data);
+    } else {
+        buf.push(0);
+    }
+}
+
+/// Serialize common gradient data (colors, positions, tile_mode, flags, local_matrix).
+fn serialize_gradient_common(
+    buf: &mut Vec<u8>,
+    colors: &[Color4f],
+    positions: Option<&[Scalar]>,
+    tile_mode: TileMode,
+    flags: GradientFlags,
+    local_matrix: Option<&Matrix>,
+) {
+    // Tile mode (1 byte)
+    buf.push(tile_mode as u8);
+
+    // Flags (4 bytes)
+    buf.extend_from_slice(&flags.0.to_le_bytes());
+
+    // Colors count (4 bytes)
+    buf.extend_from_slice(&(colors.len() as u32).to_le_bytes());
+    for color in colors {
+        buf.extend_from_slice(&color.r.to_le_bytes());
+        buf.extend_from_slice(&color.g.to_le_bytes());
+        buf.extend_from_slice(&color.b.to_le_bytes());
+        buf.extend_from_slice(&color.a.to_le_bytes());
+    }
+
+    // Positions (1 byte present flag + data if present)
+    if let Some(positions) = positions {
+        buf.push(1);
+        for pos in positions {
+            buf.extend_from_slice(&pos.to_le_bytes());
+        }
+    } else {
+        buf.push(0);
+    }
+
+    // Local matrix (1 byte present flag + 36 bytes if present)
+    if let Some(matrix) = local_matrix {
+        buf.push(1);
+        for i in 0..9 {
+            buf.extend_from_slice(&matrix.values[i].to_le_bytes());
+        }
+    } else {
+        buf.push(0);
+    }
+}
+
+// =============================================================================
 // Helper Functions for Gradient Sampling
 // =============================================================================
 
@@ -219,6 +298,15 @@ pub trait Shader: Send + Sync + std::fmt::Debug {
         let _ = (x, y);
         Color4f::transparent()
     }
+
+    /// Serialize this shader to bytes.
+    ///
+    /// Returns `None` for shader types that do not support serialization
+    /// (e.g., runtime shaders with SkSL source). Built-in shaders override
+    /// this to return `Some(bytes)`.
+    fn serialize(&self) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 /// Kind of shader (for debugging/inspection).
@@ -285,6 +373,16 @@ impl Shader for ColorShader {
 
     fn sample(&self, _x: Scalar, _y: Scalar) -> Color4f {
         self.color
+    }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = Vec::new();
+        buf.push(SHADER_KIND_COLOR);
+        buf.extend_from_slice(&self.color.r.to_le_bytes());
+        buf.extend_from_slice(&self.color.g.to_le_bytes());
+        buf.extend_from_slice(&self.color.b.to_le_bytes());
+        buf.extend_from_slice(&self.color.a.to_le_bytes());
+        Some(buf)
     }
 }
 
@@ -404,6 +502,31 @@ impl Shader for LinearGradient {
         // Interpolate color
         interpolate_gradient_color(&self.colors, self.positions.as_deref(), t)
     }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = Vec::new();
+        buf.push(SHADER_KIND_LINEAR_GRADIENT);
+
+        // Start point (8 bytes)
+        buf.extend_from_slice(&self.start.x.to_le_bytes());
+        buf.extend_from_slice(&self.start.y.to_le_bytes());
+
+        // End point (8 bytes)
+        buf.extend_from_slice(&self.end.x.to_le_bytes());
+        buf.extend_from_slice(&self.end.y.to_le_bytes());
+
+        // Common gradient data
+        serialize_gradient_common(
+            &mut buf,
+            &self.colors,
+            self.positions.as_deref(),
+            self.tile_mode,
+            self.flags,
+            self.local_matrix.as_ref(),
+        );
+
+        Some(buf)
+    }
 }
 
 /// Radial gradient shader.
@@ -516,6 +639,30 @@ impl Shader for RadialGradient {
 
         // Interpolate color
         interpolate_gradient_color(&self.colors, self.positions.as_deref(), t)
+    }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = Vec::new();
+        buf.push(SHADER_KIND_RADIAL_GRADIENT);
+
+        // Center point (8 bytes)
+        buf.extend_from_slice(&self.center.x.to_le_bytes());
+        buf.extend_from_slice(&self.center.y.to_le_bytes());
+
+        // Radius (4 bytes)
+        buf.extend_from_slice(&self.radius.to_le_bytes());
+
+        // Common gradient data
+        serialize_gradient_common(
+            &mut buf,
+            &self.colors,
+            self.positions.as_deref(),
+            self.tile_mode,
+            self.flags,
+            self.local_matrix.as_ref(),
+        );
+
+        Some(buf)
     }
 }
 
@@ -643,6 +790,31 @@ impl Shader for SweepGradient {
 
         // Interpolate color
         interpolate_gradient_color(&self.colors, self.positions.as_deref(), t)
+    }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = Vec::new();
+        buf.push(SHADER_KIND_SWEEP_GRADIENT);
+
+        // Center point (8 bytes)
+        buf.extend_from_slice(&self.center.x.to_le_bytes());
+        buf.extend_from_slice(&self.center.y.to_le_bytes());
+
+        // Start and end angles (8 bytes)
+        buf.extend_from_slice(&self.start_angle.to_le_bytes());
+        buf.extend_from_slice(&self.end_angle.to_le_bytes());
+
+        // Common gradient data
+        serialize_gradient_common(
+            &mut buf,
+            &self.colors,
+            self.positions.as_deref(),
+            self.tile_mode,
+            self.flags,
+            self.local_matrix.as_ref(),
+        );
+
+        Some(buf)
     }
 }
 
@@ -826,6 +998,33 @@ impl Shader for TwoPointConicalGradient {
         // Apply tile mode to t, then interpolate colors.
         let t_tiled = apply_tile_mode(t, self.tile_mode);
         interpolate_gradient_color(&self.colors, self.positions.as_deref(), t_tiled)
+    }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = Vec::new();
+        buf.push(SHADER_KIND_TWO_POINT_CONICAL);
+
+        // Start center and radius (12 bytes)
+        buf.extend_from_slice(&self.start_center.x.to_le_bytes());
+        buf.extend_from_slice(&self.start_center.y.to_le_bytes());
+        buf.extend_from_slice(&self.start_radius.to_le_bytes());
+
+        // End center and radius (12 bytes)
+        buf.extend_from_slice(&self.end_center.x.to_le_bytes());
+        buf.extend_from_slice(&self.end_center.y.to_le_bytes());
+        buf.extend_from_slice(&self.end_radius.to_le_bytes());
+
+        // Common gradient data
+        serialize_gradient_common(
+            &mut buf,
+            &self.colors,
+            self.positions.as_deref(),
+            self.tile_mode,
+            self.flags,
+            self.local_matrix.as_ref(),
+        );
+
+        Some(buf)
     }
 }
 
@@ -1029,6 +1228,54 @@ impl Shader for ImageShader {
     fn shader_kind(&self) -> ShaderKind {
         ShaderKind::Image
     }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = Vec::new();
+        buf.push(SHADER_KIND_IMAGE);
+
+        // Bounds (16 bytes)
+        buf.extend_from_slice(&self.bounds.left.to_le_bytes());
+        buf.extend_from_slice(&self.bounds.top.to_le_bytes());
+        buf.extend_from_slice(&self.bounds.right.to_le_bytes());
+        buf.extend_from_slice(&self.bounds.bottom.to_le_bytes());
+
+        // Tile modes (2 bytes)
+        buf.push(self.tile_mode_x as u8);
+        buf.push(self.tile_mode_y as u8);
+
+        // Sampling options (2 bytes: filter + mipmap)
+        buf.push(self.sampling.filter as u8);
+        buf.push(self.sampling.mipmap as u8);
+
+        // Local matrix (1 byte present flag + 36 bytes if present)
+        if let Some(matrix) = &self.local_matrix {
+            buf.push(1);
+            for i in 0..9 {
+                buf.extend_from_slice(&matrix.values[i].to_le_bytes());
+            }
+        } else {
+            buf.push(0);
+        }
+
+        // Image info and pixel data (if present)
+        if let (Some(pixels), Some(info)) = (&self.pixels, &self.image_info) {
+            buf.push(1); // present
+
+            // ImageInfo fields
+            buf.extend_from_slice(&(info.width() as u32).to_le_bytes());
+            buf.extend_from_slice(&(info.height() as u32).to_le_bytes());
+            buf.push(info.color_type as u8);
+            buf.push(info.alpha_type as u8);
+
+            // Pixel data length + data
+            buf.extend_from_slice(&(pixels.len() as u32).to_le_bytes());
+            buf.extend_from_slice(pixels);
+        } else {
+            buf.push(0); // absent
+        }
+
+        Some(buf)
+    }
 }
 
 /// Blend shader that combines two shaders.
@@ -1088,6 +1335,22 @@ impl Shader for BlendShader {
         let src = self.src.sample(x, y);
         let dst = self.dst.sample(x, y);
         self.blend_mode.apply(src, dst)
+    }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = Vec::new();
+        buf.push(SHADER_KIND_BLEND);
+
+        // Blend mode (1 byte)
+        buf.push(self.blend_mode as u8);
+
+        // Src shader (recursive)
+        serialize_child_shader(&mut buf, &self.src);
+
+        // Dst shader (recursive)
+        serialize_child_shader(&mut buf, &self.dst);
+
+        Some(buf)
     }
 }
 
@@ -1347,6 +1610,38 @@ impl Shader for PerlinNoiseShader {
         // in production, but grayscale is an acceptable baseline.
         Color4f::new(value, value, value, 1.0)
     }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = Vec::new();
+        buf.push(SHADER_KIND_PERLIN_NOISE);
+
+        // Noise type (1 byte)
+        buf.push(match self.noise_type {
+            NoiseType::FractalNoise => 0,
+            NoiseType::Turbulence => 1,
+        });
+
+        // Base frequencies (8 bytes)
+        buf.extend_from_slice(&self.base_frequency_x.to_le_bytes());
+        buf.extend_from_slice(&self.base_frequency_y.to_le_bytes());
+
+        // Number of octaves (4 bytes)
+        buf.extend_from_slice(&self.num_octaves.to_le_bytes());
+
+        // Seed (4 bytes)
+        buf.extend_from_slice(&self.seed.to_le_bytes());
+
+        // Tile size (1 byte present flag + 8 bytes if present)
+        if let Some((width, height)) = self.tile_size {
+            buf.push(1);
+            buf.extend_from_slice(&width.to_le_bytes());
+            buf.extend_from_slice(&height.to_le_bytes());
+        } else {
+            buf.push(0);
+        }
+
+        Some(buf)
+    }
 }
 
 /// A boxed shader type.
@@ -1409,6 +1704,21 @@ impl Shader for LocalMatrixShader {
         };
         self.inner.sample(sx, sy)
     }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = Vec::new();
+        buf.push(SHADER_KIND_LOCAL_MATRIX);
+
+        // Matrix (36 bytes)
+        for i in 0..9 {
+            buf.extend_from_slice(&self.matrix.values[i].to_le_bytes());
+        }
+
+        // Inner shader (recursive)
+        serialize_child_shader(&mut buf, &self.inner);
+
+        Some(buf)
+    }
 }
 
 /// Compose shader that chains two shaders together.
@@ -1468,6 +1778,22 @@ impl Shader for ComposeShader {
         let src = self.outer.sample(x, y);
         self.blend_mode.apply(src, dst)
     }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = Vec::new();
+        buf.push(SHADER_KIND_COMPOSE);
+
+        // Blend mode (1 byte)
+        buf.push(self.blend_mode as u8);
+
+        // Outer shader (recursive)
+        serialize_child_shader(&mut buf, &self.outer);
+
+        // Inner shader (recursive)
+        serialize_child_shader(&mut buf, &self.inner);
+
+        Some(buf)
+    }
 }
 
 /// Empty shader that produces transparent pixels.
@@ -1493,6 +1819,821 @@ impl Shader for EmptyShader {
     fn shader_kind(&self) -> ShaderKind {
         ShaderKind::Empty
     }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        Some(vec![SHADER_KIND_EMPTY])
+    }
+}
+
+// =============================================================================
+// Deserialization
+// =============================================================================
+
+/// Deserialize a shader from bytes.
+///
+/// Returns `None` if the data is invalid or the shader type is unsupported.
+pub(crate) fn deserialize_shader(bytes: &[u8], offset: &mut usize) -> Option<ShaderRef> {
+    if *offset >= bytes.len() {
+        return None;
+    }
+    let kind = bytes[*offset];
+    *offset += 1;
+
+    match kind {
+        SHADER_KIND_COLOR => deserialize_color_shader(bytes, offset),
+        SHADER_KIND_LINEAR_GRADIENT => deserialize_linear_gradient(bytes, offset),
+        SHADER_KIND_RADIAL_GRADIENT => deserialize_radial_gradient(bytes, offset),
+        SHADER_KIND_SWEEP_GRADIENT => deserialize_sweep_gradient(bytes, offset),
+        SHADER_KIND_TWO_POINT_CONICAL => deserialize_two_point_conical(bytes, offset),
+        SHADER_KIND_IMAGE => deserialize_image_shader(bytes, offset),
+        SHADER_KIND_PERLIN_NOISE => deserialize_perlin_noise(bytes, offset),
+        SHADER_KIND_BLEND => deserialize_blend_shader(bytes, offset),
+        SHADER_KIND_LOCAL_MATRIX => deserialize_local_matrix_shader(bytes, offset),
+        SHADER_KIND_COMPOSE => deserialize_compose_shader(bytes, offset),
+        SHADER_KIND_EMPTY => Some(Arc::new(EmptyShader::new())),
+        _ => None, // Unknown shader kind
+    }
+}
+
+/// Helper to read a child shader (recursively).
+fn deserialize_child_shader(bytes: &[u8], offset: &mut usize) -> Option<ShaderRef> {
+    if *offset >= bytes.len() {
+        return None;
+    }
+    let present = bytes[*offset];
+    *offset += 1;
+
+    if present == 0 {
+        return None;
+    }
+
+    // Read length
+    if *offset + 4 > bytes.len() {
+        return None;
+    }
+    let len = u32::from_le_bytes([
+        bytes[*offset],
+        bytes[*offset + 1],
+        bytes[*offset + 2],
+        bytes[*offset + 3],
+    ]) as usize;
+    *offset += 4;
+
+    if *offset + len > bytes.len() {
+        return None;
+    }
+
+    let child_bytes = &bytes[*offset..*offset + len];
+    *offset += len;
+
+    let mut child_offset = 0;
+    deserialize_shader(child_bytes, &mut child_offset)
+}
+
+/// Helper to deserialize common gradient data.
+fn deserialize_gradient_common(
+    bytes: &[u8],
+    offset: &mut usize,
+) -> Option<(Vec<Color4f>, Option<Vec<Scalar>>, TileMode, GradientFlags, Option<Matrix>)> {
+    // Tile mode (1 byte)
+    if *offset >= bytes.len() {
+        return None;
+    }
+    let tile_mode = match bytes[*offset] {
+        0 => TileMode::Clamp,
+        1 => TileMode::Repeat,
+        2 => TileMode::Mirror,
+        3 => TileMode::Decal,
+        _ => return None,
+    };
+    *offset += 1;
+
+    // Flags (4 bytes)
+    if *offset + 4 > bytes.len() {
+        return None;
+    }
+    let flags = GradientFlags(u32::from_le_bytes([
+        bytes[*offset],
+        bytes[*offset + 1],
+        bytes[*offset + 2],
+        bytes[*offset + 3],
+    ]));
+    *offset += 4;
+
+    // Colors count (4 bytes)
+    if *offset + 4 > bytes.len() {
+        return None;
+    }
+    let color_count = u32::from_le_bytes([
+        bytes[*offset],
+        bytes[*offset + 1],
+        bytes[*offset + 2],
+        bytes[*offset + 3],
+    ]) as usize;
+    *offset += 4;
+
+    // Colors (16 bytes each)
+    if *offset + color_count * 16 > bytes.len() {
+        return None;
+    }
+    let mut colors = Vec::with_capacity(color_count);
+    for _ in 0..color_count {
+        let r = f32::from_le_bytes([
+            bytes[*offset],
+            bytes[*offset + 1],
+            bytes[*offset + 2],
+            bytes[*offset + 3],
+        ]);
+        let g = f32::from_le_bytes([
+            bytes[*offset + 4],
+            bytes[*offset + 5],
+            bytes[*offset + 6],
+            bytes[*offset + 7],
+        ]);
+        let b = f32::from_le_bytes([
+            bytes[*offset + 8],
+            bytes[*offset + 9],
+            bytes[*offset + 10],
+            bytes[*offset + 11],
+        ]);
+        let a = f32::from_le_bytes([
+            bytes[*offset + 12],
+            bytes[*offset + 13],
+            bytes[*offset + 14],
+            bytes[*offset + 15],
+        ]);
+        colors.push(Color4f::new(r, g, b, a));
+        *offset += 16;
+    }
+
+    // Positions (1 byte present flag + data)
+    if *offset >= bytes.len() {
+        return None;
+    }
+    let positions_present = bytes[*offset];
+    *offset += 1;
+    let positions = if positions_present == 1 {
+        if *offset + color_count * 4 > bytes.len() {
+            return None;
+        }
+        let mut pos_vec = Vec::with_capacity(color_count);
+        for _ in 0..color_count {
+            let pos = f32::from_le_bytes([
+                bytes[*offset],
+                bytes[*offset + 1],
+                bytes[*offset + 2],
+                bytes[*offset + 3],
+            ]);
+            pos_vec.push(pos);
+            *offset += 4;
+        }
+        Some(pos_vec)
+    } else {
+        None
+    };
+
+    // Local matrix (1 byte present flag + 36 bytes)
+    if *offset >= bytes.len() {
+        return None;
+    }
+    let matrix_present = bytes[*offset];
+    *offset += 1;
+    let local_matrix = if matrix_present == 1 {
+        if *offset + 36 > bytes.len() {
+            return None;
+        }
+        let mut m = Matrix::identity();
+        for i in 0..9 {
+            m.values[i] = f32::from_le_bytes([
+                bytes[*offset],
+                bytes[*offset + 1],
+                bytes[*offset + 2],
+                bytes[*offset + 3],
+            ]);
+            *offset += 4;
+        }
+        Some(m)
+    } else {
+        None
+    };
+
+    Some((colors, positions, tile_mode, flags, local_matrix))
+}
+
+fn deserialize_color_shader(bytes: &[u8], offset: &mut usize) -> Option<ShaderRef> {
+    if *offset + 16 > bytes.len() {
+        return None;
+    }
+    let r = f32::from_le_bytes([
+        bytes[*offset],
+        bytes[*offset + 1],
+        bytes[*offset + 2],
+        bytes[*offset + 3],
+    ]);
+    let g = f32::from_le_bytes([
+        bytes[*offset + 4],
+        bytes[*offset + 5],
+        bytes[*offset + 6],
+        bytes[*offset + 7],
+    ]);
+    let b = f32::from_le_bytes([
+        bytes[*offset + 8],
+        bytes[*offset + 9],
+        bytes[*offset + 10],
+        bytes[*offset + 11],
+    ]);
+    let a = f32::from_le_bytes([
+        bytes[*offset + 12],
+        bytes[*offset + 13],
+        bytes[*offset + 14],
+        bytes[*offset + 15],
+    ]);
+    *offset += 16;
+    Some(Arc::new(ColorShader::new(Color4f::new(r, g, b, a))))
+}
+
+fn deserialize_linear_gradient(bytes: &[u8], offset: &mut usize) -> Option<ShaderRef> {
+    // Start point (8 bytes)
+    if *offset + 8 > bytes.len() {
+        return None;
+    }
+    let start_x = f32::from_le_bytes([
+        bytes[*offset],
+        bytes[*offset + 1],
+        bytes[*offset + 2],
+        bytes[*offset + 3],
+    ]);
+    let start_y = f32::from_le_bytes([
+        bytes[*offset + 4],
+        bytes[*offset + 5],
+        bytes[*offset + 6],
+        bytes[*offset + 7],
+    ]);
+    *offset += 8;
+
+    // End point (8 bytes)
+    if *offset + 8 > bytes.len() {
+        return None;
+    }
+    let end_x = f32::from_le_bytes([
+        bytes[*offset],
+        bytes[*offset + 1],
+        bytes[*offset + 2],
+        bytes[*offset + 3],
+    ]);
+    let end_y = f32::from_le_bytes([
+        bytes[*offset + 4],
+        bytes[*offset + 5],
+        bytes[*offset + 6],
+        bytes[*offset + 7],
+    ]);
+    *offset += 8;
+
+    // Common gradient data
+    let (colors, positions, tile_mode, flags, local_matrix) =
+        deserialize_gradient_common(bytes, offset)?;
+
+    let mut gradient = LinearGradient::new(
+        Point::new(start_x, start_y),
+        Point::new(end_x, end_y),
+        colors,
+        positions,
+        tile_mode,
+    )
+    .with_flags(flags);
+
+    if let Some(matrix) = local_matrix {
+        gradient = gradient.with_local_matrix(matrix);
+    }
+
+    Some(Arc::new(gradient))
+}
+
+fn deserialize_radial_gradient(bytes: &[u8], offset: &mut usize) -> Option<ShaderRef> {
+    // Center point (8 bytes)
+    if *offset + 8 > bytes.len() {
+        return None;
+    }
+    let center_x = f32::from_le_bytes([
+        bytes[*offset],
+        bytes[*offset + 1],
+        bytes[*offset + 2],
+        bytes[*offset + 3],
+    ]);
+    let center_y = f32::from_le_bytes([
+        bytes[*offset + 4],
+        bytes[*offset + 5],
+        bytes[*offset + 6],
+        bytes[*offset + 7],
+    ]);
+    *offset += 8;
+
+    // Radius (4 bytes)
+    if *offset + 4 > bytes.len() {
+        return None;
+    }
+    let radius = f32::from_le_bytes([
+        bytes[*offset],
+        bytes[*offset + 1],
+        bytes[*offset + 2],
+        bytes[*offset + 3],
+    ]);
+    *offset += 4;
+
+    // Common gradient data
+    let (colors, positions, tile_mode, flags, local_matrix) =
+        deserialize_gradient_common(bytes, offset)?;
+
+    let mut gradient = RadialGradient::new(
+        Point::new(center_x, center_y),
+        radius,
+        colors,
+        positions,
+        tile_mode,
+    )
+    .with_flags(flags);
+
+    if let Some(matrix) = local_matrix {
+        gradient = gradient.with_local_matrix(matrix);
+    }
+
+    Some(Arc::new(gradient))
+}
+
+fn deserialize_sweep_gradient(bytes: &[u8], offset: &mut usize) -> Option<ShaderRef> {
+    // Center point (8 bytes)
+    if *offset + 8 > bytes.len() {
+        return None;
+    }
+    let center_x = f32::from_le_bytes([
+        bytes[*offset],
+        bytes[*offset + 1],
+        bytes[*offset + 2],
+        bytes[*offset + 3],
+    ]);
+    let center_y = f32::from_le_bytes([
+        bytes[*offset + 4],
+        bytes[*offset + 5],
+        bytes[*offset + 6],
+        bytes[*offset + 7],
+    ]);
+    *offset += 8;
+
+    // Start and end angles (8 bytes)
+    if *offset + 8 > bytes.len() {
+        return None;
+    }
+    let start_angle = f32::from_le_bytes([
+        bytes[*offset],
+        bytes[*offset + 1],
+        bytes[*offset + 2],
+        bytes[*offset + 3],
+    ]);
+    let end_angle = f32::from_le_bytes([
+        bytes[*offset + 4],
+        bytes[*offset + 5],
+        bytes[*offset + 6],
+        bytes[*offset + 7],
+    ]);
+    *offset += 8;
+
+    // Common gradient data
+    let (colors, positions, tile_mode, flags, local_matrix) =
+        deserialize_gradient_common(bytes, offset)?;
+
+    let mut gradient = SweepGradient::new(
+        Point::new(center_x, center_y),
+        start_angle,
+        end_angle,
+        colors,
+        positions,
+        tile_mode,
+    )
+    .with_flags(flags);
+
+    if let Some(matrix) = local_matrix {
+        gradient = gradient.with_local_matrix(matrix);
+    }
+
+    Some(Arc::new(gradient))
+}
+
+fn deserialize_two_point_conical(bytes: &[u8], offset: &mut usize) -> Option<ShaderRef> {
+    // Start center and radius (12 bytes)
+    if *offset + 12 > bytes.len() {
+        return None;
+    }
+    let start_x = f32::from_le_bytes([
+        bytes[*offset],
+        bytes[*offset + 1],
+        bytes[*offset + 2],
+        bytes[*offset + 3],
+    ]);
+    let start_y = f32::from_le_bytes([
+        bytes[*offset + 4],
+        bytes[*offset + 5],
+        bytes[*offset + 6],
+        bytes[*offset + 7],
+    ]);
+    let start_radius = f32::from_le_bytes([
+        bytes[*offset + 8],
+        bytes[*offset + 9],
+        bytes[*offset + 10],
+        bytes[*offset + 11],
+    ]);
+    *offset += 12;
+
+    // End center and radius (12 bytes)
+    if *offset + 12 > bytes.len() {
+        return None;
+    }
+    let end_x = f32::from_le_bytes([
+        bytes[*offset],
+        bytes[*offset + 1],
+        bytes[*offset + 2],
+        bytes[*offset + 3],
+    ]);
+    let end_y = f32::from_le_bytes([
+        bytes[*offset + 4],
+        bytes[*offset + 5],
+        bytes[*offset + 6],
+        bytes[*offset + 7],
+    ]);
+    let end_radius = f32::from_le_bytes([
+        bytes[*offset + 8],
+        bytes[*offset + 9],
+        bytes[*offset + 10],
+        bytes[*offset + 11],
+    ]);
+    *offset += 12;
+
+    // Common gradient data
+    let (colors, positions, tile_mode, flags, local_matrix) =
+        deserialize_gradient_common(bytes, offset)?;
+
+    let mut gradient = TwoPointConicalGradient::new(
+        Point::new(start_x, start_y),
+        start_radius,
+        Point::new(end_x, end_y),
+        end_radius,
+        colors,
+        positions,
+        tile_mode,
+    )
+    .with_flags(flags);
+
+    if let Some(matrix) = local_matrix {
+        gradient = gradient.with_local_matrix(matrix);
+    }
+
+    Some(Arc::new(gradient))
+}
+
+fn deserialize_image_shader(bytes: &[u8], offset: &mut usize) -> Option<ShaderRef> {
+    // Bounds (16 bytes)
+    if *offset + 16 > bytes.len() {
+        return None;
+    }
+    let left = f32::from_le_bytes([
+        bytes[*offset],
+        bytes[*offset + 1],
+        bytes[*offset + 2],
+        bytes[*offset + 3],
+    ]);
+    let top = f32::from_le_bytes([
+        bytes[*offset + 4],
+        bytes[*offset + 5],
+        bytes[*offset + 6],
+        bytes[*offset + 7],
+    ]);
+    let right = f32::from_le_bytes([
+        bytes[*offset + 8],
+        bytes[*offset + 9],
+        bytes[*offset + 10],
+        bytes[*offset + 11],
+    ]);
+    let bottom = f32::from_le_bytes([
+        bytes[*offset + 12],
+        bytes[*offset + 13],
+        bytes[*offset + 14],
+        bytes[*offset + 15],
+    ]);
+    *offset += 16;
+
+    // Tile modes (2 bytes)
+    if *offset + 2 > bytes.len() {
+        return None;
+    }
+    let tile_mode_x = match bytes[*offset] {
+        0 => TileMode::Clamp,
+        1 => TileMode::Repeat,
+        2 => TileMode::Mirror,
+        3 => TileMode::Decal,
+        _ => return None,
+    };
+    let tile_mode_y = match bytes[*offset + 1] {
+        0 => TileMode::Clamp,
+        1 => TileMode::Repeat,
+        2 => TileMode::Mirror,
+        3 => TileMode::Decal,
+        _ => return None,
+    };
+    *offset += 2;
+
+    // Sampling options (2 bytes)
+    if *offset + 2 > bytes.len() {
+        return None;
+    }
+    let filter = match bytes[*offset] {
+        0 => FilterMode::Nearest,
+        1 => FilterMode::Linear,
+        _ => return None,
+    };
+    let mipmap = match bytes[*offset + 1] {
+        0 => MipmapMode::None,
+        1 => MipmapMode::Nearest,
+        2 => MipmapMode::Linear,
+        _ => return None,
+    };
+    *offset += 2;
+
+    // Local matrix (1 byte present flag + 36 bytes)
+    if *offset >= bytes.len() {
+        return None;
+    }
+    let matrix_present = bytes[*offset];
+    *offset += 1;
+    let local_matrix = if matrix_present == 1 {
+        if *offset + 36 > bytes.len() {
+            return None;
+        }
+        let mut m = Matrix::identity();
+        for i in 0..9 {
+            m.values[i] = f32::from_le_bytes([
+                bytes[*offset],
+                bytes[*offset + 1],
+                bytes[*offset + 2],
+                bytes[*offset + 3],
+            ]);
+            *offset += 4;
+        }
+        Some(m)
+    } else {
+        None
+    };
+
+    // Image info and pixel data (if present)
+    if *offset >= bytes.len() {
+        return None;
+    }
+    let image_present = bytes[*offset];
+    *offset += 1;
+
+    let (pixels, image_info) = if image_present == 1 {
+        // ImageInfo fields
+        if *offset + 6 > bytes.len() {
+            return None;
+        }
+        let width = i32::from_le_bytes([
+            bytes[*offset],
+            bytes[*offset + 1],
+            bytes[*offset + 2],
+            bytes[*offset + 3],
+        ]);
+        let height = i32::from_le_bytes([
+            bytes[*offset + 4],
+            bytes[*offset + 5],
+            bytes[*offset + 6],
+            bytes[*offset + 7],
+        ]);
+        let color_type = match bytes[*offset + 8] {
+            0 => skia_rs_core::color::ColorType::Unknown,
+            1 => skia_rs_core::color::ColorType::Alpha8,
+            2 => skia_rs_core::color::ColorType::Rgb565,
+            3 => skia_rs_core::color::ColorType::Argb4444,
+            4 => skia_rs_core::color::ColorType::Rgba8888,
+            5 => skia_rs_core::color::ColorType::Rgb888x,
+            6 => skia_rs_core::color::ColorType::Bgra8888,
+            7 => skia_rs_core::color::ColorType::Rgba1010102,
+            8 => skia_rs_core::color::ColorType::Bgra1010102,
+            9 => skia_rs_core::color::ColorType::Rgb101010x,
+            10 => skia_rs_core::color::ColorType::Bgr101010x,
+            11 => skia_rs_core::color::ColorType::Gray8,
+            12 => skia_rs_core::color::ColorType::RgbaF16,
+            13 => skia_rs_core::color::ColorType::RgbaF16Norm,
+            14 => skia_rs_core::color::ColorType::RgbaF32,
+            15 => skia_rs_core::color::ColorType::R8Unorm,
+            16 => skia_rs_core::color::ColorType::A16Float,
+            17 => skia_rs_core::color::ColorType::R16G16Float,
+            18 => skia_rs_core::color::ColorType::A16Unorm,
+            19 => skia_rs_core::color::ColorType::R16G16Unorm,
+            20 => skia_rs_core::color::ColorType::R16G16B16A16Unorm,
+            21 => skia_rs_core::color::ColorType::Srgba8888,
+            22 => skia_rs_core::color::ColorType::R8Unorm2,
+            _ => return None,
+        };
+        let alpha_type = match bytes[*offset + 9] {
+            0 => skia_rs_core::color::AlphaType::Unknown,
+            1 => skia_rs_core::color::AlphaType::Opaque,
+            2 => skia_rs_core::color::AlphaType::Premul,
+            3 => skia_rs_core::color::AlphaType::Unpremul,
+            _ => return None,
+        };
+        *offset += 10;
+
+        // Pixel data length + data
+        if *offset + 4 > bytes.len() {
+            return None;
+        }
+        let pixel_len = u32::from_le_bytes([
+            bytes[*offset],
+            bytes[*offset + 1],
+            bytes[*offset + 2],
+            bytes[*offset + 3],
+        ]) as usize;
+        *offset += 4;
+
+        if *offset + pixel_len > bytes.len() {
+            return None;
+        }
+        let pixel_data = bytes[*offset..*offset + pixel_len].to_vec();
+        *offset += pixel_len;
+
+        let info = skia_rs_core::pixel::ImageInfo::new(
+            width,
+            height,
+            color_type,
+            alpha_type,
+        ).ok()?;
+
+        (Some(Arc::new(pixel_data)), Some(info))
+    } else {
+        (None, None)
+    };
+
+    Some(Arc::new(ImageShader {
+        bounds: Rect::from_xywh(left, top, right - left, bottom - top),
+        tile_mode_x,
+        tile_mode_y,
+        sampling: SamplingOptions { filter, mipmap },
+        local_matrix,
+        pixels,
+        image_info,
+    }))
+}
+
+fn deserialize_perlin_noise(bytes: &[u8], offset: &mut usize) -> Option<ShaderRef> {
+    // Noise type (1 byte)
+    if *offset >= bytes.len() {
+        return None;
+    }
+    let noise_type = match bytes[*offset] {
+        0 => NoiseType::FractalNoise,
+        1 => NoiseType::Turbulence,
+        _ => return None,
+    };
+    *offset += 1;
+
+    // Base frequencies (8 bytes)
+    if *offset + 8 > bytes.len() {
+        return None;
+    }
+    let base_frequency_x = f32::from_le_bytes([
+        bytes[*offset],
+        bytes[*offset + 1],
+        bytes[*offset + 2],
+        bytes[*offset + 3],
+    ]);
+    let base_frequency_y = f32::from_le_bytes([
+        bytes[*offset + 4],
+        bytes[*offset + 5],
+        bytes[*offset + 6],
+        bytes[*offset + 7],
+    ]);
+    *offset += 8;
+
+    // Number of octaves (4 bytes)
+    if *offset + 4 > bytes.len() {
+        return None;
+    }
+    let num_octaves = i32::from_le_bytes([
+        bytes[*offset],
+        bytes[*offset + 1],
+        bytes[*offset + 2],
+        bytes[*offset + 3],
+    ]);
+    *offset += 4;
+
+    // Seed (4 bytes)
+    if *offset + 4 > bytes.len() {
+        return None;
+    }
+    let seed = f32::from_le_bytes([
+        bytes[*offset],
+        bytes[*offset + 1],
+        bytes[*offset + 2],
+        bytes[*offset + 3],
+    ]);
+    *offset += 4;
+
+    // Tile size (1 byte present flag + 8 bytes)
+    if *offset >= bytes.len() {
+        return None;
+    }
+    let tile_present = bytes[*offset];
+    *offset += 1;
+    let tile_size = if tile_present == 1 {
+        if *offset + 8 > bytes.len() {
+            return None;
+        }
+        let width = i32::from_le_bytes([
+            bytes[*offset],
+            bytes[*offset + 1],
+            bytes[*offset + 2],
+            bytes[*offset + 3],
+        ]);
+        let height = i32::from_le_bytes([
+            bytes[*offset + 4],
+            bytes[*offset + 5],
+            bytes[*offset + 6],
+            bytes[*offset + 7],
+        ]);
+        *offset += 8;
+        Some((width, height))
+    } else {
+        None
+    };
+
+    let mut shader = PerlinNoiseShader {
+        noise_type,
+        base_frequency_x,
+        base_frequency_y,
+        num_octaves,
+        seed,
+        tile_size: None,
+    };
+
+    if let Some((w, h)) = tile_size {
+        shader = shader.with_tile_size(w, h);
+    }
+
+    Some(Arc::new(shader))
+}
+
+fn deserialize_blend_shader(bytes: &[u8], offset: &mut usize) -> Option<ShaderRef> {
+    // Blend mode (1 byte)
+    if *offset >= bytes.len() {
+        return None;
+    }
+    let blend_mode = crate::BlendMode::from_u8(bytes[*offset])?;
+    *offset += 1;
+
+    // Src shader (recursive)
+    let src = deserialize_child_shader(bytes, offset)?;
+
+    // Dst shader (recursive)
+    let dst = deserialize_child_shader(bytes, offset)?;
+
+    Some(Arc::new(BlendShader::new(blend_mode, dst, src)))
+}
+
+fn deserialize_local_matrix_shader(bytes: &[u8], offset: &mut usize) -> Option<ShaderRef> {
+    // Matrix (36 bytes)
+    if *offset + 36 > bytes.len() {
+        return None;
+    }
+    let mut matrix = Matrix::identity();
+    for i in 0..9 {
+        matrix.values[i] = f32::from_le_bytes([
+            bytes[*offset],
+            bytes[*offset + 1],
+            bytes[*offset + 2],
+            bytes[*offset + 3],
+        ]);
+        *offset += 4;
+    }
+
+    // Inner shader (recursive)
+    let inner = deserialize_child_shader(bytes, offset)?;
+
+    Some(Arc::new(LocalMatrixShader::new(inner, matrix)))
+}
+
+fn deserialize_compose_shader(bytes: &[u8], offset: &mut usize) -> Option<ShaderRef> {
+    // Blend mode (1 byte)
+    if *offset >= bytes.len() {
+        return None;
+    }
+    let blend_mode = crate::BlendMode::from_u8(bytes[*offset])?;
+    *offset += 1;
+
+    // Outer shader (recursive)
+    let outer = deserialize_child_shader(bytes, offset)?;
+
+    // Inner shader (recursive)
+    let inner = deserialize_child_shader(bytes, offset)?;
+
+    Some(Arc::new(ComposeShader::new(outer, inner, blend_mode)))
 }
 
 /// Convenience functions for creating shaders.

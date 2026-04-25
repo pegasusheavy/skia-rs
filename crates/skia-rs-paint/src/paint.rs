@@ -353,6 +353,11 @@ impl Paint {
     /// - 1 byte: stroke cap
     /// - 1 byte: stroke join
     /// - 1 byte: flags (bit 0: anti_alias, bit 1: dither)
+    /// - [optional trailing sections for shader, mask_filter, color_filter, image_filter]
+    ///
+    /// Each optional section is: [1 byte present flag] [4 bytes length] [data].
+    /// If a shader/filter does not support serialization (e.g., runtime shaders), the
+    /// present flag is 0 and that field is omitted from deserialization.
     pub fn serialize(&self) -> Vec<u8> {
         let mut data = Vec::with_capacity(17);
 
@@ -390,6 +395,25 @@ impl Paint {
         }
         data.push(flags);
 
+        // Shader section
+        match self.shader.as_ref().and_then(|s| s.serialize()) {
+            Some(shader_data) => {
+                data.push(1); // present
+                data.extend_from_slice(&(shader_data.len() as u32).to_le_bytes());
+                data.extend_from_slice(&shader_data);
+            }
+            None => data.push(0), // absent
+        }
+
+        // MaskFilter section (not yet implemented - always absent)
+        data.push(0);
+
+        // ColorFilter section (not yet implemented - always absent)
+        data.push(0);
+
+        // ImageFilter section (not yet implemented - always absent)
+        data.push(0);
+
         data
     }
 
@@ -397,63 +421,134 @@ impl Paint {
     ///
     /// Returns `None` if the data is invalid or too short.
     ///
-    /// Note: Shaders and filters (mask_filter, color_filter, image_filter) are
-    /// not serialized and will be `None` after deserialization. Full round-trip
-    /// serialization of complex Paint objects is tracked as a future enhancement.
+    /// Shaders and filters are deserialized from optional trailing sections.
+    /// Runtime shaders/filters (SkSL-based) do not serialize and will be `None`
+    /// after deserialization.
     pub fn deserialize(data: &[u8]) -> Option<Self> {
         if data.len() < 17 {
             return None;
         }
 
+        let mut offset = 0;
+
         // Color
-        let r = data[0] as f32 / 255.0;
-        let g = data[1] as f32 / 255.0;
-        let b = data[2] as f32 / 255.0;
-        let a = data[3] as f32 / 255.0;
+        let r = data[offset] as f32 / 255.0;
+        let g = data[offset + 1] as f32 / 255.0;
+        let b = data[offset + 2] as f32 / 255.0;
+        let a = data[offset + 3] as f32 / 255.0;
         let color = Color4f::new(r, g, b, a);
+        offset += 4;
 
         // Blend mode
-        let blend_mode = BlendMode::from_u8(data[4])?;
+        let blend_mode = BlendMode::from_u8(data[offset])?;
+        offset += 1;
 
         // Style
-        let style = match data[5] {
+        let style = match data[offset] {
             0 => Style::Fill,
             1 => Style::Stroke,
             2 => Style::StrokeAndFill,
             _ => return None,
         };
+        offset += 1;
 
         // Stroke width
-        let stroke_width = f32::from_le_bytes([data[6], data[7], data[8], data[9]]);
+        let stroke_width = f32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]);
+        offset += 4;
 
         // Stroke miter
-        let stroke_miter = f32::from_le_bytes([data[10], data[11], data[12], data[13]]);
+        let stroke_miter = f32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]);
+        offset += 4;
 
         // Stroke cap
-        let stroke_cap = match data[14] {
+        let stroke_cap = match data[offset] {
             0 => StrokeCap::Butt,
             1 => StrokeCap::Round,
             2 => StrokeCap::Square,
             _ => return None,
         };
+        offset += 1;
 
         // Stroke join
-        let stroke_join = match data[15] {
+        let stroke_join = match data[offset] {
             0 => StrokeJoin::Miter,
             1 => StrokeJoin::Round,
             2 => StrokeJoin::Bevel,
             _ => return None,
         };
+        offset += 1;
 
         // Flags
-        let flags = data[16];
+        let flags = data[offset];
         let anti_alias = (flags & 0x01) != 0;
         let dither = (flags & 0x02) != 0;
+        offset += 1;
+
+        // Optional trailing sections (shader, mask_filter, color_filter, image_filter)
+        // Read shader section if present
+        let shader = if offset < data.len() && data[offset] == 1 {
+            offset += 1;
+            if offset + 4 > data.len() {
+                return None;
+            }
+            let len = u32::from_le_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ]) as usize;
+            offset += 4;
+            if offset + len > data.len() {
+                return None;
+            }
+            let shader_bytes = &data[offset..offset + len];
+            offset += len;
+
+            let mut shader_offset = 0;
+            crate::shader::deserialize_shader(shader_bytes, &mut shader_offset)
+        } else {
+            if offset < data.len() {
+                offset += 1; // skip absent flag
+            }
+            None
+        };
+
+        // Skip mask_filter, color_filter, image_filter sections (not yet implemented)
+        // If they're present, consume them but don't deserialize
+        for _ in 0..3 {
+            if offset < data.len() {
+                if data[offset] == 1 {
+                    offset += 1;
+                    if offset + 4 > data.len() {
+                        return None;
+                    }
+                    let len = u32::from_le_bytes([
+                        data[offset],
+                        data[offset + 1],
+                        data[offset + 2],
+                        data[offset + 3],
+                    ]) as usize;
+                    offset += 4 + len;
+                } else {
+                    offset += 1;
+                }
+            }
+        }
 
         Some(Self {
             color,
-            shader: None, // Shaders are not serialized
-            mask_filter: None, // Filters are not serialized
+            shader,
+            mask_filter: None, // Filters not yet deserialized
             color_filter: None,
             image_filter: None,
             blend_mode,
@@ -571,5 +666,87 @@ mod tests {
         paint.set_image_filter(None);
         assert!(paint.image_filter().is_none());
         assert!(!paint.has_image_filter());
+    }
+
+    #[test]
+    fn test_paint_serialize_preserves_color_shader() {
+        use crate::shader::ColorShader;
+        use std::sync::Arc;
+
+        let mut paint = Paint::new();
+        paint.set_shader(Some(Arc::new(ColorShader::new(Color4f::new(
+            0.5, 0.25, 0.75, 1.0,
+        )))));
+
+        let bytes = paint.serialize();
+        let restored = Paint::deserialize(&bytes).unwrap();
+
+        assert!(restored.shader().is_some());
+        // Verify by sampling - should be the color we set
+        let c = restored.shader().unwrap().sample(0.0, 0.0);
+        assert!((c.r - 0.5).abs() < 1e-3);
+        assert!((c.g - 0.25).abs() < 1e-3);
+        assert!((c.b - 0.75).abs() < 1e-3);
+        assert!((c.a - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_paint_serialize_preserves_linear_gradient() {
+        use crate::shader::{LinearGradient, TileMode};
+        use skia_rs_core::Point;
+        use std::sync::Arc;
+
+        let mut paint = Paint::new();
+        let gradient = LinearGradient::new(
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 0.0),
+            vec![
+                Color4f::new(1.0, 0.0, 0.0, 1.0),
+                Color4f::new(0.0, 0.0, 1.0, 1.0),
+            ],
+            None,
+            TileMode::Clamp,
+        );
+        paint.set_shader(Some(Arc::new(gradient)));
+
+        let bytes = paint.serialize();
+        let restored = Paint::deserialize(&bytes).unwrap();
+
+        assert!(restored.shader().is_some());
+        // Sample at start and end to verify gradient
+        let c_start = restored.shader().unwrap().sample(0.0, 0.0);
+        assert!((c_start.r - 1.0).abs() < 1e-3);
+        assert!((c_start.b - 0.0).abs() < 1e-3);
+
+        let c_end = restored.shader().unwrap().sample(100.0, 0.0);
+        assert!((c_end.r - 0.0).abs() < 1e-3);
+        assert!((c_end.b - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_paint_serialize_no_shader_backward_compat() {
+        // A Paint without a shader should still round-trip
+        let paint = Paint::new();
+        let bytes = paint.serialize();
+        let restored = Paint::deserialize(&bytes).unwrap();
+        assert!(restored.shader().is_none());
+    }
+
+    #[test]
+    fn test_paint_serialize_old_format_still_deserializes() {
+        // Old format (17 bytes) should deserialize correctly
+        let mut paint = Paint::new();
+        paint.set_color(Color4f::new(0.8, 0.6, 0.4, 1.0));
+
+        let bytes = paint.serialize();
+        // Take only the first 17 bytes (original format)
+        let old_bytes = &bytes[0..17];
+        let restored = Paint::deserialize(old_bytes).unwrap();
+
+        // Should deserialize but shader will be None
+        assert!(restored.shader().is_none());
+        assert!((restored.color().r - 0.8).abs() < 0.01);
+        assert!((restored.color().g - 0.6).abs() < 0.01);
+        assert!((restored.color().b - 0.4).abs() < 0.01);
     }
 }
