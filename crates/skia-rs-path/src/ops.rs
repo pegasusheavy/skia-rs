@@ -3,7 +3,7 @@
 //! This module implements boolean operations on paths using a scanline-based
 //! algorithm inspired by the Bentley-Ottmann algorithm.
 
-use crate::{Path, PathBuilder, PathElement, Verb};
+use crate::{Path, PathBuilder, PathElement};
 use skia_rs_core::{Point, Rect, Scalar};
 
 /// Operation type for path boolean operations.

@@ -139,7 +139,7 @@ impl PathEffect for DashEffect {
         }
 
         // Find starting interval index and offset
-        let (mut interval_idx, mut interval_offset) = {
+        let (mut interval_idx, interval_offset) = {
             let mut accumulated = 0.0;
             let mut idx = 0;
             while accumulated + self.intervals[idx] <= phase {
