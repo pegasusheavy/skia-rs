@@ -663,6 +663,79 @@ impl Shader for TwoPointConicalGradient {
     fn shader_kind(&self) -> ShaderKind {
         ShaderKind::TwoPointConicalGradient
     }
+
+    fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
+        // Two-point conical gradient: solve quadratic for parameter t.
+        // Point P at (x, y). Circles C0 = start_center (radius r0) and
+        // C1 = end_center (radius r1).
+        //
+        // We need t such that P lies on the interpolated circle:
+        //   center(t) = C0 + t * (C1 - C0)
+        //   radius(t) = r0 + t * (r1 - r0)
+        //   |P - center(t)| = radius(t)
+        //
+        // Let d = C1 - C0, dr = r1 - r0, e = P - C0.
+        // Expanding: |e - t*d|^2 = (r0 + t*dr)^2
+        //   e.e - 2t(e.d) + t^2(d.d) = r0^2 + 2t*r0*dr + t^2*dr^2
+        //   t^2(d.d - dr^2) - 2t(e.d + r0*dr) + (e.e - r0^2) = 0
+        //
+        // Quadratic: A*t^2 + B*t + C = 0 with
+        //   A = d.d - dr^2
+        //   B = -2*(e.d + r0*dr)
+        //   C = e.e - r0^2
+        //
+        // Pick the larger root (Skia convention for non-degenerate case).
+
+        let dx = self.end_center.x - self.start_center.x;
+        let dy = self.end_center.y - self.start_center.y;
+        let dr = self.end_radius - self.start_radius;
+
+        let ex = x - self.start_center.x;
+        let ey = y - self.start_center.y;
+
+        let a = dx * dx + dy * dy - dr * dr;
+        let b = -2.0 * (ex * dx + ey * dy + self.start_radius * dr);
+        let c = ex * ex + ey * ey - self.start_radius * self.start_radius;
+
+        let t_opt = if a.abs() < 1e-7 {
+            // Linear case (d.d == dr^2): B*t + C = 0
+            if b.abs() < 1e-7 {
+                None
+            } else {
+                Some(-c / b)
+            }
+        } else {
+            let disc = b * b - 4.0 * a * c;
+            if disc < 0.0 {
+                None
+            } else {
+                let sqrt_disc = disc.sqrt();
+                // Two roots represent two circles the point could lie on.
+                // We want the circle closest to the start (smallest valid t).
+                let t0 = (-b + sqrt_disc) / (2.0 * a);
+                let t1 = (-b - sqrt_disc) / (2.0 * a);
+                // Prefer the root whose interpolated radius is non-negative
+                let r_at = |t: Scalar| self.start_radius + t * dr;
+                let t0_valid = r_at(t0) >= 0.0;
+                let t1_valid = r_at(t1) >= 0.0;
+                match (t0_valid, t1_valid) {
+                    (true, true) => Some(t0.min(t1)),
+                    (true, false) => Some(t0),
+                    (false, true) => Some(t1),
+                    (false, false) => None,
+                }
+            }
+        };
+
+        let t = match t_opt {
+            Some(t) => t,
+            None => return Color4f::transparent(),
+        };
+
+        // Apply tile mode to t, then interpolate colors.
+        let t_tiled = apply_tile_mode(t, self.tile_mode);
+        interpolate_gradient_color(&self.colors, self.positions.as_deref(), t_tiled)
+    }
 }
 
 /// Image shader that tiles an image.
@@ -1334,5 +1407,60 @@ mod tests {
         let compose = ComposeShader::new(solid.clone(), half.clone(), crate::BlendMode::SrcOver);
         let c = compose.sample(0.0, 0.0);
         assert!(c.a > 0.5, "ComposeShader should not produce transparent output");
+    }
+
+    #[test]
+    fn test_two_point_conical_gradient_interpolates() {
+        // Two circles: inner at origin (r=10), outer at (100, 0) (r=30).
+        // Interpolate red -> blue.
+        let gradient = TwoPointConicalGradient::new(
+            Point::new(0.0, 0.0),
+            10.0,
+            Point::new(100.0, 0.0),
+            30.0,
+            vec![
+                Color4f::new(1.0, 0.0, 0.0, 1.0), // red at t=0 (inner circle)
+                Color4f::new(0.0, 0.0, 1.0, 1.0), // blue at t=1 (outer circle)
+            ],
+            None, // positions default
+            TileMode::Clamp,
+        );
+
+        // A point on the inner circle (at start_center + start_radius in x direction)
+        // should be red (t=0).
+        let c_inner = gradient.sample(10.0, 0.0);
+        assert!(c_inner.r > 0.9, "inner circle point should be red, got r={}", c_inner.r);
+
+        // A point on the outer circle (at end_center + end_radius in x direction)
+        // should be blue (t=1).
+        let c_outer = gradient.sample(130.0, 0.0);
+        assert!(c_outer.b > 0.9, "outer circle point should be blue, got b={}", c_outer.b);
+
+        // Midpoint should show a mix (purple-ish)
+        let c_mid = gradient.sample(50.0, 0.0);
+        assert!(c_mid.r > 0.1 && c_mid.b > 0.1,
+                "midpoint should mix red and blue, got r={} b={}", c_mid.r, c_mid.b);
+    }
+
+    #[test]
+    fn test_two_point_conical_gradient_outside_returns_clamped() {
+        // Outside both circles with TileMode::Clamp should clamp to edge color
+        let gradient = TwoPointConicalGradient::new(
+            Point::new(0.0, 0.0),
+            10.0,
+            Point::new(50.0, 0.0),
+            20.0,
+            vec![
+                Color4f::new(1.0, 0.0, 0.0, 1.0),
+                Color4f::new(0.0, 1.0, 0.0, 1.0),
+            ],
+            None,
+            TileMode::Clamp,
+        );
+
+        // Far off-axis
+        let c = gradient.sample(200.0, 200.0);
+        // Should be bounded, not NaN
+        assert!(c.r.is_finite() && c.g.is_finite() && c.b.is_finite() && c.a.is_finite());
     }
 }
