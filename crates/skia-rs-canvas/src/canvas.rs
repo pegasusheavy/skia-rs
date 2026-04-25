@@ -89,6 +89,31 @@ impl std::fmt::Debug for Backing<'_> {
     }
 }
 
+/// An offscreen layer pushed by [`Canvas::save_layer`].
+///
+/// While this layer is on top of the stack, all draws are routed into
+/// `buffer` instead of the base backing. On [`Canvas::restore`] the buffer
+/// is composited back onto the enclosing target (the next layer down or the
+/// base backing) using `paint`'s alpha and blend mode.
+struct Layer {
+    /// Offscreen pixel buffer holding this layer's contents.
+    buffer: PixelBuffer,
+    /// Bounds in the enclosing canvas coordinate space, or `None` if the
+    /// layer covers the whole canvas.
+    ///
+    /// `bounds.left, bounds.top` is the offset at which the layer's local
+    /// origin sits inside its parent. Layer-local coordinates are
+    /// canvas coordinates minus this offset.
+    bounds: Option<Rect>,
+    /// Paint controlling how the layer composites back onto the parent.
+    /// `None` means use a default [`Paint`] (opaque [`BlendMode::SrcOver`]).
+    paint: Option<Paint>,
+    /// Canvas save count at the moment this layer was pushed. Used by
+    /// [`Canvas::restore`] to decide whether the current restore should
+    /// pop and composite this layer.
+    save_count_when_pushed: usize,
+}
+
 /// The main drawing interface.
 ///
 /// `Canvas` is the single public canvas type. Its [`Backing`] determines
@@ -107,6 +132,11 @@ pub struct Canvas<'a> {
     width: i32,
     /// Height of the logical canvas.
     height: i32,
+    /// Stack of offscreen layers pushed by [`Canvas::save_layer`]. The top
+    /// entry (if any) receives all rasterized draws until its matching
+    /// [`Canvas::restore`], at which point it is composited back onto the
+    /// enclosing target.
+    layer_stack: Vec<Layer>,
 }
 
 impl<'a> Canvas<'a> {
@@ -131,6 +161,7 @@ impl<'a> Canvas<'a> {
             save_count: 1,
             width,
             height,
+            layer_stack: Vec::new(),
         }
     }
 
@@ -147,6 +178,7 @@ impl<'a> Canvas<'a> {
             save_count: 1,
             width,
             height,
+            layer_stack: Vec::new(),
         }
     }
 
@@ -160,6 +192,7 @@ impl<'a> Canvas<'a> {
             save_count: 1,
             width,
             height,
+            layer_stack: Vec::new(),
         }
     }
 
@@ -213,31 +246,146 @@ impl<'a> Canvas<'a> {
 
     /// Save the current state with a layer.
     ///
-    /// Layer composition itself is tracked by P5-4; this currently behaves
-    /// like a plain [`save`](Self::save) but records a `SaveLayer` command in
-    /// the recording backing so playback preserves intent.
+    /// For raster backings this allocates an offscreen [`PixelBuffer`] sized
+    /// to `rec.bounds` (or the full canvas if no bounds are given) and
+    /// redirects all subsequent draws into it until the matching
+    /// [`restore`](Self::restore). On restore the buffer is composited back
+    /// onto the enclosing target using `rec.paint`'s alpha and blend mode.
+    ///
+    /// Recording backings simply emit a [`DrawCommand::SaveLayer`] and rely
+    /// on playback (against a raster canvas) to do the actual composition.
+    /// Null backings behave like plain [`save`](Self::save) — no layer is
+    /// allocated — but the save count is incremented so the matching
+    /// restore still balances.
     pub fn save_layer(&mut self, rec: &SaveLayerRec<'_>) -> usize {
         let bounds = rec.bounds.copied();
         let paint = rec.paint.cloned();
-        // Maintain matrix/clip stack.
+
+        // Record intent for Recording backings before mutating anything else.
+        if let Backing::Recording(commands) = &mut self.backing {
+            commands.push(DrawCommand::SaveLayer {
+                bounds,
+                paint: paint.clone(),
+            });
+        }
+
+        // Maintain matrix/clip/save-count stack exactly like save().
         let matrix = *self.matrix_stack.last().unwrap();
         self.matrix_stack.push(matrix);
         self.clip_stack.save();
         self.save_count += 1;
-        if let Backing::Recording(commands) = &mut self.backing {
-            commands.push(DrawCommand::SaveLayer { bounds, paint });
+
+        // Only raster backings allocate an offscreen layer — Recording and
+        // Null have no pixels to composite.
+        if matches!(self.backing, Backing::Raster(_)) {
+            let (w, h) = match bounds {
+                Some(b) => (b.width().ceil() as i32, b.height().ceil() as i32),
+                None => (self.width, self.height),
+            };
+            let buffer = PixelBuffer::new(w.max(1), h.max(1));
+            // INIT_WITH_PREVIOUS is left unimplemented here — the buffer is
+            // left fully transparent. Pre-seeding from the parent is left
+            // as a follow-up because it requires reading back and mapping
+            // bounds between coordinate spaces.
+            self.layer_stack.push(Layer {
+                buffer,
+                bounds,
+                paint,
+                save_count_when_pushed: self.save_count,
+            });
         }
+
         self.save_count
     }
 
     /// Restore to the previous state.
+    ///
+    /// If the top entry of the layer stack was pushed at the current save
+    /// count, the layer is popped and composited onto its parent target
+    /// (the next layer below, or the base backing) before the matrix/clip
+    /// stacks are popped.
     pub fn restore(&mut self) {
-        if self.save_count > 1 {
-            self.matrix_stack.pop();
-            self.clip_stack.restore();
-            self.save_count -= 1;
-            if let Backing::Recording(commands) = &mut self.backing {
-                commands.push(DrawCommand::Restore);
+        if self.save_count <= 1 {
+            return;
+        }
+
+        // If the top layer was pushed at this save count, composite it
+        // back onto its parent before popping save state.
+        let should_pop_layer = self
+            .layer_stack
+            .last()
+            .is_some_and(|l| l.save_count_when_pushed == self.save_count);
+        if should_pop_layer {
+            let layer = self.layer_stack.pop().unwrap();
+            self.composite_layer(layer);
+        }
+
+        self.matrix_stack.pop();
+        self.clip_stack.restore();
+        self.save_count -= 1;
+
+        if let Backing::Recording(commands) = &mut self.backing {
+            commands.push(DrawCommand::Restore);
+        }
+    }
+
+    /// Composite a popped [`Layer`] back onto the enclosing target (the
+    /// next layer below, or the base [`Backing::Raster`] buffer). Uses the
+    /// layer paint's alpha (scaling the source alpha) and blend mode.
+    fn composite_layer(&mut self, layer: Layer) {
+        let paint = layer.paint.unwrap_or_default();
+        let blend_mode = paint.blend_mode();
+        // Layer paint alpha scales the source alpha per-pixel. Stored as
+        // [0.0, 1.0] in Paint — clamp defensively.
+        let layer_alpha = paint.alpha().clamp(0.0, 1.0);
+        let (offset_x, offset_y) = match layer.bounds {
+            Some(b) => (b.left.floor() as i32, b.top.floor() as i32),
+            None => (0, 0),
+        };
+
+        // Borrow the target buffer: either the next layer below (parent
+        // layer) or the base raster backing. Recording/Null backings have
+        // no pixels to composite into.
+        let target: &mut PixelBuffer = if let Some(parent) = self.layer_stack.last_mut() {
+            &mut parent.buffer
+        } else {
+            match &mut self.backing {
+                Backing::Raster(buf) => *buf,
+                _ => return,
+            }
+        };
+
+        let src_buf = &layer.buffer;
+        let src_w = src_buf.width;
+        let src_h = src_buf.height;
+
+        for y in 0..src_h {
+            let dy = offset_y + y;
+            if dy < 0 || dy >= target.height {
+                continue;
+            }
+            for x in 0..src_w {
+                let dx = offset_x + x;
+                if dx < 0 || dx >= target.width {
+                    continue;
+                }
+                let src_offset = (y as usize) * src_buf.stride + (x as usize) * 4;
+                let sr = src_buf.pixels[src_offset];
+                let sg = src_buf.pixels[src_offset + 1];
+                let sb = src_buf.pixels[src_offset + 2];
+                let sa_raw = src_buf.pixels[src_offset + 3];
+                if sa_raw == 0 && matches!(
+                    blend_mode,
+                    skia_rs_paint::BlendMode::SrcOver | skia_rs_paint::BlendMode::DstOver
+                ) {
+                    // Fully transparent pixels contribute nothing under
+                    // over-style blends; skip to avoid pointless work.
+                    continue;
+                }
+                // Scale source alpha by the layer paint alpha.
+                let scaled_a = ((sa_raw as f32) * layer_alpha).round().clamp(0.0, 255.0) as u8;
+                let src = Color::from_argb(scaled_a, sr, sg, sb);
+                target.blend_pixel(dx, dy, src, blend_mode);
             }
         }
     }
@@ -355,9 +503,13 @@ impl<'a> Canvas<'a> {
     // Raster-backing helper
     // =========================================================================
 
-    /// Build a configured [`Rasterizer`] from the current matrix and clip
-    /// when the backing is [`Backing::Raster`]. Returns `None` for
-    /// non-raster backings.
+    /// Build a configured [`Rasterizer`] from the current matrix and clip.
+    ///
+    /// If the canvas has an active layer (pushed by
+    /// [`save_layer`](Self::save_layer)), the rasterizer targets the top
+    /// layer's offscreen buffer; otherwise it targets the base
+    /// [`Backing::Raster`] buffer. For [`Backing::Recording`] and
+    /// [`Backing::Null`] canvases without an active layer, returns `None`.
     ///
     /// The closure runs with `&mut Rasterizer`; its return value is
     /// propagated.
@@ -365,6 +517,27 @@ impl<'a> Canvas<'a> {
     fn with_rasterizer<R>(&mut self, f: impl FnOnce(&mut Rasterizer<'_>) -> R) -> Option<R> {
         let matrix = *self.matrix_stack.last().unwrap();
         let clip_stack = self.clip_stack.clone();
+
+        // An active layer takes priority over the base backing. The layer
+        // buffer is sized to the layer's bounds, so we pre-compose a
+        // translation that maps canvas coordinates to layer-local
+        // coordinates (buffer origin sits at bounds.left, bounds.top).
+        if let Some(layer) = self.layer_stack.last_mut() {
+            let (ox, oy) = match layer.bounds {
+                Some(b) => (b.left, b.top),
+                None => (0.0, 0.0),
+            };
+            let adjusted = if ox == 0.0 && oy == 0.0 {
+                matrix
+            } else {
+                Matrix::translate(-ox, -oy).concat(&matrix)
+            };
+            let mut raster = Rasterizer::new(&mut layer.buffer);
+            raster.set_matrix(&adjusted);
+            raster.set_clip_stack(clip_stack);
+            return Some(f(&mut raster));
+        }
+
         if let Backing::Raster(buffer) = &mut self.backing {
             let mut raster = Rasterizer::new(buffer);
             raster.set_matrix(&matrix);
@@ -380,7 +553,16 @@ impl<'a> Canvas<'a> {
     // =========================================================================
 
     /// Clear the canvas with a color.
+    ///
+    /// If a layer is active (pushed by [`save_layer`](Self::save_layer)),
+    /// only the top layer's buffer is cleared; the enclosing buffer is
+    /// untouched. This matches Skia semantics: clear affects the current
+    /// drawing target, not the root surface.
     pub fn clear(&mut self, color: Color) {
+        if let Some(layer) = self.layer_stack.last_mut() {
+            layer.buffer.clear(color);
+            return;
+        }
         match &mut self.backing {
             Backing::Raster(buffer) => buffer.clear(color),
             Backing::Recording(commands) => commands.push(DrawCommand::Clear { color }),
@@ -792,10 +974,23 @@ impl<'a> Canvas<'a> {
         let dst_y_start = visible_dst.top.floor() as i32;
         let dst_y_end = visible_dst.bottom.ceil() as i32;
 
-        let buffer = match &mut self.backing {
-            Backing::Raster(b) => b,
-            _ => return,
-        };
+        // Route pixel writes to the top layer buffer if one is active, else
+        // to the base raster backing. Layer buffers are in layer-local
+        // coords (canvas coord minus bounds origin), so apply the same
+        // offset subtraction used in with_rasterizer.
+        let (buffer, buf_offset_x, buf_offset_y): (&mut PixelBuffer, i32, i32) =
+            if let Some(layer) = self.layer_stack.last_mut() {
+                let (ox, oy) = match layer.bounds {
+                    Some(b) => (b.left.floor() as i32, b.top.floor() as i32),
+                    None => (0, 0),
+                };
+                (&mut layer.buffer, ox, oy)
+            } else {
+                match &mut self.backing {
+                    Backing::Raster(b) => (*b, 0, 0),
+                    _ => return,
+                }
+            };
 
         for dst_y in dst_y_start..dst_y_end {
             for dst_x in dst_x_start..dst_x_end {
@@ -822,7 +1017,7 @@ impl<'a> Canvas<'a> {
                         color = Color::from_argb(a, color.red(), color.green(), color.blue());
                     }
 
-                    buffer.blend_pixel(dst_x, dst_y, color, blend_mode);
+                    buffer.blend_pixel(dst_x - buf_offset_x, dst_y - buf_offset_y, color, blend_mode);
                 }
             }
         }
@@ -1020,10 +1215,19 @@ impl<'a> Canvas<'a> {
         color: Option<Color>,
         paint: &Paint,
     ) {
-        let buffer = match &mut self.backing {
-            Backing::Raster(b) => b,
-            _ => return,
-        };
+        let (buffer, buf_offset_x, buf_offset_y): (&mut PixelBuffer, i32, i32) =
+            if let Some(layer) = self.layer_stack.last_mut() {
+                let (ox, oy) = match layer.bounds {
+                    Some(b) => (b.left.floor() as i32, b.top.floor() as i32),
+                    None => (0, 0),
+                };
+                (&mut layer.buffer, ox, oy)
+            } else {
+                match &mut self.backing {
+                    Backing::Raster(b) => (*b, 0, 0),
+                    _ => return,
+                }
+            };
 
         let color = color.unwrap_or_else(|| paint.color32());
         let blend_mode = paint.blend_mode();
@@ -1066,7 +1270,7 @@ impl<'a> Canvas<'a> {
             };
 
             for x in (xa.ceil() as i32)..(xb.floor() as i32) {
-                buffer.blend_pixel(x, y, color, blend_mode);
+                buffer.blend_pixel(x - buf_offset_x, y - buf_offset_y, color, blend_mode);
             }
         }
 
@@ -1081,7 +1285,7 @@ impl<'a> Canvas<'a> {
             };
 
             for x in (xa.ceil() as i32)..(xb.floor() as i32) {
-                buffer.blend_pixel(x, y, color, blend_mode);
+                buffer.blend_pixel(x - buf_offset_x, y - buf_offset_y, color, blend_mode);
             }
         }
     }
@@ -1102,10 +1306,19 @@ impl<'a> Canvas<'a> {
         let color = paint.color32();
         let blend_mode = paint.blend_mode();
 
-        let buffer = match &mut self.backing {
-            Backing::Raster(b) => b,
-            _ => return,
-        };
+        let (buffer, buf_offset_x, buf_offset_y): (&mut PixelBuffer, i32, i32) =
+            if let Some(layer) = self.layer_stack.last_mut() {
+                let (ox, oy) = match layer.bounds {
+                    Some(b) => (b.left.floor() as i32, b.top.floor() as i32),
+                    None => (0, 0),
+                };
+                (&mut layer.buffer, ox, oy)
+            } else {
+                match &mut self.backing {
+                    Backing::Raster(b) => (*b, 0, 0),
+                    _ => return,
+                }
+            };
 
         for run in blob.runs() {
             let font = &run.font;
@@ -1139,7 +1352,12 @@ impl<'a> Canvas<'a> {
                     let r = clipped.round_out();
                     for py in r.top..r.bottom {
                         for px in r.left..r.right {
-                            buffer.blend_pixel(px, py, color, blend_mode);
+                            buffer.blend_pixel(
+                                px - buf_offset_x,
+                                py - buf_offset_y,
+                                color,
+                                blend_mode,
+                            );
                         }
                     }
                 }
@@ -1644,5 +1862,234 @@ mod tests {
         }
         // Two DrawLine commands should be recorded (n-1 for polygon)
         assert_eq!(cmds.iter().filter(|cmd| matches!(cmd, DrawCommand::DrawLine { .. })).count(), 2);
+    }
+
+    // =========================================================================
+    // save_layer / restore layer-composition tests
+    // =========================================================================
+
+    #[test]
+    fn test_save_layer_increments_save_count_and_restore_balances() {
+        let mut buffer = PixelBuffer::new(10, 10);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        let before = canvas.save_count();
+        let returned = canvas.save_layer(&SaveLayerRec::default());
+        let during = canvas.save_count();
+        assert_eq!(during, before + 1);
+        assert_eq!(returned, during);
+        canvas.restore();
+        assert_eq!(canvas.save_count(), before);
+    }
+
+    #[test]
+    fn test_save_layer_full_alpha_paint_is_pixel_identical_to_direct_draw() {
+        // A save_layer with a default (opaque SrcOver) paint should composite
+        // the layer unchanged onto the base buffer, matching a direct draw.
+        let mut direct = PixelBuffer::new(8, 8);
+        {
+            let mut c = Canvas::new_raster(&mut direct);
+            let mut paint = Paint::new();
+            paint.set_color32(Color::from_argb(255, 200, 100, 50));
+            c.draw_rect(&Rect::from_xywh(1.0, 1.0, 6.0, 6.0), &paint);
+        }
+
+        let mut layered = PixelBuffer::new(8, 8);
+        {
+            let mut c = Canvas::new_raster(&mut layered);
+            c.save_layer(&SaveLayerRec::default());
+            let mut paint = Paint::new();
+            paint.set_color32(Color::from_argb(255, 200, 100, 50));
+            c.draw_rect(&Rect::from_xywh(1.0, 1.0, 6.0, 6.0), &paint);
+            c.restore();
+        }
+
+        for y in 0..8 {
+            for x in 0..8 {
+                let a = direct.get_pixel(x, y).unwrap();
+                let b = layered.get_pixel(x, y).unwrap();
+                assert_eq!(
+                    a.as_u32(),
+                    b.as_u32(),
+                    "mismatch at ({x},{y}): direct={:08x} layered={:08x}",
+                    a.as_u32(),
+                    b.as_u32()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_save_layer_half_alpha_paint_halves_source_contribution() {
+        // Draw an opaque white rect inside a save_layer whose paint has
+        // ~50% alpha. The base buffer starts black; after composite the
+        // result should be roughly mid-gray (~128), not 255.
+        let mut buffer = PixelBuffer::new(4, 4);
+        buffer.clear(Color::from_argb(255, 0, 0, 0));
+        let mut canvas = Canvas::new_raster(&mut buffer);
+
+        let mut layer_paint = Paint::new();
+        layer_paint.set_color32(Color::from_argb(128, 255, 255, 255));
+        let rec = SaveLayerRec {
+            bounds: None,
+            paint: Some(&layer_paint),
+            flags: SaveLayerFlags::NONE,
+        };
+        canvas.save_layer(&rec);
+
+        let mut white = Paint::new();
+        white.set_color32(Color::WHITE);
+        canvas.draw_rect(&Rect::from_xywh(0.0, 0.0, 4.0, 4.0), &white);
+
+        canvas.restore();
+        drop(canvas);
+
+        let c = buffer.get_pixel(2, 2).unwrap();
+        // With 50% paint alpha over solid black, expect ~128 on each channel.
+        assert!(
+            c.red() > 100 && c.red() < 160,
+            "expected ~128, got r={}",
+            c.red()
+        );
+        assert!(
+            c.green() > 100 && c.green() < 160,
+            "expected ~128, got g={}",
+            c.green()
+        );
+        assert!(
+            c.blue() > 100 && c.blue() < 160,
+            "expected ~128, got b={}",
+            c.blue()
+        );
+    }
+
+    #[test]
+    fn test_save_layer_bounds_restrict_composite_area() {
+        // With bounds [0,0,4,4], a full-canvas draw inside the layer must
+        // only affect pixels inside those bounds after restore.
+        let mut buffer = PixelBuffer::new(10, 10);
+        buffer.clear(Color::from_argb(255, 0, 0, 0));
+        let mut canvas = Canvas::new_raster(&mut buffer);
+
+        let layer_bounds = Rect::from_xywh(0.0, 0.0, 4.0, 4.0);
+        let rec = SaveLayerRec {
+            bounds: Some(&layer_bounds),
+            paint: None,
+            flags: SaveLayerFlags::NONE,
+        };
+        canvas.save_layer(&rec);
+
+        let mut red = Paint::new();
+        red.set_color32(Color::from_argb(255, 255, 0, 0));
+        // Fill the whole canvas — most of it falls outside the layer's
+        // 4x4 buffer and should simply be clipped away on composite.
+        canvas.draw_rect(&Rect::from_xywh(0.0, 0.0, 10.0, 10.0), &red);
+        canvas.restore();
+        drop(canvas);
+
+        // Inside bounds: red.
+        let inside = buffer.get_pixel(1, 1).unwrap();
+        assert_eq!(inside.red(), 255);
+        // Outside bounds: still the original black — layer composition
+        // must not have touched it.
+        let outside = buffer.get_pixel(8, 8).unwrap();
+        assert_eq!(outside.red(), 0);
+        assert_eq!(outside.alpha(), 255);
+    }
+
+    #[test]
+    fn test_save_layer_nested_lifo_composition() {
+        // Two nested layers, each with 50% alpha paint. After both restores
+        // the innermost draw should have been multiplied by both alphas
+        // (~0.5 * 0.5 = 0.25), producing roughly 64 on the base.
+        let mut buffer = PixelBuffer::new(4, 4);
+        buffer.clear(Color::from_argb(255, 0, 0, 0));
+        let mut canvas = Canvas::new_raster(&mut buffer);
+
+        let mut p1 = Paint::new();
+        p1.set_color32(Color::from_argb(128, 255, 255, 255));
+        let rec1 = SaveLayerRec {
+            bounds: None,
+            paint: Some(&p1),
+            flags: SaveLayerFlags::NONE,
+        };
+        canvas.save_layer(&rec1);
+
+        let mut p2 = Paint::new();
+        p2.set_color32(Color::from_argb(128, 255, 255, 255));
+        let rec2 = SaveLayerRec {
+            bounds: None,
+            paint: Some(&p2),
+            flags: SaveLayerFlags::NONE,
+        };
+        canvas.save_layer(&rec2);
+
+        let mut white = Paint::new();
+        white.set_color32(Color::WHITE);
+        canvas.draw_rect(&Rect::from_xywh(0.0, 0.0, 4.0, 4.0), &white);
+
+        canvas.restore();
+        canvas.restore();
+        drop(canvas);
+
+        let c = buffer.get_pixel(2, 2).unwrap();
+        // Two nested 50% alphas over solid black -> roughly 0.25 * 255 = 64.
+        assert!(
+            c.red() >= 32 && c.red() <= 96,
+            "expected ~64, got r={}",
+            c.red()
+        );
+    }
+
+    #[test]
+    fn test_save_layer_restore_to_count_composites_all_open_layers() {
+        // restore_to_count must cascade through restore(), which in turn
+        // composites each popped layer back onto its parent.
+        let mut buffer = PixelBuffer::new(4, 4);
+        buffer.clear(Color::from_argb(255, 0, 0, 0));
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        let base = canvas.save_count();
+
+        canvas.save_layer(&SaveLayerRec::default());
+        canvas.save_layer(&SaveLayerRec::default());
+
+        let mut white = Paint::new();
+        white.set_color32(Color::WHITE);
+        canvas.draw_rect(&Rect::from_xywh(0.0, 0.0, 4.0, 4.0), &white);
+
+        canvas.restore_to_count(base);
+        assert_eq!(canvas.save_count(), base);
+        drop(canvas);
+
+        // Both layers composited with default (opaque) paint — pixel should
+        // be white on black, i.e. fully opaque white.
+        let c = buffer.get_pixel(2, 2).unwrap();
+        assert_eq!(c.red(), 255);
+        assert_eq!(c.green(), 255);
+        assert_eq!(c.blue(), 255);
+    }
+
+    #[test]
+    fn test_save_layer_draws_do_not_leak_to_base_until_restore() {
+        // Drawing inside save_layer must not touch the base buffer until
+        // the matching restore composites the layer back.
+        let mut buffer = PixelBuffer::new(4, 4);
+        buffer.clear(Color::from_argb(255, 0, 0, 0));
+        let mut canvas = Canvas::new_raster(&mut buffer);
+
+        canvas.save_layer(&SaveLayerRec::default());
+        let mut white = Paint::new();
+        white.set_color32(Color::WHITE);
+        canvas.draw_rect(&Rect::from_xywh(0.0, 0.0, 4.0, 4.0), &white);
+
+        // Before restore we expect the base buffer to still be untouched.
+        // We can't borrow the base buffer while the canvas holds it, so
+        // drop the canvas first — dropping ends the &mut borrow without
+        // running composition (composition only runs in restore()).
+        drop(canvas);
+
+        let c = buffer.get_pixel(2, 2).unwrap();
+        assert_eq!(c.red(), 0, "base buffer should be untouched before restore");
+        assert_eq!(c.green(), 0);
+        assert_eq!(c.blue(), 0);
     }
 }
