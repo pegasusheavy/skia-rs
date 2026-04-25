@@ -5,6 +5,7 @@
 
 use crate::shader::{Shader, ShaderKind};
 use crate::sksl::{Expr, FnDecl, Parser, SkslProgram, SkslType, Stmt};
+use crate::sksl_interp::{Interp, Value as SkslValue};
 use skia_rs_core::{Color4f, Matrix, Scalar};
 use std::sync::Arc;
 
@@ -20,7 +21,12 @@ pub enum RuntimeEffectError {
     /// Type mismatch.
     TypeMismatch(String),
     /// Invalid child count.
-    InvalidChildCount { expected: usize, got: usize },
+    InvalidChildCount {
+        /// Expected number of children.
+        expected: usize,
+        /// Number of children supplied.
+        got: usize,
+    },
 }
 
 impl std::fmt::Display for RuntimeEffectError {
@@ -1080,6 +1086,109 @@ impl RuntimeEffect {
         }
     }
 
+    /// Decode a single uniform from the raw byte buffer into an interpreter
+    /// Value. Used by the software fallback when running shaders without a
+    /// GPU backend. Panics on malformed buffers are impossible — bounds are
+    /// checked via `get` reads.
+    fn decode_uniform(&self, uniform: &Uniform, data: &[u8]) -> SkslValue {
+        let read_f32 = |off: usize| -> f32 {
+            if off + 4 <= data.len() {
+                f32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
+            } else {
+                0.0
+            }
+        };
+        let read_i32 = |off: usize| -> i32 {
+            if off + 4 <= data.len() {
+                i32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
+            } else {
+                0
+            }
+        };
+        let o = uniform.offset;
+        match uniform.ty {
+            UniformType::Float => SkslValue::Float(read_f32(o)),
+            UniformType::Float2 => SkslValue::Vec2([read_f32(o), read_f32(o + 4)]),
+            UniformType::Float3 => {
+                SkslValue::Vec3([read_f32(o), read_f32(o + 4), read_f32(o + 8)])
+            }
+            UniformType::Float4 => SkslValue::Vec4([
+                read_f32(o),
+                read_f32(o + 4),
+                read_f32(o + 8),
+                read_f32(o + 12),
+            ]),
+            UniformType::Float2x2 => {
+                let mut m = [0.0f32; 4];
+                for (i, slot) in m.iter_mut().enumerate() {
+                    *slot = read_f32(o + i * 4);
+                }
+                SkslValue::Mat2(m)
+            }
+            UniformType::Float3x3 => {
+                let mut m = [0.0f32; 9];
+                for (i, slot) in m.iter_mut().enumerate() {
+                    *slot = read_f32(o + i * 4);
+                }
+                SkslValue::Mat3(m)
+            }
+            UniformType::Float4x4 => {
+                let mut m = [0.0f32; 16];
+                for (i, slot) in m.iter_mut().enumerate() {
+                    *slot = read_f32(o + i * 4);
+                }
+                SkslValue::Mat4(m)
+            }
+            UniformType::Int => SkslValue::Int(read_i32(o)),
+            UniformType::Int2 => {
+                // No vec2<i32> in the interpreter — fall back to float vec.
+                SkslValue::Vec2([read_i32(o) as f32, read_i32(o + 4) as f32])
+            }
+            UniformType::Int3 => SkslValue::Vec3([
+                read_i32(o) as f32,
+                read_i32(o + 4) as f32,
+                read_i32(o + 8) as f32,
+            ]),
+            UniformType::Int4 => SkslValue::Vec4([
+                read_i32(o) as f32,
+                read_i32(o + 4) as f32,
+                read_i32(o + 8) as f32,
+                read_i32(o + 12) as f32,
+            ]),
+        }
+    }
+
+    /// Build an interpreter seeded with this effect's functions, uniforms,
+    /// and children. Used by the software fallback paths for RuntimeShader
+    /// and RuntimeColorFilter. The returned interpreter borrows function
+    /// bodies from `self.program`, so it must not outlive this effect.
+    fn build_interp<'a>(
+        &'a self,
+        uniform_data: &UniformData,
+        children: &[Arc<dyn Shader>],
+    ) -> Interp<'a> {
+        let mut interp = Interp::new();
+        for f in &self.program.functions {
+            interp.functions.insert(f.name.clone(), f);
+        }
+        // Decode non-child uniforms.
+        for u in &self.uniforms {
+            // Child samplers are tracked separately in `self.children`; skip
+            // them here so we don't mistake a shader binding for a scalar
+            // uniform read.
+            if self.children.iter().any(|c| c.name == u.name) {
+                continue;
+            }
+            let v = self.decode_uniform(u, uniform_data.data());
+            interp.uniforms.insert(u.name.clone(), v);
+        }
+        interp.children = children.to_vec();
+        for c in &self.children {
+            interp.children_by_name.insert(c.name.clone(), c.index);
+        }
+        interp
+    }
+
     /// Create a RuntimeShader from this effect.
     pub fn make_shader(
         self: &Arc<Self>,
@@ -1232,10 +1341,15 @@ impl Shader for RuntimeShader {
         ShaderKind::Color // Closest match for runtime shader
     }
 
-    fn sample(&self, _x: Scalar, _y: Scalar) -> Color4f {
-        // Software fallback - would need interpreter
-        // For now, return magenta to indicate runtime shader
-        Color4f::new(1.0, 0.0, 1.0, 1.0)
+    fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
+        // Software fallback: run the SkSL interpreter on the parsed program.
+        // Runtime shaders follow the convention `half4 main(float2 coord)`,
+        // so we dispatch `main` with a Vec2 coordinate and read back a Vec4.
+        let mut interp = self.effect.build_interp(&self.uniforms, &self.children);
+        let coord = SkslValue::Vec2([x, y]);
+        let result = interp.run_function("main", vec![coord]);
+        let rgba = result.as_vec4();
+        Color4f::new(rgba[0], rgba[1], rgba[2], rgba[3])
     }
 }
 
@@ -1259,8 +1373,14 @@ impl RuntimeColorFilter {
 
     /// Filter a color.
     pub fn filter_color(&self, color: Color4f) -> Color4f {
-        // Software fallback - would need interpreter
-        color
+        // Software fallback: run the SkSL interpreter on the parsed program.
+        // Runtime color filters follow `half4 main(half4 color)`; we pass the
+        // input color as a Vec4 and read the returned Vec4.
+        let mut interp = self.effect.build_interp(&self.uniforms, &[]);
+        let c = SkslValue::Vec4([color.r, color.g, color.b, color.a]);
+        let result = interp.run_function("main", vec![c]);
+        let rgba = result.as_vec4();
+        Color4f::new(rgba[0], rgba[1], rgba[2], rgba[3])
     }
 }
 
@@ -1458,6 +1578,79 @@ mod tests {
 
         assert!(msl.contains("for ("), "MSL should contain for loop");
         assert!(msl.contains("float4"), "MSL should use float4");
+    }
+
+    #[test]
+    fn test_runtime_shader_returns_red() {
+        // Ensures the software interpreter produces the shader's return
+        // value instead of the old magenta placeholder.
+        use crate::shader::Shader;
+        let src = r#"
+            vec4 main(vec2 coord) {
+                return vec4(1.0, 0.0, 0.0, 1.0);
+            }
+        "#;
+        let effect = Arc::new(RuntimeEffect::make_for_shader(src).unwrap());
+        let data = UniformData::from_effect(&effect);
+        let shader = effect.make_shader(&data, &[]).unwrap();
+        let c = shader.sample(10.0, 20.0);
+        assert!((c.r - 1.0).abs() < 1e-3, "r should be 1.0, got {}", c.r);
+        assert!((c.g - 0.0).abs() < 1e-3, "g should be 0.0, got {}", c.g);
+        assert!((c.b - 0.0).abs() < 1e-3, "b should be 0.0, got {}", c.b);
+        assert!((c.a - 1.0).abs() < 1e-3, "a should be 1.0, got {}", c.a);
+    }
+
+    #[test]
+    fn test_runtime_shader_uses_coord() {
+        // The returned color should depend on the sampled coordinate.
+        use crate::shader::Shader;
+        let src = r#"
+            vec4 main(vec2 coord) {
+                return vec4(coord.x, coord.y, 0.0, 1.0);
+            }
+        "#;
+        let effect = Arc::new(RuntimeEffect::make_for_shader(src).unwrap());
+        let data = UniformData::from_effect(&effect);
+        let shader = effect.make_shader(&data, &[]).unwrap();
+        let c = shader.sample(0.25, 0.75);
+        assert!((c.r - 0.25).abs() < 1e-3);
+        assert!((c.g - 0.75).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_runtime_shader_uses_uniform() {
+        // Uniform values should feed into the shader through the interpreter.
+        use crate::shader::Shader;
+        let src = r#"
+            uniform float scale;
+            vec4 main(vec2 coord) {
+                return vec4(coord.x * scale, 0.0, 0.0, 1.0);
+            }
+        "#;
+        let effect = Arc::new(RuntimeEffect::make_for_shader(src).unwrap());
+        let mut data = UniformData::from_effect(&effect);
+        let u = effect.find_uniform("scale").unwrap();
+        data.set_float(u.offset, 2.0);
+        let shader = effect.make_shader(&data, &[]).unwrap();
+        let c = shader.sample(0.5, 0.0);
+        assert!((c.r - 1.0).abs() < 1e-3, "expected scale * x = 1.0, got {}", c.r);
+    }
+
+    #[test]
+    fn test_runtime_color_filter_inverts() {
+        let src = r#"
+            vec4 main(vec4 color) {
+                return vec4(1.0 - color.x, 1.0 - color.y, 1.0 - color.z, color.w);
+            }
+        "#;
+        let effect = Arc::new(RuntimeEffect::make_for_color_filter(src).unwrap());
+        let data = UniformData::from_effect(&effect);
+        let filter = effect.make_color_filter(&data).unwrap();
+        let out = filter.filter_color(Color4f::new(0.2, 0.3, 0.4, 1.0));
+        assert!((out.r - 0.8).abs() < 1e-3);
+        assert!((out.g - 0.7).abs() < 1e-3);
+        assert!((out.b - 0.6).abs() < 1e-3);
+        assert!((out.a - 1.0).abs() < 1e-3);
     }
 
     #[test]

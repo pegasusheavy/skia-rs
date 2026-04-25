@@ -17,6 +17,7 @@ pub mod paint;
 pub mod runtime_effect;
 pub mod shader;
 pub mod sksl;
+pub(crate) mod sksl_interp;
 
 pub use blend::*;
 pub use filter::*;
