@@ -5,6 +5,20 @@
 use skia_rs_core::{AlphaType, ColorSpace, ColorType, Rect, Scalar};
 use std::sync::Arc;
 
+/// Sampling mode for image resampling operations.
+///
+/// Corresponds to a subset of Skia's `SkSamplingOptions`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SamplingOptions {
+    /// Nearest-neighbor sampling: copy the closest source pixel. Fast,
+    /// blocky, correct for pixel art and thumbnails.
+    #[default]
+    Nearest,
+    /// Bilinear filtering: blend the four surrounding source pixels. Good
+    /// for photographs and gradient-heavy content.
+    Linear,
+}
+
 /// Simplified image info for codec use (avoids Result-based construction).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImageInfo {
@@ -431,31 +445,100 @@ impl Image {
         Self::from_raster_data_owned(new_info, new_pixels, new_row_bytes)
     }
 
-    /// Create a scaled version of this image.
+    /// Create a scaled version of this image using nearest-neighbor
+    /// sampling.
+    ///
+    /// For quality-sensitive scaling (photographs, downscaling), prefer
+    /// [`Image::make_scaled_with`] with [`SamplingOptions::Linear`].
     pub fn make_scaled(&self, width: i32, height: i32) -> Option<Self> {
+        self.make_scaled_with(width, height, SamplingOptions::Nearest)
+    }
+
+    /// Create a scaled version of this image with explicit sampling
+    /// options.
+    ///
+    /// - [`SamplingOptions::Nearest`]: fastest, appropriate for pixel art
+    ///   and thumbnails, visibly blocky when upscaled.
+    /// - [`SamplingOptions::Linear`]: bilinear filtering, adequate for
+    ///   photographs; the default for quality-sensitive resampling.
+    pub fn make_scaled_with(
+        &self,
+        width: i32,
+        height: i32,
+        sampling: SamplingOptions,
+    ) -> Option<Self> {
         if width <= 0 || height <= 0 {
             return None;
         }
 
-        // Simple nearest-neighbor scaling
         let new_info = ImageInfo::new(width, height, self.color_type(), self.alpha_type());
         let bytes_per_pixel = self.color_type().bytes_per_pixel();
         let new_row_bytes = width as usize * bytes_per_pixel;
         let mut new_pixels = vec![0u8; (height as usize) * new_row_bytes];
 
-        let x_scale = self.width() as f32 / width as f32;
-        let y_scale = self.height() as f32 / height as f32;
+        let src_w = self.width() as usize;
+        let src_h = self.height() as usize;
+        let src_row_bytes = self.inner.row_bytes;
 
-        for dst_y in 0..height as usize {
-            let src_y = ((dst_y as f32 * y_scale) as usize).min(self.height() as usize - 1);
-            for dst_x in 0..width as usize {
-                let src_x = ((dst_x as f32 * x_scale) as usize).min(self.width() as usize - 1);
+        match sampling {
+            SamplingOptions::Nearest => {
+                let x_scale = self.width() as f32 / width as f32;
+                let y_scale = self.height() as f32 / height as f32;
 
-                let src_offset = src_y * self.inner.row_bytes + src_x * bytes_per_pixel;
-                let dst_offset = dst_y * new_row_bytes + dst_x * bytes_per_pixel;
+                for dst_y in 0..height as usize {
+                    let src_y = ((dst_y as f32 * y_scale) as usize).min(src_h - 1);
+                    for dst_x in 0..width as usize {
+                        let src_x = ((dst_x as f32 * x_scale) as usize).min(src_w - 1);
 
-                for i in 0..bytes_per_pixel {
-                    new_pixels[dst_offset + i] = self.inner.pixels[src_offset + i];
+                        let src_offset = src_y * src_row_bytes + src_x * bytes_per_pixel;
+                        let dst_offset = dst_y * new_row_bytes + dst_x * bytes_per_pixel;
+
+                        new_pixels[dst_offset..dst_offset + bytes_per_pixel].copy_from_slice(
+                            &self.inner.pixels[src_offset..src_offset + bytes_per_pixel],
+                        );
+                    }
+                }
+            }
+            SamplingOptions::Linear => {
+                // Sample at pixel centers: src_x = (dst_x + 0.5) *
+                // src_w/dst_w - 0.5. The -0.5 aligns pixel centers so a
+                // 1:1 scale reproduces the source exactly.
+                let x_scale = src_w as f32 / width as f32;
+                let y_scale = src_h as f32 / height as f32;
+                let max_x = src_w.saturating_sub(1);
+                let max_y = src_h.saturating_sub(1);
+
+                for dst_y in 0..height as usize {
+                    let fy = ((dst_y as f32 + 0.5) * y_scale - 0.5).max(0.0);
+                    let y0 = (fy as usize).min(max_y);
+                    let y1 = (y0 + 1).min(max_y);
+                    let ty = fy - y0 as f32;
+
+                    for dst_x in 0..width as usize {
+                        let fx = ((dst_x as f32 + 0.5) * x_scale - 0.5).max(0.0);
+                        let x0 = (fx as usize).min(max_x);
+                        let x1 = (x0 + 1).min(max_x);
+                        let tx = fx - x0 as f32;
+
+                        let p00 = y0 * src_row_bytes + x0 * bytes_per_pixel;
+                        let p01 = y0 * src_row_bytes + x1 * bytes_per_pixel;
+                        let p10 = y1 * src_row_bytes + x0 * bytes_per_pixel;
+                        let p11 = y1 * src_row_bytes + x1 * bytes_per_pixel;
+                        let dst_offset = dst_y * new_row_bytes + dst_x * bytes_per_pixel;
+
+                        for i in 0..bytes_per_pixel {
+                            let c00 = self.inner.pixels[p00 + i] as f32;
+                            let c01 = self.inner.pixels[p01 + i] as f32;
+                            let c10 = self.inner.pixels[p10 + i] as f32;
+                            let c11 = self.inner.pixels[p11 + i] as f32;
+
+                            let top = c00 * (1.0 - tx) + c01 * tx;
+                            let bot = c10 * (1.0 - tx) + c11 * tx;
+                            let v = top * (1.0 - ty) + bot * ty;
+
+                            new_pixels[dst_offset + i] = v.round().clamp(0.0, 255.0) as u8;
+                        }
+                    }
                 }
             }
         }
@@ -540,6 +623,54 @@ mod tests {
         let image = Image::from_color(100, 100, 0xFF_FF0000).unwrap();
         let scaled = image.make_scaled(50, 50).unwrap();
         assert_eq!(scaled.dimensions(), (50, 50));
+    }
+
+    #[test]
+    fn test_image_scaled_linear_blends_neighbors() {
+        // 2x1 source: black / white. Scale up 4x wide with linear sampling
+        // and expect intermediate gray values in the middle.
+        let info = ImageInfo::new(2, 1, ColorType::Rgba8888, AlphaType::Premul);
+        let src = vec![
+            0, 0, 0, 255, // black
+            255, 255, 255, 255, // white
+        ];
+        let image = Image::from_raster_data(&info, &src, 8).unwrap();
+
+        let up = image.make_scaled_with(4, 1, SamplingOptions::Linear).unwrap();
+        assert_eq!(up.dimensions(), (4, 1));
+
+        // Nearest sampling would produce [black, black, white, white].
+        // Linear sampling should give [black, ~blend, ~blend, white].
+        let p0 = up.read_pixel(0, 0).unwrap();
+        let p1 = up.read_pixel(1, 0).unwrap();
+        let p2 = up.read_pixel(2, 0).unwrap();
+        let p3 = up.read_pixel(3, 0).unwrap();
+
+        // End points remain (approximately) black and white.
+        assert!(p0.r < 0.1);
+        assert!(p3.r > 0.9);
+        // Interior samples are non-extreme greys.
+        assert!(p1.r > 0.0 && p1.r < 1.0);
+        assert!(p2.r > 0.0 && p2.r < 1.0);
+        // Monotonic: p1.r < p2.r (brightness increases left-to-right).
+        assert!(p1.r < p2.r);
+    }
+
+    #[test]
+    fn test_image_scaled_nearest_preserves_pixels() {
+        // 2x1 source: black / white. Double the width with nearest
+        // sampling — each source pixel should appear exactly twice.
+        let info = ImageInfo::new(2, 1, ColorType::Rgba8888, AlphaType::Premul);
+        let src = vec![0, 0, 0, 255, 255, 255, 255, 255];
+        let image = Image::from_raster_data(&info, &src, 8).unwrap();
+
+        let up = image.make_scaled_with(4, 1, SamplingOptions::Nearest).unwrap();
+        let p0 = up.read_pixel(0, 0).unwrap();
+        let p1 = up.read_pixel(1, 0).unwrap();
+        let p2 = up.read_pixel(2, 0).unwrap();
+        let p3 = up.read_pixel(3, 0).unwrap();
+        assert!(p0.r < 0.01 && p1.r < 0.01);
+        assert!(p2.r > 0.99 && p3.r > 0.99);
     }
 
     #[test]
