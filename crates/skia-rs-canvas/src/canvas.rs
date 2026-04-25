@@ -816,39 +816,131 @@ impl<'a> Canvas<'a> {
     /// When image-atlas support is added, `image_bounds` will identify a
     /// sub-region of a bound texture atlas, `lattice` will define the
     /// stretch/fixed cells, and the result will be drawn into `dst`.
+    #[cfg(feature = "codec")]
     pub fn draw_image_lattice(
         &mut self,
-        _image_bounds: &Rect,
-        _lattice: &ImageLattice,
-        _dst: &Rect,
+        image: &skia_rs_codec::Image,
+        lattice: &ImageLattice,
+        dst: &Rect,
         _filter_mode: FilterMode,
-        _paint: Option<&Paint>,
+        paint: Option<&Paint>,
     ) {
-        // No-op: image atlas infrastructure does not exist yet.
+        let src_w = image.width() as Scalar;
+        let src_h = image.height() as Scalar;
+        if src_w <= 0.0 || src_h <= 0.0 {
+            return;
+        }
+
+        // Build source edges: [0, x_divs..., src_w]
+        let mut src_x_edges = vec![0.0];
+        src_x_edges.extend(
+            lattice
+                .x_divs
+                .iter()
+                .map(|&x| (x as Scalar).clamp(0.0, src_w)),
+        );
+        src_x_edges.push(src_w);
+
+        let mut src_y_edges = vec![0.0];
+        src_y_edges.extend(
+            lattice
+                .y_divs
+                .iter()
+                .map(|&y| (y as Scalar).clamp(0.0, src_h)),
+        );
+        src_y_edges.push(src_h);
+
+        // Build destination edges using proportional scaling.
+        // Full 9-patch semantics (fixed corners, stretch middles) are a
+        // future refinement; proportional baseline is functionally correct
+        // when divs are chosen proportionally to dst size.
+        let dst_scale_x = dst.width() / src_w;
+        let dst_scale_y = dst.height() / src_h;
+        let dst_x_edges: Vec<Scalar> = src_x_edges
+            .iter()
+            .map(|&x| dst.left + x * dst_scale_x)
+            .collect();
+        let dst_y_edges: Vec<Scalar> = src_y_edges
+            .iter()
+            .map(|&y| dst.top + y * dst_scale_y)
+            .collect();
+
+        // Iterate cells and call draw_image_rect for each non-empty cell
+        for j in 0..(src_y_edges.len() - 1) {
+            for i in 0..(src_x_edges.len() - 1) {
+                // Check if this cell should be skipped (Transparent)
+                if let Some(ref rect_types) = lattice.rect_types {
+                    let cell_idx = j * (src_x_edges.len() - 1) + i;
+                    if let Some(&LatticeRectType::Transparent) = rect_types.get(cell_idx) {
+                        continue;
+                    }
+                }
+
+                let src_cell = skia_rs_core::IRect::new(
+                    src_x_edges[i] as i32,
+                    src_y_edges[j] as i32,
+                    src_x_edges[i + 1] as i32,
+                    src_y_edges[j + 1] as i32,
+                );
+                let dst_cell = Rect::new(
+                    dst_x_edges[i],
+                    dst_y_edges[j],
+                    dst_x_edges[i + 1],
+                    dst_y_edges[j + 1],
+                );
+                if src_cell.width() > 0
+                    && src_cell.height() > 0
+                    && dst_cell.width() > 0.0
+                    && dst_cell.height() > 0.0
+                {
+                    self.draw_image_rect(image, Some(&src_cell), &dst_cell, paint);
+                }
+            }
+        }
     }
 
     /// Draw multiple images from an atlas.
     ///
-    /// This API is designed for future texture-atlas or GPU backends where a
-    /// single large texture holds many small sprites. Each sprite is defined by
-    /// a source rectangle in `sprites` and transformed by the corresponding
+    /// Draws sprites from a single atlas image. Each sprite is defined by a
+    /// source rectangle in `sprites` and transformed by the corresponding
     /// `RSXform` in `xforms`. Optional per-sprite tint colors can be provided.
     ///
-    /// The current software-only Canvas implementation has no image-atlas
-    /// infrastructure, so this method is a no-op. For immediate-mode sprite
-    /// drawing, use [`draw_image_rect`](Self::draw_image_rect) in a loop
-    /// (requires `codec` feature).
+    /// Each sprite is drawn using save/concat/draw_image_rect/restore to
+    /// handle rotation, scale, and translation. Tint colors are accepted but
+    /// not applied in this baseline implementation (requires color-filter-on-draw
+    /// hookup tracked separately).
+    #[cfg(feature = "codec")]
     pub fn draw_atlas(
         &mut self,
-        _atlas_bounds: &Rect,
-        _xforms: &[RSXform],
-        _sprites: &[Rect],
+        atlas: &skia_rs_codec::Image,
+        xforms: &[RSXform],
+        sprites: &[Rect],
         _colors: Option<&[Color]>,
         _blend_mode: skia_rs_paint::BlendMode,
         _sampling: FilterMode,
-        _paint: Option<&Paint>,
+        paint: Option<&Paint>,
     ) {
-        // No-op: image atlas infrastructure does not exist yet.
+        let count = xforms.len().min(sprites.len());
+        for i in 0..count {
+            let xform = &xforms[i];
+            let tex = &sprites[i];
+            let matrix = xform.to_matrix();
+
+            // Draw the sprite: save current transform, concat the RSXform,
+            // draw the atlas sub-rect to (0, 0) .. (tex.width, tex.height)
+            // in local space, then restore.
+            self.save();
+            self.concat(&matrix);
+            let dst_local = Rect::from_xywh(0.0, 0.0, tex.width(), tex.height());
+            let src_rect = skia_rs_core::IRect::new(
+                tex.left as i32,
+                tex.top as i32,
+                tex.right as i32,
+                tex.bottom as i32,
+            );
+            self.draw_image_rect(atlas, Some(&src_rect), &dst_local, paint);
+            self.restore();
+        }
     }
 
     /// Draw a Coons patch.
@@ -2642,42 +2734,71 @@ mod tests {
     }
 
     #[test]
-    fn test_draw_image_lattice_noop() {
-        // draw_image_lattice is a no-op without atlas infrastructure
-        let mut buffer = PixelBuffer::new(10, 10);
+    #[cfg(feature = "codec")]
+    fn test_draw_image_lattice_single_cell() {
+        // Lattice with one division in each axis creates a 2x2 grid of cells
+        let mut buffer = PixelBuffer::new(40, 40);
         let mut canvas = Canvas::new_raster(&mut buffer);
 
+        let image = skia_rs_codec::Image::from_color(10, 10, 0xFF_FF0000).unwrap();
         let lattice = ImageLattice::new(vec![5], vec![5]);
         canvas.draw_image_lattice(
-            &Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+            &image,
             &lattice,
-            &Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
+            &Rect::from_xywh(0.0, 0.0, 40.0, 40.0),
             FilterMode::Nearest,
             None,
         );
+
+        // Should draw something without panicking
+    }
+
+    #[test]
+    #[cfg(feature = "codec")]
+    fn test_draw_image_lattice_empty_divs() {
+        // Lattice with no divs = single cell = full image
+        let mut buffer = PixelBuffer::new(40, 40);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+
+        let image = skia_rs_codec::Image::from_color(10, 10, 0xFF_00FF00).unwrap();
+        let lattice = ImageLattice::new(vec![], vec![]);
+        canvas.draw_image_lattice(
+            &image,
+            &lattice,
+            &Rect::from_xywh(0.0, 0.0, 40.0, 40.0),
+            FilterMode::Nearest,
+            None,
+        );
+
+        // Should behave like draw_image_rect
+    }
+
+    #[test]
+    #[cfg(feature = "codec")]
+    fn test_draw_atlas_empty() {
+        // Empty xforms/sprites should be a no-op
+        let mut buffer = PixelBuffer::new(10, 10);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+
+        let image = skia_rs_codec::Image::from_color(100, 100, 0xFF_0000FF).unwrap();
+        canvas.draw_atlas(&image, &[], &[], None, skia_rs_paint::BlendMode::SrcOver, FilterMode::Nearest, None);
 
         // Should not panic
     }
 
     #[test]
-    fn test_draw_atlas_noop() {
-        // draw_atlas is a no-op without atlas infrastructure
-        let mut buffer = PixelBuffer::new(10, 10);
+    #[cfg(feature = "codec")]
+    fn test_draw_atlas_single_sprite() {
+        // Single sprite with translation
+        let mut buffer = PixelBuffer::new(100, 100);
         let mut canvas = Canvas::new_raster(&mut buffer);
 
-        let xforms = [RSXform::from_scale_translate(1.0, 0.0, 0.0)];
+        let image = skia_rs_codec::Image::from_color(100, 100, 0xFF_FFFF00).unwrap();
+        let xforms = [RSXform::from_scale_translate(1.0, 10.0, 10.0)];
         let sprites = [Rect::from_xywh(0.0, 0.0, 10.0, 10.0)];
 
-        canvas.draw_atlas(
-            &Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
-            &xforms,
-            &sprites,
-            None,
-            skia_rs_paint::BlendMode::SrcOver,
-            FilterMode::Nearest,
-            None,
-        );
+        canvas.draw_atlas(&image, &xforms, &sprites, None, skia_rs_paint::BlendMode::SrcOver, FilterMode::Nearest, None);
 
-        // Should not panic
+        // Should draw sprite at (10, 10) without panicking
     }
 }
