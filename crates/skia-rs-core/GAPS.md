@@ -5,12 +5,12 @@
 
 ## Summary
 - Total public functions reviewed: 217 (`pub fn` declarations; includes trait method implementations and derived methods)
-- Total test functions: 36 (`#[test]` annotations)
-- Total test cases: 36 (cargo test output)
+- Total test functions: 36 → ~75+ (expanded with gap fix tests)
 - Total gaps found: 12
-- Critical gaps: 5
-- Nice-to-have gaps: 7
+- **Critical gaps resolved: 4/5 ✅** (GAP-C1 deferred to ICC subplan)
+- **Nice-to-have gaps resolved: 7/7 ✅**
 - Estimated complexity: Medium-High
+- **Phase 2 status: COMPLETE** (with GAP-C1 documented as known limitation)
 
 ## Files Reviewed
 - [x] lib.rs
@@ -25,6 +25,7 @@
 ## Critical Gaps
 
 ### GAP-C1: `IccProfile::from_bytes()` defaults to sRGB for all parsed profiles
+**Status:** ⚠️ DEFERRED to dedicated ICC subplan (limitation now documented in API)
 **Location:** `src/color.rs:716-726`
 **Issue:** Semantic gap
 **Description:** The function correctly parses the ICC header fields (profile
@@ -45,6 +46,7 @@ gamut matrix construction)
 **Priority:** HIGH
 
 ### GAP-C2: `Region::contains_rect()` has false negatives for complex regions
+**Status:** ✅ RESOLVED - scanline containment algorithm
 **Location:** `src/region.rs:171-183`
 **Issue:** Semantic gap
 **Description:** For complex (multi-rect) regions, `contains_rect` only checks
@@ -62,6 +64,7 @@ SkIRect&)` uses a scanline-based algorithm that correctly handles this.
 **Priority:** HIGH
 
 ### GAP-C3: `Region::union()` does not merge overlapping rectangles
+**Status:** ✅ RESOLVED - canonicalize_rects scanline merge
 **Location:** `src/region.rs:285-298`
 **Issue:** Semantic gap -- rectangle list grows unboundedly
 **Description:** The `union` method simply appends the other region's rects to
@@ -79,6 +82,7 @@ double-count area and `intersect` to produce duplicate fragments.
 **Priority:** HIGH
 
 ### GAP-C4: `geometry::Matrix::map_point()` division by zero when w == 0 with perspective
+**Status:** ✅ RESOLVED - w==0 guard added
 **Location:** `src/geometry.rs:1168-1173`
 **Issue:** Missing validation -- divide-by-zero
 **Description:** When the perspective row produces w=0 for a given input point,
@@ -95,6 +99,7 @@ guards against w==0 by returning (0,0).
 **Priority:** HIGH
 
 ### GAP-C5: Duplicate `Matrix` type defined in two files
+**Status:** ✅ RESOLVED - orphan files removed
 **Location:** `src/geometry.rs:984-1233` and `src/matrix.rs:1-212`
 **Issue:** Architectural -- dead code / confusing duplication
 **Description:** There are two independent `Matrix` implementations. The one
@@ -115,6 +120,7 @@ definition in `lib.rs`.
 ## Nice-to-Have Gaps
 
 ### GAP-N1: `geometry::Matrix::skew()` uses `tan()` instead of raw skew values
+**Status:** ✅ RESOLVED - skew now takes raw factors
 **Location:** `src/geometry.rs:1073-1077`
 **Issue:** API deviation from Skia
 **Description:** The `skew()` constructor in `geometry.rs` applies `kx.tan()`
@@ -131,6 +137,7 @@ MakeSkew(SkScalar kx, SkScalar ky)` places kx/ky directly in the matrix.
 **Priority:** MEDIUM
 
 ### GAP-N2: No `RRect` validation for clamping radii to half-dimensions
+**Status:** ✅ RESOLVED - radii clamped to half-dimensions
 **Location:** `src/geometry.rs:903-908`
 **Issue:** Missing validation
 **Description:** `RRect::from_rect_xy()` does not clamp radii to
@@ -143,6 +150,7 @@ Skia's `SkRRect::setRectXY` clamps radii to fit.
 **Priority:** MEDIUM
 
 ### GAP-N3: `Matrix44::get()`/`set()` do not bounds-check row/col indices
+**Status:** ✅ RESOLVED - bounds checks added
 **Location:** `src/matrix44.rs:275-283`
 **Issue:** Panic risk
 **Description:** `get(row, col)` accesses `self.values[col * 4 + row]` without
@@ -156,6 +164,7 @@ error message.
 **Priority:** LOW
 
 ### GAP-N4: `Matrix44::ortho()` and `perspective()` have no guard for zero-width ranges
+**Status:** ✅ RESOLVED - ortho_checked/perspective_checked added
 **Location:** `src/matrix44.rs:207-231` and `src/matrix44.rs:234-266`
 **Issue:** Missing validation
 **Description:** `ortho()` divides by `(right - left)`, `(top - bottom)`, and
@@ -169,6 +178,7 @@ Rust-idiomatic.
 **Priority:** LOW
 
 ### GAP-N5: `geometry::Matrix` inverse uses hard-coded epsilon (1e-10) for singularity check
+**Status:** ✅ RESOLVED - epsilon = Scalar::EPSILON * 256
 **Location:** `src/geometry.rs:1212`
 **Issue:** Numerical robustness
 **Description:** The determinant threshold `1e-10` is arbitrary and may be too
@@ -183,6 +193,7 @@ Skia uses `SK_ScalarNearlyZero` (1/4096 = ~2.44e-4) for its comparisons.
 **Priority:** MEDIUM
 
 ### GAP-N6: `convert_pixels()` does not handle alpha type conversion
+**Status:** ✅ RESOLVED - alpha conversion in convert_pixels
 **Location:** `src/pixel.rs:565-617`
 **Issue:** Semantic gap
 **Description:** The function converts between color types (e.g. RGBA8888 to
@@ -197,6 +208,7 @@ conversion.
 **Priority:** MEDIUM
 
 ### GAP-N7: `scalar.rs` orphan not exposed or deleted
+**Status:** ✅ RESOLVED - scalar.rs orphan removed
 **Location:** `src/scalar.rs` (entire file)
 **Issue:** Dead code
 **Description:** `scalar.rs` defines `Scalar`, 7 constants, and 4 utility
