@@ -31,6 +31,25 @@ pub enum PathOp {
 ///
 /// # Returns
 /// The resulting path, or None if the operation fails
+///
+/// # Limitations
+///
+/// The current polygon-based implementation has known correctness
+/// issues for non-trivial inputs:
+///
+/// - `PathOp::Intersect` uses Sutherland-Hodgman clipping, which
+///   only produces correct results when both inputs are convex
+///   polygons. Concave inputs (circles, complex shapes) may produce
+///   incorrect intersection results.
+///
+/// - `PathOp::Difference`, `PathOp::ReverseDifference`, and
+///   `PathOp::Xor` only handle the trivial cases of full containment
+///   or full disjointness. Partial overlaps return the unmodified
+///   subject path.
+///
+/// A robust implementation requires either a Weiler-Atherton or
+/// sweep-line clipping algorithm. Tracked as GAP-C4 and GAP-C5 in
+/// the foundation audit; planned for a future release.
 pub fn op(path1: &Path, path2: &Path, op: PathOp) -> Option<Path> {
     PathOps::new(path1, path2, op).compute()
 }
