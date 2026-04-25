@@ -638,7 +638,7 @@ impl Path {
         let mut max_x = Scalar::NEG_INFINITY;
         let mut max_y = Scalar::NEG_INFINITY;
 
-        let mut include = |p: Point, min_x: &mut Scalar, min_y: &mut Scalar, max_x: &mut Scalar, max_y: &mut Scalar| {
+        let include = |p: Point, min_x: &mut Scalar, min_y: &mut Scalar, max_x: &mut Scalar, max_y: &mut Scalar| {
             if p.x < *min_x { *min_x = p.x; }
             if p.y < *min_y { *min_y = p.y; }
             if p.x > *max_x { *max_x = p.x; }
