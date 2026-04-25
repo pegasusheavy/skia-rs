@@ -2,6 +2,7 @@
 
 use skia_rs_core::{Point, Rect, Scalar};
 use smallvec::SmallVec;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 /// Path fill type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -87,13 +88,23 @@ pub enum PathConvexity {
     #[default]
     Unknown = 0,
     /// Path is convex.
-    Convex,
+    Convex = 1,
     /// Path is concave.
-    Concave,
+    Concave = 2,
+}
+
+impl PathConvexity {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => PathConvexity::Convex,
+            2 => PathConvexity::Concave,
+            _ => PathConvexity::Unknown,
+        }
+    }
 }
 
 /// A 2D geometric path.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug)]
 pub struct Path {
     /// Path verbs.
     pub(crate) verbs: SmallVec<[Verb; 16]>,
@@ -105,8 +116,43 @@ pub struct Path {
     pub(crate) fill_type: FillType,
     /// Cached bounds (lazily computed).
     pub(crate) bounds: Option<Rect>,
-    /// Cached convexity.
-    pub(crate) convexity: PathConvexity,
+    /// Cached convexity (stored as u8 for Send+Sync via AtomicU8).
+    pub(crate) convexity: AtomicU8,
+}
+
+impl Default for Path {
+    fn default() -> Self {
+        Self {
+            verbs: SmallVec::new(),
+            points: SmallVec::new(),
+            conic_weights: SmallVec::new(),
+            fill_type: FillType::default(),
+            bounds: None,
+            convexity: AtomicU8::new(PathConvexity::Unknown as u8),
+        }
+    }
+}
+
+impl Clone for Path {
+    fn clone(&self) -> Self {
+        Self {
+            verbs: self.verbs.clone(),
+            points: self.points.clone(),
+            conic_weights: self.conic_weights.clone(),
+            fill_type: self.fill_type,
+            bounds: self.bounds,
+            convexity: AtomicU8::new(self.convexity.load(Ordering::Relaxed)),
+        }
+    }
+}
+
+impl PartialEq for Path {
+    fn eq(&self, other: &Self) -> bool {
+        self.verbs == other.verbs
+            && self.points == other.points
+            && self.conic_weights == other.conic_weights
+            && self.fill_type == other.fill_type
+    }
 }
 
 impl Path {
@@ -342,13 +388,16 @@ impl Path {
 
     /// Get the convexity of the path.
     pub fn convexity(&self) -> PathConvexity {
-        if self.convexity != PathConvexity::Unknown {
-            return self.convexity;
+        let cached = PathConvexity::from_u8(self.convexity.load(Ordering::Relaxed));
+        if cached != PathConvexity::Unknown {
+            return cached;
         }
 
         // Simple convexity check based on cross product signs
         if self.points.len() < 3 {
-            return PathConvexity::Convex;
+            let result = PathConvexity::Convex;
+            self.convexity.store(result as u8, Ordering::Relaxed);
+            return result;
         }
 
         let mut sign = 0i32;
@@ -366,12 +415,16 @@ impl Path {
                 if sign == 0 {
                     sign = current_sign;
                 } else if sign != current_sign {
-                    return PathConvexity::Concave;
+                    let result = PathConvexity::Concave;
+                    self.convexity.store(result as u8, Ordering::Relaxed);
+                    return result;
                 }
             }
         }
 
-        PathConvexity::Convex
+        let result = PathConvexity::Convex;
+        self.convexity.store(result as u8, Ordering::Relaxed);
+        result
     }
 
     /// Check if the path is convex.
@@ -446,7 +499,7 @@ impl Path {
 
         self.verbs = new_verbs;
         self.bounds = None;
-        self.convexity = PathConvexity::Unknown;
+        self.convexity.store(PathConvexity::Unknown as u8, Ordering::Relaxed);
     }
 
     /// Transform the path by a matrix.
@@ -455,7 +508,7 @@ impl Path {
             *point = matrix.map_point(*point);
         }
         self.bounds = None;
-        self.convexity = PathConvexity::Unknown;
+        self.convexity.store(PathConvexity::Unknown as u8, Ordering::Relaxed);
     }
 
     /// Create a transformed copy of the path.
@@ -722,5 +775,20 @@ mod tests {
         builder.close();
         let path = builder.build();
         assert!(!path.is_oval(), "Random 4-cubic path should not be detected as oval");
+    }
+
+    #[test]
+    fn test_path_convexity_returns_consistent_result() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(10.0, 0.0);
+        builder.line_to(10.0, 10.0);
+        builder.line_to(0.0, 10.0);
+        builder.close();
+        let path = builder.build();
+
+        let c1 = path.convexity();
+        let c2 = path.convexity();
+        assert_eq!(c1, c2);
     }
 }
