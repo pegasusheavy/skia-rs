@@ -600,6 +600,13 @@ pub fn convert_pixels(
     let width = src_info.width() as usize;
     let height = src_info.height() as usize;
 
+    // Compute alpha conversion mode once; apply per-row for cache locality.
+    let alpha_conv = AlphaConversion::from_alpha_types(
+        src_info.alpha_type,
+        dst_info.alpha_type,
+        dst_info.color_type.has_alpha(),
+    );
+
     for y in 0..height {
         let src_row_start = y * src_row_bytes;
         let dst_row_start = y * dst_row_bytes;
@@ -610,46 +617,55 @@ pub fn convert_pixels(
             &mut dst[dst_row_start..],
             dst_info.color_type,
             width,
+            alpha_conv,
         )?;
-    }
-
-    // Apply alpha type conversion if needed and the color type carries alpha.
-    // This must happen after color type conversion so that the destination
-    // buffer already holds data in the destination color type layout.
-    if src_info.alpha_type != dst_info.alpha_type && dst_info.color_type.has_alpha() {
-        apply_alpha_conversion(dst, src_info.alpha_type, dst_info.alpha_type);
     }
 
     Ok(())
 }
 
-/// Apply alpha type conversion to pixels in place.
-///
-/// Converts between Premul and Unpremul alpha representations. Other
-/// transitions (involving Opaque or Unknown) are no-ops because they only
-/// require a declaration change, not a value transformation.
-fn apply_alpha_conversion(pixels: &mut [u8], src_alpha: AlphaType, dst_alpha: AlphaType) {
-    match (src_alpha, dst_alpha) {
-        (AlphaType::Unpremul, AlphaType::Premul) => premultiply_in_place(pixels),
-        (AlphaType::Premul, AlphaType::Unpremul) => unpremultiply_in_place(pixels),
-        _ => {}
+/// How to convert alpha during pixel conversion.
+#[derive(Clone, Copy, Debug)]
+enum AlphaConversion {
+    None,
+    Premultiply,
+    Unpremultiply,
+}
+
+impl AlphaConversion {
+    fn from_alpha_types(src: AlphaType, dst: AlphaType, color_has_alpha: bool) -> Self {
+        if !color_has_alpha || src == dst {
+            return AlphaConversion::None;
+        }
+        match (src, dst) {
+            (AlphaType::Unpremul, AlphaType::Premul) => AlphaConversion::Premultiply,
+            (AlphaType::Premul, AlphaType::Unpremul) => AlphaConversion::Unpremultiply,
+            _ => AlphaConversion::None,
+        }
     }
 }
 
-/// Convert a single row of pixels.
+/// Convert a single row of pixels, applying alpha conversion in the same pass.
 fn convert_row(
     src: &[u8],
     src_type: ColorType,
     dst: &mut [u8],
     dst_type: ColorType,
     width: usize,
+    alpha_conv: AlphaConversion,
 ) -> Result<(), PixelError> {
     use ColorType::*;
 
     // Same format - just copy
     if src_type == dst_type {
         let bpp = src_type.bytes_per_pixel();
-        dst[..width * bpp].copy_from_slice(&src[..width * bpp]);
+        let row_len = width * bpp;
+        dst[..row_len].copy_from_slice(&src[..row_len]);
+        match alpha_conv {
+            AlphaConversion::None => {}
+            AlphaConversion::Premultiply => premultiply_in_place(&mut dst[..row_len]),
+            AlphaConversion::Unpremultiply => unpremultiply_in_place(&mut dst[..row_len]),
+        }
         return Ok(());
     }
 
@@ -782,6 +798,13 @@ fn convert_row(
         }
 
         _ => return Err(PixelError::UnsupportedColorType),
+    }
+
+    // Apply alpha conversion to the row while it is still hot in cache.
+    match alpha_conv {
+        AlphaConversion::None => {}
+        AlphaConversion::Premultiply => premultiply_in_place(&mut dst[..width * dst_type.bytes_per_pixel()]),
+        AlphaConversion::Unpremultiply => unpremultiply_in_place(&mut dst[..width * dst_type.bytes_per_pixel()]),
     }
 
     Ok(())
