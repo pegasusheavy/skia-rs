@@ -807,7 +807,15 @@ impl<'a> Canvas<'a> {
 
     /// Draw an image lattice (nine-patch style stretching).
     ///
-    /// Tracked by P5-9 (GAP-T4). Currently a no-op placeholder.
+    /// This API is designed for future texture-atlas or GPU backends. The
+    /// current software-only Canvas implementation has no image-atlas
+    /// infrastructure, so this method is a no-op. Callers with an actual image
+    /// should use [`draw_image_nine`](Self::draw_image_nine) instead (requires
+    /// `codec` feature).
+    ///
+    /// When image-atlas support is added, `image_bounds` will identify a
+    /// sub-region of a bound texture atlas, `lattice` will define the
+    /// stretch/fixed cells, and the result will be drawn into `dst`.
     pub fn draw_image_lattice(
         &mut self,
         _image_bounds: &Rect,
@@ -816,11 +824,20 @@ impl<'a> Canvas<'a> {
         _filter_mode: FilterMode,
         _paint: Option<&Paint>,
     ) {
+        // No-op: image atlas infrastructure does not exist yet.
     }
 
     /// Draw multiple images from an atlas.
     ///
-    /// Tracked by P5-9 (GAP-T4). Currently a no-op placeholder.
+    /// This API is designed for future texture-atlas or GPU backends where a
+    /// single large texture holds many small sprites. Each sprite is defined by
+    /// a source rectangle in `sprites` and transformed by the corresponding
+    /// `RSXform` in `xforms`. Optional per-sprite tint colors can be provided.
+    ///
+    /// The current software-only Canvas implementation has no image-atlas
+    /// infrastructure, so this method is a no-op. For immediate-mode sprite
+    /// drawing, use [`draw_image_rect`](Self::draw_image_rect) in a loop
+    /// (requires `codec` feature).
     pub fn draw_atlas(
         &mut self,
         _atlas_bounds: &Rect,
@@ -831,27 +848,174 @@ impl<'a> Canvas<'a> {
         _sampling: FilterMode,
         _paint: Option<&Paint>,
     ) {
+        // No-op: image atlas infrastructure does not exist yet.
     }
 
     /// Draw a Coons patch.
     ///
-    /// Tracked by P5-9 (GAP-T4). Currently a no-op placeholder.
+    /// A Coons patch is a bicubic surface defined by 12 control points forming
+    /// four boundary cubic Bezier curves. The patch is subdivided into an 8×8
+    /// grid and rasterized as triangles. Corner colors (if provided) are
+    /// bilinearly interpolated across the patch. Texture mapping
+    /// (`tex_coords`) is not yet supported and is silently ignored.
+    ///
+    /// The 12 control points define the patch boundaries in this order:
+    /// - Points 0-3: top edge (left to right)
+    /// - Points 3-6: right edge (top to bottom)
+    /// - Points 9-6: bottom edge (left to right, reversed)
+    /// - Points 0, 11, 10, 9: left edge (top to bottom)
     pub fn draw_patch(
         &mut self,
-        _cubic_points: &[Point; 12],
-        _colors: Option<&[Color; 4]>,
+        cubic_points: &[Point; 12],
+        colors: Option<&[Color; 4]>,
         _tex_coords: Option<&[Point; 4]>,
         _blend_mode: skia_rs_paint::BlendMode,
-        _paint: &Paint,
+        paint: &Paint,
     ) {
+        // Subdivide the patch into an N×N grid
+        const N: usize = 8;
+
+        // Evaluate a cubic Bezier curve at parameter t
+        fn cubic_bezier(p0: Point, p1: Point, p2: Point, p3: Point, t: Scalar) -> Point {
+            let mt = 1.0 - t;
+            let mt2 = mt * mt;
+            let t2 = t * t;
+            let mt3 = mt2 * mt;
+            let t3 = t2 * t;
+            Point::new(
+                p0.x * mt3 + 3.0 * p1.x * mt2 * t + 3.0 * p2.x * mt * t2 + p3.x * t3,
+                p0.y * mt3 + 3.0 * p1.y * mt2 * t + 3.0 * p2.y * mt * t2 + p3.y * t3,
+            )
+        }
+
+        // Evaluate the Coons patch at (u, v) ∈ [0, 1]²
+        fn eval_patch(c: &[Point; 12], u: Scalar, v: Scalar) -> Point {
+            // Four boundary curves:
+            // top:    c[0..=3]
+            // right:  c[3..=6]
+            // bottom: c[9..=6] (reversed)
+            // left:   c[0], c[11], c[10], c[9]
+            let top = cubic_bezier(c[0], c[1], c[2], c[3], u);
+            let bottom = cubic_bezier(c[9], c[8], c[7], c[6], u);
+            let left = cubic_bezier(c[0], c[11], c[10], c[9], v);
+            let right = cubic_bezier(c[3], c[4], c[5], c[6], v);
+
+            // Coons patch formula: bilinear blend of opposite edges, minus
+            // the bilinear interpolation of corners (to avoid double-counting).
+            let lc_x = (1.0 - v) * top.x + v * bottom.x;
+            let lc_y = (1.0 - v) * top.y + v * bottom.y;
+
+            let lr_x = (1.0 - u) * left.x + u * right.x;
+            let lr_y = (1.0 - u) * left.y + u * right.y;
+
+            let bl_x = (1.0 - u) * (1.0 - v) * c[0].x
+                + u * (1.0 - v) * c[3].x
+                + (1.0 - u) * v * c[9].x
+                + u * v * c[6].x;
+            let bl_y = (1.0 - u) * (1.0 - v) * c[0].y
+                + u * (1.0 - v) * c[3].y
+                + (1.0 - u) * v * c[9].y
+                + u * v * c[6].y;
+
+            Point::new(lc_x + lr_x - bl_x, lc_y + lr_y - bl_y)
+        }
+
+        // Build a grid of vertices
+        let mut vertices = Vec::with_capacity((N + 1) * (N + 1));
+        for j in 0..=N {
+            for i in 0..=N {
+                let u = i as Scalar / N as Scalar;
+                let v = j as Scalar / N as Scalar;
+                vertices.push(eval_patch(cubic_points, u, v));
+            }
+        }
+
+        // Bilinearly interpolate corner colors at grid point (i, j)
+        let get_color = |i: usize, j: usize| -> Option<Color> {
+            let colors = colors?;
+            let u = i as Scalar / N as Scalar;
+            let v = j as Scalar / N as Scalar;
+
+            // Corner colors: [top-left, top-right, bottom-right, bottom-left]
+            let c = colors;
+            let r = (1.0 - u) * (1.0 - v) * c[0].red() as Scalar
+                + u * (1.0 - v) * c[1].red() as Scalar
+                + u * v * c[2].red() as Scalar
+                + (1.0 - u) * v * c[3].red() as Scalar;
+            let g = (1.0 - u) * (1.0 - v) * c[0].green() as Scalar
+                + u * (1.0 - v) * c[1].green() as Scalar
+                + u * v * c[2].green() as Scalar
+                + (1.0 - u) * v * c[3].green() as Scalar;
+            let b = (1.0 - u) * (1.0 - v) * c[0].blue() as Scalar
+                + u * (1.0 - v) * c[1].blue() as Scalar
+                + u * v * c[2].blue() as Scalar
+                + (1.0 - u) * v * c[3].blue() as Scalar;
+            let a = (1.0 - u) * (1.0 - v) * c[0].alpha() as Scalar
+                + u * (1.0 - v) * c[1].alpha() as Scalar
+                + u * v * c[2].alpha() as Scalar
+                + (1.0 - u) * v * c[3].alpha() as Scalar;
+
+            Some(Color::from_argb(
+                a.clamp(0.0, 255.0) as u8,
+                r.clamp(0.0, 255.0) as u8,
+                g.clamp(0.0, 255.0) as u8,
+                b.clamp(0.0, 255.0) as u8,
+            ))
+        };
+
+        // Build triangles: for each cell, two triangles (TL-TR-BR, TL-BR-BL)
+        let mut triangle_verts = Vec::new();
+        let mut triangle_colors = Vec::new();
+        for j in 0..N {
+            for i in 0..N {
+                let idx_tl = j * (N + 1) + i;
+                let idx_tr = idx_tl + 1;
+                let idx_bl = idx_tl + (N + 1);
+                let idx_br = idx_bl + 1;
+
+                // Triangle 1: TL-TR-BR
+                triangle_verts.push(vertices[idx_tl]);
+                triangle_verts.push(vertices[idx_tr]);
+                triangle_verts.push(vertices[idx_br]);
+
+                // Triangle 2: TL-BR-BL
+                triangle_verts.push(vertices[idx_tl]);
+                triangle_verts.push(vertices[idx_br]);
+                triangle_verts.push(vertices[idx_bl]);
+
+                if colors.is_some() {
+                    // Colors for triangle 1
+                    triangle_colors.push(get_color(i, j).unwrap());
+                    triangle_colors.push(get_color(i + 1, j).unwrap());
+                    triangle_colors.push(get_color(i + 1, j + 1).unwrap());
+                    // Colors for triangle 2
+                    triangle_colors.push(get_color(i, j).unwrap());
+                    triangle_colors.push(get_color(i + 1, j + 1).unwrap());
+                    triangle_colors.push(get_color(i, j + 1).unwrap());
+                }
+            }
+        }
+
+        let vertex_colors = if colors.is_some() {
+            Some(triangle_colors.as_slice())
+        } else {
+            None
+        };
+
+        self.draw_vertices(VertexMode::Triangles, &triangle_verts, vertex_colors, paint);
     }
 
     /// Draw an annotation.
     ///
-    /// Annotations are used for PDF output (links, names, etc.). Currently a
-    /// placeholder; the full implementation is tracked by P5-9.
-    pub fn draw_annotation(&mut self, rect: &Rect, key: &str, value: &[u8]) {
-        let _ = (rect, key, value);
+    /// Annotations attach metadata to a rectangle for consumption by
+    /// structured output formats (PDF links, SVG  metadata, etc.). They have
+    /// no visual effect on raster or null backings. Recording backings would
+    /// capture the annotation for downstream consumers, but this is not yet
+    /// implemented — the annotation is currently dropped in all cases.
+    pub fn draw_annotation(&mut self, _rect: &Rect, _key: &str, _value: &[u8]) {
+        // Annotations are metadata-only. Raster and null backings simply drop
+        // them. Recording backings would emit DrawCommand::Annotation for
+        // PDF/SVG export, but that variant doesn't exist yet (tracked by P5-9).
     }
 
     // =========================================================================
@@ -2368,5 +2532,152 @@ mod tests {
             center.red() > 200 && center.green() > 200 && center.blue() > 200,
             "Center should be bright white"
         );
+    }
+
+    #[test]
+    fn test_draw_patch_flat_square() {
+        // 12 control points forming a flat 100x100 square patch
+        let mut buffer = PixelBuffer::new(120, 120);
+        buffer.clear(Color::from_argb(255, 0, 0, 0));
+        let mut canvas = Canvas::new_raster(&mut buffer);
+
+        let cubics = [
+            // Top edge: left to right
+            Point::new(10.0, 10.0),
+            Point::new(40.0, 10.0),
+            Point::new(70.0, 10.0),
+            Point::new(100.0, 10.0),
+            // Right edge: top to bottom
+            Point::new(100.0, 40.0),
+            Point::new(100.0, 70.0),
+            Point::new(100.0, 100.0),
+            // Bottom edge: right to left (reversed)
+            Point::new(70.0, 100.0),
+            Point::new(40.0, 100.0),
+            Point::new(10.0, 100.0),
+            // Left edge: bottom to top
+            Point::new(10.0, 70.0),
+            Point::new(10.0, 40.0),
+        ];
+
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_rgb(255, 0, 0));
+
+        canvas.draw_patch(&cubics, None, None, skia_rs_paint::BlendMode::SrcOver, &paint);
+        drop(canvas);
+
+        // Center of the patch should be red
+        let center = buffer.get_pixel(55, 55).unwrap();
+        assert!(center.red() > 200, "Center should be red, got {:?}", center);
+    }
+
+    #[test]
+    fn test_draw_patch_with_corner_colors() {
+        // Patch with interpolated corner colors
+        let mut buffer = PixelBuffer::new(120, 120);
+        buffer.clear(Color::from_argb(255, 0, 0, 0));
+        let mut canvas = Canvas::new_raster(&mut buffer);
+
+        let cubics = [
+            Point::new(10.0, 10.0),
+            Point::new(40.0, 10.0),
+            Point::new(70.0, 10.0),
+            Point::new(100.0, 10.0),
+            Point::new(100.0, 40.0),
+            Point::new(100.0, 70.0),
+            Point::new(100.0, 100.0),
+            Point::new(70.0, 100.0),
+            Point::new(40.0, 100.0),
+            Point::new(10.0, 100.0),
+            Point::new(10.0, 70.0),
+            Point::new(10.0, 40.0),
+        ];
+
+        // Corner colors: red, green, blue, yellow
+        let colors = [
+            Color::from_rgb(255, 0, 0),   // top-left: red
+            Color::from_rgb(0, 255, 0),   // top-right: green
+            Color::from_rgb(0, 0, 255),   // bottom-right: blue
+            Color::from_rgb(255, 255, 0), // bottom-left: yellow
+        ];
+
+        let mut paint = Paint::new();
+        canvas.draw_patch(
+            &cubics,
+            Some(&colors),
+            None,
+            skia_rs_paint::BlendMode::SrcOver,
+            &paint,
+        );
+        drop(canvas);
+
+        // Center should have a mix of all four colors
+        let center = buffer.get_pixel(55, 55).unwrap();
+        assert!(
+            center.red() > 50 && center.green() > 50,
+            "Center should blend all colors, got {:?}",
+            center
+        );
+    }
+
+    #[test]
+    fn test_draw_annotation_noop_on_raster() {
+        // Annotations should not panic or affect pixels
+        let mut buffer = PixelBuffer::new(10, 10);
+        buffer.clear(Color::from_argb(255, 100, 100, 100));
+        let mut canvas = Canvas::new_raster(&mut buffer);
+
+        canvas.draw_annotation(
+            &Rect::from_xywh(0.0, 0.0, 5.0, 5.0),
+            "url",
+            b"https://example.com",
+        );
+        drop(canvas);
+
+        // Pixels should be unchanged
+        let pixel = buffer.get_pixel(1, 1).unwrap();
+        assert_eq!(pixel.red(), 100);
+        assert_eq!(pixel.green(), 100);
+        assert_eq!(pixel.blue(), 100);
+    }
+
+    #[test]
+    fn test_draw_image_lattice_noop() {
+        // draw_image_lattice is a no-op without atlas infrastructure
+        let mut buffer = PixelBuffer::new(10, 10);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+
+        let lattice = ImageLattice::new(vec![5], vec![5]);
+        canvas.draw_image_lattice(
+            &Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+            &lattice,
+            &Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
+            FilterMode::Nearest,
+            None,
+        );
+
+        // Should not panic
+    }
+
+    #[test]
+    fn test_draw_atlas_noop() {
+        // draw_atlas is a no-op without atlas infrastructure
+        let mut buffer = PixelBuffer::new(10, 10);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+
+        let xforms = [RSXform::from_scale_translate(1.0, 0.0, 0.0)];
+        let sprites = [Rect::from_xywh(0.0, 0.0, 10.0, 10.0)];
+
+        canvas.draw_atlas(
+            &Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+            &xforms,
+            &sprites,
+            None,
+            skia_rs_paint::BlendMode::SrcOver,
+            FilterMode::Nearest,
+            None,
+        );
+
+        // Should not panic
     }
 }
