@@ -1705,9 +1705,9 @@ fn box_blur_horizontal(buf: &mut [u8], width: usize, height: usize, radius: usiz
     if width == 0 {
         return;
     }
-    let mut row_copy = vec![0u8; width];
     let r = radius;
     let window = (2 * r + 1) as u32;
+    let mut row_copy = vec![0u8; width];
     for y in 0..height {
         let row_start = y * width;
         // Copy current row
@@ -1735,9 +1735,9 @@ fn box_blur_vertical(buf: &mut [u8], width: usize, height: usize, radius: usize)
     if height == 0 {
         return;
     }
-    let mut col_copy = vec![0u8; height];
     let r = radius;
     let window = (2 * r + 1) as u32;
+    let mut col_copy = vec![0u8; height];
     for x in 0..width {
         // Copy column
         for y in 0..height {

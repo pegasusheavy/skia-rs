@@ -66,7 +66,10 @@ impl Value {
                     0.0
                 }
             }
-            _ => 0.0,
+            _ => {
+                debug_assert!(false, "cannot coerce {:?} to f32 — validator should have caught this", self);
+                0.0
+            }
         }
     }
 
@@ -81,7 +84,10 @@ impl Value {
                     0
                 }
             }
-            _ => 0,
+            _ => {
+                debug_assert!(false, "cannot coerce {:?} to i32 — validator should have caught this", self);
+                0
+            }
         }
     }
 
@@ -93,7 +99,10 @@ impl Value {
             Value::Vec4(v) => [v[0], v[1]],
             Value::Float(f) => [*f, *f],
             Value::Int(i) => [*i as f32, *i as f32],
-            _ => [0.0, 0.0],
+            _ => {
+                debug_assert!(false, "cannot coerce {:?} to vec2 — validator should have caught this", self);
+                [0.0, 0.0]
+            }
         }
     }
 
@@ -107,7 +116,10 @@ impl Value {
                 let x = *i as f32;
                 [x, x, x]
             }
-            _ => [0.0, 0.0, 0.0],
+            _ => {
+                debug_assert!(false, "cannot coerce {:?} to vec3 — validator should have caught this", self);
+                [0.0, 0.0, 0.0]
+            }
         }
     }
 
@@ -121,7 +133,10 @@ impl Value {
                 let x = *i as f32;
                 [x, x, x, x]
             }
-            _ => [0.0, 0.0, 0.0, 0.0],
+            _ => {
+                debug_assert!(false, "cannot coerce {:?} to vec4 — validator should have caught this", self);
+                [0.0, 0.0, 0.0, 0.0]
+            }
         }
     }
 
@@ -130,7 +145,10 @@ impl Value {
             Value::Bool(b) => *b,
             Value::Int(i) => *i != 0,
             Value::Float(f) => *f != 0.0,
-            _ => false,
+            _ => {
+                debug_assert!(false, "cannot coerce {:?} to bool — validator should have caught this", self);
+                false
+            }
         }
     }
 

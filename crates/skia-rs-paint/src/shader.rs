@@ -1411,6 +1411,7 @@ impl Shader for BlendShader {
 /// for noise, or [0, 1] for turbulence (which uses abs()). The classic Perlin
 /// noise uses a 256-entry permutation table and interpolates gradients at
 /// integer lattice points.
+#[derive(Debug, Clone)]
 struct PerlinNoiseGenerator {
     /// Permutation table seeded from the shader seed.
     perm: [u16; 512],
@@ -1547,6 +1548,8 @@ pub struct PerlinNoiseShader {
     num_octaves: i32,
     seed: Scalar,
     tile_size: Option<(i32, i32)>,
+    #[cfg_attr(test, allow(dead_code))]
+    generator: std::sync::OnceLock<PerlinNoiseGenerator>,
 }
 
 /// Type of Perlin noise.
@@ -1573,6 +1576,7 @@ impl PerlinNoiseShader {
             num_octaves,
             seed,
             tile_size: None,
+            generator: std::sync::OnceLock::new(),
         }
     }
 
@@ -1590,6 +1594,7 @@ impl PerlinNoiseShader {
             num_octaves,
             seed,
             tile_size: None,
+            generator: std::sync::OnceLock::new(),
         }
     }
 
@@ -1644,7 +1649,7 @@ impl Shader for PerlinNoiseShader {
     }
 
     fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
-        let generator = PerlinNoiseGenerator::new(self.seed as u32);
+        let generator = self.generator.get_or_init(|| PerlinNoiseGenerator::new(self.seed as u32));
         let fx = x * self.base_frequency_x;
         let fy = y * self.base_frequency_y;
         let octaves = self.num_octaves.max(1) as u32;
@@ -2622,6 +2627,7 @@ fn deserialize_perlin_noise(bytes: &[u8], offset: &mut usize) -> Option<ShaderRe
         num_octaves,
         seed,
         tile_size: None,
+        generator: std::sync::OnceLock::new(),
     };
 
     if let Some((w, h)) = tile_size {

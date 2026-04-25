@@ -610,6 +610,33 @@ pub enum SkslType {
     Struct(String),
 }
 
+impl std::fmt::Display for SkslType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SkslType::Void => write!(f, "void"),
+            SkslType::Bool => write!(f, "bool"),
+            SkslType::Int => write!(f, "int"),
+            SkslType::Float => write!(f, "float"),
+            SkslType::Half => write!(f, "half"),
+            SkslType::Vec2 => write!(f, "vec2"),
+            SkslType::Vec3 => write!(f, "vec3"),
+            SkslType::Vec4 => write!(f, "vec4"),
+            SkslType::Half2 => write!(f, "half2"),
+            SkslType::Half3 => write!(f, "half3"),
+            SkslType::Half4 => write!(f, "half4"),
+            SkslType::Mat2 => write!(f, "mat2"),
+            SkslType::Mat3 => write!(f, "mat3"),
+            SkslType::Mat4 => write!(f, "mat4"),
+            SkslType::Sampler2D => write!(f, "sampler2D"),
+            SkslType::Shader => write!(f, "shader"),
+            SkslType::ColorFilter => write!(f, "colorFilter"),
+            SkslType::Blender => write!(f, "blender"),
+            SkslType::Array(inner, n) => write!(f, "{}[{}]", inner, n),
+            SkslType::Struct(name) => write!(f, "struct {}", name),
+        }
+    }
+}
+
 impl SkslType {
     /// Get the GLSL type name.
     pub fn glsl_name(&self) -> &'static str {

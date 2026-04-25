@@ -239,8 +239,8 @@ impl<'a> Validator<'a> {
                 } else {
                     Err(ValidationError::ReturnTypeMismatch {
                         function: f.name.clone(),
-                        expected: type_name(&f.return_type),
-                        actual: type_name(&actual),
+                        expected: f.return_type.to_string(),
+                        actual: actual.to_string(),
                     })
                 }
             }
@@ -276,8 +276,8 @@ impl<'a> Validator<'a> {
                     let init_ty = self.validate_expr(init_expr)?;
                     if !types_compatible(ty, &init_ty) {
                         return Err(ValidationError::TypeMismatch {
-                            expected: type_name(ty),
-                            actual: type_name(&init_ty),
+                            expected: ty.to_string(),
+                            actual: init_ty.to_string(),
                             context: format!("variable '{}' initializer", name),
                         });
                     }
@@ -300,7 +300,7 @@ impl<'a> Validator<'a> {
                 if !matches!(ct, SkslType::Bool) {
                     return Err(ValidationError::TypeMismatch {
                         expected: "bool".into(),
-                        actual: type_name(&ct),
+                        actual: ct.to_string(),
                         context: "if condition".into(),
                     });
                 }
@@ -333,7 +333,7 @@ impl<'a> Validator<'a> {
                         self.pop_scope();
                         return Err(ValidationError::TypeMismatch {
                             expected: "bool".into(),
-                            actual: type_name(&ct),
+                            actual: ct.to_string(),
                             context: "for condition".into(),
                         });
                     }
@@ -352,7 +352,7 @@ impl<'a> Validator<'a> {
                 if !matches!(ct, SkslType::Bool) {
                     return Err(ValidationError::TypeMismatch {
                         expected: "bool".into(),
-                        actual: type_name(&ct),
+                        actual: ct.to_string(),
                         context: "while condition".into(),
                     });
                 }
@@ -365,7 +365,7 @@ impl<'a> Validator<'a> {
                 if !matches!(ct, SkslType::Bool) {
                     return Err(ValidationError::TypeMismatch {
                         expected: "bool".into(),
-                        actual: type_name(&ct),
+                        actual: ct.to_string(),
                         context: "do-while condition".into(),
                     });
                 }
@@ -398,8 +398,8 @@ impl<'a> Validator<'a> {
                 result_type_for_binop(*op, &lt, &rt).ok_or_else(|| {
                     ValidationError::InvalidOperator {
                         op: op.glsl_str().to_string(),
-                        lhs: type_name(&lt),
-                        rhs: type_name(&rt),
+                        lhs: lt.to_string(),
+                        rhs: rt.to_string(),
                     }
                 })
             }
@@ -409,7 +409,7 @@ impl<'a> Validator<'a> {
                 result_type_for_unop(*op, &t).ok_or_else(|| {
                     ValidationError::InvalidOperator {
                         op: op.glsl_str().to_string(),
-                        lhs: type_name(&t),
+                        lhs: t.to_string(),
                         rhs: String::new(),
                     }
                 })
@@ -440,7 +440,7 @@ impl<'a> Validator<'a> {
                 swizzle_result_type(&base_ty, field).ok_or_else(|| {
                     ValidationError::InvalidSwizzle {
                         field: field.clone(),
-                        base: type_name(&base_ty),
+                        base: base_ty.to_string(),
                     }
                 })
             }
@@ -451,7 +451,7 @@ impl<'a> Validator<'a> {
                 if !matches!(idx_ty, SkslType::Int) {
                     return Err(ValidationError::TypeMismatch {
                         expected: "int".into(),
-                        actual: type_name(&idx_ty),
+                        actual: idx_ty.to_string(),
                         context: "array/vector index".into(),
                     });
                 }
@@ -467,7 +467,7 @@ impl<'a> Validator<'a> {
                 if !matches!(ct, SkslType::Bool) {
                     return Err(ValidationError::TypeMismatch {
                         expected: "bool".into(),
-                        actual: type_name(&ct),
+                        actual: ct.to_string(),
                         context: "ternary condition".into(),
                     });
                 }
@@ -477,8 +477,8 @@ impl<'a> Validator<'a> {
                     Ok(tt)
                 } else {
                     Err(ValidationError::TypeMismatch {
-                        expected: type_name(&tt),
-                        actual: type_name(&et),
+                        expected: tt.to_string(),
+                        actual: et.to_string(),
                         context: "ternary branches".into(),
                     })
                 }
@@ -492,8 +492,8 @@ impl<'a> Validator<'a> {
                 let vt = self.validate_expr(value)?;
                 if !types_compatible(&tt, &vt) {
                     return Err(ValidationError::TypeMismatch {
-                        expected: type_name(&tt),
-                        actual: type_name(&vt),
+                        expected: tt.to_string(),
+                        actual: vt.to_string(),
                         context: "assignment".into(),
                     });
                 }
@@ -509,8 +509,8 @@ impl<'a> Validator<'a> {
                 result_type_for_binop(*op, &tt, &vt).ok_or_else(|| {
                     ValidationError::InvalidOperator {
                         op: op.glsl_str().to_string(),
-                        lhs: type_name(&tt),
-                        rhs: type_name(&vt),
+                        lhs: tt.to_string(),
+                        rhs: vt.to_string(),
                     }
                 })?;
                 Ok(tt)
@@ -524,7 +524,7 @@ impl<'a> Validator<'a> {
                 if !is_numeric(&t) {
                     return Err(ValidationError::InvalidOperator {
                         op: "++/--".into(),
-                        lhs: type_name(&t),
+                        lhs: t.to_string(),
                         rhs: String::new(),
                     });
                 }
@@ -552,8 +552,8 @@ impl<'a> Validator<'a> {
                 let actual = self.validate_expr(arg)?;
                 if !types_compatible(expected, &actual) {
                     return Err(ValidationError::TypeMismatch {
-                        expected: type_name(expected),
-                        actual: type_name(&actual),
+                        expected: expected.to_string(),
+                        actual: actual.to_string(),
                         context: format!("argument to '{}'", name),
                     });
                 }
@@ -605,8 +605,8 @@ impl<'a> Validator<'a> {
             return return_rule.apply(&arg_types).ok_or_else(|| {
                 ValidationError::InvalidOperator {
                     op: name.to_string(),
-                    lhs: arg_types.first().map(type_name).unwrap_or_default(),
-                    rhs: arg_types.get(1).map(type_name).unwrap_or_default(),
+                    lhs: arg_types.first().map(|t| t.to_string()).unwrap_or_default(),
+                    rhs: arg_types.get(1).map(|t| t.to_string()).unwrap_or_default(),
                 }
             });
         }
@@ -665,31 +665,6 @@ fn is_assignable(expr: &Expr) -> bool {
     }
 }
 
-/// Canonical printable name for a type, used in error messages.
-fn type_name(ty: &SkslType) -> String {
-    match ty {
-        SkslType::Void => "void".into(),
-        SkslType::Bool => "bool".into(),
-        SkslType::Int => "int".into(),
-        SkslType::Float => "float".into(),
-        SkslType::Half => "half".into(),
-        SkslType::Vec2 => "vec2".into(),
-        SkslType::Vec3 => "vec3".into(),
-        SkslType::Vec4 => "vec4".into(),
-        SkslType::Half2 => "half2".into(),
-        SkslType::Half3 => "half3".into(),
-        SkslType::Half4 => "half4".into(),
-        SkslType::Mat2 => "mat2".into(),
-        SkslType::Mat3 => "mat3".into(),
-        SkslType::Mat4 => "mat4".into(),
-        SkslType::Sampler2D => "sampler2D".into(),
-        SkslType::Shader => "shader".into(),
-        SkslType::ColorFilter => "colorFilter".into(),
-        SkslType::Blender => "blender".into(),
-        SkslType::Array(inner, n) => format!("{}[{}]", type_name(inner), n),
-        SkslType::Struct(n) => format!("struct {}", n),
-    }
-}
 
 /// Our "compatibility" predicate. Strict equality with a couple of
 /// equivalences: `float`/`half` and their matching vectors are
