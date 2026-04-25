@@ -103,19 +103,19 @@ pub fn stroke_to_fill(path: &Path, params: &StrokeParams) -> Option<Path> {
     let half_width = params.width / 2.0;
     let mut builder = PathBuilder::new();
 
-    // Collect path elements into contours
-    let mut contours: Vec<Vec<Point>> = Vec::new();
+    // Collect path elements into contours, tracking closed state per contour
+    let mut contours: Vec<(Vec<Point>, bool)> = Vec::new();
     let mut current_contour: Vec<Point> = Vec::new();
-    let mut is_closed = false;
+    let mut current_closed = false;
 
     for element in path.iter() {
         match element {
             PathElement::Move(p) => {
                 if !current_contour.is_empty() {
-                    contours.push(std::mem::take(&mut current_contour));
+                    contours.push((std::mem::take(&mut current_contour), current_closed));
                 }
                 current_contour.push(p);
-                is_closed = false;
+                current_closed = false;
             }
             PathElement::Line(p) => {
                 current_contour.push(p);
@@ -147,22 +147,22 @@ pub fn stroke_to_fill(path: &Path, params: &StrokeParams) -> Option<Path> {
                 }
             }
             PathElement::Close => {
-                is_closed = true;
+                current_closed = true;
             }
         }
     }
 
     if !current_contour.is_empty() {
-        contours.push(current_contour);
+        contours.push((current_contour, current_closed));
     }
 
-    // Process each contour
-    for contour in &contours {
+    // Process each contour using its own closed state
+    for (contour, is_closed) in &contours {
         if contour.len() < 2 {
             continue;
         }
 
-        stroke_contour(&mut builder, contour, is_closed, half_width, params);
+        stroke_contour(&mut builder, contour, *is_closed, half_width, params);
     }
 
     Some(builder.build())
@@ -466,6 +466,25 @@ mod tests {
         let stroked = stroke_to_fill(&path, &params).unwrap();
 
         assert!(!stroked.is_empty());
+    }
+
+    #[test]
+    fn test_stroke_to_fill_multi_contour_mixed_closed_open() {
+        // Path with two contours: first closed (triangle), second open (line).
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(10.0, 0.0);
+        builder.line_to(5.0, 10.0);
+        builder.close();
+        builder.move_to(20.0, 0.0);
+        builder.line_to(30.0, 0.0);
+        let path = builder.build();
+
+        let params = StrokeParams::new(2.0);
+        let result = stroke_to_fill(&path, &params);
+        assert!(result.is_some(), "stroke_to_fill should succeed for valid input");
+        let stroked = result.unwrap();
+        assert!(stroked.iter().count() > 0, "stroked path should not be empty");
     }
 
     #[test]
