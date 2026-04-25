@@ -1158,6 +1158,10 @@ impl Matrix {
     }
 
     /// Transforms a point by this matrix.
+    ///
+    /// For perspective transformations (when the bottom row is not [0, 0, 1]),
+    /// the result is the projected point. If the perspective division would
+    /// produce w == 0, returns (0, 0) to avoid producing NaN or infinity.
     #[inline]
     pub fn map_point(&self, point: Point) -> Point {
         let m = &self.values;
@@ -1167,7 +1171,12 @@ impl Matrix {
         // Handle perspective
         if m[6] != 0.0 || m[7] != 0.0 || m[8] != 1.0 {
             let w = m[6] * point.x + m[7] * point.y + m[8];
-            Point { x: x / w, y: y / w }
+            if w == 0.0 {
+                Point { x: 0.0, y: 0.0 }
+            } else {
+                let w_inv = 1.0 / w;
+                Point { x: x * w_inv, y: y * w_inv }
+            }
         } else {
             Point { x, y }
         }
@@ -1276,5 +1285,41 @@ mod tests {
         let result = m.concat(&inv);
         assert!((result.values[0] - 1.0).abs() < 1e-6);
         assert!((result.values[4] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_matrix_map_point_perspective_zero_w() {
+        // Matrix that produces w=0 for the origin point.
+        // perspective row: w = x + y + 0 = 0 at (0, 0).
+        let matrix = Matrix {
+            values: [
+                1.0, 0.0, 0.0,
+                0.0, 1.0, 0.0,
+                1.0, 1.0, 0.0,
+            ],
+        };
+        let point = matrix.map_point(Point::new(0.0, 0.0));
+        // Should return (0, 0) instead of NaN/inf
+        assert!(point.x.is_finite(), "x should be finite, got {}", point.x);
+        assert!(point.y.is_finite(), "y should be finite, got {}", point.y);
+        assert_eq!(point.x, 0.0);
+        assert_eq!(point.y, 0.0);
+    }
+
+    #[test]
+    fn test_matrix_map_point_perspective_normal() {
+        // Verify normal perspective division still works.
+        // w = 2 for all points (persp_2 = 2, persp_0/1 = 0).
+        let matrix = Matrix {
+            values: [
+                1.0, 0.0, 0.0,
+                0.0, 1.0, 0.0,
+                0.0, 0.0, 2.0,
+            ],
+        };
+        let point = matrix.map_point(Point::new(4.0, 6.0));
+        // x/w = 4/2 = 2, y/w = 6/2 = 3
+        assert_eq!(point.x, 2.0);
+        assert_eq!(point.y, 3.0);
     }
 }
