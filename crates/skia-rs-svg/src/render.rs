@@ -1,19 +1,19 @@
 //! SVG rendering to canvas.
 
 use crate::dom::*;
-use skia_rs_canvas::{RasterCanvas, Surface};
+use skia_rs_canvas::{Canvas, Surface};
 use skia_rs_core::{Color, Matrix, Point, Rect, Scalar};
 use skia_rs_paint::{Paint, Style};
 use skia_rs_path::PathBuilder;
 
 /// Render an SVG DOM to a surface.
 pub fn render_svg_to_surface(dom: &SvgDom, surface: &mut Surface) {
-    let mut canvas = surface.raster_canvas();
+    let mut canvas = surface.canvas();
     render_svg(&dom, &mut canvas);
 }
 
 /// Render an SVG DOM to a raster canvas.
-pub fn render_svg(dom: &SvgDom, canvas: &mut RasterCanvas<'_>) {
+pub fn render_svg(dom: &SvgDom, canvas: &mut Canvas<'_>) {
     // Calculate scale to fit
     let view_box = dom.get_view_box();
     let scale_x = canvas.width() as Scalar / view_box.width();
@@ -33,7 +33,7 @@ pub fn render_svg(dom: &SvgDom, canvas: &mut RasterCanvas<'_>) {
 }
 
 /// Render a single SVG node.
-fn render_node(node: &SvgNode, canvas: &mut RasterCanvas<'_>, dom: &SvgDom) {
+fn render_node(node: &SvgNode, canvas: &mut Canvas<'_>, dom: &SvgDom) {
     if !node.visible {
         return;
     }
@@ -213,7 +213,7 @@ pub fn render_svg_string(svg: &str, width: i32, height: i32) -> Option<Surface> 
 
     // Clear with white
     {
-        let mut canvas = surface.raster_canvas();
+        let mut canvas = surface.canvas();
         canvas.clear(Color::WHITE);
     }
 

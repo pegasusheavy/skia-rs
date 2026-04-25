@@ -588,6 +588,42 @@ mod tests {
     }
 
     #[test]
+    fn test_picture_playback_draws_pixels() {
+        // Before the Canvas/Backing unification, Picture::playback received a
+        // Canvas whose draw methods were TODO stubs, so replay produced no
+        // pixels. This test pins the new end-to-end behavior: record a clear
+        // + filled rect, replay to a raster surface, and verify the pixels.
+        use crate::Surface;
+        use skia_rs_paint::Style;
+        use skia_rs_core::Color;
+
+        let mut recorder = PictureRecorder::new();
+        let rc = recorder.begin_recording(Rect::from_xywh(0.0, 0.0, 20.0, 20.0));
+        rc.clear(Color::from_argb(255, 255, 255, 255));
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_argb(255, 0, 0, 255));
+        paint.set_style(Style::Fill);
+        rc.draw_rect(&Rect::from_xywh(5.0, 5.0, 10.0, 10.0), &paint);
+        let picture = recorder.finish_recording().unwrap();
+
+        let mut surface = Surface::new_raster_n32_premul(20, 20).unwrap();
+        {
+            let mut canvas = surface.canvas();
+            picture.playback(&mut canvas);
+        }
+
+        let pixel = surface.pixel_buffer().get_pixel(10, 10).unwrap();
+        assert_eq!(pixel.blue(), 255);
+        assert_eq!(pixel.red(), 0);
+
+        // A pixel outside the rect should be the clear color (white).
+        let bg = surface.pixel_buffer().get_pixel(1, 1).unwrap();
+        assert_eq!(bg.red(), 255);
+        assert_eq!(bg.green(), 255);
+        assert_eq!(bg.blue(), 255);
+    }
+
+    #[test]
     fn test_nested_pictures() {
         // Create inner picture
         let mut recorder = PictureRecorder::new();

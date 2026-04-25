@@ -24,7 +24,8 @@ pub use clip::{ClipMask, ClipStack, ClipState};
 pub use picture::*;
 pub use raster::*;
 pub use simd::{SimdCapabilities, simd_capabilities};
-pub use surface::{RasterCanvas, Surface, VertexMode};
+#[allow(deprecated)]
+pub use surface::{RasterCanvas, Surface};
 
 // Re-export Image for drawing
 #[cfg(feature = "codec")]

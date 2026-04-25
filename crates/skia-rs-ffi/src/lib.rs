@@ -350,7 +350,7 @@ pub unsafe extern "C" fn sk_refcnt_is_unique(ptr: *const sk_refcnt_t) -> bool {
 }
 
 // Re-export types for FFI
-use skia_rs_canvas::{PixelBuffer, RasterCanvas, Surface};
+use skia_rs_canvas::{PixelBuffer, Surface};
 use skia_rs_core::{
     AlphaType, Color, ColorType, IPoint, IRect, ISize, ImageInfo, Matrix, Point, Rect, Scalar, Size,
 };

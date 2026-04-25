@@ -23,7 +23,7 @@ std = ["skia-rs-core/std", "skia-rs-path/std", "skia-rs-paint/std", "skia-rs-can
 serde = ["skia-rs-core/serde", "skia-rs-path/serde", "skia-rs-paint/serde"]
 
 # Image codecs
-codec = ["dep:skia-rs-codec"]
+codec = ["dep:skia-rs-codec", "skia-rs-canvas/codec"]
 codec-png = ["codec", "skia-rs-codec?/png"]
 codec-jpeg = ["codec", "skia-rs-codec?/jpeg"]
 codec-webp = ["codec", "skia-rs-codec?/webp"]
@@ -49,7 +49,7 @@ opengl = ["gpu", "skia-rs-gpu?/opengl"]
 metal = ["gpu", "skia-rs-gpu?/metal"]
 
 # Text rendering
-text = ["dep:skia-rs-text"]
+text = ["dep:skia-rs-text", "skia-rs-canvas/text"]
 
 # All features (for testing/docs)
 full = ["std", "serde", "codec-all", "svg", "pdf", "skottie", "gpu", "text"]

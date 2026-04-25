@@ -178,7 +178,7 @@ pub mod version {
     /// The minor version number.
     pub const MINOR: u32 = 2;
     /// The patch version number.
-    pub const PATCH: u32 = 2;
+    pub const PATCH: u32 = 3;
 
     /// The full version string.
     pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -196,8 +196,15 @@ mod tests {
 
     #[test]
     fn test_version() {
-        assert_eq!(version::VERSION, "0.2.2");
-        assert_eq!(version::as_tuple(), (0, 2, 2));
+        assert_eq!(version::VERSION, env!("CARGO_PKG_VERSION"));
+        let parts: Vec<u32> = env!("CARGO_PKG_VERSION")
+            .split('.')
+            .map(|p| p.parse().unwrap())
+            .collect();
+        assert_eq!(
+            version::as_tuple(),
+            (parts[0], parts[1], parts[2])
+        );
     }
 
     #[test]
