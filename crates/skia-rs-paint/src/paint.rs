@@ -1,6 +1,7 @@
 //! Paint structure for drawing configuration.
 
 use crate::blend::BlendMode;
+use crate::filter::{ColorFilterRef, ImageFilterRef, MaskFilterRef};
 use crate::shader::ShaderRef;
 use skia_rs_core::{Color, Color4f, Scalar};
 
@@ -50,6 +51,12 @@ pub struct Paint {
     color: Color4f,
     /// Shader for complex fills (gradients, images, etc.).
     shader: Option<ShaderRef>,
+    /// Mask filter for blur, emboss, etc.
+    mask_filter: Option<MaskFilterRef>,
+    /// Color filter for color transformations.
+    color_filter: Option<ColorFilterRef>,
+    /// Image filter for effects like blur, drop shadow, etc.
+    image_filter: Option<ImageFilterRef>,
     /// Blend mode.
     blend_mode: BlendMode,
     /// Style (fill/stroke).
@@ -73,6 +80,9 @@ impl Default for Paint {
         Self {
             color: Color4f::new(0.0, 0.0, 0.0, 1.0),
             shader: None,
+            mask_filter: None,
+            color_filter: None,
+            image_filter: None,
             blend_mode: BlendMode::SrcOver,
             style: Style::Fill,
             stroke_width: 1.0,
@@ -239,6 +249,63 @@ impl Paint {
         self.shader.is_some()
     }
 
+    /// Get the mask filter.
+    #[inline]
+    pub fn mask_filter(&self) -> Option<&MaskFilterRef> {
+        self.mask_filter.as_ref()
+    }
+
+    /// Set the mask filter.
+    #[inline]
+    pub fn set_mask_filter(&mut self, filter: Option<MaskFilterRef>) -> &mut Self {
+        self.mask_filter = filter;
+        self
+    }
+
+    /// Check if the paint has a mask filter.
+    #[inline]
+    pub fn has_mask_filter(&self) -> bool {
+        self.mask_filter.is_some()
+    }
+
+    /// Get the color filter.
+    #[inline]
+    pub fn color_filter(&self) -> Option<&ColorFilterRef> {
+        self.color_filter.as_ref()
+    }
+
+    /// Set the color filter.
+    #[inline]
+    pub fn set_color_filter(&mut self, filter: Option<ColorFilterRef>) -> &mut Self {
+        self.color_filter = filter;
+        self
+    }
+
+    /// Check if the paint has a color filter.
+    #[inline]
+    pub fn has_color_filter(&self) -> bool {
+        self.color_filter.is_some()
+    }
+
+    /// Get the image filter.
+    #[inline]
+    pub fn image_filter(&self) -> Option<&ImageFilterRef> {
+        self.image_filter.as_ref()
+    }
+
+    /// Set the image filter.
+    #[inline]
+    pub fn set_image_filter(&mut self, filter: Option<ImageFilterRef>) -> &mut Self {
+        self.image_filter = filter;
+        self
+    }
+
+    /// Check if the paint has an image filter.
+    #[inline]
+    pub fn has_image_filter(&self) -> bool {
+        self.image_filter.is_some()
+    }
+
     /// Check if anti-aliasing is enabled.
     #[inline]
     pub fn is_anti_alias(&self) -> bool {
@@ -329,6 +396,10 @@ impl Paint {
     /// Deserialize a paint from bytes.
     ///
     /// Returns `None` if the data is invalid or too short.
+    ///
+    /// Note: Shaders and filters (mask_filter, color_filter, image_filter) are
+    /// not serialized and will be `None` after deserialization. Full round-trip
+    /// serialization of complex Paint objects is tracked as a future enhancement.
     pub fn deserialize(data: &[u8]) -> Option<Self> {
         if data.len() < 17 {
             return None;
@@ -382,6 +453,9 @@ impl Paint {
         Some(Self {
             color,
             shader: None, // Shaders are not serialized
+            mask_filter: None, // Filters are not serialized
+            color_filter: None,
+            image_filter: None,
             blend_mode,
             style,
             stroke_width,
@@ -439,5 +513,63 @@ mod tests {
         let mut data = Paint::new().serialize();
         data[4] = 255;
         assert!(Paint::deserialize(&data).is_none());
+    }
+
+    #[test]
+    fn test_paint_mask_filter() {
+        use crate::filter::{BlurMaskFilter, BlurStyle};
+        use std::sync::Arc;
+
+        let mut paint = Paint::new();
+        assert!(paint.mask_filter().is_none());
+        assert!(!paint.has_mask_filter());
+
+        let filter: MaskFilterRef = Arc::new(BlurMaskFilter::new(BlurStyle::Normal, 5.0));
+        paint.set_mask_filter(Some(filter));
+        assert!(paint.mask_filter().is_some());
+        assert!(paint.has_mask_filter());
+
+        paint.set_mask_filter(None);
+        assert!(paint.mask_filter().is_none());
+        assert!(!paint.has_mask_filter());
+    }
+
+    #[test]
+    fn test_paint_color_filter() {
+        use crate::filter::ColorMatrixFilter;
+        use std::sync::Arc;
+
+        let mut paint = Paint::new();
+        assert!(paint.color_filter().is_none());
+        assert!(!paint.has_color_filter());
+
+        let filter: ColorFilterRef = Arc::new(ColorMatrixFilter::identity());
+        paint.set_color_filter(Some(filter));
+        assert!(paint.color_filter().is_some());
+        assert!(paint.has_color_filter());
+
+        paint.set_color_filter(None);
+        assert!(paint.color_filter().is_none());
+        assert!(!paint.has_color_filter());
+    }
+
+    #[test]
+    fn test_paint_image_filter() {
+        use crate::filter::BlurImageFilter;
+        use crate::shader::TileMode;
+        use std::sync::Arc;
+
+        let mut paint = Paint::new();
+        assert!(paint.image_filter().is_none());
+        assert!(!paint.has_image_filter());
+
+        let filter: ImageFilterRef = Arc::new(BlurImageFilter::new(5.0, 5.0, TileMode::Clamp));
+        paint.set_image_filter(Some(filter));
+        assert!(paint.image_filter().is_some());
+        assert!(paint.has_image_filter());
+
+        paint.set_image_filter(None);
+        assert!(paint.image_filter().is_none());
+        assert!(!paint.has_image_filter());
     }
 }
