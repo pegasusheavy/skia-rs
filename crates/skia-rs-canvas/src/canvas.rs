@@ -908,12 +908,20 @@ impl<'a> Canvas<'a> {
     ) {
     }
 
-    /// Flush any pending operations.
+    /// Flush any pending drawing operations.
     ///
-    /// Raster and Null backings perform every draw eagerly so `flush` is a
-    /// no-op. Future GPU backings will drain the command queue here. Tracked
-    /// by P5-5.
-    pub fn flush(&mut self) {}
+    /// For raster canvases, drawing is synchronous — every draw method
+    /// mutates the backing pixel buffer immediately — so flush() is a
+    /// no-op. For recording canvases, flush() does not force playback
+    /// (that's handled separately by Picture consumers). For null
+    /// canvases, flush() is trivially a no-op.
+    ///
+    /// When GPU and deferred backings land, this method will route to
+    /// the backing's flush primitive.
+    pub fn flush(&mut self) {
+        // Currently a no-op for all supported backings. GPU/deferred
+        // routing will be added when those backings are introduced.
+    }
 }
 
 // =============================================================================
@@ -2091,5 +2099,22 @@ mod tests {
         assert_eq!(c.red(), 0, "base buffer should be untouched before restore");
         assert_eq!(c.green(), 0);
         assert_eq!(c.blue(), 0);
+    }
+
+    #[test]
+    fn test_flush_is_safe_on_all_backings() {
+        // Flush must be safe and non-panicking on all backing types.
+        // It's a no-op for raster (synchronous), recording (does not force
+        // playback), and null (trivially no-op).
+        let mut buffer = PixelBuffer::new(10, 10);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        canvas.flush();
+
+        let mut commands = Vec::new();
+        let mut canvas = Canvas::new_recording(&mut commands, 10, 10);
+        canvas.flush();
+
+        let mut canvas = Canvas::new_null(10, 10);
+        canvas.flush();
     }
 }
