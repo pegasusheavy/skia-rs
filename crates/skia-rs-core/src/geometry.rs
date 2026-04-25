@@ -905,10 +905,10 @@ impl RRect {
     /// to zero, and radii exceeding half the rect dimension are reduced to fit.
     #[inline]
     pub fn from_rect_xy(rect: Rect, x_rad: Scalar, y_rad: Scalar) -> Self {
-        let half_w = (rect.right - rect.left) * 0.5;
-        let half_h = (rect.bottom - rect.top) * 0.5;
-        let x_rad = x_rad.max(0.0).min(half_w);
-        let y_rad = y_rad.max(0.0).min(half_h);
+        let half_w = rect.width() * 0.5;
+        let half_h = rect.height() * 0.5;
+        let x_rad = x_rad.clamp(0.0, half_w);
+        let y_rad = y_rad.clamp(0.0, half_h);
         let radius = Point::new(x_rad, y_rad);
         Self {
             rect,

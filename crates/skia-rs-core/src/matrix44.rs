@@ -332,6 +332,7 @@ impl Matrix44 {
     /// Get a column as a 4-element array.
     #[inline]
     pub fn col(&self, idx: usize) -> [Scalar; 4] {
+        assert!(idx < 4, "col index out of bounds: {} (must be < 4)", idx);
         let base = idx * 4;
         [
             self.values[base],
@@ -344,6 +345,7 @@ impl Matrix44 {
     /// Get a row as a 4-element array.
     #[inline]
     pub fn row(&self, idx: usize) -> [Scalar; 4] {
+        assert!(idx < 4, "row index out of bounds: {} (must be < 4)", idx);
         [
             self.values[idx],
             self.values[idx + 4],
@@ -452,7 +454,10 @@ impl Matrix44 {
     /// Computes the inverse of this matrix, or None if singular.
     pub fn invert(&self) -> Option<Self> {
         let det = self.determinant();
-        if det.abs() < 1e-10 {
+        // Skia uses 1/4096 ≈ 2.44e-4. We use a tighter bound that's
+        // still well above f32 epsilon (~1.19e-7).
+        const SINGULARITY_THRESHOLD: Scalar = Scalar::EPSILON * 256.0;
+        if det.abs() < SINGULARITY_THRESHOLD {
             return None;
         }
 

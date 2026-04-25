@@ -629,10 +629,9 @@ pub fn convert_pixels(
 /// transitions (involving Opaque or Unknown) are no-ops because they only
 /// require a declaration change, not a value transformation.
 fn apply_alpha_conversion(pixels: &mut [u8], src_alpha: AlphaType, dst_alpha: AlphaType) {
-    use AlphaType::*;
     match (src_alpha, dst_alpha) {
-        (Unpremul, Premul) => premultiply_in_place(pixels),
-        (Premul, Unpremul) => unpremultiply_in_place(pixels),
+        (AlphaType::Unpremul, AlphaType::Premul) => premultiply_in_place(pixels),
+        (AlphaType::Premul, AlphaType::Unpremul) => unpremultiply_in_place(pixels),
         _ => {}
     }
 }

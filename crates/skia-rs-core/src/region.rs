@@ -189,31 +189,27 @@ impl Region {
         y_edges.dedup();
 
         // Process each y-band
+        let mut x_intervals: Vec<(i32, i32)> = Vec::with_capacity(self.rects.len());
         for window in y_edges.windows(2) {
             let band_top = window[0];
             let band_bottom = window[1];
 
-            if band_top >= query_bottom || band_bottom <= query_top {
-                continue;
-            }
-
-            // Find all rects that cover this entire band vertically
-            let mut x_intervals: Vec<(i32, i32)> = self
-                .rects
-                .iter()
-                .filter(|r| r.top <= band_top && r.bottom >= band_bottom)
-                .map(|r| (r.left, r.right))
-                .collect();
+            x_intervals.clear();
+            x_intervals.extend(
+                self.rects
+                    .iter()
+                    .filter(|r| r.top <= band_top && r.bottom >= band_bottom)
+                    .map(|r| (r.left, r.right)),
+            );
 
             if x_intervals.is_empty() {
                 return false;
             }
 
-            // Sort and check x-coverage spans [rect.left, rect.right)
             x_intervals.sort_unstable_by_key(|&(l, _)| l);
 
             let mut covered_right = rect.left;
-            for (l, r) in x_intervals {
+            for (l, r) in x_intervals.iter().copied() {
                 if l > covered_right {
                     return false; // Gap in coverage
                 }
@@ -341,7 +337,7 @@ impl Region {
         // Combine all rects, then canonicalize to scanline form so overlapping
         // and adjacent rects are merged.  Without this the rect list grows
         // without bound on repeated unions, making all O(n) region ops slow.
-        let mut all_rects: Vec<IRect> = self.rects.clone();
+        let mut all_rects = std::mem::take(&mut self.rects);
         all_rects.extend(other.rects.iter().cloned());
 
         self.rects = canonicalize_rects(&all_rects);
@@ -489,22 +485,25 @@ fn canonicalize_rects(input: &[IRect]) -> Vec<IRect> {
     y_edges.dedup();
 
     let mut result: Vec<IRect> = Vec::new();
-    // prev_band holds (top, bottom, x-intervals) for the last emitted/pending band.
     let mut prev_band: Option<(i32, i32, Vec<(i32, i32)>)> = None;
+
+    // Reusable buffers - allocate once, clear per-band.
+    let mut intervals: Vec<(i32, i32)> = Vec::with_capacity(input.len());
+    let mut merged: Vec<(i32, i32)> = Vec::with_capacity(input.len());
 
     for window in y_edges.windows(2) {
         let band_top = window[0];
         let band_bottom = window[1];
 
-        // Collect x-intervals from all rects that fully span this band vertically.
-        let mut intervals: Vec<(i32, i32)> = input
-            .iter()
-            .filter(|r| !r.is_empty() && r.top <= band_top && r.bottom >= band_bottom)
-            .map(|r| (r.left, r.right))
-            .collect();
+        intervals.clear();
+        intervals.extend(
+            input
+                .iter()
+                .filter(|r| !r.is_empty() && r.top <= band_top && r.bottom >= band_bottom)
+                .map(|r| (r.left, r.right)),
+        );
 
         if intervals.is_empty() {
-            // No coverage in this band — flush any pending band.
             if let Some((top, bottom, ints)) = prev_band.take() {
                 for (l, r) in ints {
                     result.push(IRect::new(l, top, r, bottom));
@@ -513,13 +512,11 @@ fn canonicalize_rects(input: &[IRect]) -> Vec<IRect> {
             continue;
         }
 
-        // Merge overlapping/adjacent x-intervals within this band.
         intervals.sort_unstable_by_key(|&(l, _)| l);
-        let mut merged: Vec<(i32, i32)> = Vec::with_capacity(intervals.len());
+        merged.clear();
         let mut cur = intervals[0];
         for &(l, r) in &intervals[1..] {
             if l <= cur.1 {
-                // Overlapping or touching — extend.
                 if r > cur.1 {
                     cur.1 = r;
                 }
@@ -530,27 +527,25 @@ fn canonicalize_rects(input: &[IRect]) -> Vec<IRect> {
         }
         merged.push(cur);
 
-        // Try to extend the previous band downward when x-intervals are identical.
+        // Try to extend the previous band downward when x-intervals match.
         match prev_band.take() {
             Some((prev_top, prev_bottom, ref prev_intervals))
                 if prev_bottom == band_top && prev_intervals == &merged =>
             {
-                prev_band = Some((prev_top, band_bottom, merged));
+                prev_band = Some((prev_top, band_bottom, std::mem::take(&mut merged)));
             }
             Some((prev_top, prev_bottom, prev_intervals)) => {
-                // Flush the old band, then record the current one.
                 for (l, r) in prev_intervals {
                     result.push(IRect::new(l, prev_top, r, prev_bottom));
                 }
-                prev_band = Some((band_top, band_bottom, merged));
+                prev_band = Some((band_top, band_bottom, std::mem::take(&mut merged)));
             }
             None => {
-                prev_band = Some((band_top, band_bottom, merged));
+                prev_band = Some((band_top, band_bottom, std::mem::take(&mut merged)));
             }
         }
     }
 
-    // Flush the final pending band.
     if let Some((top, bottom, intervals)) = prev_band {
         for (l, r) in intervals {
             result.push(IRect::new(l, top, r, bottom));
