@@ -1069,10 +1069,13 @@ impl Matrix {
     }
 
     /// Creates a skew matrix.
+    ///
+    /// Takes raw skew factors (not angles), matching Skia's `SkMatrix::MakeSkew`.
+    /// To skew by an angle, pass `angle.tan()` as the parameter.
     #[inline]
     pub fn skew(kx: Scalar, ky: Scalar) -> Self {
         Self {
-            values: [1.0, kx.tan(), 0.0, ky.tan(), 1.0, 0.0, 0.0, 0.0, 1.0],
+            values: [1.0, kx, 0.0, ky, 1.0, 0.0, 0.0, 0.0, 1.0],
         }
     }
 
@@ -1304,6 +1307,25 @@ mod tests {
         assert!(point.y.is_finite(), "y should be finite, got {}", point.y);
         assert_eq!(point.x, 0.0);
         assert_eq!(point.y, 0.0);
+    }
+
+    #[test]
+    fn test_matrix_skew_raw_factors() {
+        // Skew with kx=0.5, ky=0.0 should produce a matrix where
+        // a point (0, 1) maps to (0.5, 1) - x is shifted by 0.5*y
+        let matrix = Matrix::skew(0.5, 0.0);
+        let point = matrix.map_point(Point::new(0.0, 1.0));
+        assert!((point.x - 0.5).abs() < 1e-6, "Expected x=0.5, got {}", point.x);
+        assert!((point.y - 1.0).abs() < 1e-6, "Expected y=1.0, got {}", point.y);
+
+        // Skew matrix values should match: [1, 0.5, 0, 0, 1, 0, 0, 0, 1]
+        let m = matrix.values;
+        assert_eq!(m[0], 1.0);
+        assert!((m[1] - 0.5).abs() < 1e-6);
+        assert_eq!(m[2], 0.0);
+        assert_eq!(m[3], 0.0);
+        assert_eq!(m[4], 1.0);
+        assert_eq!(m[5], 0.0);
     }
 
     #[test]
