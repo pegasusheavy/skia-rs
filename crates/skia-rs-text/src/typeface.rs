@@ -258,10 +258,14 @@ impl Typeface {
     }
 
     /// Check if this typeface has fixed width glyphs.
-    #[inline]
+    ///
+    /// Reads the `post` table's `isFixedPitch` flag via `ttf_parser`. Returns
+    /// `false` for dataless typefaces (no `post` table is loaded).
     pub fn is_fixed_pitch(&self) -> bool {
-        // Would need to parse font tables to determine this
-        false
+        self.font_data()
+            .and_then(|data| ttf_parser::Face::parse(data, 0).ok())
+            .map(|face| face.is_monospaced())
+            .unwrap_or(false)
     }
 
     /// Get the glyph ID for a character.

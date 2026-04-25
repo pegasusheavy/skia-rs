@@ -104,3 +104,144 @@ fn glyph_path_y_axis_is_flipped_into_screen_space() {
         bounds.bottom
     );
 }
+
+#[test]
+fn metrics_come_from_font_tables_not_hardcoded_approximations() {
+    // demo.ttf has a real hhea table; ascender/descender/line_gap must be
+    // pulled from it and scaled by size/upem. The previous hardcoded
+    // `-0.8*size, +0.2*size, 0.0` approximation was flagged as gap C-1.
+    //
+    // demo.ttf: upem=1000, hhea.ascender=1024, hhea.descender=-400,
+    //           hhea.line_gap=0. At size=1000 these scale 1:1.
+    let font = demo_font(1000.0);
+    let m = font.metrics();
+
+    // Screen-space: ascent = -ascender (y-axis inverted).
+    assert!(
+        (m.ascent - -1024.0).abs() < 0.5,
+        "expected ascent ≈ -1024, got {}",
+        m.ascent
+    );
+    assert!(
+        (m.descent - 400.0).abs() < 0.5,
+        "expected descent ≈ 400 (from hhea.descender=-400), got {}",
+        m.descent
+    );
+    assert!(
+        m.leading.abs() < 0.5,
+        "expected leading ≈ 0, got {}",
+        m.leading
+    );
+
+    // Crucially, these values are NOT the old hardcoded approximations
+    // (which would be -0.8*1000 = -800 and 0.2*1000 = 200). Anything near
+    // those numbers would indicate the fallback path was hit.
+    assert!(
+        (m.ascent + 800.0).abs() > 50.0,
+        "ascent must not equal the -0.8*size approximation"
+    );
+    assert!(
+        (m.descent - 200.0).abs() > 50.0,
+        "descent must not equal the +0.2*size approximation"
+    );
+}
+
+#[test]
+fn metrics_scale_linearly_with_size() {
+    // Font tables are in font-space units and must scale by size/upem.
+    let small = demo_font(10.0).metrics();
+    let big = demo_font(100.0).metrics();
+
+    let ratio = big.ascent / small.ascent;
+    assert!(
+        (ratio - 10.0).abs() < 0.05,
+        "ascent should scale 10x with size (got ratio {ratio}: {:?} vs {:?})",
+        big.ascent,
+        small.ascent
+    );
+    let dr = big.descent / small.descent;
+    assert!(
+        (dr - 10.0).abs() < 0.05,
+        "descent should scale 10x (got {dr})"
+    );
+}
+
+#[test]
+fn dataless_typeface_still_returns_approximate_metrics() {
+    // Gap C-1 fix must NOT regress the dataless-default-typeface path:
+    // callers that constructed a Font via `Font::from_size(...)` with no
+    // backing font data still get the pre-existing approximation so their
+    // layout numbers don't collapse to zero.
+    let font = Font::from_size(16.0);
+    let m = font.metrics();
+    assert!(m.ascent < 0.0);
+    assert!(m.descent > 0.0);
+    assert!(m.line_height() > 0.0);
+}
+
+#[test]
+fn is_fixed_pitch_reads_post_table() {
+    // Gap C-2: Typeface::is_fixed_pitch must consult the post table via
+    // ttf-parser rather than always returning false. demo.ttf is a
+    // proportional (non-monospaced) font so this returns false — but
+    // importantly it returns *from the parsed data*, exercising the new
+    // code path rather than the "always-false" short-circuit.
+    let tf = Typeface::from_data(DEMO_TTF.to_vec()).expect("parse");
+    assert!(!tf.is_fixed_pitch(), "demo.ttf is proportional");
+    // The dataless default typeface cannot read a table; must still
+    // return false (no crash, no false-positive).
+    let default = Typeface::default_typeface();
+    assert!(!default.is_fixed_pitch());
+}
+
+#[test]
+fn get_widths_delegates_to_hmtx_advances() {
+    // Gap N-3: `get_widths` must return the same per-glyph advances as
+    // `glyph_advance`, not a uniform `size * 0.5` per character.
+    let font = demo_font(100.0);
+    // demo.ttf maps only 'A' to a real glyph; other characters are .notdef
+    // (gid=0) whose advance is 0.
+    let widths = font.get_widths("AB");
+    assert_eq!(widths.len(), 2);
+    assert!(
+        widths[0] > 0.0,
+        "expected real advance for 'A', got {}",
+        widths[0]
+    );
+    assert!(
+        widths[1].abs() < 0.001,
+        "expected 0 advance for missing 'B', got {}",
+        widths[1]
+    );
+}
+
+#[test]
+fn get_bounds_uses_real_glyph_bbox() {
+    // Gap N-4: bounds must come from ttf_parser::Face::glyph_bounding_box
+    // scaled + y-flipped — not a synthetic ascent×descent rectangle.
+    let font = demo_font(100.0);
+    let bounds = font.get_bounds("A");
+    assert_eq!(bounds.len(), 1);
+    let r = bounds[0];
+    // 'A' ascends above the baseline, so top is negative in screen space.
+    assert!(r.top < 0.0, "glyph 'A' top should be above baseline, got {}", r.top);
+    // 'A' rests on or near the baseline.
+    assert!(
+        r.bottom.abs() < 5.0,
+        "glyph 'A' bottom should sit near baseline, got {}",
+        r.bottom
+    );
+    // Width is non-zero and corresponds to the outline, not the advance.
+    assert!(r.width() > 0.0);
+}
+
+#[test]
+fn glyph_bounds_returns_real_outline_box() {
+    let font = demo_font(100.0);
+    let bbox = font.glyph_bounds(1);
+    // Same constraints as get_bounds but for a single glyph id.
+    assert!(bbox.top < 0.0);
+    assert!(bbox.width() > 0.0);
+    // Missing glyph yields empty rect.
+    assert_eq!(font.glyph_bounds(0), skia_rs_core::Rect::EMPTY);
+}

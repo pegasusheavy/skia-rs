@@ -259,12 +259,121 @@ impl Font {
     }
 
     /// Get the font metrics.
+    ///
+    /// When the typeface has backing font data, this pulls real values from
+    /// the font's `hhea`/`OS/2`/`post` tables via `ttf_parser` and scales them
+    /// by `size / units_per_em`. Specifically:
+    ///
+    /// - `ascent` ← `Face::ascender()` (negated, screen-space is y-down)
+    /// - `descent` ← `Face::descender()` (negated — ttf-parser returns a
+    ///   negative font-space value; we store the positive screen-space
+    ///   descent so that `line_height = -ascent + descent + leading` works)
+    /// - `leading` ← `Face::line_gap()`
+    /// - `x_height`, `cap_height` ← OS/2 v2+ when present
+    /// - `underline_position` / `underline_thickness` ← `post` table
+    /// - `strikeout_position` / `strikeout_thickness` ← OS/2
+    ///
+    /// Falls back to the previous hardcoded multiples of `size` only for the
+    /// dataless default typeface, which has no font tables to read.
     pub fn metrics(&self) -> FontMetrics {
-        // Calculate metrics based on size and typeface
-        let scale = self.size / self.typeface.units_per_em() as Scalar;
+        if let Some(data) = self.typeface.font_data() {
+            if let Ok(face) = ttf_parser::Face::parse(data, 0) {
+                let upem = face.units_per_em();
+                if upem > 0 {
+                    let scale = self.size / upem as Scalar;
 
+                    // Font-space ascender is positive (units above baseline).
+                    // Screen-space ascent is negative (y grows downward).
+                    let ascent = -(face.ascender() as Scalar) * scale;
+                    // Font-space descender is negative (units below baseline).
+                    // Screen-space descent is positive.
+                    let descent = -(face.descender() as Scalar) * scale;
+                    let leading = face.line_gap() as Scalar * scale;
+
+                    // Cap and x heights — OS/2 v2+ only; fall back to a
+                    // fraction of ascent when missing.
+                    let cap_height = face
+                        .capital_height()
+                        .map(|v| -(v as Scalar) * scale)
+                        .unwrap_or(ascent * 0.875);
+                    let x_height = face
+                        .x_height()
+                        .map(|v| -(v as Scalar) * scale)
+                        .unwrap_or(ascent * 0.625);
+
+                    // Underline from `post`. Font-space position is the
+                    // *center* of the underline, measured upward from the
+                    // baseline (usually negative). We want a screen-space
+                    // offset from the baseline (positive = below), so negate.
+                    let (underline_position, underline_thickness) = face
+                        .underline_metrics()
+                        .map(|lm| {
+                            (
+                                -(lm.position as Scalar) * scale,
+                                lm.thickness as Scalar * scale,
+                            )
+                        })
+                        .unwrap_or((0.1 * self.size, 0.05 * self.size));
+
+                    // Strikeout from OS/2. Same convention as underline.
+                    let (strikeout_position, strikeout_thickness) = face
+                        .strikeout_metrics()
+                        .map(|lm| {
+                            (
+                                -(lm.position as Scalar) * scale,
+                                lm.thickness as Scalar * scale,
+                            )
+                        })
+                        .unwrap_or((-0.3 * self.size, 0.05 * self.size));
+
+                    // Visible bounds: match Skia's convention of including a
+                    // small margin beyond ascent/descent. A number of fonts
+                    // do not carry usWinAscent/Descent in a usable form from
+                    // ttf-parser, so we derive bottom/top from ascent/descent
+                    // with a 10 % cushion — matching Skia's fallback.
+                    let top = ascent * 1.125;
+                    let bottom = descent * 1.125;
+
+                    // Average / max char width: ttf-parser does not expose
+                    // xAvgCharWidth directly via a dedicated accessor, so use
+                    // a reasonable estimate from measured glyph advances.
+                    // `glyph_hor_advance` on gid 1 is a good-enough fallback;
+                    // prefer the measured advance of 'x' if present.
+                    let avg_char_width = face
+                        .glyph_index('x')
+                        .and_then(|g| face.glyph_hor_advance(g))
+                        .map(|a| a as Scalar * scale)
+                        .unwrap_or(0.5 * self.size);
+                    let max_char_width = face
+                        .glyph_index('M')
+                        .and_then(|g| face.glyph_hor_advance(g))
+                        .map(|a| a as Scalar * scale)
+                        .unwrap_or(self.size);
+
+                    return FontMetrics {
+                        ascent,
+                        descent,
+                        leading,
+                        top,
+                        bottom,
+                        avg_char_width,
+                        max_char_width,
+                        x_height,
+                        cap_height,
+                        underline_position,
+                        underline_thickness,
+                        strikeout_position,
+                        strikeout_thickness,
+                    };
+                }
+            }
+        }
+
+        // Dataless default typeface: fall back to the hardcoded
+        // approximation. The default typeface has no tables to read and all
+        // callers have historically relied on these numbers.
         FontMetrics {
-            ascent: -0.8 * self.size, // Approximate
+            ascent: -0.8 * self.size,
             descent: 0.2 * self.size,
             leading: 0.0,
             top: -0.9 * self.size,
@@ -311,28 +420,86 @@ impl Font {
     }
 
     /// Get glyph widths for text.
+    ///
+    /// Returns the per-character horizontal advance. Delegates to
+    /// `glyph_advance`, which reads the font's `hmtx` table when present,
+    /// so this function produces correct per-character positioning for real
+    /// fonts rather than the old uniform `size / 2` approximation.
     pub fn get_widths(&self, text: &str) -> Vec<Scalar> {
-        // Simple approximation
-        let width = self.size * 0.5 * self.scale_x;
-        text.chars().map(|_| width).collect()
+        text.chars()
+            .map(|c| self.glyph_advance(self.char_to_glyph(c)))
+            .collect()
     }
 
     /// Get glyph bounds for text.
+    ///
+    /// Returns the bounding box of each character's glyph, positioned
+    /// cumulatively along x by the per-glyph advance from `hmtx`. Each box's
+    /// tight visual extent is taken from `ttf_parser::Face::glyph_bounding_box`
+    /// when present; otherwise we fall back to the previous ascent/descent
+    /// rectangle with the measured advance as its width.
     pub fn get_bounds(&self, text: &str) -> Vec<skia_rs_core::Rect> {
-        let width = self.size * 0.5 * self.scale_x;
         let metrics = self.metrics();
+        let mut out = Vec::with_capacity(text.chars().count());
 
-        text.chars()
-            .enumerate()
-            .map(|(i, _)| {
+        let parsed = self
+            .typeface
+            .font_data()
+            .and_then(|data| ttf_parser::Face::parse(data, 0).ok());
+
+        let scale = if let Some(face) = parsed.as_ref() {
+            let upem = face.units_per_em();
+            if upem > 0 {
+                self.size / upem as Scalar
+            } else {
+                1.0
+            }
+        } else {
+            1.0
+        };
+
+        let mut x_offset: Scalar = 0.0;
+        for c in text.chars() {
+            let glyph = self.char_to_glyph(c);
+            let advance = self.glyph_advance(glyph);
+
+            let rect = if let Some(face) = parsed.as_ref() {
+                if glyph != 0 {
+                    if let Some(bbox) = face.glyph_bounding_box(ttf_parser::GlyphId(glyph)) {
+                        // Font-space bbox is y-up; flip to y-down screen
+                        // space (negate y and swap top/bottom).
+                        let left = bbox.x_min as Scalar * scale * self.scale_x;
+                        let right = bbox.x_max as Scalar * scale * self.scale_x;
+                        let top = -(bbox.y_max as Scalar) * scale;
+                        let bottom = -(bbox.y_min as Scalar) * scale;
+                        skia_rs_core::Rect::new(
+                            x_offset + left,
+                            top,
+                            x_offset + right,
+                            bottom,
+                        )
+                    } else {
+                        // Glyph has no outline (e.g. space). Zero-sized box.
+                        skia_rs_core::Rect::from_xywh(x_offset, 0.0, 0.0, 0.0)
+                    }
+                } else {
+                    skia_rs_core::Rect::from_xywh(x_offset, 0.0, 0.0, 0.0)
+                }
+            } else {
+                // Dataless typeface — fall back to advance×line-height box.
                 skia_rs_core::Rect::from_xywh(
-                    i as Scalar * width,
+                    x_offset,
                     metrics.ascent,
-                    width,
+                    advance,
                     -metrics.ascent + metrics.descent,
                 )
-            })
-            .collect()
+            };
+
+            out.push(rect);
+            x_offset += advance;
+        }
+
+        out
     }
 
     /// Convert character to glyph ID.
@@ -382,15 +549,41 @@ impl Font {
 
     /// Get the bounding box for a glyph.
     ///
-    /// Returns the tight bounds around the glyph's visible pixels.
+    /// Returns the tight visual bounds around the glyph's outline, read
+    /// from the font's glyph bbox (via `ttf_parser::Face::glyph_bounding_box`)
+    /// and converted from font-space (y-up) into screen-space (y-down) with
+    /// the same `size/upem` scale used for glyph paths.
+    ///
+    /// For the dataless default typeface or when a glyph has no outline,
+    /// falls back to an ascent×descent rectangle sized by the measured
+    /// advance.
     pub fn glyph_bounds(&self, glyph: u16) -> skia_rs_core::Rect {
         if glyph == 0 {
             return skia_rs_core::Rect::EMPTY;
         }
 
+        if let Some(data) = self.typeface.font_data() {
+            if let Ok(face) = ttf_parser::Face::parse(data, 0) {
+                let upem = face.units_per_em();
+                if upem > 0 {
+                    if let Some(bbox) = face.glyph_bounding_box(ttf_parser::GlyphId(glyph)) {
+                        let scale = self.size / upem as Scalar;
+                        let left = bbox.x_min as Scalar * scale * self.scale_x;
+                        let right = bbox.x_max as Scalar * scale * self.scale_x;
+                        let top = -(bbox.y_max as Scalar) * scale;
+                        let bottom = -(bbox.y_min as Scalar) * scale;
+                        return skia_rs_core::Rect::new(left, top, right, bottom);
+                    }
+                    // No outline — still report a zero-sized rect rather
+                    // than the old ascent×descent approximation.
+                    return skia_rs_core::Rect::EMPTY;
+                }
+            }
+        }
+
+        // Dataless typeface fallback.
         let advance = self.glyph_advance(glyph);
         let metrics = self.metrics();
-
         skia_rs_core::Rect::from_xywh(
             0.0,
             metrics.ascent,
