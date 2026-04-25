@@ -2081,6 +2081,7 @@ name = "skia-rs-paint"
 version = "0.2.2"
 dependencies = [
  "bitflags 2.10.0",
+ "naga",
  "proptest",
  "serde",
  "skia-rs-core",

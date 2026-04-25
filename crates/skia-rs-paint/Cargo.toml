@@ -25,6 +25,7 @@ skia-rs-path = { workspace = true }
 bitflags = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true, optional = true }
+naga = { version = "23", features = ["wgsl-in", "spv-out"] }
 
 [dev-dependencies]
 proptest = { workspace = true }

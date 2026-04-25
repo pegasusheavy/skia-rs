@@ -214,6 +214,8 @@ pub struct RuntimeEffect {
     wgsl_cache: OnceLock<String>,
     /// Compiled MSL (cached).
     msl_cache: OnceLock<String>,
+    /// Compiled SPIR-V words (cached).
+    spv_cache: OnceLock<Vec<u32>>,
 }
 
 impl RuntimeEffect {
@@ -295,6 +297,7 @@ impl RuntimeEffect {
             glsl_cache: OnceLock::new(),
             wgsl_cache: OnceLock::new(),
             msl_cache: OnceLock::new(),
+            spv_cache: OnceLock::new(),
         })
     }
 
@@ -350,10 +353,63 @@ impl RuntimeEffect {
                 let _ = self.msl_cache.set(output.clone());
                 Ok(output)
             }
-            ShaderTarget::SpirV => Err(RuntimeEffectError::CompileError(
-                "SPIR-V compilation not yet implemented".to_string(),
-            )),
+            ShaderTarget::SpirV => {
+                let words = self.compile_to_spirv()?;
+                // Hex-encode the little-endian byte stream so SPIR-V
+                // output fits the `Result<String, _>` API. Callers that
+                // need the raw word array should use `compile_to_spirv`.
+                let mut out = String::with_capacity(words.len() * 9);
+                for (i, w) in words.iter().enumerate() {
+                    if i > 0 && i % 8 == 0 {
+                        out.push('\n');
+                    } else if i > 0 {
+                        out.push(' ');
+                    }
+                    out.push_str(&format!("{:08x}", w));
+                }
+                Ok(out)
+            }
         }
+    }
+
+    /// Compile to SPIR-V binary.
+    ///
+    /// Returns the native SPIR-V word array. The implementation lowers
+    /// the effect to WGSL using the existing backend, then runs it
+    /// through `naga` (parse -> validate -> SPIR-V emit).
+    pub fn compile_to_spirv(&self) -> Result<Vec<u32>, RuntimeEffectError> {
+        if let Some(cached) = self.spv_cache.get() {
+            return Ok(cached.clone());
+        }
+
+        // Build a WGSL module suitable for naga. Our regular WGSL output
+        // lacks entry-point attributes (naga rejects modules without a
+        // real vertex/fragment/compute entry point), so wrap the shader
+        // body in a synthetic fragment wrapper that naga accepts.
+        let wgsl = self.to_wgsl_for_naga();
+
+        let module = naga::front::wgsl::parse_str(&wgsl).map_err(|e| {
+            RuntimeEffectError::CompileError(format!(
+                "naga WGSL parse failed: {}\n---\n{}",
+                e.message(),
+                wgsl
+            ))
+        })?;
+
+        let mut validator = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        );
+        let info = validator.validate(&module).map_err(|e| {
+            RuntimeEffectError::CompileError(format!("naga validation failed: {}", e))
+        })?;
+
+        let options = naga::back::spv::Options::default();
+        let words = naga::back::spv::write_vec(&module, &info, &options, None)
+            .map_err(|e| RuntimeEffectError::CompileError(format!("naga SPIR-V emit: {}", e)))?;
+
+        let _ = self.spv_cache.set(words.clone());
+        Ok(words)
     }
 
     /// Convert to GLSL.
@@ -640,6 +696,128 @@ impl RuntimeEffect {
             UniformType::Int3 => "vec3<i32>",
             UniformType::Int4 => "vec4<i32>",
         }
+    }
+
+    /// Convert to WGSL that naga can parse and validate.
+    ///
+    /// Differs from `to_wgsl` in two ways:
+    /// 1. `f16` is rewritten to `f32` so we don't need the `f16` WGSL
+    ///    extension (naga supports it but not all targets do; SPIR-V
+    ///    without Float16 capability would otherwise fail).
+    /// 2. A synthetic `@fragment` entry point is appended so naga's
+    ///    validator has something to anchor the module on. The real
+    ///    `main` function is preserved and called from the wrapper.
+    /// 3. Child-shader uniforms (texture_2d bindings) are skipped from
+    ///    the uniform struct — they require separate texture/sampler
+    ///    bindings that the WGSL backend does not currently emit.
+    fn to_wgsl_for_naga(&self) -> String {
+        let mut output = String::new();
+
+        // Non-child uniforms only. Child samplers need separate binding
+        // slots (texture_2d + sampler) which the current backend does
+        // not emit, so if the shader references them SPIR-V generation
+        // will fail during naga parse with a clear error.
+        let scalar_uniforms: Vec<&Uniform> = self
+            .uniforms
+            .iter()
+            .filter(|u| !self.children.iter().any(|c| c.name == u.name))
+            .collect();
+
+        if !scalar_uniforms.is_empty() {
+            output.push_str("struct Uniforms {\n");
+            for uniform in &scalar_uniforms {
+                output.push_str(&format!(
+                    "    {}: {},\n",
+                    uniform.name,
+                    self.type_to_wgsl(&uniform.ty)
+                ));
+            }
+            output.push_str("}\n\n");
+            output.push_str("@group(0) @binding(0) var<uniform> uniforms: Uniforms;\n\n");
+        }
+
+        // Uniform binding prelude injected at the top of every
+        // function body: `let <name> = uniforms.<name>;`. The SkSL ->
+        // WGSL backend emits uniform references as bare identifiers
+        // (e.g. `scale` rather than `uniforms.scale`), so these
+        // `let` bindings make the references resolve when naga
+        // validates the module.
+        let mut uniform_binds = String::new();
+        for u in &scalar_uniforms {
+            uniform_binds.push_str(&format!(
+                "    let {} = uniforms.{};\n",
+                u.name, u.name
+            ));
+        }
+
+        // Emit user functions with f16 rewritten to f32 and the
+        // uniform-binding prelude injected after the opening brace.
+        for func in &self.program.functions {
+            let func_wgsl = self.function_to_wgsl(func);
+            let rewritten = rewrite_f16_to_f32(&func_wgsl);
+            if uniform_binds.is_empty() {
+                output.push_str(&rewritten);
+            } else {
+                // Insert the prelude right after the first `{\n` so
+                // every function sees the uniform values in scope.
+                if let Some(brace) = rewritten.find("{\n") {
+                    let split = brace + 2;
+                    output.push_str(&rewritten[..split]);
+                    output.push_str(&uniform_binds);
+                    output.push_str(&rewritten[split..]);
+                } else {
+                    output.push_str(&rewritten);
+                }
+            }
+            output.push('\n');
+        }
+
+        // Synthesize a fragment entry point. The signature is:
+        //   @fragment fn _naga_main(@location(0) pos: vec2<f32>) -> @location(0) vec4<f32>
+        // This is enough for naga to validate and emit SPIR-V for a
+        // shader effect. Color filters / blenders don't map cleanly
+        // to a fragment stage, but naga just needs a valid entry
+        // point that references `main` for the rest of the module to
+        // validate.
+        if let Some(main) = self.program.functions.iter().find(|f| f.name == "main") {
+            output.push_str("@fragment\n");
+            output.push_str(
+                "fn _naga_main(@location(0) _pos: vec2<f32>) -> @location(0) vec4<f32> {\n",
+            );
+            // Call main with arguments matching its signature.
+            let call_args: Vec<String> = main
+                .params
+                .iter()
+                .map(|p| match p.ty {
+                    SkslType::Vec2 | SkslType::Half2 => "_pos".to_string(),
+                    SkslType::Vec4 | SkslType::Half4 => {
+                        "vec4<f32>(0.0, 0.0, 0.0, 1.0)".to_string()
+                    }
+                    SkslType::Float | SkslType::Half => "0.0".to_string(),
+                    SkslType::Int => "0".to_string(),
+                    SkslType::Bool => "false".to_string(),
+                    _ => "0.0".to_string(),
+                })
+                .collect();
+            // `main` returns vec4<f32> for shaders (validated at
+            // parse time). Promote half4 returns to vec4<f32> via an
+            // explicit constructor if needed.
+            let returns_half = matches!(main.return_type, SkslType::Half4);
+            if returns_half {
+                output.push_str(&format!(
+                    "    return vec4<f32>(main({}));\n",
+                    call_args.join(", ")
+                ));
+            } else {
+                output.push_str(&format!(
+                    "    return main({});\n",
+                    call_args.join(", ")
+                ));
+            }
+            output.push_str("}\n");
+        }
+
+        output
     }
 
     fn function_to_wgsl(&self, func: &FnDecl) -> String {
@@ -1267,6 +1445,40 @@ enum EffectKind {
 }
 
 /// Validate the entry point for the given effect kind.
+/// Rewrite `f16` type tokens to `f32` in a WGSL source string.
+///
+/// The WGSL backend emits `f16` for SkSL `half` types (the WGSL
+/// extension name is `f16`). naga + SPIR-V targets that don't enable
+/// the `Float16` capability can't lower those, so for the SPIR-V path
+/// we downgrade the precision to f32. This is a lossy transform but
+/// avoids requiring an extension that Vulkan implementations may not
+/// expose. Matches whole-token `f16` occurrences only.
+fn rewrite_f16_to_f32(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let bytes = src.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"f16") {
+            // Check that this is a standalone token (not part of a
+            // longer identifier like `f16foo`).
+            let prev_ok = i == 0 || !is_ident_byte(bytes[i - 1]);
+            let next_ok = i + 3 >= bytes.len() || !is_ident_byte(bytes[i + 3]);
+            if prev_ok && next_ok {
+                out.push_str("f32");
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
 fn validate_entry_point(program: &SkslProgram, kind: EffectKind) -> Result<(), RuntimeEffectError> {
     let main = program
         .functions
@@ -1813,6 +2025,63 @@ mod tests {
         let a = effect.compile_to(ShaderTarget::Msl).unwrap();
         let b = effect.compile_to(ShaderTarget::Msl).unwrap();
         assert_eq!(a, b, "Cached MSL should be identical");
+    }
+
+    #[test]
+    fn test_compile_to_spirv_produces_words() {
+        let src = "vec4 main(vec2 p) { return vec4(1.0, 0.0, 0.0, 1.0); }";
+        let effect = RuntimeEffect::make_for_shader(src).unwrap();
+        let words = effect.compile_to_spirv().unwrap_or_else(|e| {
+            panic!("SPIR-V compile failed: {}", e);
+        });
+        assert!(!words.is_empty(), "SPIR-V output should not be empty");
+        // SPIR-V magic number is 0x07230203 at index 0.
+        assert_eq!(
+            words[0], 0x07230203,
+            "SPIR-V magic word missing (got {:#010x})",
+            words[0]
+        );
+    }
+
+    #[test]
+    fn test_compile_to_spirv_via_target() {
+        let src = "vec4 main(vec2 p) { return vec4(0.5, 0.5, 0.5, 1.0); }";
+        let effect = RuntimeEffect::make_for_shader(src).unwrap();
+        let hex = effect
+            .compile_to(ShaderTarget::SpirV)
+            .unwrap_or_else(|e| panic!("SpirV target compile failed: {}", e));
+        // First word should be the SPIR-V magic number encoded as
+        // little-endian hex.
+        assert!(
+            hex.starts_with("07230203"),
+            "expected SPIR-V magic in hex output, got: {}",
+            &hex[..32.min(hex.len())]
+        );
+    }
+
+    #[test]
+    fn test_runtime_effect_caches_spirv() {
+        let src = "vec4 main(vec2 p) { return vec4(1.0, 0.0, 0.0, 1.0); }";
+        let effect = RuntimeEffect::make_for_shader(src).unwrap();
+        let a = effect.compile_to_spirv().unwrap();
+        let b = effect.compile_to_spirv().unwrap();
+        assert_eq!(a, b, "Cached SPIR-V should be identical");
+    }
+
+    #[test]
+    fn test_compile_to_spirv_with_uniforms() {
+        let src = r#"
+            uniform float scale;
+            uniform vec2 offset;
+            vec4 main(vec2 p) {
+                return vec4((p + offset) * scale, 0.0, 1.0);
+            }
+        "#;
+        let effect = RuntimeEffect::make_for_shader(src).unwrap();
+        let words = effect.compile_to_spirv().unwrap_or_else(|e| {
+            panic!("SPIR-V compile with uniforms failed: {}", e);
+        });
+        assert_eq!(words[0], 0x07230203);
     }
 
     #[test]
