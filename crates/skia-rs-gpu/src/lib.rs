@@ -49,7 +49,9 @@ pub mod vulkan_backend;
 #[cfg(feature = "opengl")]
 pub mod opengl_backend;
 
-#[cfg(feature = "metal")]
+// The metal crate only compiles on Apple targets, so gate the backend
+// module on both the feature and the target family.
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
 pub mod metal_backend;
 
 pub use atlas::*;
@@ -76,5 +78,5 @@ pub use vulkan_backend::*;
 #[cfg(feature = "opengl")]
 pub use opengl_backend::*;
 
-#[cfg(feature = "metal")]
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
 pub use metal_backend::*;

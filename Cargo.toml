@@ -71,7 +71,11 @@ jpeg-decoder = "0.3"
 jpeg-encoder = "0.6"
 gif = "0.13"
 webp = "0.3"
-ravif = "0.11"
+# ravif: default features pull rav1e with nasm-requiring asm optimisations.
+# Disable them so --all-features builds without a system assembler. The
+# asm path is a performance upgrade, not a functional one — consumers that
+# want it can re-enable via `ravif = { workspace = true, features = ["asm"] }`.
+ravif = { version = "0.11", default-features = false, features = ["threading"] }
 avif-decode = "1.0"
 rawloader = "0.37"
 
