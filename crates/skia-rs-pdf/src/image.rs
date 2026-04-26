@@ -6,7 +6,6 @@
 //! - Image masks and soft masks
 //! - Color space handling
 
-use skia_rs_core::{Color, Scalar};
 use std::io::Write;
 
 /// Image color space.
@@ -319,11 +318,18 @@ impl PdfImageManager {
     }
 
     /// Add an RGBA image (returns image index and mask index).
+    ///
+    /// The returned image has its [`PdfImage::soft_mask_id`] populated with
+    /// the mask's manager *index*. [`crate::PdfDocument::write_to`] resolves
+    /// this index to the mask's final object id when serialising, so
+    /// callers don't need to patch anything up post-hoc.
     pub fn add_rgba(&mut self, width: u32, height: u32, data: &[u8]) -> (usize, usize) {
-        let (image, mask) = PdfImage::from_rgba(width, height, data);
+        let (mut image, mask) = PdfImage::from_rgba(width, height, data);
         let mask_idx = self.images.len();
         self.images.push(mask);
         let image_idx = self.images.len();
+        // Store the mask *index* here; the writer translates to object id.
+        image.soft_mask_id = Some(mask_idx as u32);
         self.images.push(image);
         (image_idx, mask_idx)
     }
@@ -415,5 +421,21 @@ mod tests {
         assert_eq!(PdfColorSpace::DeviceGray.components(), 1);
         assert_eq!(PdfColorSpace::DeviceRGB.components(), 3);
         assert_eq!(PdfColorSpace::DeviceCMYK.components(), 4);
+    }
+
+    #[test]
+    fn test_add_rgba_links_soft_mask_index() {
+        let mut m = PdfImageManager::new();
+        let data = vec![0u8; 4 * 4 * 4];
+        let (image_idx, mask_idx) = m.add_rgba(4, 4, &data);
+
+        // The image stores the mask's *index* in soft_mask_id so that the
+        // writer can translate it to the emitted object id.
+        let image = m.get(image_idx).unwrap();
+        assert_eq!(image.soft_mask_id, Some(mask_idx as u32));
+        // Mask is a mask with gray colorspace.
+        let mask = m.get(mask_idx).unwrap();
+        assert!(mask.is_mask);
+        assert_eq!(mask.color_space, PdfColorSpace::DeviceGray);
     }
 }

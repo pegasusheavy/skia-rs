@@ -5,6 +5,95 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2026-04-25
+
+Phase 6 complete: audited and completed the remaining six crates
+(text, codec, ffi, svg, pdf, gpu). 80 gaps across six GAPS.md files;
+all addressed with explicit resolution or documented deferrals.
+
+### Added (skia-rs-text)
+- Real Font::metrics from hhea/OS/2/post tables (replaced hardcoded approximations)
+- Paragraph::layout routes through functional rustybuzz Shaper (was ad-hoc glyph mapping)
+- Per-span style preservation via LineFragment
+- Real glyph intercepts with de Casteljau flattening
+- Color font table parsing (COLR v0/v1 layers, CBDT/CBLC/sbix/bdat, SVG-in-OpenType bytes, palette access)
+- FontMgr::make_from_data, make_from_file, character-coverage matching
+- GlyphRun bounds from real advances
+
+### Added (skia-rs-codec)
+- Image::read_pixels format conversion via skia_rs_core::convert_pixels
+- Image::make_with_filter applies real ImageFilter from skia-rs-paint
+- GpuImageBackend trait defining upload/read_back/release contract
+- EncodedImageGenerator caches decoded image and reports real info
+- SamplingOptions::{Nearest, Linear} and Image::make_scaled_with bilinear
+- Fixed WebP RGB→RGBA decode bug (surfaced by new round-trip tests)
+
+### Added (skia-rs-ffi)
+- Panic catching wraps every exported sk_* function (soundness fix)
+- Tag-validated RefCounted<T> rejects untagged pointers
+- sk_init(major, minor) + sk_is_initialized() for runtime ABI check
+- Expanded API: sk_canvas_t, sk_image_t, sk_typeface_t/sk_font_t,
+  sk_shader_t, sk_colorfilter_t, sk_maskfilter_t, sk_imagefilter_t,
+  gradient constructors, blur/saturation/matrix filters, image I/O,
+  PNG encode, surface read_pixels, path iteration, matrix helpers
+- cbindgen-driven include/skia_rs.h header and examples/draw_rect.c
+
+### Added (skia-rs-svg)
+- <text> element renders real glyph outlines via skia-rs-text
+- Gradient url(#id) references resolved through Defs symbol table
+- Gradient <stop> parsing from attrs or style; spread + transform
+- CSS Stylesheet applied during render tree-walk
+- Replaced hand-rolled XML parser with roxmltree (entities, CDATA,
+  namespaces, text content all fixed)
+- <image> data: base64 decode via skia-rs-codec
+- <clipPath> dispatch via canvas.clip_path
+- Extended color parsing (3/4/6/8-digit hex, rgb/a, hsl/a, ~140 CSS3 names)
+- Extended length units (px/pt/pc/em/rem/ex/ch/vw/vh/vmin/vmax/cm/mm/in/%)
+
+### Added (skia-rs-pdf)
+- PdfDocument wires PdfFontManager, PdfImageManager, TransparencyManager
+  so the Resources dict actually contains /Font, /XObject, /ExtGState
+- Per-page used_fonts/used_images/used_ext_gstates tracking
+- Real TrueType metrics from ttf_parser::Face (ascender/descender/
+  italic_angle/cap_height/x_height/bbox/per-code widths)
+- FNV-1a subset-prefix tag on BaseFont; FontFile2 stream emission
+- PDF/A validation wired into write_to with XMP metadata + OutputIntent
+- ExtGState registration for alpha < 1 or non-Normal blend mode
+- set_alpha/set_blend_mode/draw_image/draw_text_with_font methods
+- Conic flattening via skia_rs_path::flatten::flatten_conic_adaptive
+- ToUnicode CMap from recorded used_chars (surrogate-pair aware)
+
+### Added (skia-rs-gpu)
+- WgpuExecutor + WgpuPipelineCache consume CommandBuffer + RenderPipelineDescriptor
+- Paint→pipeline bridge (paint_bridge.rs): PipelineSelection, BlendMode→BlendState, uniform packing
+- Ear-clipping triangulator replaces fan (handles concave correctly)
+- Adaptive conic flattening in tessellation
+- WgpuStencilSurface with full depth/stencil translation (wires stencil-cover algorithm)
+- Naga WGSL validation in shader compilation
+- Felzenszwalb-Huttenlocher O(n) SDF distance transform
+- Atlas compact() + free()
+- MSAA resolve path in read_pixels
+
+### Fixed
+- All six crates: GAPS.md annotated with per-gap Status lines
+
+### Test counts
+- skia-rs-text: 19 → 57
+- skia-rs-codec: 26 → 47
+- skia-rs-ffi: 13 → 28
+- skia-rs-svg: 21 → 39
+- skia-rs-pdf: 27 → 62
+- skia-rs-gpu: 77 → 104 (default), 78 → 115 (wgpu)
+- **Workspace total: 695 → 718+ tests, 0 failures**
+
+### Deferred (documented in per-crate GAPS.md)
+- Text: COLR v1 gradients/transforms, SVG-in-OpenType rasterization
+- Codec: RAW demosaic (needs color-pipeline library), ICC profile chain
+- FFI: full API surface expansion (text blobs, codec streaming, runtime effects, matrix44, picture, GPU FFI, SVG/PDF FFI)
+- SVG: CIE-lab/oklch color spaces (upstream color-management)
+- PDF: byte-level TTF subsetting, external veraPDF validation in CI
+- GPU: OpenGL/Vulkan/Metal executors (wgpu path is fully functional), real-GPU CI setup
+
 ## [0.2.4] - 2026-04-25
 
 ### Added (skia-rs-canvas)

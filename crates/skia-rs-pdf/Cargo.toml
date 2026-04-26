@@ -22,6 +22,7 @@ skia-rs-text = { workspace = true }
 pdf-writer = { workspace = true }
 flate2 = { workspace = true }
 thiserror = { workspace = true }
+ttf-parser = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
