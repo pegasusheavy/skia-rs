@@ -92,6 +92,7 @@ bytemuck = { version = "1.18", features = ["derive"] }
 smallvec = "1.13"
 arrayvec = "0.7"
 parking_lot = "0.12"
+base64 = "0.22"
 
 # WASM support
 wasm-bindgen = "0.2"

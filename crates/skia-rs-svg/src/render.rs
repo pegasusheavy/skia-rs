@@ -8,6 +8,8 @@
 
 use crate::css::apply_stylesheet;
 use crate::dom::*;
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use skia_rs_canvas::{Canvas, ClipOp, Surface};
 use skia_rs_codec::decode_image;
 use skia_rs_core::{Color, Color4f, Matrix, Point, Rect, Scalar};
@@ -426,32 +428,9 @@ fn decode_image_href(href: &str) -> Option<Vec<u8>> {
 /// Decode a base64-encoded string (standard alphabet, ignores whitespace
 /// and padding).
 fn decode_base64(input: &str) -> Option<Vec<u8>> {
-    let mut output = Vec::with_capacity(input.len() * 3 / 4);
-    let mut buffer: u32 = 0;
-    let mut bits: u32 = 0;
-
-    for byte in input.bytes() {
-        let value: u32 = match byte {
-            b'A'..=b'Z' => (byte - b'A') as u32,
-            b'a'..=b'z' => (byte - b'a' + 26) as u32,
-            b'0'..=b'9' => (byte - b'0' + 52) as u32,
-            b'+' => 62,
-            b'/' => 63,
-            b'=' => continue, // Skip padding.
-            b' ' | b'\t' | b'\n' | b'\r' => continue,
-            _ => return None, // Invalid byte in base64.
-        };
-
-        buffer = (buffer << 6) | value;
-        bits += 6;
-
-        if bits >= 8 {
-            bits -= 8;
-            output.push(((buffer >> bits) & 0xff) as u8);
-        }
-    }
-
-    Some(output)
+    // Remove all whitespace (the original hand-rolled decoder tolerated embedded whitespace).
+    let cleaned: String = input.chars().filter(|c| !c.is_whitespace()).collect();
+    STANDARD.decode(&cleaned).ok()
 }
 
 /// Create a Paint from an SVG paint specification, resolving gradient

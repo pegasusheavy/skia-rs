@@ -275,97 +275,105 @@ impl Font {
     ///
     /// Falls back to the previous hardcoded multiples of `size` only for the
     /// dataless default typeface, which has no font tables to read.
+    ///
+    /// The core metrics (ascender, descender, line_gap, cap/x heights) are
+    /// retrieved from the typeface's cached parsed data to avoid re-parsing
+    /// on every call. Additional values (underline, strikeout, glyph advances)
+    /// still require parsing the font once per metrics() call.
     pub fn metrics(&self) -> FontMetrics {
-        if let Some(data) = self.typeface.font_data() {
-            if let Ok(face) = ttf_parser::Face::parse(data, 0) {
-                let upem = face.units_per_em();
-                if upem > 0 {
-                    let scale = self.size / upem as Scalar;
+        if let Some(raw) = self.typeface.raw_metrics() {
+            let upem = raw.units_per_em;
+            if upem > 0 {
+                let scale = self.size / upem as Scalar;
 
-                    // Font-space ascender is positive (units above baseline).
-                    // Screen-space ascent is negative (y grows downward).
-                    let ascent = -(face.ascender() as Scalar) * scale;
-                    // Font-space descender is negative (units below baseline).
-                    // Screen-space descent is positive.
-                    let descent = -(face.descender() as Scalar) * scale;
-                    let leading = face.line_gap() as Scalar * scale;
+                // Font-space ascender is positive (units above baseline).
+                // Screen-space ascent is negative (y grows downward).
+                let ascent = -(raw.ascender as Scalar) * scale;
+                // Font-space descender is negative (units below baseline).
+                // Screen-space descent is positive.
+                let descent = -(raw.descender as Scalar) * scale;
+                let leading = raw.line_gap as Scalar * scale;
 
-                    // Cap and x heights — OS/2 v2+ only; fall back to a
-                    // fraction of ascent when missing.
-                    let cap_height = face
-                        .capital_height()
-                        .map(|v| -(v as Scalar) * scale)
-                        .unwrap_or(ascent * 0.875);
-                    let x_height = face
-                        .x_height()
-                        .map(|v| -(v as Scalar) * scale)
-                        .unwrap_or(ascent * 0.625);
+                // Cap and x heights — OS/2 v2+ only; fall back to a
+                // fraction of ascent when missing.
+                let cap_height = raw
+                    .cap_height
+                    .map(|v| -(v as Scalar) * scale)
+                    .unwrap_or(ascent * 0.875);
+                let x_height = raw
+                    .x_height
+                    .map(|v| -(v as Scalar) * scale)
+                    .unwrap_or(ascent * 0.625);
 
-                    // Underline from `post`. Font-space position is the
-                    // *center* of the underline, measured upward from the
-                    // baseline (usually negative). We want a screen-space
-                    // offset from the baseline (positive = below), so negate.
-                    let (underline_position, underline_thickness) = face
-                        .underline_metrics()
-                        .map(|lm| {
-                            (
-                                -(lm.position as Scalar) * scale,
-                                lm.thickness as Scalar * scale,
-                            )
-                        })
-                        .unwrap_or((0.1 * self.size, 0.05 * self.size));
+                // We still need to parse the Face once to get underline/strikeout
+                // metrics and glyph advances, which aren't in the cached metadata.
+                let data = self.typeface.font_data().expect("raw_metrics implies font_data");
+                let face = ttf_parser::Face::parse(data, 0).expect("raw_metrics implies valid font");
 
-                    // Strikeout from OS/2. Same convention as underline.
-                    let (strikeout_position, strikeout_thickness) = face
-                        .strikeout_metrics()
-                        .map(|lm| {
-                            (
-                                -(lm.position as Scalar) * scale,
-                                lm.thickness as Scalar * scale,
-                            )
-                        })
-                        .unwrap_or((-0.3 * self.size, 0.05 * self.size));
+                // Underline from `post`. Font-space position is the
+                // *center* of the underline, measured upward from the
+                // baseline (usually negative). We want a screen-space
+                // offset from the baseline (positive = below), so negate.
+                let (underline_position, underline_thickness) = face
+                    .underline_metrics()
+                    .map(|lm| {
+                        (
+                            -(lm.position as Scalar) * scale,
+                            lm.thickness as Scalar * scale,
+                        )
+                    })
+                    .unwrap_or((0.1 * self.size, 0.05 * self.size));
 
-                    // Visible bounds: match Skia's convention of including a
-                    // small margin beyond ascent/descent. A number of fonts
-                    // do not carry usWinAscent/Descent in a usable form from
-                    // ttf-parser, so we derive bottom/top from ascent/descent
-                    // with a 10 % cushion — matching Skia's fallback.
-                    let top = ascent * 1.125;
-                    let bottom = descent * 1.125;
+                // Strikeout from OS/2. Same convention as underline.
+                let (strikeout_position, strikeout_thickness) = face
+                    .strikeout_metrics()
+                    .map(|lm| {
+                        (
+                            -(lm.position as Scalar) * scale,
+                            lm.thickness as Scalar * scale,
+                        )
+                    })
+                    .unwrap_or((-0.3 * self.size, 0.05 * self.size));
 
-                    // Average / max char width: ttf-parser does not expose
-                    // xAvgCharWidth directly via a dedicated accessor, so use
-                    // a reasonable estimate from measured glyph advances.
-                    // `glyph_hor_advance` on gid 1 is a good-enough fallback;
-                    // prefer the measured advance of 'x' if present.
-                    let avg_char_width = face
-                        .glyph_index('x')
-                        .and_then(|g| face.glyph_hor_advance(g))
-                        .map(|a| a as Scalar * scale)
-                        .unwrap_or(0.5 * self.size);
-                    let max_char_width = face
-                        .glyph_index('M')
-                        .and_then(|g| face.glyph_hor_advance(g))
-                        .map(|a| a as Scalar * scale)
-                        .unwrap_or(self.size);
+                // Visible bounds: match Skia's convention of including a
+                // small margin beyond ascent/descent. A number of fonts
+                // do not carry usWinAscent/Descent in a usable form from
+                // ttf-parser, so we derive bottom/top from ascent/descent
+                // with a 10 % cushion — matching Skia's fallback.
+                let top = ascent * 1.125;
+                let bottom = descent * 1.125;
 
-                    return FontMetrics {
-                        ascent,
-                        descent,
-                        leading,
-                        top,
-                        bottom,
-                        avg_char_width,
-                        max_char_width,
-                        x_height,
-                        cap_height,
-                        underline_position,
-                        underline_thickness,
-                        strikeout_position,
-                        strikeout_thickness,
-                    };
-                }
+                // Average / max char width: ttf-parser does not expose
+                // xAvgCharWidth directly via a dedicated accessor, so use
+                // a reasonable estimate from measured glyph advances.
+                // `glyph_hor_advance` on gid 1 is a good-enough fallback;
+                // prefer the measured advance of 'x' if present.
+                let avg_char_width = face
+                    .glyph_index('x')
+                    .and_then(|g| face.glyph_hor_advance(g))
+                    .map(|a| a as Scalar * scale)
+                    .unwrap_or(0.5 * self.size);
+                let max_char_width = face
+                    .glyph_index('M')
+                    .and_then(|g| face.glyph_hor_advance(g))
+                    .map(|a| a as Scalar * scale)
+                    .unwrap_or(self.size);
+
+                return FontMetrics {
+                    ascent,
+                    descent,
+                    leading,
+                    top,
+                    bottom,
+                    avg_char_width,
+                    max_char_width,
+                    x_height,
+                    cap_height,
+                    underline_position,
+                    underline_thickness,
+                    strikeout_position,
+                    strikeout_thickness,
+                };
             }
         }
 

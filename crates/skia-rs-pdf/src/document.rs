@@ -8,6 +8,41 @@ use crate::transparency::TransparencyManager;
 use skia_rs_core::Scalar;
 use std::io::Write;
 
+/// Error type for PDF document operations.
+#[derive(Debug)]
+pub enum PdfError {
+    /// I/O error during write.
+    Io(std::io::Error),
+    /// PDF/A validation failure.
+    Validation(Vec<String>),
+}
+
+impl std::fmt::Display for PdfError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PdfError::Io(e) => write!(f, "I/O error: {}", e),
+            PdfError::Validation(msgs) => {
+                write!(f, "PDF/A validation failed: {}", msgs.join(", "))
+            }
+        }
+    }
+}
+
+impl std::error::Error for PdfError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            PdfError::Io(e) => Some(e),
+            PdfError::Validation(_) => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for PdfError {
+    fn from(e: std::io::Error) -> Self {
+        PdfError::Io(e)
+    }
+}
+
 /// PDF document metadata.
 #[derive(Debug, Clone, Default)]
 pub struct PdfMetadata {
@@ -212,26 +247,21 @@ impl PdfDocument {
     /// 7. The xref table and trailer.
     ///
     /// Validates PDF/A conformance (when configured) before writing and
-    /// returns an [`std::io::Error`] of kind `Other` if validation fails.
-    pub fn write_to<W: Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
+    /// returns a [`PdfError::Validation`] if validation fails. I/O errors
+    /// are returned as [`PdfError::Io`].
+    pub fn write_to<W: Write>(&mut self, writer: &mut W) -> Result<(), PdfError> {
         // Sync PDF/A document model with current state before validating.
         self.sync_pdfa_model();
 
         if let Err(errors) = self.validate_pdfa() {
-            let msg = errors
-                .iter()
-                .map(|e| format!("{}", e))
-                .collect::<Vec<_>>()
-                .join("; ");
-            return Err(std::io::Error::other(format!(
-                "PDF/A validation failed: {}",
-                msg
-            )));
+            let msgs = errors.iter().map(|e| format!("{}", e)).collect();
+            return Err(PdfError::Validation(msgs));
         }
 
         // Now do the actual emission using a dry-run offset tracker.
         let mut ctx = WriteCtx::new(self);
-        ctx.emit(writer)
+        ctx.emit(writer)?;
+        Ok(())
     }
 
     /// Update the PDF/A validation model from the document's current
@@ -316,10 +346,12 @@ impl PdfDocument {
     }
 
     /// Generate PDF bytes.
-    pub fn to_bytes(&mut self) -> Vec<u8> {
+    ///
+    /// Returns an error if PDF/A validation fails or I/O errors occur.
+    pub fn to_bytes(&mut self) -> Result<Vec<u8>, PdfError> {
         let mut buffer = Vec::new();
-        self.write_to(&mut buffer).unwrap();
-        buffer
+        self.write_to(&mut buffer)?;
+        Ok(buffer)
     }
 }
 
@@ -617,7 +649,9 @@ impl<'a> WriteCtx<'a> {
                 })
                 .to_xmp();
 
-            let metadata_id = self.metadata_id.unwrap();
+            let metadata_id = self
+                .metadata_id
+                .expect("metadata_id must be set when PDF/A is enabled");
             self.offsets.push((metadata_id, self.offset));
             let md = format!(
                 "{} 0 obj\n<< /Type /Metadata /Subtype /XML /Length {} >>\nstream\n{}\nendstream\nendobj\n",
@@ -627,8 +661,12 @@ impl<'a> WriteCtx<'a> {
             );
             self.write_bytes(writer, md.as_bytes())?;
 
-            let intent_id = self.output_intent_id.unwrap();
-            let icc_id = self.icc_profile_id.unwrap();
+            let intent_id = self
+                .output_intent_id
+                .expect("output_intent_id must be set when PDF/A is enabled");
+            let icc_id = self
+                .icc_profile_id
+                .expect("icc_profile_id must be set when PDF/A is enabled");
             self.offsets.push((intent_id, self.offset));
             let oi = format!(
                 "{} 0 obj\n<< /Type /OutputIntent /S /GTS_PDFA1 /OutputConditionIdentifier (sRGB IEC61966-2.1) /RegistryName (http://www.color.org) /Info (sRGB IEC61966-2.1) /DestOutputProfile {} 0 R >>\nendobj\n",
@@ -832,7 +870,7 @@ mod tests {
     #[test]
     fn test_pdf_document_empty() {
         let mut doc = PdfDocument::new();
-        let bytes = doc.to_bytes();
+        let bytes = doc.to_bytes().unwrap();
         assert!(bytes.starts_with(b"%PDF-1.4"));
     }
 
@@ -843,7 +881,7 @@ mod tests {
         let page = canvas.finish();
         doc.end_page(page);
 
-        let bytes = doc.to_bytes();
+        let bytes = doc.to_bytes().unwrap();
         assert!(bytes.starts_with(b"%PDF-1.4"));
         assert_eq!(doc.page_count(), 1);
     }
@@ -858,7 +896,7 @@ mod tests {
         let page = canvas.finish();
         doc.end_page(page);
 
-        let bytes = doc.to_bytes();
+        let bytes = doc.to_bytes().unwrap();
         let content = String::from_utf8_lossy(&bytes);
         assert!(content.contains("/Title (Test Document)"));
     }
@@ -879,7 +917,7 @@ mod tests {
             doc.end_page(page);
         }
 
-        let bytes = doc.to_bytes();
+        let bytes = doc.to_bytes().unwrap();
         let s = String::from_utf8_lossy(&bytes);
         // The page's /Resources dict must reference the font.
         assert!(s.contains("/Font << /F1"), "missing /Font in Resources: {}", s);
@@ -910,7 +948,7 @@ mod tests {
             doc.end_page(page);
         }
 
-        let bytes = doc.to_bytes();
+        let bytes = doc.to_bytes().unwrap();
         let s = String::from_utf8_lossy(&bytes);
         assert!(s.contains("/XObject << /Im1"), "missing /XObject in Resources: {}", s);
         assert!(s.contains("/ExtGState << /GS1"), "missing /ExtGState: {}", s);
@@ -928,7 +966,7 @@ mod tests {
         let page = canvas.finish();
         doc.end_page(page);
 
-        let bytes = doc.to_bytes();
+        let bytes = doc.to_bytes().unwrap();
         let s = String::from_utf8_lossy(&bytes);
 
         // Header bumped to 1.7 for PDF/A-2.
@@ -961,8 +999,12 @@ mod tests {
 
         let mut buf = Vec::new();
         let err = doc.write_to(&mut buf).expect_err("A1b with transparency must fail");
-        assert_eq!(err.kind(), std::io::ErrorKind::Other);
-        let msg = format!("{}", err);
-        assert!(msg.contains("Transparency"), "unexpected error: {}", msg);
+        match err {
+            PdfError::Validation(msgs) => {
+                let combined = msgs.join(" ");
+                assert!(combined.contains("Transparency"), "unexpected error: {}", combined);
+            }
+            PdfError::Io(e) => panic!("expected validation error, got I/O error: {}", e),
+        }
     }
 }

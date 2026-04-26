@@ -193,7 +193,9 @@ impl CssSelector {
         }
 
         if selectors.len() == 1 {
-            selectors.pop().unwrap()
+            selectors
+                .pop()
+                .expect("selectors.len() == 1 guarantees element")
         } else if selectors.is_empty() {
             CssSelector::Universal
         } else {
@@ -481,165 +483,12 @@ fn parse_css_paint(s: &str) -> Option<SvgPaint> {
 }
 
 fn parse_css_color(s: &str) -> Option<Color> {
-    let s = s.trim();
-
-    if s.starts_with('#') {
-        let hex = &s[1..];
-        let (r, g, b, a) = if hex.len() == 3 {
-            let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
-            let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
-            let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;
-            (r, g, b, 255)
-        } else if hex.len() == 4 {
-            let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
-            let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
-            let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;
-            let a = u8::from_str_radix(&hex[3..4], 16).ok()? * 17;
-            (r, g, b, a)
-        } else if hex.len() == 6 {
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-            (r, g, b, 255)
-        } else if hex.len() == 8 {
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-            let a = u8::from_str_radix(&hex[6..8], 16).ok()?;
-            (r, g, b, a)
-        } else {
-            return None;
-        };
-        Some(Color::from_argb(a, r, g, b))
-    } else if s.starts_with("rgb(") {
-        let inner = s[4..].trim_end_matches(')');
-        let parts: Vec<u8> = inner
-            .split(',')
-            .filter_map(|p| p.trim().parse().ok())
-            .collect();
-        if parts.len() == 3 {
-            Some(Color::from_rgb(parts[0], parts[1], parts[2]))
-        } else {
-            None
-        }
-    } else if s.starts_with("rgba(") {
-        let inner = s[5..].trim_end_matches(')');
-        let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
-        if parts.len() == 4 {
-            let r: u8 = parts[0].parse().ok()?;
-            let g: u8 = parts[1].parse().ok()?;
-            let b: u8 = parts[2].parse().ok()?;
-            let a: f32 = parts[3].parse().ok()?;
-            Some(Color::from_argb((a * 255.0) as u8, r, g, b))
-        } else {
-            None
-        }
-    } else if s.starts_with("hsl(") || s.starts_with("hsla(") {
-        // Parse HSL(A) colors
-        let is_hsla = s.starts_with("hsla(");
-        let inner = if is_hsla {
-            s[5..].trim_end_matches(')')
-        } else {
-            s[4..].trim_end_matches(')')
-        };
-        let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
-        if parts.len() >= 3 {
-            let h: f32 = parts[0].trim_end_matches("deg").parse().ok()?;
-            let s_val: f32 = parts[1].trim_end_matches('%').parse::<f32>().ok()? / 100.0;
-            let l: f32 = parts[2].trim_end_matches('%').parse::<f32>().ok()? / 100.0;
-            let a: f32 = if is_hsla && parts.len() >= 4 {
-                parts[3].parse().ok()?
-            } else {
-                1.0
-            };
-
-            let (r, g, b) = hsl_to_rgb(h, s_val, l);
-            Some(Color::from_argb((a * 255.0) as u8, r, g, b))
-        } else {
-            None
-        }
-    } else {
-        // Named colors (extended set)
-        match s.to_lowercase().as_str() {
-            "black" => Some(Color::BLACK),
-            "white" => Some(Color::WHITE),
-            "red" => Some(Color::from_rgb(255, 0, 0)),
-            "green" => Some(Color::from_rgb(0, 128, 0)),
-            "blue" => Some(Color::from_rgb(0, 0, 255)),
-            "yellow" => Some(Color::from_rgb(255, 255, 0)),
-            "cyan" | "aqua" => Some(Color::from_rgb(0, 255, 255)),
-            "magenta" | "fuchsia" => Some(Color::from_rgb(255, 0, 255)),
-            "gray" | "grey" => Some(Color::from_rgb(128, 128, 128)),
-            "silver" => Some(Color::from_rgb(192, 192, 192)),
-            "maroon" => Some(Color::from_rgb(128, 0, 0)),
-            "olive" => Some(Color::from_rgb(128, 128, 0)),
-            "lime" => Some(Color::from_rgb(0, 255, 0)),
-            "teal" => Some(Color::from_rgb(0, 128, 128)),
-            "navy" => Some(Color::from_rgb(0, 0, 128)),
-            "purple" => Some(Color::from_rgb(128, 0, 128)),
-            "orange" => Some(Color::from_rgb(255, 165, 0)),
-            "pink" => Some(Color::from_rgb(255, 192, 203)),
-            "brown" => Some(Color::from_rgb(165, 42, 42)),
-            "coral" => Some(Color::from_rgb(255, 127, 80)),
-            "crimson" => Some(Color::from_rgb(220, 20, 60)),
-            "gold" => Some(Color::from_rgb(255, 215, 0)),
-            "indigo" => Some(Color::from_rgb(75, 0, 130)),
-            "ivory" => Some(Color::from_rgb(255, 255, 240)),
-            "khaki" => Some(Color::from_rgb(240, 230, 140)),
-            "lavender" => Some(Color::from_rgb(230, 230, 250)),
-            "lightblue" => Some(Color::from_rgb(173, 216, 230)),
-            "lightgreen" => Some(Color::from_rgb(144, 238, 144)),
-            "lightgray" | "lightgrey" => Some(Color::from_rgb(211, 211, 211)),
-            "darkblue" => Some(Color::from_rgb(0, 0, 139)),
-            "darkgreen" => Some(Color::from_rgb(0, 100, 0)),
-            "darkred" => Some(Color::from_rgb(139, 0, 0)),
-            "darkgray" | "darkgrey" => Some(Color::from_rgb(169, 169, 169)),
-            "transparent" => Some(Color::TRANSPARENT),
-            "currentcolor" => None, // Would need context
-            _ => None,
-        }
+    // "currentcolor" needs context from the inheritance chain, which
+    // Color::from_css doesn't have. Return None so the caller can handle it.
+    if s.trim().eq_ignore_ascii_case("currentcolor") {
+        return None;
     }
-}
-
-fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
-    let h = h % 360.0 / 360.0;
-
-    if s == 0.0 {
-        let v = (l * 255.0) as u8;
-        return (v, v, v);
-    }
-
-    let q = if l < 0.5 {
-        l * (1.0 + s)
-    } else {
-        l + s - l * s
-    };
-    let p = 2.0 * l - q;
-
-    let r = hue_to_rgb(p, q, h + 1.0 / 3.0);
-    let g = hue_to_rgb(p, q, h);
-    let b = hue_to_rgb(p, q, h - 1.0 / 3.0);
-
-    ((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
-}
-
-fn hue_to_rgb(p: f32, q: f32, mut t: f32) -> f32 {
-    if t < 0.0 {
-        t += 1.0;
-    }
-    if t > 1.0 {
-        t -= 1.0;
-    }
-    if t < 1.0 / 6.0 {
-        return p + (q - p) * 6.0 * t;
-    }
-    if t < 1.0 / 2.0 {
-        return q;
-    }
-    if t < 2.0 / 3.0 {
-        return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
-    }
-    p
+    Color::from_css(s)
 }
 
 fn parse_css_length(s: &str) -> Scalar {

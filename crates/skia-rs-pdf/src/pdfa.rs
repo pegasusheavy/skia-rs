@@ -752,7 +752,9 @@ impl PdfADocument {
             instance_id: Some(inst_id),
         });
 
-        self.xmp_metadata.as_mut().unwrap()
+        self.xmp_metadata
+            .as_mut()
+            .expect("xmp_metadata was just set above")
     }
 
     /// Set sRGB output intent.
