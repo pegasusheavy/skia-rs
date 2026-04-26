@@ -1083,6 +1083,10 @@ pub unsafe extern "C" fn sk_path_iter_next(
             }
         };
 
+        let consume = verb.point_count();
+        if it.point_index + consume > it.points.len() {
+            return SK_PATH_VERB_DONE;
+        }
         match verb {
             Verb::Move => {
                 write(0, it.points[it.point_index]);

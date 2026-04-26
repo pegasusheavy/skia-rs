@@ -246,6 +246,8 @@ impl fmt::Display for ShaderError {
     }
 }
 
+impl std::error::Error for ShaderError {}
+
 /// A shader compilation/validation warning
 #[derive(Debug, Clone)]
 pub struct ShaderWarning {
