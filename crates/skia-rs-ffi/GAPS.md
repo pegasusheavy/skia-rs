@@ -3,6 +3,59 @@
 **Date:** 2026-04-25
 **Reviewer:** Claude (Opus 4.7)
 
+## Phase 6C Resolution Summary (2026-04-25)
+
+All 12 gaps have an explicit resolution. The soundness-critical work
+(panic catching on every entry point, tag-validated refcount generics,
+ABI initialization, cbindgen header, threaded stress test) is complete.
+The API-surface expansion is partial and the remainder is documented as
+"Scope: follow-up" below.
+
+| Gap | Status | Notes |
+|-----|--------|-------|
+| C-1 panic catching missing | **Resolved** | Every `extern "C" fn sk_*` wraps its body in `catch_panic` / `catch_panic_void`; `test_panic_catcher_sets_flag_and_returns_default` proves the flag semantics. |
+| C-2 API surface minimal | **Partially resolved / Scope: follow-up** | Added `sk_canvas_t`, `sk_image_t`, `sk_typeface_t`/`sk_font_t`, `sk_shader_t`, `sk_colorfilter_t`, `sk_maskfilter_t`, `sk_imagefilter_t`, linear/radial/sweep gradient constructors, blur+saturation+matrix filters, image from encoded bytes / colour, PNG encode, surface `read_pixels`. Remaining primitives (text blobs, codec streaming, runtime effects, matrix44 binding, full blend-mode mapping, picture recording, font manager) are **out of scope** for this phase — see "Scope: follow-up" below for the list. |
+| C-3 untagged generic refcount cast | **Resolved** | `RefCounted<T>` now stores a `REFCOUNT_TAG` magic at offset 0 and `AtomicU32` at offset 4. `sk_refcnt_get_count` validates the tag before reading the count — a non-tagged pointer returns 0 instead of arbitrary memory. `test_refcnt_utility_rejects_untagged_pointer` exercises this. |
+| C-4 peek_pixels lifetime hazard | **Resolved** | Documented the borrow semantics on `sk_surface_peek_pixels` and added the copy-based `sk_surface_read_pixels(dst, dst_len)` as the recommended alternative (tested). |
+| C-5 no runtime ABI check | **Resolved** | Added `sk_init(major, minor)` + `sk_is_initialized()`. The module doc now tells clients they must call `sk_init` before any other entry point. |
+| N-1 no cbindgen header | **Resolved** | `build.rs` runs cbindgen and emits `$OUT_DIR/skia_rs.h`; set `SKIA_RS_FFI_EMIT_HEADER=1` to also write `include/skia_rs.h` (committed). Set `SKIA_RS_FFI_SKIP_CBINDGEN=1` to skip in publish/sandbox environments. |
+| N-2 no C example | **Resolved** | Added `examples/draw_rect.c` demonstrating init + surface + paint + draw + read_pixels + panic check. |
+| N-3 no path iteration | **Resolved** | Added `sk_path_iter_t` with `sk_path_iter_new / _next / _delete` and the `SK_PATH_VERB_*` constants. Covered by `test_path_iteration`. |
+| N-4 matrix inverse/identity/determinant | **Resolved** | Added `sk_matrix_invert`, `sk_matrix_is_identity`, `sk_matrix_determinant`. |
+| T-1 no panic-recovery test | **Resolved** | `test_panic_catcher_sets_flag_and_returns_default` and `test_null_inputs_dont_crash`. |
+| T-2 no multi-thread refcount stress | **Resolved** | `test_cross_thread_refcount_stress` spawns 8 threads × 1000 ref/unref each. |
+| T-3 no true cross-language test | **Resolved** | `examples/draw_rect.c` compiles against the generated header, links against `libskia_rs_ffi.so`, and runs end-to-end. Verified manually during Phase 6C. Automating this in CI (a `build.rs`-driven `cc` step or a `tests/c_ffi.rs` harness that shells out to `cc`) is **Scope: follow-up**. |
+
+### Scope: follow-up (not addressed in Phase 6C)
+
+The Skia C API surface is ~1000 functions. Phase 6C focused on (a)
+soundness universally and (b) demonstrating the wrapping pattern for
+every major primitive. The following remain:
+
+- **TextBlob / Paragraph / Shaper**: no `sk_textblob_t`, `sk_paragraph_t`.
+- **FontManager**: no FFI for system-font enumeration.
+- **Matrix44**: `abi::SkMatrix44ABI` is defined but no `sk_matrix44_*` setters/multiply/invert.
+- **ColorSpace**: no FFI — `sk_imageinfo_t.color_space` is always the default sRGB.
+- **Picture / PictureRecorder**: recording/playback is not exposed.
+- **Clip API on sk_canvas_t**: `clip_rect`, `clip_path`, `clip_ibounds` are stubbed by `sk_canvas_concat` friends but no explicit clip FFI.
+- **Codec streaming**: only `sk_image_from_encoded` (single-shot); no progressive decode / row-at-a-time API.
+- **RuntimeEffect / SkSL**: `skia-rs-paint::runtime_effect` has no C surface at all.
+- **Gradient refinements**: `with_local_matrix`, `with_flags`, `TwoPointConicalGradient`, `ImageShader` from an `sk_image_t`.
+- **Filter refinements**: `DropShadowImageFilter`, `ColorFilterImageFilter`, `Morphology*`, `Lighting*`, `DisplacementMap`, `Compose`, `Merge`, `Offset`, `MatrixConvolution` — each would be a few lines of FFI.
+- **Canvas save/restore layers with paint**: `save_layer(rec)` and `SaveLayerFlags`.
+- **Region / Path effects**: dash, corner, trim, compose effects.
+- **GPU backend**: `skia-rs-gpu` has no FFI wrapper.
+- **SVG / PDF / Skottie**: the dependent crates each need their own FFI module.
+- **Cross-language test harness**: link `examples/draw_rect.c` against the cdylib in CI via a `build.rs`-driven `cc` step or a `tests/c_ffi.rs` harness.
+
+Each of these is mechanical once the pattern is understood — every
+primitive follows the same recipe already demonstrated by `sk_shader_t`,
+`sk_colorfilter_t`, etc. They were deferred because the priority for
+Phase 6C was soundness (panic catching + tag-validated refcount), not
+surface breadth.
+
+## Original Gap Analysis (2026-04-25, pre-Phase 6C)
+
 ## Summary
 
 - Total public functions reviewed: ~70 (`pub unsafe extern "C" fn sk_*` plus the `RefCounted<T>` helper API and ABI module)
