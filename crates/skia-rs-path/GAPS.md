@@ -5,13 +5,13 @@
 
 ## Summary
 
-**Phase 3 status: COMPLETE (with documented deferrals)**
+**Phase 3 status: COMPLETE**
 
 - Total public functions reviewed: 106
 - Total gaps found: 14
 - **Critical gaps resolved: 6/6** (GAP-C4, C5 resolved in P7A via geo crate booleans)
-- **Nice-to-have gaps resolved: 6/8** (GAP-N2, N3 deferred - control-polygon approximation works for typical use)
-- **Overall resolution: 12/14, 2 deferred**
+- **Nice-to-have gaps resolved: 8/8** (GAP-N2, N3 resolved in P7B via adaptive flattening)
+- **Overall resolution: 14/14, all resolved**
 
 ## Files Reviewed
 
@@ -199,32 +199,41 @@ control points. Control point bounds are an overestimate.
 
 ### GAP-N2: `Path::length()` uses control polygon approximation for curves
 
-**Status:** DEFERRED (control-polygon approximation works for typical use)
+**Status:** ✅ RESOLVED (P7B)
 
-**Location:** `src/path.rs:520-549`
-**Issue:** For Quad/Conic curves, length is approximated as
+**Location:** `src/path.rs:767-825`
+**Issue:** For Quad/Conic curves, length was approximated as
 `distance(start, ctrl) + distance(ctrl, end)` which is the control polygon length --
-always an overestimate. For Cubic, it uses
+always an overestimate. For Cubic, it used
 `distance(start, c1) + distance(c1, c2) + distance(c2, end)`. A more accurate
 approach would use adaptive subdivision or Gauss-Legendre quadrature.
 
-**Estimated effort:** 2-3 days
-**Priority:** LOW - The approximation is serviceable for many use cases
+**Resolution:** Now uses `flatten_quad_adaptive`, `flatten_cubic_adaptive`, and
+`flatten_conic_adaptive` from `flatten.rs` with a tolerance of 0.25 units. Each
+curve is subdivided adaptively until the chord-midpoint deviation is below tolerance,
+then the arc length is computed by summing the line segment lengths. For a
+quarter-circle conic (radius 1, weight sqrt(2)/2), the computed length is within
+0.05 of π/2. For a straight-line cubic (all control points collinear), the computed
+length matches the chord length rather than the 3x-overestimate control polygon length.
 
 ---
 
 ### GAP-N3: `Path::contains()` uses fixed-step curve linearization
 
-**Status:** DEFERRED (fixed-step linearization works for typical use)
+**Status:** ✅ RESOLVED (P7B)
 
-**Location:** `src/path.rs:445-500`
-**Issue:** Conic containment check (lines 461-476) ignores the weight parameter,
-treating conics as quadratic beziers. The approximation uses 8 steps for quads/conics
+**Location:** `src/path.rs:559-643`
+**Issue:** Conic containment check (lines 461-476 in old version) ignored the weight parameter,
+treating conics as quadratic beziers. The approximation used 8 steps for quads/conics
 and 12 for cubics regardless of curve complexity. Adaptive subdivision based on
 curvature would be more accurate.
 
-**Estimated effort:** 1-2 days
-**Priority:** LOW - Fixed-step approximation works for typical use cases
+**Resolution:** Now uses `flatten_quad_adaptive`, `flatten_cubic_adaptive`, and
+`flatten_conic_adaptive` from `flatten.rs` with a tolerance of 0.1 units. Each
+curve is subdivided adaptively, respecting the conic weight parameter, then the
+ray-crossing count is computed over the resulting polyline segments. Test case
+verifies that a point inside a quarter-circle conic (but outside the control
+triangle) is correctly contained, and a point outside the arc is correctly excluded.
 
 ---
 

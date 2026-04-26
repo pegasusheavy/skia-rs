@@ -557,6 +557,8 @@ impl Path {
 
     /// Check if a point is inside the path (using fill rule).
     pub fn contains(&self, point: Point) -> bool {
+        use crate::flatten::{flatten_cubic_adaptive, flatten_conic_adaptive, flatten_quad_adaptive};
+
         // Ray casting algorithm
         if !self.bounds().contains(point) {
             return false;
@@ -564,10 +566,15 @@ impl Path {
 
         let mut crossings = 0;
         let mut current = Point::zero();
+        let mut contour_start = Point::zero();
+        const TOL: Scalar = 0.1;
 
         for element in self.iter() {
             match element {
-                PathElement::Move(p) => current = p,
+                PathElement::Move(p) => {
+                    current = p;
+                    contour_start = p;
+                }
                 PathElement::Line(end) => {
                     if ray_crosses_segment(point, current, end) {
                         crossings += 1;
@@ -575,62 +582,47 @@ impl Path {
                     current = end;
                 }
                 PathElement::Quad(ctrl, end) => {
-                    // Approximate with lines
-                    for i in 1..=8 {
-                        let t = i as f32 / 8.0;
-                        let mt = 1.0 - t;
-                        let p = Point::new(
-                            mt * mt * current.x + 2.0 * mt * t * ctrl.x + t * t * end.x,
-                            mt * mt * current.y + 2.0 * mt * t * ctrl.y + t * t * end.y,
-                        );
-                        if ray_crosses_segment(point, current, p) {
+                    let mut pts = Vec::with_capacity(16);
+                    flatten_quad_adaptive(&mut pts, current, ctrl, end, TOL);
+                    let mut prev = current;
+                    for pt in &pts {
+                        if ray_crosses_segment(point, prev, *pt) {
                             crossings += 1;
                         }
-                        current = p;
+                        prev = *pt;
                     }
                     current = end;
                 }
-                PathElement::Conic(ctrl, end, _w) => {
-                    // Approximate with lines
-                    for i in 1..=8 {
-                        let t = i as f32 / 8.0;
-                        let mt = 1.0 - t;
-                        let p = Point::new(
-                            mt * mt * current.x + 2.0 * mt * t * ctrl.x + t * t * end.x,
-                            mt * mt * current.y + 2.0 * mt * t * ctrl.y + t * t * end.y,
-                        );
-                        if ray_crosses_segment(point, current, p) {
+                PathElement::Conic(ctrl, end, w) => {
+                    let mut pts = Vec::with_capacity(16);
+                    flatten_conic_adaptive(&mut pts, current, ctrl, end, w, TOL);
+                    let mut prev = current;
+                    for pt in &pts {
+                        if ray_crosses_segment(point, prev, *pt) {
                             crossings += 1;
                         }
-                        current = p;
+                        prev = *pt;
                     }
                     current = end;
                 }
                 PathElement::Cubic(c1, c2, end) => {
-                    // Approximate with lines
-                    for i in 1..=12 {
-                        let t = i as f32 / 12.0;
-                        let mt = 1.0 - t;
-                        let mt2 = mt * mt;
-                        let t2 = t * t;
-                        let p = Point::new(
-                            mt2 * mt * current.x
-                                + 3.0 * mt2 * t * c1.x
-                                + 3.0 * mt * t2 * c2.x
-                                + t2 * t * end.x,
-                            mt2 * mt * current.y
-                                + 3.0 * mt2 * t * c1.y
-                                + 3.0 * mt * t2 * c2.y
-                                + t2 * t * end.y,
-                        );
-                        if ray_crosses_segment(point, current, p) {
+                    let mut pts = Vec::with_capacity(16);
+                    flatten_cubic_adaptive(&mut pts, current, c1, c2, end, TOL);
+                    let mut prev = current;
+                    for pt in &pts {
+                        if ray_crosses_segment(point, prev, *pt) {
                             crossings += 1;
                         }
-                        current = p;
+                        prev = *pt;
                     }
                     current = end;
                 }
-                PathElement::Close => {}
+                PathElement::Close => {
+                    if ray_crosses_segment(point, current, contour_start) {
+                        crossings += 1;
+                    }
+                    current = contour_start;
+                }
             }
         }
 
@@ -765,30 +757,57 @@ impl Path {
 
     /// Get the total length of the path.
     pub fn length(&self) -> Scalar {
+        use crate::flatten::{flatten_cubic_adaptive, flatten_conic_adaptive, flatten_quad_adaptive};
+
         let mut total = 0.0;
         let mut current = Point::zero();
+        let mut contour_start = Point::zero();
+        const TOL: Scalar = 0.25;
 
         for element in self.iter() {
             match element {
-                PathElement::Move(p) => current = p,
+                PathElement::Move(p) => {
+                    current = p;
+                    contour_start = p;
+                }
                 PathElement::Line(end) => {
                     total += current.distance(&end);
                     current = end;
                 }
                 PathElement::Quad(ctrl, end) => {
-                    // Approximate
-                    total += current.distance(&ctrl) + ctrl.distance(&end);
+                    let mut pts = Vec::with_capacity(16);
+                    flatten_quad_adaptive(&mut pts, current, ctrl, end, TOL);
+                    let mut prev = current;
+                    for pt in &pts {
+                        total += prev.distance(pt);
+                        prev = *pt;
+                    }
                     current = end;
                 }
-                PathElement::Conic(ctrl, end, _) => {
-                    total += current.distance(&ctrl) + ctrl.distance(&end);
+                PathElement::Conic(ctrl, end, w) => {
+                    let mut pts = Vec::with_capacity(16);
+                    flatten_conic_adaptive(&mut pts, current, ctrl, end, w, TOL);
+                    let mut prev = current;
+                    for pt in &pts {
+                        total += prev.distance(pt);
+                        prev = *pt;
+                    }
                     current = end;
                 }
                 PathElement::Cubic(c1, c2, end) => {
-                    total += current.distance(&c1) + c1.distance(&c2) + c2.distance(&end);
+                    let mut pts = Vec::with_capacity(16);
+                    flatten_cubic_adaptive(&mut pts, current, c1, c2, end, TOL);
+                    let mut prev = current;
+                    for pt in &pts {
+                        total += prev.distance(pt);
+                        prev = *pt;
+                    }
                     current = end;
                 }
-                PathElement::Close => {}
+                PathElement::Close => {
+                    total += current.distance(&contour_start);
+                    current = contour_start;
+                }
             }
         }
 
@@ -977,5 +996,63 @@ mod tests {
         assert!((loose.right - tight.right).abs() < 1e-4);
         assert!((loose.top - tight.top).abs() < 1e-4);
         assert!((loose.bottom - tight.bottom).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_length_quarter_circle_close_to_pi_over_2() {
+        // Quarter-circle arc as a conic with weight sqrt(2)/2.
+        // Radius 1, circumference of full circle = 2π, quarter = π/2 ≈ 1.5708.
+        let mut builder = PathBuilder::new();
+        builder.move_to(1.0, 0.0);
+        builder.conic_to(1.0, 1.0, 0.0, 1.0, std::f32::consts::FRAC_1_SQRT_2);
+        let path = builder.build();
+        let len = path.length();
+        let expected = std::f32::consts::FRAC_PI_2;
+        assert!(
+            (len - expected).abs() < 0.05,
+            "expected ~π/2 = {}, got {}",
+            expected,
+            len
+        );
+    }
+
+    #[test]
+    fn test_length_tight_cubic_less_than_control_polygon() {
+        // Straight-line cubic: all 4 control points collinear. Length = chord length.
+        // Control polygon length = 3x chord length. Old impl would return 3x.
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.cubic_to(1.0, 0.0, 2.0, 0.0, 3.0, 0.0);
+        let path = builder.build();
+        let len = path.length();
+        assert!(
+            (len - 3.0).abs() < 0.1,
+            "expected 3.0, got {}",
+            len
+        );
+    }
+
+    #[test]
+    fn test_contains_conic_honors_weight() {
+        // A quarter-circle conic + closing lines forms a filled quarter-disk.
+        // A point inside the arc but outside the control triangle should still be contained.
+        let mut builder = PathBuilder::new();
+        builder.move_to(1.0, 0.0);
+        builder.conic_to(1.0, 1.0, 0.0, 1.0, std::f32::consts::FRAC_1_SQRT_2);
+        builder.line_to(0.0, 0.0);
+        builder.close();
+        let path = builder.build();
+
+        // Point at (0.7, 0.3) is inside the quarter-circle (r = sqrt(0.49 + 0.09) ≈ 0.76 < 1)
+        assert!(
+            path.contains(Point::new(0.7, 0.3)),
+            "point inside quarter-disk should be contained"
+        );
+
+        // Point at (0.9, 0.9) is outside the arc (r = sqrt(0.81 + 0.81) ≈ 1.27 > 1)
+        assert!(
+            !path.contains(Point::new(0.9, 0.9)),
+            "point outside quarter-disk should not be contained"
+        );
     }
 }
