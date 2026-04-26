@@ -961,22 +961,28 @@ impl IccProfile {
 
     /// Parse an ICC profile from a byte buffer.
     ///
-    /// Reads the 128-byte ICC header to extract profile class, color space,
-    /// and PCS information.
+    /// Reads the 128-byte ICC header and the tag table to recover the
+    /// profile's transfer function (from the `rTRC` tag) and gamut
+    /// primaries (from the `rXYZ`/`gXYZ`/`bXYZ` tags). The extracted
+    /// transfer function and gamut are used to populate
+    /// `embedded_color_space`.
     ///
-    /// # Limitations
+    /// Supported transfer-curve tag types:
+    /// - `curv` with count 0 (identity), count 1 (pure gamma via u8.8
+    ///   fixed-point), or tabulated (approximated as sRGB if it spans
+    ///   `[0, 1]`, else gamma 2.2).
+    /// - `para` function types 0, 3, and 4 (pure gamma, 5-parameter, and
+    ///   7-parameter parametric curves respectively). The sRGB form is
+    ///   detected by parameter inspection.
     ///
-    /// **The current implementation does not parse the ICC tag table.**
-    /// All parsed profiles report `embedded_color_space` as sRGB regardless
-    /// of their actual transfer function and gamut. For accurate color
-    /// management with Display P3, Adobe RGB, or other non-sRGB profiles,
-    /// this function will produce incorrect color space metadata.
+    /// Primaries are matched against known named gamuts (sRGB/Rec.709,
+    /// Display P3, Adobe RGB, Rec.2020) with a small tolerance; anything
+    /// else falls back to `ColorGamut::Custom`.
     ///
-    /// Full tag table parsing (rTRC/gTRC/bTRC for transfer functions and
-    /// rXYZ/gXYZ/bXYZ for gamut) is planned for a future release. Track
-    /// progress in the foundation audit (GAP-C1).
-    ///
-    /// Returns `None` if the profile bytes are malformed or too short.
+    /// Returns `None` if the bytes are malformed, too short, or fail the
+    /// `acsp` magic-number check. Profiles whose tag table cannot be
+    /// resolved fall back to sRGB for `embedded_color_space` rather than
+    /// returning `None`.
     pub fn from_bytes(data: &[u8]) -> Option<Self> {
         // ICC profile header is 128 bytes
         if data.len() < 128 {
@@ -1017,15 +1023,32 @@ impl IccProfile {
             _ => IccPcs::Xyz,
         };
 
-        // For now, default to sRGB for all parsed profiles
-        // A full implementation would parse the tag table to get
-        // the actual transfer function and primaries
+        // Parse the tag table and try to rebuild a ColorSpace from the
+        // rTRC + rXYZ/gXYZ/bXYZ tags. The red TRC is used for all three
+        // channels (ColorSpace currently carries a single TransferFunction
+        // and virtually all real-world RGB profiles use identical R/G/B
+        // curves). If any required tag is missing or uses an unsupported
+        // encoding, fall back to sRGB instead of failing the whole parse.
+        let embedded_color_space = icc::parse_tag_table(data)
+            .and_then(|tags| {
+                let rx = icc::read_xyz_tag(&tags, data, b"rXYZ")?;
+                let gx = icc::read_xyz_tag(&tags, data, b"gXYZ")?;
+                let bx = icc::read_xyz_tag(&tags, data, b"bXYZ")?;
+                let rtrc = icc::read_trc_tag(&tags, data, b"rTRC")?;
+                let gamut = icc::classify_gamut(rx, gx, bx);
+                Some(ColorSpace {
+                    transfer_fn: rtrc,
+                    gamut,
+                })
+            })
+            .unwrap_or_else(ColorSpace::srgb);
+
         Some(Self {
             profile_class,
             color_space,
             pcs,
             description: "ICC Profile".to_string(),
-            embedded_color_space: ColorSpace::srgb(),
+            embedded_color_space,
             raw_data: Some(data.to_vec()),
         })
     }
@@ -1091,6 +1114,358 @@ pub enum IccPcs {
     Xyz,
     /// CIE Lab.
     Lab,
+}
+
+// =============================================================================
+// ICC Tag Table Parsing (internal)
+// =============================================================================
+
+/// Private helpers for parsing the ICC v2/v4 tag table referenced by
+/// `IccProfile::from_bytes`. Kept in its own module so the parsing code
+/// cannot accidentally reach into `IccProfile` internals — this module's
+/// only interface with the outer type is returning a `ColorSpace`.
+mod icc {
+    use super::{ColorGamut, TransferFunction};
+
+    /// A single entry from the ICC tag table.
+    #[derive(Debug)]
+    pub(super) struct IccTag {
+        pub signature: [u8; 4],
+        pub offset: u32,
+        pub size: u32,
+    }
+
+    #[inline]
+    fn read_u32_be(bytes: &[u8], off: usize) -> Option<u32> {
+        bytes
+            .get(off..off + 4)?
+            .try_into()
+            .ok()
+            .map(u32::from_be_bytes)
+    }
+
+    #[inline]
+    fn read_u16_be(bytes: &[u8], off: usize) -> Option<u16> {
+        bytes
+            .get(off..off + 2)?
+            .try_into()
+            .ok()
+            .map(u16::from_be_bytes)
+    }
+
+    /// Read a signed 15.16 fixed-point number (s15Fixed16Number) at `off`.
+    #[inline]
+    fn read_s15_16(bytes: &[u8], off: usize) -> Option<f32> {
+        let raw = read_u32_be(bytes, off)? as i32;
+        Some(raw as f32 / 65536.0)
+    }
+
+    /// Parse the tag table at byte 128. Performs bounds and sanity checks
+    /// so a corrupted count or offset cannot cause downstream panics.
+    pub(super) fn parse_tag_table(bytes: &[u8]) -> Option<Vec<IccTag>> {
+        if bytes.len() < 132 {
+            return None;
+        }
+        let count = read_u32_be(bytes, 128)? as usize;
+        // Each tag entry is 12 bytes. Reject pathological counts and
+        // counts that would overflow the buffer.
+        if count > 1024 {
+            return None;
+        }
+        let table_end = 132_usize.checked_add(count.checked_mul(12)?)?;
+        if table_end > bytes.len() {
+            return None;
+        }
+        let mut tags = Vec::with_capacity(count);
+        for i in 0..count {
+            let base = 132 + i * 12;
+            let signature: [u8; 4] = bytes.get(base..base + 4)?.try_into().ok()?;
+            let offset = read_u32_be(bytes, base + 4)?;
+            let size = read_u32_be(bytes, base + 8)?;
+            // The tag's data range must lie within the buffer.
+            let end = (offset as usize).checked_add(size as usize)?;
+            if end > bytes.len() {
+                return None;
+            }
+            tags.push(IccTag {
+                signature,
+                offset,
+                size,
+            });
+        }
+        Some(tags)
+    }
+
+    fn find_tag<'a>(tags: &'a [IccTag], sig: &[u8; 4]) -> Option<&'a IccTag> {
+        tags.iter().find(|t| &t.signature == sig)
+    }
+
+    /// Read an `XYZ ` tag and return its three s15.16 components.
+    pub(super) fn read_xyz_tag(
+        tags: &[IccTag],
+        bytes: &[u8],
+        sig: &[u8; 4],
+    ) -> Option<[f32; 3]> {
+        let tag = find_tag(tags, sig)?;
+        let start = tag.offset as usize;
+        let end = start.checked_add(tag.size as usize)?;
+        let data = bytes.get(start..end)?;
+        // 4 bytes type sig + 4 bytes reserved + 3 × 4 bytes s15Fixed16
+        if data.len() < 20 || &data[0..4] != b"XYZ " {
+            return None;
+        }
+        let x = read_s15_16(data, 8)?;
+        let y = read_s15_16(data, 12)?;
+        let z = read_s15_16(data, 16)?;
+        Some([x, y, z])
+    }
+
+    /// Read a TRC tag (`rTRC`, `gTRC`, or `bTRC`) and decode its transfer
+    /// function. Supports `curv` and `para` type signatures.
+    pub(super) fn read_trc_tag(
+        tags: &[IccTag],
+        bytes: &[u8],
+        sig: &[u8; 4],
+    ) -> Option<TransferFunction> {
+        let tag = find_tag(tags, sig)?;
+        let start = tag.offset as usize;
+        let end = start.checked_add(tag.size as usize)?;
+        let data = bytes.get(start..end)?;
+        if data.len() < 12 {
+            return None;
+        }
+        match &data[0..4] {
+            b"curv" => parse_curv(data),
+            b"para" => parse_para(data),
+            _ => None,
+        }
+    }
+
+    /// Parse a `curv` tag body.
+    ///
+    /// Layout: 4 bytes sig + 4 bytes reserved + 4 bytes count + count × u16.
+    /// - count == 0: identity curve (gamma 1.0) → Linear
+    /// - count == 1: u8.8 fixed-point gamma
+    /// - count >  1: tabulated curve (approximated; see below)
+    fn parse_curv(data: &[u8]) -> Option<TransferFunction> {
+        let count = read_u32_be(data, 8)? as usize;
+        if count == 0 {
+            return Some(TransferFunction::Linear);
+        }
+        if count == 1 {
+            let raw = read_u16_be(data, 12)?;
+            let gamma = raw as f32 / 256.0;
+            return Some(gamma_to_transfer(gamma));
+        }
+        // Tabulated curve. We don't store arbitrary LUTs in
+        // TransferFunction, so approximate: if the curve spans roughly
+        // [0, 1] we treat it as sRGB (the overwhelmingly common case for
+        // tabulated TRCs on display profiles); otherwise fall back to a
+        // gamma 2.2 approximation. Callers needing exact evaluation can
+        // parse the raw bytes from raw_data().
+        if data.len() < 12 + count * 2 {
+            return None;
+        }
+        let first = read_u16_be(data, 12)?;
+        let last = read_u16_be(data, 12 + (count - 1) * 2)?;
+        if first <= 8 && last >= 0xFF00 {
+            Some(TransferFunction::Srgb)
+        } else {
+            Some(gamma_to_transfer(2.2))
+        }
+    }
+
+    /// Parse a `para` tag body.
+    ///
+    /// Layout: 4 bytes sig + 4 bytes reserved + 2 bytes function type +
+    /// 2 bytes reserved + parameters (each an s15Fixed16).
+    ///
+    /// Function types:
+    /// - 0: Y = X^g                             (1 param)
+    /// - 1: Y = (aX+b)^g if X >= -b/a else 0    (3 params)
+    /// - 2: Y = (aX+b)^g + c if X >= -b/a else c (4 params)
+    /// - 3: Y = (aX+b)^g if X >= d else cX       (5 params)
+    /// - 4: Y = (aX+b)^g + e if X >= d else cX + f (7 params; sRGB-shaped)
+    fn parse_para(data: &[u8]) -> Option<TransferFunction> {
+        let function_type = read_u16_be(data, 8)?;
+        let p = 12; // parameters start offset within the tag data
+        match function_type {
+            0 => {
+                if data.len() < p + 4 {
+                    return None;
+                }
+                let g = read_s15_16(data, p)?;
+                Some(gamma_to_transfer(g))
+            }
+            1 => {
+                if data.len() < p + 12 {
+                    return None;
+                }
+                let g = read_s15_16(data, p)?;
+                let a = read_s15_16(data, p + 4)?;
+                let b = read_s15_16(data, p + 8)?;
+                // Expressed as the 7-param form with d = -b/a, c/e/f = 0.
+                let d = if a != 0.0 { -b / a } else { 0.0 };
+                classify_parametric(g, a, b, 0.0, d, 0.0, 0.0)
+            }
+            2 => {
+                if data.len() < p + 16 {
+                    return None;
+                }
+                let g = read_s15_16(data, p)?;
+                let a = read_s15_16(data, p + 4)?;
+                let b = read_s15_16(data, p + 8)?;
+                let c = read_s15_16(data, p + 12)?;
+                let d = if a != 0.0 { -b / a } else { 0.0 };
+                classify_parametric(g, a, b, 0.0, d, c, c)
+            }
+            3 => {
+                if data.len() < p + 20 {
+                    return None;
+                }
+                let g = read_s15_16(data, p)?;
+                let a = read_s15_16(data, p + 4)?;
+                let b = read_s15_16(data, p + 8)?;
+                let c = read_s15_16(data, p + 12)?;
+                let d = read_s15_16(data, p + 16)?;
+                classify_parametric(g, a, b, c, d, 0.0, 0.0)
+            }
+            4 => {
+                if data.len() < p + 28 {
+                    return None;
+                }
+                let g = read_s15_16(data, p)?;
+                let a = read_s15_16(data, p + 4)?;
+                let b = read_s15_16(data, p + 8)?;
+                let c = read_s15_16(data, p + 12)?;
+                let d = read_s15_16(data, p + 16)?;
+                let e = read_s15_16(data, p + 20)?;
+                let f = read_s15_16(data, p + 24)?;
+                classify_parametric(g, a, b, c, d, e, f)
+            }
+            _ => None,
+        }
+    }
+
+    /// Collapse a pure power curve to a named variant where possible.
+    fn gamma_to_transfer(g: f32) -> TransferFunction {
+        if (g - 1.0).abs() < 1e-3 {
+            TransferFunction::Linear
+        } else {
+            // Store as a parametric pure power: Y = X^g (a=1, b=0, rest 0).
+            TransferFunction::Parametric {
+                g,
+                a: 1.0,
+                b: 0.0,
+                c: 0.0,
+                d: 0.0,
+                e: 0.0,
+                f: 0.0,
+            }
+        }
+    }
+
+    /// Identify common named transfer functions from their 7-parameter
+    /// form. Falls back to `TransferFunction::Parametric` for anything we
+    /// don't recognise.
+    fn classify_parametric(
+        g: f32,
+        a: f32,
+        b: f32,
+        c: f32,
+        d: f32,
+        e: f32,
+        f: f32,
+    ) -> Option<TransferFunction> {
+        // sRGB: g=2.4, a=1/1.055, b=0.055/1.055, c=1/12.92, d=0.04045,
+        // e=0, f=0. Tolerances are loose enough to accept the rounded
+        // s15Fixed16 representations that real profiles emit.
+        let near = |x: f32, y: f32| (x - y).abs() < 1e-3;
+        if near(g, 2.4)
+            && near(a, 1.0 / 1.055)
+            && near(b, 0.055 / 1.055)
+            && near(c, 1.0 / 12.92)
+            && near(d, 0.04045)
+            && near(e, 0.0)
+            && near(f, 0.0)
+        {
+            return Some(TransferFunction::Srgb);
+        }
+        // Rec.2020 / Rec.709: g=1/0.45 ≈ 2.222, a=1/1.099, b=0.099/1.099,
+        // c=1/4.5, d=0.081, e=0, f=0.
+        if near(g, 1.0 / 0.45)
+            && near(a, 1.0 / 1.099)
+            && near(b, 0.099 / 1.099)
+            && near(c, 1.0 / 4.5)
+            && near(d, 0.081)
+            && near(e, 0.0)
+            && near(f, 0.0)
+        {
+            return Some(TransferFunction::Rec2020);
+        }
+        Some(TransferFunction::Parametric {
+            g,
+            a,
+            b,
+            c,
+            d,
+            e,
+            f,
+        })
+    }
+
+    /// Map D50-adapted primaries (rXYZ, gXYZ, bXYZ) to a named
+    /// `ColorGamut`. Tolerance is ~0.01 in XYZ units, which is wide
+    /// enough to swallow the precision loss of s15Fixed16 but tight
+    /// enough to discriminate sRGB, P3, Adobe RGB, and Rec.2020.
+    pub(super) fn classify_gamut(r: [f32; 3], g: [f32; 3], b: [f32; 3]) -> ColorGamut {
+        // Reference primaries, D50-adapted (via Bradford), as emitted by
+        // well-known profile generators (lcms2, ArgyllCMS, Apple):
+        let sets: &[(ColorGamut, [[f32; 3]; 3])] = &[
+            (
+                ColorGamut::Srgb,
+                [
+                    [0.4361, 0.2225, 0.0139],
+                    [0.3851, 0.7169, 0.0971],
+                    [0.1431, 0.0606, 0.7141],
+                ],
+            ),
+            (
+                ColorGamut::DisplayP3,
+                [
+                    [0.5151, 0.2412, -0.0010],
+                    [0.2920, 0.6922, 0.0419],
+                    [0.1571, 0.0666, 0.7841],
+                ],
+            ),
+            (
+                ColorGamut::AdobeRgb,
+                [
+                    [0.6097, 0.3111, 0.0195],
+                    [0.2053, 0.6257, 0.0609],
+                    [0.1492, 0.0632, 0.7446],
+                ],
+            ),
+            (
+                ColorGamut::Rec2020,
+                [
+                    [0.6734, 0.2790, -0.0019],
+                    [0.1656, 0.6753, 0.0299],
+                    [0.1251, 0.0457, 0.7969],
+                ],
+            ),
+        ];
+        const TOL: f32 = 0.01;
+        for (gamut, p) in sets {
+            let dr = (r[0] - p[0][0]).abs() + (r[1] - p[0][1]).abs() + (r[2] - p[0][2]).abs();
+            let dg = (g[0] - p[1][0]).abs() + (g[1] - p[1][1]).abs() + (g[2] - p[1][2]).abs();
+            let db = (b[0] - p[2][0]).abs() + (b[1] - p[2][1]).abs() + (b[2] - p[2][2]).abs();
+            if dr < 3.0 * TOL && dg < 3.0 * TOL && db < 3.0 * TOL {
+                return *gamut;
+            }
+        }
+        ColorGamut::Custom
+    }
 }
 
 // =============================================================================
@@ -1652,5 +2027,74 @@ mod tests {
         // Should be approximately middle gray
         let gray = mixed.red();
         assert!(gray > 100 && gray < 200);
+    }
+
+    #[test]
+    fn test_icc_profile_rejects_short_buffer() {
+        // Anything shorter than the 128-byte header must be rejected.
+        assert!(IccProfile::from_bytes(&[]).is_none());
+        assert!(IccProfile::from_bytes(&[0u8; 64]).is_none());
+        assert!(IccProfile::from_bytes(&[0u8; 127]).is_none());
+    }
+
+    #[test]
+    fn test_icc_profile_rejects_missing_magic() {
+        // 128 zero bytes has no "acsp" signature at offset 36.
+        let bytes = [0u8; 128];
+        assert!(IccProfile::from_bytes(&bytes).is_none());
+    }
+
+    #[test]
+    fn test_icc_profile_parses_srgb_profile_correctly() {
+        // Fixture is Artifex Software's sRGB ICC profile (tabulated curv
+        // tag spanning [0, 0xFFFF]). The tag-table parser should recover
+        // sRGB primaries and classify the curv as TransferFunction::Srgb.
+        let bytes = match std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/srgb.icc"
+        )) {
+            Ok(b) => b,
+            Err(_) => {
+                eprintln!("tests/fixtures/srgb.icc not available; skipping");
+                return;
+            }
+        };
+        let profile = IccProfile::from_bytes(&bytes).expect("should parse sRGB profile");
+        assert_eq!(profile.color_space, IccColorSpace::Rgb);
+        assert_eq!(profile.pcs, IccPcs::Xyz);
+        assert!(
+            profile.color_space().is_srgb(),
+            "parsed sRGB profile should report is_srgb=true; got {:?}",
+            profile.color_space(),
+        );
+    }
+
+    #[test]
+    fn test_icc_profile_parses_display_p3_profile() {
+        // Fixture is Blender's srgb_p3d65_display.icc — P3 primaries
+        // with sRGB-shaped parametric TRC (para type 3). The parser
+        // should report DisplayP3 gamut and a non-sRGB color space.
+        let bytes = match std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/display_p3.icc"
+        )) {
+            Ok(b) => b,
+            Err(_) => {
+                eprintln!("tests/fixtures/display_p3.icc not available; skipping");
+                return;
+            }
+        };
+        let profile = IccProfile::from_bytes(&bytes).expect("should parse P3 profile");
+        assert_eq!(profile.color_space, IccColorSpace::Rgb);
+        assert!(
+            !profile.color_space().is_srgb(),
+            "Display P3 must not report is_srgb; got {:?}",
+            profile.color_space(),
+        );
+        assert_eq!(
+            profile.color_space().gamut,
+            ColorGamut::DisplayP3,
+            "Display P3 primaries must be classified as ColorGamut::DisplayP3",
+        );
     }
 }

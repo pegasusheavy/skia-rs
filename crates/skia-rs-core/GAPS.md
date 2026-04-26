@@ -7,10 +7,11 @@
 - Total public functions reviewed: 217 (`pub fn` declarations; includes trait method implementations and derived methods)
 - Total test functions: 36 → ~75+ (expanded with gap fix tests)
 - Total gaps found: 12
-- **Critical gaps resolved: 4/5 ✅** (GAP-C1 deferred to ICC subplan)
+- **Critical gaps resolved: 5/5 ✅**
 - **Nice-to-have gaps resolved: 7/7 ✅**
 - Estimated complexity: Medium-High
-- **Phase 2 status: COMPLETE** (with GAP-C1 documented as known limitation)
+- **Phase 2 status: COMPLETE**
+- **P7C (2026-04-26): GAP-C1 resolved — ICC tag table parsing implemented**
 
 ## Files Reviewed
 - [x] lib.rs
@@ -25,25 +26,26 @@
 ## Critical Gaps
 
 ### GAP-C1: `IccProfile::from_bytes()` defaults to sRGB for all parsed profiles
-**Status:** ⚠️ DEFERRED to dedicated ICC subplan (limitation now documented in API)
-**Location:** `src/color.rs:716-726`
-**Issue:** Semantic gap
-**Description:** The function correctly parses the ICC header fields (profile
-class, color space, PCS) but hardcodes `ColorSpace::srgb()` as the
+**Status:** ✅ RESOLVED (P7C, 2026-04-26) -- tag table parsing for
+rTRC + rXYZ/gXYZ/bXYZ tags; gamut classifier matches sRGB, Display P3,
+Adobe RGB, Rec.2020 (else falls back to `ColorGamut::Custom`); transfer
+curves recovered from `curv` (count=0/1/tabulated) and `para` (function
+types 0-4). Unsupported profiles still fall back to sRGB rather than
+returning `None`.
+**Location:** `src/color.rs` -- `IccProfile::from_bytes` + `mod icc`
+**Tests:** `test_icc_profile_parses_srgb_profile_correctly`,
+`test_icc_profile_parses_display_p3_profile`,
+`test_icc_profile_rejects_short_buffer`,
+`test_icc_profile_rejects_missing_magic` plus fixtures under
+`crates/skia-rs-core/tests/fixtures/`.
+**Original issue:** The function correctly parsed the ICC header fields
+(profile class, color space, PCS) but hardcoded `ColorSpace::srgb()` as the
 `embedded_color_space` for every parsed profile, regardless of its actual
 transfer function and gamut. A Display P3 ICC profile parsed with
-`from_bytes()` will report `is_srgb() == true` and any color-managed pipeline
-that relies on `IccProfile::color_space()` will produce incorrect output. The
-code contains an inline comment acknowledging this ("For now, default to sRGB
-for all parsed profiles") but does not surface the limitation to callers in the
-doc comment.
+`from_bytes()` would report `is_srgb() == true`.
 **Skia reference:** `skia/src/core/SkColorSpace.cpp` --
 `SkColorSpace::MakeICC()` parses the tag table (TRC + rXYZ/gXYZ/bXYZ tags) to
 extract the actual transfer function and gamut matrix.
-**Estimated effort:** 2-3 days (tag table parsing, parametric TRC extraction,
-gamut matrix construction)
-**Dependencies:** None
-**Priority:** HIGH
 
 ### GAP-C2: `Region::contains_rect()` has false negatives for complex regions
 **Status:** ✅ RESOLVED - scanline containment algorithm
@@ -236,7 +238,7 @@ color.rs (13 tests, but missing coverage for):
 - `color4f_srgb_to_linear()` / `color4f_linear_to_srgb()` -- not directly tested
 - `rgb_to_xyz()` / `xyz_to_rgb()` -- not tested
 - `rgb_to_lab()` / `lab_to_rgb()` -- not tested
-- `IccProfile::from_bytes()` -- not tested (header parsing, edge cases)
+- `IccProfile::from_bytes()` -- tested (P7C: sRGB and Display P3 fixtures plus short-buffer / missing-magic rejection)
 - `ColorSpace::display_p3()` / `ColorSpace::srgb_linear()` -- not tested
 - `ColorType::has_alpha()` -- not tested
 - `ColorType::n32()` -- not tested
