@@ -357,7 +357,7 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
             export_gradient_attrs(output, &grad.spread, &grad.units);
 
             if !grad.transform.is_identity() {
-                export_transform_attr(output, &grad.transform, options);
+                export_gradient_transform_attr(output, &grad.transform, options);
             }
 
             output.push('>');
@@ -401,7 +401,7 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
             export_gradient_attrs(output, &grad.spread, &grad.units);
 
             if !grad.transform.is_identity() {
-                export_transform_attr(output, &grad.transform, options);
+                export_gradient_transform_attr(output, &grad.transform, options);
             }
 
             output.push('>');
@@ -433,11 +433,27 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
             write!(output, "<{}", tag).unwrap();
             export_common_attrs(output, node, options);
 
-            if node.children.is_empty() {
+            // `<style>` nodes carry their CSS source in the
+            // `__text_content` attribute (populated by the parser).
+            // Emit it inside a CDATA block so downstream consumers see
+            // the same CSS we originally parsed.
+            let text_content = node.attributes.get("__text_content");
+
+            if node.children.is_empty() && text_content.is_none() {
                 output.push_str("/>");
             } else {
                 output.push('>');
                 output.push_str(newline);
+
+                if let Some(css) = text_content {
+                    if !css.is_empty() {
+                        if options.pretty_print {
+                            output.push_str(&options.indent.repeat(depth + 1));
+                        }
+                        write!(output, "<![CDATA[{}]]>", css).unwrap();
+                        output.push_str(newline);
+                    }
+                }
 
                 for child in &node.children {
                     export_node(output, child, options, depth + 1);
@@ -530,6 +546,22 @@ fn is_standard_attr(key: &str) -> bool {
             | "opacity"
             | "visibility"
     )
+}
+
+/// Emit a gradient transform attribute (`gradientTransform=...`) — same
+/// matrix encoding as `export_transform_attr`, different attribute name
+/// per SVG 1.1 §13.2.3.
+fn export_gradient_transform_attr(
+    output: &mut String,
+    matrix: &Matrix,
+    options: &SvgExportOptions,
+) {
+    let mut buf = String::new();
+    export_transform_attr(&mut buf, matrix, options);
+    // export_transform_attr writes ` transform="..."` — rewrite the
+    // attribute name in place so we don't duplicate its formatting logic.
+    let replaced = buf.replacen(" transform=", " gradientTransform=", 1);
+    output.push_str(&replaced);
 }
 
 fn export_transform_attr(output: &mut String, matrix: &Matrix, options: &SvgExportOptions) {
@@ -771,22 +803,6 @@ fn escape_xml(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-/// Trait extension for Matrix to check identity.
-trait MatrixExt {
-    fn is_identity(&self) -> bool;
-}
-
-impl MatrixExt for Matrix {
-    fn is_identity(&self) -> bool {
-        (self.values[0] - 1.0).abs() < 0.001
-            && self.values[1].abs() < 0.001
-            && self.values[2].abs() < 0.001
-            && self.values[3].abs() < 0.001
-            && (self.values[4] - 1.0).abs() < 0.001
-            && self.values[5].abs() < 0.001
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -845,6 +861,81 @@ mod tests {
         assert_eq!(
             format_color(&Color::from_argb(128, 255, 0, 0)),
             "rgba(255, 0, 0, 0.5019608)"
+        );
+    }
+
+    #[test]
+    fn test_export_gradient_transform_uses_gradient_attribute() {
+        // A gradient with a non-identity transform must emit
+        // `gradientTransform=`, never `transform=`, per SVG 1.1 §13.2.3.
+        let mut dom = SvgDom::new();
+        dom.width = 10.0;
+        dom.height = 10.0;
+        let mut grad = SvgNode::new(SvgNodeKind::LinearGradient(SvgLinearGradient {
+            x1: 0.0,
+            y1: 0.0,
+            x2: 1.0,
+            y2: 0.0,
+            stops: vec![GradientStop {
+                offset: 0.0,
+                color: Color::BLACK,
+                opacity: 1.0,
+            }],
+            spread: SpreadMethod::Pad,
+            units: GradientUnits::ObjectBoundingBox,
+            transform: Matrix::translate(5.0, 0.0),
+        }));
+        grad.id = Some("g".to_string());
+
+        let mut defs = SvgNode::new(SvgNodeKind::Defs);
+        defs.add_child(grad);
+        dom.root.add_child(defs);
+
+        let svg = export_svg(&dom);
+        assert!(
+            svg.contains("gradientTransform="),
+            "expected gradientTransform attribute, got:\n{}",
+            svg
+        );
+        assert!(
+            !svg.contains("<linearGradient")
+                || !svg[svg.find("<linearGradient").unwrap()..]
+                    .split('>')
+                    .next()
+                    .unwrap()
+                    .contains(" transform="),
+            "linearGradient element must not use `transform=`, got:\n{}",
+            svg
+        );
+    }
+
+    #[test]
+    fn test_export_style_element_round_trips() {
+        // When a <style> block is parsed, its contents end up in the
+        // Unknown("style") node's __text_content attribute. Exporting
+        // such a node must re-emit the CSS in CDATA so a subsequent
+        // parse recovers the rule.
+        use crate::parser::parse_svg;
+
+        let svg_in = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+          <style>rect { fill: red; }</style>
+          <rect x="0" y="0" width="10" height="10"/>
+        </svg>"#;
+        let dom = parse_svg(svg_in).unwrap();
+        assert_eq!(dom.stylesheet.rules.len(), 1);
+
+        let exported = export_svg(&dom);
+        assert!(
+            exported.contains("<style") && exported.contains("fill: red"),
+            "style block should round-trip, got:\n{}",
+            exported
+        );
+
+        let reparsed = parse_svg(&exported).unwrap();
+        assert_eq!(
+            reparsed.stylesheet.rules.len(),
+            1,
+            "exported style element should survive a re-parse"
         );
     }
 }

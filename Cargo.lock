@@ -2185,9 +2185,11 @@ dependencies = [
  "proptest",
  "roxmltree",
  "skia-rs-canvas",
+ "skia-rs-codec",
  "skia-rs-core",
  "skia-rs-paint",
  "skia-rs-path",
+ "skia-rs-text",
  "thiserror 2.0.17",
  "usvg",
 ]

@@ -17,7 +17,9 @@ readme = "README.md"
 skia-rs-core = { workspace = true }
 skia-rs-path = { workspace = true }
 skia-rs-paint = { workspace = true }
-skia-rs-canvas = { workspace = true }
+skia-rs-canvas = { workspace = true, features = ["codec", "text"] }
+skia-rs-text = { workspace = true }
+skia-rs-codec = { workspace = true }
 roxmltree = { workspace = true }
 usvg = { workspace = true }
 thiserror = { workspace = true }

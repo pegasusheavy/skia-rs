@@ -761,4 +761,63 @@ mod tests {
         assert!(color.green() < 10);
         assert!(color.blue() < 10);
     }
+
+    #[test]
+    fn test_apply_stylesheet_to_dom() {
+        // Verify that apply_stylesheet actually modifies a DOM node's
+        // resolved style based on a matching class selector.
+        use crate::dom::{SvgDom, SvgNode, SvgNodeKind, SvgPaint, SvgRect};
+
+        let mut dom = SvgDom::new();
+        dom.width = 50.0;
+        dom.height = 50.0;
+
+        let mut rect = SvgNode::new(SvgNodeKind::Rect(SvgRect {
+            x: 0.0,
+            y: 0.0,
+            width: 50.0,
+            height: 50.0,
+            rx: 0.0,
+            ry: 0.0,
+        }));
+        rect.classes.push("accent".to_string());
+        // Default fill is black; the stylesheet should overwrite it to
+        // red.
+        rect.fill = Some(SvgPaint::Color(Color::BLACK));
+        dom.root.add_child(rect);
+
+        let sheet = Stylesheet::parse(".accent { fill: #ff0000; opacity: 0.5; }");
+        apply_stylesheet(&mut dom, &sheet);
+
+        let styled = &dom.root.children[0];
+        assert!(matches!(
+            styled.fill,
+            Some(SvgPaint::Color(c)) if c == Color::from_rgb(255, 0, 0)
+        ));
+        assert!((styled.opacity - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_apply_stylesheet_inline_overrides_rule() {
+        // Inline styles are applied after selector-matched rules, so
+        // they win even over a more specific id selector in the sheet.
+        use crate::dom::{SvgDom, SvgNode, SvgNodeKind, SvgPaint, SvgRect};
+
+        let mut dom = SvgDom::new();
+        let mut rect = SvgNode::new(SvgNodeKind::Rect(SvgRect::default()));
+        rect.id = Some("hero".to_string());
+        rect.fill = Some(SvgPaint::Color(Color::BLACK));
+        rect.attributes
+            .insert("style".to_string(), "fill: green".to_string());
+        dom.root.add_child(rect);
+
+        let sheet = Stylesheet::parse("#hero { fill: red }");
+        apply_stylesheet(&mut dom, &sheet);
+
+        let styled = &dom.root.children[0];
+        assert!(matches!(
+            styled.fill,
+            Some(SvgPaint::Color(c)) if c == Color::from_rgb(0, 128, 0)
+        ));
+    }
 }
