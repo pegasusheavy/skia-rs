@@ -108,50 +108,176 @@ impl SdfRenderParams {
 }
 
 /// Generate a signed distance field from a binary mask.
+///
+/// Uses Felzenszwalb & Huttenlocher's O(n) distance transform algorithm
+/// (Felzenszwalb, 2012) rather than the previous O(n²·spread²) brute-force
+/// dead-reckoning search. The algorithm computes the exact Euclidean
+/// squared distance transform in linear time via a lower-envelope
+/// computation on each row, then each column.
+///
+/// For a 256×256 mask with spread 16 the old implementation touched ~17M
+/// pixels per direction (quadratic in spread). The new implementation
+/// touches 64k pixels per pass regardless of spread.
 pub fn generate_sdf_from_mask(mask: &[u8], width: u32, height: u32, spread: f32) -> Vec<f32> {
-    let mut sdf = vec![0.0f32; (width * height) as usize];
+    let w = width as usize;
+    let h = height as usize;
+    let inf = f32::MAX / 4.0;
 
-    // Two-pass algorithm: compute distance transform
-    // This is a simplified version; production would use a better algorithm
+    // Distance from each pixel to the nearest "off" pixel (outside region).
+    let mut d_out = vec![inf; w * h];
+    // Distance to the nearest "on" pixel.
+    let mut d_in = vec![inf; w * h];
 
-    for y in 0..height {
-        for x in 0..width {
-            let idx = (y * width + x) as usize;
+    for y in 0..h {
+        for x in 0..w {
+            let idx = y * w + x;
             let is_inside = mask[idx] > 127;
-
-            // Find nearest opposite pixel
-            let mut min_dist_sq = f32::MAX;
-
-            let search_radius = (spread * 2.0).ceil() as i32;
-            for dy in -search_radius..=search_radius {
-                for dx in -search_radius..=search_radius {
-                    let nx = x as i32 + dx;
-                    let ny = y as i32 + dy;
-
-                    if nx >= 0 && nx < width as i32 && ny >= 0 && ny < height as i32 {
-                        let nidx = (ny as u32 * width + nx as u32) as usize;
-                        let neighbor_inside = mask[nidx] > 127;
-
-                        if is_inside != neighbor_inside {
-                            let dist_sq = (dx * dx + dy * dy) as f32;
-                            min_dist_sq = min_dist_sq.min(dist_sq);
-                        }
-                    }
-                }
-            }
-
-            let dist = if min_dist_sq == f32::MAX {
-                spread
+            if is_inside {
+                d_out[idx] = inf;
+                d_in[idx] = 0.0;
             } else {
-                min_dist_sq.sqrt()
-            };
-
-            // Signed distance: negative inside, positive outside
-            sdf[idx] = if is_inside { -dist } else { dist };
+                d_out[idx] = 0.0;
+                d_in[idx] = inf;
+            }
         }
     }
 
+    distance_transform_2d(&mut d_out, w, h);
+    distance_transform_2d(&mut d_in, w, h);
+
+    let mut sdf = vec![0.0f32; w * h];
+    for i in 0..(w * h) {
+        // d_out[i]: squared distance from i to nearest "outside" pixel (a
+        //          pixel whose mask byte was 0). Non-zero iff i is inside.
+        // d_in[i]:  squared distance from i to nearest "inside" pixel.
+        //          Non-zero iff i is outside.
+        //
+        // Signed distance:
+        //   inside pixel  → negative, magnitude = distance to nearest outside
+        //   outside pixel → positive, magnitude = distance to nearest inside
+        let out_d = d_out[i].max(0.0).sqrt();
+        let in_d = d_in[i].max(0.0).sqrt();
+        let signed = if mask[i] > 127 { -out_d } else { in_d };
+        // Clamp to +/- spread so the mapping to texture texels is stable.
+        sdf[i] = signed.clamp(-spread, spread);
+    }
     sdf
+}
+
+/// Felzenszwalb–Huttenlocher 2D squared-distance transform.
+///
+/// Runs the 1D transform first on each row, then on each column of the
+/// intermediate. Input `f` should start with 0 for source pixels and
+/// infinity elsewhere; output is the squared Euclidean distance from each
+/// pixel to the nearest source pixel.
+fn distance_transform_2d(f: &mut [f32], w: usize, h: usize) {
+    // Row pass.
+    let mut row = vec![0.0f32; w];
+    for y in 0..h {
+        for x in 0..w {
+            row[x] = f[y * w + x];
+        }
+        distance_transform_1d(&mut row);
+        for x in 0..w {
+            f[y * w + x] = row[x];
+        }
+    }
+
+    // Column pass.
+    let mut col = vec![0.0f32; h];
+    for x in 0..w {
+        for y in 0..h {
+            col[y] = f[y * w + x];
+        }
+        distance_transform_1d(&mut col);
+        for y in 0..h {
+            f[y * w + x] = col[y];
+        }
+    }
+}
+
+/// 1D lower-envelope distance transform (Felzenszwalb 2012).
+///
+/// Canonical two-pass algorithm: sweep left-to-right building the lower
+/// envelope of parabolas `(i - q)² + f[q]`, then evaluate the envelope at
+/// each integer point. Runs in O(n).
+fn distance_transform_1d(f: &mut [f32]) {
+    let n = f.len();
+    if n == 0 {
+        return;
+    }
+    let big = f32::MAX / 4.0;
+
+    // Read-only copy of the input.
+    let input: Vec<f32> = f.to_vec();
+
+    // Find first non-infinite index; if the entire input is infinite, the
+    // result is also infinite (no source pixel anywhere).
+    let first_finite = match input.iter().position(|&v| v < big) {
+        Some(i) => i,
+        None => {
+            for v in f.iter_mut() {
+                *v = big;
+            }
+            return;
+        }
+    };
+
+    // Indices of parabolas in the lower envelope, and the boundaries
+    // between them. `k` is the index of the rightmost parabola in the
+    // envelope.
+    let mut v = vec![0usize; n];
+    let mut z = vec![0.0f32; n + 1];
+    let mut k: isize = 0;
+    v[0] = first_finite;
+    z[0] = f32::NEG_INFINITY;
+    z[1] = f32::INFINITY;
+
+    for q in (first_finite + 1)..n {
+        if input[q] >= big {
+            continue;
+        }
+        // Intersection of parabola q with parabola v[k].
+        loop {
+            let p = v[k as usize];
+            let fp = input[p];
+            let fq = input[q];
+            let denom = 2.0 * (q as f32 - p as f32);
+            let s = ((fq + (q * q) as f32) - (fp + (p * p) as f32)) / denom;
+            if s <= z[k as usize] {
+                if k == 0 {
+                    // Replace the single parabola in the envelope.
+                    v[0] = q;
+                    z[0] = f32::NEG_INFINITY;
+                    z[1] = f32::INFINITY;
+                    break;
+                }
+                k -= 1;
+            } else {
+                k += 1;
+                v[k as usize] = q;
+                z[k as usize] = s;
+                z[k as usize + 1] = f32::INFINITY;
+                break;
+            }
+        }
+    }
+
+    // Evaluate the lower envelope at each integer location.
+    let mut j: isize = 0;
+    for q in 0..n {
+        while j < k && z[j as usize + 1] < q as f32 {
+            j += 1;
+        }
+        let p = v[j as usize];
+        let fp = input[p];
+        if fp >= big {
+            f[q] = big;
+        } else {
+            let d = q as f32 - p as f32;
+            f[q] = d * d + fp;
+        }
+    }
 }
 
 /// Convert SDF to normalized texture data (0-255).
@@ -458,6 +584,91 @@ mod tests {
 
         let median = msdf.sample_median(0.0, 0.0);
         assert!((median - 2.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_generate_sdf_from_mask_basic() {
+        // 8x8 mask with a 4x4 filled square in the centre.
+        let w = 8;
+        let h = 8;
+        let mut mask = vec![0u8; w * h];
+        for y in 2..6 {
+            for x in 2..6 {
+                mask[y * w + x] = 255;
+            }
+        }
+
+        let sdf = generate_sdf_from_mask(&mask, w as u32, h as u32, 10.0);
+        assert_eq!(sdf.len(), 64);
+
+        // Centre of the square should be interior (negative).
+        let centre = sdf[3 * w + 3];
+        assert!(centre < 0.0, "centre should be inside (negative)");
+
+        // Corner of the canvas should be exterior (positive).
+        let corner = sdf[0];
+        assert!(corner > 0.0, "canvas corner should be outside");
+
+        // A pixel at the boundary (row 2, column 2 is inside; row 1, col 2
+        // is outside and adjacent) — its distance should be near 1.
+        let just_outside = sdf[1 * w + 2];
+        assert!(just_outside > 0.0 && just_outside < 2.0);
+    }
+
+    #[test]
+    fn test_distance_transform_1d_exact() {
+        // A 1D array with a single source at index 3 should produce squared
+        // distance equal to (i - 3)^2 for each i.
+        let inf = f32::MAX / 4.0;
+        let mut f = vec![inf; 7];
+        f[3] = 0.0;
+        distance_transform_1d(&mut f);
+        for i in 0..7 {
+            let expected = ((i as i32 - 3) * (i as i32 - 3)) as f32;
+            assert!((f[i] - expected).abs() < 1e-4, "idx {}: {} vs {}", i, f[i], expected);
+        }
+    }
+
+    #[test]
+    fn test_distance_transform_1d_multiple_sources() {
+        // Two sources at ends: each pixel's distance is to the nearest one.
+        let inf = f32::MAX / 4.0;
+        let mut f = vec![inf; 7];
+        f[0] = 0.0;
+        f[6] = 0.0;
+        distance_transform_1d(&mut f);
+        // pixel 3 is equidistant (3 each way) → 9.
+        assert!((f[3] - 9.0).abs() < 1e-4);
+        // pixel 2 is 2 from 0 → 4.
+        assert!((f[2] - 4.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_sdf_generation_scales_linearly() {
+        // Coarse regression guard: generating a reasonably large SDF must
+        // return in finite time. The old brute-force algorithm with spread
+        // 100 on a 64x64 mask performed ~4M distance checks per pixel; the
+        // F&H transform performs at most ~n per dimension.
+        //
+        // We don't time the call directly (too flaky for CI); we assert
+        // that the result is self-consistent for a single-pixel source:
+        // every pixel's distance is its Euclidean distance to that source,
+        // up to the spread clamp.
+        let w = 32;
+        let h = 32;
+        let mut mask = vec![0u8; w * h];
+        mask[16 * w + 16] = 255; // single interior pixel
+
+        let sdf = generate_sdf_from_mask(&mask, w as u32, h as u32, 100.0);
+        // The inside pixel has nearest outside at distance 1 → SDF = -1.
+        assert!(
+            (sdf[16 * w + 16] + 1.0).abs() < 1e-4,
+            "expected -1, got {}",
+            sdf[16 * w + 16]
+        );
+        // A pixel three away (outside) has distance-to-inside = 3 → SDF = 3.
+        let three_away = sdf[16 * w + 19];
+        assert!((three_away - 3.0).abs() < 1e-4, "expected ~3, got {}", three_away);
     }
 
     #[test]

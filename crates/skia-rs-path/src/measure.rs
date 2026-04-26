@@ -1,12 +1,32 @@
 //! Path measurement and traversal.
 
-use crate::Path;
+use crate::flatten::{flatten_conic_adaptive, flatten_cubic_adaptive, flatten_quad_adaptive};
+use crate::{Path, PathElement};
 use skia_rs_core::{Matrix, Point, Scalar};
+
+/// Tolerance used when flattening curves for length measurement.
+const FLATTEN_TOLERANCE: Scalar = 0.25;
+
+/// A line segment with cumulative length up to its endpoint.
+#[derive(Debug, Clone)]
+struct Segment {
+    start: Point,
+    end: Point,
+    length: Scalar,
+    /// Cumulative length within the contour up to and including this segment.
+    cumulative: Scalar,
+}
+
+#[derive(Debug)]
+struct Contour {
+    segments: Vec<Segment>,
+    length: Scalar,
+}
 
 /// Measures the length of a path and allows querying points along it.
 #[derive(Debug)]
 pub struct PathMeasure {
-    path: Path,
+    contours: Vec<Contour>,
     contour_lengths: Vec<Scalar>,
     total_length: Scalar,
 }
@@ -15,11 +35,11 @@ impl PathMeasure {
     /// Create a new path measure.
     pub fn new(path: &Path) -> Self {
         let mut measure = Self {
-            path: path.clone(),
+            contours: Vec::new(),
             contour_lengths: Vec::new(),
             total_length: 0.0,
         };
-        measure.compute_lengths();
+        measure.compute_lengths(path);
         measure
     }
 
@@ -45,44 +65,467 @@ impl PathMeasure {
         if distance < 0.0 || distance > self.total_length {
             return None;
         }
-        // TODO: Implement point interpolation
-        let _ = distance;
-        None
+        let (contour, offset) = self.locate(distance)?;
+        let seg = Self::segment_at(contour, offset);
+        let seg_start_cum = seg.cumulative - seg.length;
+        let t = if seg.length > 0.0 {
+            ((offset - seg_start_cum) / seg.length).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        Some(Point::new(
+            seg.start.x + (seg.end.x - seg.start.x) * t,
+            seg.start.y + (seg.end.y - seg.start.y) * t,
+        ))
     }
 
-    /// Get the tangent at a distance along the path.
+    /// Get the tangent (unit direction vector) at a distance along the path.
     pub fn get_tangent_at(&self, distance: Scalar) -> Option<Point> {
         if distance < 0.0 || distance > self.total_length {
             return None;
         }
-        // TODO: Implement tangent calculation
-        let _ = distance;
-        None
+        let (contour, offset) = self.locate(distance)?;
+        let seg = Self::segment_at(contour, offset);
+        let dx = seg.end.x - seg.start.x;
+        let dy = seg.end.y - seg.start.y;
+        let len = (dx * dx + dy * dy).sqrt();
+        if len > 0.0 {
+            Some(Point::new(dx / len, dy / len))
+        } else {
+            Some(Point::new(1.0, 0.0))
+        }
     }
 
     /// Get the transformation matrix at a distance along the path.
+    ///
+    /// The returned matrix maps the local origin to the position at the
+    /// given distance, and the local x-axis to the path's tangent
+    /// direction at that distance. Useful for placing text or stamps
+    /// along a path.
     pub fn get_matrix_at(&self, distance: Scalar) -> Option<Matrix> {
-        if distance < 0.0 || distance > self.total_length {
-            return None;
-        }
-        // TODO: Implement matrix calculation
-        let _ = distance;
-        None
+        let position = self.get_point_at(distance)?;
+        let tangent = self.get_tangent_at(distance)?;
+        Some(Matrix {
+            values: [
+                tangent.x, -tangent.y, position.x,
+                tangent.y,  tangent.x, position.y,
+                0.0,        0.0,       1.0,
+            ],
+        })
     }
 
-    /// Get a segment of the path.
+    /// Get a segment of the path between the given distances.
+    ///
+    /// Returns a new Path containing the portion from `start` to `end`,
+    /// constructed from line segments (curves in the source path are
+    /// flattened during length computation).
     pub fn get_segment(&self, start: Scalar, end: Scalar) -> Option<Path> {
         if start >= end || start < 0.0 || end > self.total_length {
             return None;
         }
-        // TODO: Implement segment extraction
-        let _ = (start, end);
-        None
+
+        let mut builder = crate::PathBuilder::new();
+        let mut acc = 0.0;
+        let mut started_any = false;
+
+        for contour in &self.contours {
+            let c_start = acc;
+            let c_end = acc + contour.length;
+            acc = c_end;
+
+            if c_end <= start {
+                continue;
+            }
+            if c_start >= end {
+                break;
+            }
+
+            let local_seg_start = (start.max(c_start) - c_start).max(0.0);
+            let local_seg_end = (end.min(c_end) - c_start).min(contour.length);
+
+            let first_pt = interpolate_at(contour, local_seg_start);
+            builder.move_to(first_pt.x, first_pt.y);
+            started_any = true;
+
+            for seg in &contour.segments {
+                let s_start = seg.cumulative - seg.length;
+                let s_end = seg.cumulative;
+                if s_end <= local_seg_start {
+                    continue;
+                }
+                if s_start >= local_seg_end {
+                    break;
+                }
+                let t1 = if s_end > local_seg_end {
+                    ((local_seg_end - s_start) / seg.length).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                let p = Point::new(
+                    seg.start.x + (seg.end.x - seg.start.x) * t1,
+                    seg.start.y + (seg.end.y - seg.start.y) * t1,
+                );
+                builder.line_to(p.x, p.y);
+            }
+        }
+
+        if started_any {
+            Some(builder.build())
+        } else {
+            None
+        }
     }
 
-    fn compute_lengths(&mut self) {
-        // TODO: Implement length computation
-        // This requires flattening curves and summing segment lengths
-        self.total_length = 0.0;
+    /// Locate the contour containing `distance` and return the offset within it.
+    fn locate(&self, distance: Scalar) -> Option<(&Contour, Scalar)> {
+        let mut remaining = distance;
+        for c in &self.contours {
+            if remaining <= c.length {
+                return Some((c, remaining));
+            }
+            remaining -= c.length;
+        }
+        // At exact total_length, return last contour at its end
+        self.contours.last().map(|c| (c, c.length))
+    }
+
+    /// Find the segment within a contour that contains the given offset.
+    fn segment_at(contour: &Contour, offset: Scalar) -> &Segment {
+        let idx = match contour
+            .segments
+            .binary_search_by(|s| s.cumulative.partial_cmp(&offset).unwrap_or(std::cmp::Ordering::Equal))
+        {
+            Ok(i) => i,
+            Err(i) => i.min(contour.segments.len().saturating_sub(1)),
+        };
+        &contour.segments[idx]
+    }
+
+    fn compute_lengths(&mut self, path: &Path) {
+        let mut current_contour: Option<Contour> = None;
+        let mut current_pt = Point::new(0.0, 0.0);
+        let mut contour_start = Point::new(0.0, 0.0);
+        let mut points: Vec<Point> = Vec::with_capacity(16);
+
+        let push_segment = |contour: &mut Contour, start: Point, end: Point| {
+            let dx = end.x - start.x;
+            let dy = end.y - start.y;
+            let len = (dx * dx + dy * dy).sqrt();
+            if len > 0.0 {
+                contour.length += len;
+                contour.segments.push(Segment {
+                    start,
+                    end,
+                    length: len,
+                    cumulative: contour.length,
+                });
+            }
+        };
+
+        for elem in path.iter() {
+            match elem {
+                PathElement::Move(p) => {
+                    if let Some(c) = current_contour.take() {
+                        if c.length > 0.0 {
+                            self.contour_lengths.push(c.length);
+                            self.total_length += c.length;
+                            self.contours.push(c);
+                        }
+                    }
+                    current_contour = Some(Contour {
+                        segments: Vec::new(),
+                        length: 0.0,
+                    });
+                    current_pt = p;
+                    contour_start = p;
+                }
+                PathElement::Line(p) => {
+                    if let Some(c) = current_contour.as_mut() {
+                        push_segment(c, current_pt, p);
+                    }
+                    current_pt = p;
+                }
+                PathElement::Quad(ctrl, end) => {
+                    if let Some(c) = current_contour.as_mut() {
+                        points.clear();
+                        flatten_quad_adaptive(&mut points, current_pt, ctrl, end, FLATTEN_TOLERANCE);
+                        let mut prev = current_pt;
+                        for p in &points {
+                            push_segment(c, prev, *p);
+                            prev = *p;
+                        }
+                    }
+                    current_pt = end;
+                }
+                PathElement::Cubic(c1, c2, end) => {
+                    if let Some(c) = current_contour.as_mut() {
+                        points.clear();
+                        flatten_cubic_adaptive(&mut points, current_pt, c1, c2, end, FLATTEN_TOLERANCE);
+                        let mut prev = current_pt;
+                        for p in &points {
+                            push_segment(c, prev, *p);
+                            prev = *p;
+                        }
+                    }
+                    current_pt = end;
+                }
+                PathElement::Conic(ctrl, end, w) => {
+                    if let Some(c) = current_contour.as_mut() {
+                        points.clear();
+                        flatten_conic_adaptive(&mut points, current_pt, ctrl, end, w, FLATTEN_TOLERANCE);
+                        let mut prev = current_pt;
+                        for p in &points {
+                            push_segment(c, prev, *p);
+                            prev = *p;
+                        }
+                    }
+                    current_pt = end;
+                }
+                PathElement::Close => {
+                    if let Some(c) = current_contour.as_mut() {
+                        if current_pt != contour_start {
+                            push_segment(c, current_pt, contour_start);
+                        }
+                    }
+                    current_pt = contour_start;
+                }
+            }
+        }
+
+        if let Some(c) = current_contour.take() {
+            if c.length > 0.0 {
+                self.contour_lengths.push(c.length);
+                self.total_length += c.length;
+                self.contours.push(c);
+            }
+        }
+    }
+}
+
+fn interpolate_at(contour: &Contour, offset: Scalar) -> Point {
+    let seg = PathMeasure::segment_at(contour, offset);
+    let seg_start_cum = seg.cumulative - seg.length;
+    let t = if seg.length > 0.0 {
+        ((offset - seg_start_cum) / seg.length).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    Point::new(
+        seg.start.x + (seg.end.x - seg.start.x) * t,
+        seg.start.y + (seg.end.y - seg.start.y) * t,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::PathBuilder;
+
+    #[test]
+    fn test_path_measure_empty_path() {
+        let path = PathBuilder::new().build();
+        let measure = PathMeasure::new(&path);
+        assert_eq!(measure.length(), 0.0);
+        assert_eq!(measure.contour_count(), 0);
+    }
+
+    #[test]
+    fn test_path_measure_single_line() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        assert!((measure.length() - 100.0).abs() < 0.01);
+        assert_eq!(measure.contour_count(), 1);
+    }
+
+    #[test]
+    fn test_path_measure_diagonal_line() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(3.0, 4.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        assert!((measure.length() - 5.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_path_measure_multiple_lines() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(10.0, 0.0);
+        builder.line_to(10.0, 10.0);
+        builder.line_to(0.0, 10.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        assert!((measure.length() - 30.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_path_measure_quadratic_curve() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.quad_to(50.0, 0.0, 100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        assert!((measure.length() - 100.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_path_measure_multi_contour() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(10.0, 0.0);
+        builder.move_to(20.0, 0.0);
+        builder.line_to(50.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        assert!((measure.length() - 40.0).abs() < 0.01);
+        assert_eq!(measure.contour_count(), 2);
+        assert!((measure.contour_length(0).unwrap() - 10.0).abs() < 0.01);
+        assert!((measure.contour_length(1).unwrap() - 30.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_path_measure_closed_contour() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(10.0, 0.0);
+        builder.line_to(10.0, 10.0);
+        builder.line_to(0.0, 10.0);
+        builder.close();
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        // Close adds the segment from (0,10) back to (0,0), length 10
+        assert!((measure.length() - 40.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_point_at_start() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        let p = measure.get_point_at(0.0).unwrap();
+        assert!((p.x - 0.0).abs() < 0.01);
+        assert!((p.y - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_point_at_midpoint() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        let p = measure.get_point_at(50.0).unwrap();
+        assert!((p.x - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_point_at_end() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        let p = measure.get_point_at(100.0).unwrap();
+        assert!((p.x - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_point_at_out_of_range() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        assert!(measure.get_point_at(-1.0).is_none());
+        assert!(measure.get_point_at(101.0).is_none());
+    }
+
+    #[test]
+    fn test_get_point_at_multi_contour() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(10.0, 0.0); // contour 1: 0..10
+        builder.move_to(20.0, 0.0);
+        builder.line_to(50.0, 0.0); // contour 2: 10..40
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+
+        let p = measure.get_point_at(5.0).unwrap();
+        assert!((p.x - 5.0).abs() < 0.01);
+
+        let p = measure.get_point_at(25.0).unwrap();
+        assert!((p.x - 35.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_tangent_horizontal_line() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        let t = measure.get_tangent_at(50.0).unwrap();
+        assert!((t.x - 1.0).abs() < 0.01);
+        assert!((t.y - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_tangent_diagonal() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(3.0, 4.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        let t = measure.get_tangent_at(2.5).unwrap();
+        assert!((t.x - 0.6).abs() < 0.01);
+        assert!((t.y - 0.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_matrix_horizontal_line() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        let m = measure.get_matrix_at(50.0).unwrap();
+        let mapped = m.map_point(Point::new(0.0, 0.0));
+        assert!((mapped.x - 50.0).abs() < 0.01);
+        assert!((mapped.y - 0.0).abs() < 0.01);
+        let mapped_tangent = m.map_point(Point::new(1.0, 0.0));
+        assert!((mapped_tangent.x - 51.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_segment_subset_of_line() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+
+        let segment = measure.get_segment(25.0, 75.0).unwrap();
+        let bounds = segment.bounds();
+        assert!((bounds.left - 25.0).abs() < 0.5);
+        assert!((bounds.right - 75.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn test_get_segment_invalid_range() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+
+        assert!(measure.get_segment(75.0, 25.0).is_none());
+        assert!(measure.get_segment(-1.0, 50.0).is_none());
+        assert!(measure.get_segment(50.0, 200.0).is_none());
     }
 }

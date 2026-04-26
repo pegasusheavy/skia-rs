@@ -3,7 +3,10 @@
 //! Path effects modify how a path is stroked or filled. They can be applied
 //! to create dashed lines, rounded corners, jittery edges, and more.
 
-use crate::{Path, PathBuilder, PathElement};
+use crate::{
+    flatten::{flatten_conic_adaptive, flatten_cubic_adaptive, flatten_quad_adaptive},
+    Path, PathBuilder, PathElement,
+};
 use skia_rs_core::{Point, Scalar};
 use std::sync::Arc;
 
@@ -47,6 +50,60 @@ pub type PathEffectRef = Arc<dyn PathEffect>;
 // =============================================================================
 // Dash Effect
 // =============================================================================
+
+/// Convert a path with curves to a path containing only lines,
+/// using adaptive tolerance for curve flattening. Used by DashEffect
+/// so dash intervals can transition mid-curve.
+fn flatten_path_to_lines(path: &Path, tolerance: Scalar) -> Path {
+    let mut builder = PathBuilder::new();
+    let mut current = Point::new(0.0, 0.0);
+    let mut contour_start = Point::new(0.0, 0.0);
+    let mut points: Vec<Point> = Vec::with_capacity(16);
+
+    for elem in path.iter() {
+        match elem {
+            PathElement::Move(p) => {
+                builder.move_to(p.x, p.y);
+                current = p;
+                contour_start = p;
+            }
+            PathElement::Line(p) => {
+                builder.line_to(p.x, p.y);
+                current = p;
+            }
+            PathElement::Quad(c, e) => {
+                points.clear();
+                flatten_quad_adaptive(&mut points, current, c, e, tolerance);
+                for p in &points {
+                    builder.line_to(p.x, p.y);
+                }
+                current = e;
+            }
+            PathElement::Cubic(c1, c2, e) => {
+                points.clear();
+                flatten_cubic_adaptive(&mut points, current, c1, c2, e, tolerance);
+                for p in &points {
+                    builder.line_to(p.x, p.y);
+                }
+                current = e;
+            }
+            PathElement::Conic(c, e, w) => {
+                points.clear();
+                flatten_conic_adaptive(&mut points, current, c, e, w, tolerance);
+                for p in &points {
+                    builder.line_to(p.x, p.y);
+                }
+                current = e;
+            }
+            PathElement::Close => {
+                builder.close();
+                current = contour_start;
+            }
+        }
+    }
+
+    builder.build()
+}
 
 /// Dash effect that creates dashed/dotted lines.
 ///
@@ -126,6 +183,10 @@ impl PathEffect for DashEffect {
             return None;
         }
 
+        // Pre-flatten curves to lines so dash logic can transition mid-curve.
+        let flattened = flatten_path_to_lines(path, 0.5);
+        let path = &flattened;
+
         let mut builder = PathBuilder::new();
         let mut current_pos = Point::zero();
         let mut contour_start = Point::zero();
@@ -139,7 +200,7 @@ impl PathEffect for DashEffect {
         }
 
         // Find starting interval index and offset
-        let (mut interval_idx, mut interval_offset) = {
+        let (mut interval_idx, interval_offset) = {
             let mut accumulated = 0.0;
             let mut idx = 0;
             while accumulated + self.intervals[idx] <= phase {
@@ -593,9 +654,82 @@ impl TrimEffect {
 
 impl PathEffect for TrimEffect {
     fn apply(&self, path: &Path) -> Option<Path> {
-        // This is a simplified implementation
-        // A full implementation would use PathMeasure
-        Some(path.clone())
+        let measure = crate::measure::PathMeasure::new(path);
+        let total = measure.length();
+        if total <= 0.0 {
+            return Some(path.clone());
+        }
+
+        let start_dist = self.start * total;
+        let end_dist = self.end * total;
+
+        match self.mode {
+            TrimMode::Normal => {
+                if start_dist >= end_dist {
+                    return Some(Path::new());
+                }
+                measure.get_segment(start_dist, end_dist)
+            }
+            TrimMode::Inverted => {
+                if start_dist >= end_dist {
+                    return Some(path.clone());
+                }
+                let mut builder = PathBuilder::new();
+                if start_dist > 0.0 {
+                    if let Some(before) = measure.get_segment(0.0, start_dist) {
+                        for elem in before.iter() {
+                            match elem {
+                                PathElement::Move(p) => {
+                                    builder.move_to(p.x, p.y);
+                                }
+                                PathElement::Line(p) => {
+                                    builder.line_to(p.x, p.y);
+                                }
+                                PathElement::Quad(p1, p2) => {
+                                    builder.quad_to(p1.x, p1.y, p2.x, p2.y);
+                                }
+                                PathElement::Cubic(p1, p2, p3) => {
+                                    builder.cubic_to(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
+                                }
+                                PathElement::Conic(p1, p2, w) => {
+                                    builder.conic_to(p1.x, p1.y, p2.x, p2.y, w);
+                                }
+                                PathElement::Close => {
+                                    builder.close();
+                                }
+                            }
+                        }
+                    }
+                }
+                if end_dist < total {
+                    if let Some(after) = measure.get_segment(end_dist, total) {
+                        for elem in after.iter() {
+                            match elem {
+                                PathElement::Move(p) => {
+                                    builder.move_to(p.x, p.y);
+                                }
+                                PathElement::Line(p) => {
+                                    builder.line_to(p.x, p.y);
+                                }
+                                PathElement::Quad(p1, p2) => {
+                                    builder.quad_to(p1.x, p1.y, p2.x, p2.y);
+                                }
+                                PathElement::Cubic(p1, p2, p3) => {
+                                    builder.cubic_to(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
+                                }
+                                PathElement::Conic(p1, p2, w) => {
+                                    builder.conic_to(p1.x, p1.y, p2.x, p2.y, w);
+                                }
+                                PathElement::Close => {
+                                    builder.close();
+                                }
+                            }
+                        }
+                    }
+                }
+                Some(builder.build())
+            }
+        }
     }
 
     fn effect_kind(&self) -> PathEffectKind {
@@ -1113,6 +1247,28 @@ mod tests {
     }
 
     #[test]
+    fn test_dash_effect_on_curve_produces_dashes_along_curve() {
+        // A long quadratic curve with a 10-on/10-off dash.
+        // Dash transitions should occur along the curve, not just at endpoints.
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.quad_to(50.0, 100.0, 100.0, 0.0);
+        let path = builder.build();
+
+        let effect = DashEffect::new(vec![10.0, 10.0], 0.0).unwrap();
+        let result = effect.apply(&path).unwrap();
+
+        // Each dash starts with a Move. On a curved path with length ~140,
+        // we should get multiple dashes (not just one at start and one at end).
+        let moves = result.iter().filter(|e| matches!(e, PathElement::Move(_))).count();
+        assert!(
+            moves >= 3,
+            "Expected at least 3 dashes on curved path (curve length ~140, dash period 20), got {}",
+            moves
+        );
+    }
+
+    #[test]
     fn test_corner_effect() {
         let corner = CornerEffect::new(5.0).unwrap();
         assert_eq!(corner.radius(), 5.0);
@@ -1139,5 +1295,49 @@ mod tests {
         let corner = make_corner(5.0).unwrap();
         let composed = make_compose(dash, corner);
         assert_eq!(composed.effect_kind(), PathEffectKind::Compose);
+    }
+
+    #[test]
+    fn test_trim_effect_normal_extracts_subsegment() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+
+        let effect = TrimEffect::new(0.25, 0.75, TrimMode::Normal).unwrap();
+        let result = effect.apply(&path).unwrap();
+
+        let bounds = result.bounds();
+        assert!(
+            (bounds.left - 25.0).abs() < 0.5,
+            "Trimmed left should be ~25, got {}",
+            bounds.left
+        );
+        assert!(
+            (bounds.right - 75.0).abs() < 0.5,
+            "Trimmed right should be ~75, got {}",
+            bounds.right
+        );
+    }
+
+    #[test]
+    fn test_trim_effect_inverted_keeps_outside_range() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+
+        let effect = TrimEffect::new(0.25, 0.75, TrimMode::Inverted).unwrap();
+        let result = effect.apply(&path).unwrap();
+
+        let bounds = result.bounds();
+        assert!((bounds.left - 0.0).abs() < 0.5);
+        assert!((bounds.right - 100.0).abs() < 0.5);
+        // Should have at least 2 contours (before 25 and after 75)
+        assert_eq!(
+            result.contour_count(),
+            2,
+            "Inverted trim should produce two contours"
+        );
     }
 }

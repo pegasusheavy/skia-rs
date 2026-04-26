@@ -13,6 +13,7 @@
 
 pub mod builder;
 pub mod effects;
+pub mod flatten;
 pub mod measure;
 pub mod ops;
 pub mod path;

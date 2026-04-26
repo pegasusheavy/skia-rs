@@ -2,7 +2,7 @@
 //!
 //! A typeface represents a specific font file or font family member.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// Font weight (100-900).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -83,6 +83,65 @@ pub enum FontSlant {
     Oblique,
 }
 
+/// Cached parsed metrics and metadata from a TrueType/OpenType font.
+///
+/// This avoids re-parsing the font tables for every metrics query.
+/// Per-glyph operations (outlines, bounding boxes) still require
+/// re-parsing because `ttf_parser::Face` methods borrow from the
+/// font data with a lifetime.
+#[derive(Debug, Clone)]
+struct ParsedTypeface {
+    units_per_em: u16,
+    ascender: i16,
+    descender: i16,
+    line_gap: i16,
+    cap_height: Option<i16>,
+    x_height: Option<i16>,
+    italic_angle: f32,
+    is_monospaced: bool,
+    bbox: (i16, i16, i16, i16), // xmin, ymin, xmax, ymax
+    underline_position: Option<i16>,
+    underline_thickness: Option<i16>,
+    strikeout_position: Option<i16>,
+    strikeout_thickness: Option<i16>,
+}
+
+/// Raw font metrics extracted from OpenType/TrueType tables.
+///
+/// These values are in font design units, not scaled to a specific size.
+/// Consumers (e.g., PDF font descriptors) can use this to avoid re-parsing
+/// the font with `ttf_parser`.
+#[derive(Debug, Clone, Copy)]
+pub struct RawFontMetrics {
+    /// Units per EM (typically 1000 or 2048).
+    pub units_per_em: u16,
+    /// Typographic ascender (distance above baseline, positive = up).
+    pub ascender: i16,
+    /// Typographic descender (distance below baseline, negative = down).
+    pub descender: i16,
+    /// Typographic line gap (additional spacing between lines).
+    pub line_gap: i16,
+    /// Cap height (height of uppercase letters), if present in OS/2 table.
+    pub cap_height: Option<i16>,
+    /// x-height (height of lowercase 'x'), if present in OS/2 table.
+    pub x_height: Option<i16>,
+    /// Italic angle in degrees (0 = upright, positive = clockwise slant).
+    pub italic_angle: f32,
+    /// Whether this is a monospaced font (from post table).
+    pub is_monospaced: bool,
+    /// Global bounding box: (xmin, ymin, xmax, ymax) in font units.
+    pub bbox: (i16, i16, i16, i16),
+    /// Underline center position (font units, positive = above baseline).
+    /// From the `post` table.
+    pub underline_position: Option<i16>,
+    /// Underline stroke thickness (font units). From the `post` table.
+    pub underline_thickness: Option<i16>,
+    /// Strikeout center position (font units). From the OS/2 table.
+    pub strikeout_position: Option<i16>,
+    /// Strikeout stroke thickness (font units). From the OS/2 table.
+    pub strikeout_thickness: Option<i16>,
+}
+
 /// Font style combining weight, width, and slant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct FontStyle {
@@ -150,6 +209,8 @@ pub struct Typeface {
     units_per_em: u16,
     /// Number of glyphs.
     glyph_count: u16,
+    /// Cached parsed metadata (initialized on first access).
+    parsed: OnceLock<Option<ParsedTypeface>>,
 }
 
 impl Typeface {
@@ -164,10 +225,15 @@ impl Typeface {
             data: None,
             units_per_em: 2048,
             glyph_count: 256,
+            parsed: OnceLock::new(),
         }
     }
 
     /// Create a typeface from font data.
+    ///
+    /// The data is parsed with `ttf_parser` to extract real `units_per_em`,
+    /// glyph count, family name, and style flags. Returns `None` if the data
+    /// is not a valid OpenType/TrueType font (or collection, index 0).
     pub fn from_data(data: Vec<u8>) -> Option<Self> {
         static NEXT_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 
@@ -175,13 +241,40 @@ impl Typeface {
             return None;
         }
 
+        let face = ttf_parser::Face::parse(&data, 0).ok()?;
+        let units_per_em = face.units_per_em();
+        let glyph_count = face.number_of_glyphs();
+
+        // Pull the first English family name from the name table if present.
+        let family_name = face
+            .names()
+            .into_iter()
+            .find(|n| n.name_id == ttf_parser::name_id::FAMILY && n.is_unicode())
+            .and_then(|n| n.to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        let weight = FontWeight(face.weight().to_number());
+        let slant = if face.is_italic() {
+            FontSlant::Italic
+        } else if face.is_oblique() {
+            FontSlant::Oblique
+        } else {
+            FontSlant::Upright
+        };
+        let width = FontWidth(face.width().to_number() as u8);
+
         Some(Self {
-            family_name: "Unknown".to_string(),
-            style: FontStyle::NORMAL,
+            family_name,
+            style: FontStyle {
+                weight,
+                width,
+                slant,
+            },
             id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             data: Some(Arc::new(data)),
-            units_per_em: 2048,
-            glyph_count: 256,
+            units_per_em,
+            glyph_count,
+            parsed: OnceLock::new(),
         })
     }
 
@@ -228,20 +321,72 @@ impl Typeface {
     }
 
     /// Check if this typeface has fixed width glyphs.
-    #[inline]
+    ///
+    /// Reads the `post` table's `isFixedPitch` flag via `ttf_parser`. Returns
+    /// `false` for dataless typefaces (no `post` table is loaded).
     pub fn is_fixed_pitch(&self) -> bool {
-        // Would need to parse font tables to determine this
-        false
+        self.parsed()
+            .map(|p| p.is_monospaced)
+            .unwrap_or(false)
+    }
+
+    /// Get cached parsed metadata if font data is available.
+    ///
+    /// This parses the font once on first access and caches the result.
+    /// Returns `None` if this typeface has no backing font data.
+    fn parsed(&self) -> Option<&ParsedTypeface> {
+        self.parsed
+            .get_or_init(|| {
+                let data = self.font_data()?;
+                let face = ttf_parser::Face::parse(data, 0).ok()?;
+                let (underline_position, underline_thickness) = face
+                    .underline_metrics()
+                    .map(|lm| (Some(lm.position), Some(lm.thickness)))
+                    .unwrap_or((None, None));
+                let (strikeout_position, strikeout_thickness) = face
+                    .strikeout_metrics()
+                    .map(|lm| (Some(lm.position), Some(lm.thickness)))
+                    .unwrap_or((None, None));
+                Some(ParsedTypeface {
+                    units_per_em: face.units_per_em(),
+                    ascender: face.ascender(),
+                    descender: face.descender(),
+                    line_gap: face.line_gap(),
+                    cap_height: face.capital_height(),
+                    x_height: face.x_height(),
+                    italic_angle: face.italic_angle().unwrap_or(0.0),
+                    is_monospaced: face.is_monospaced(),
+                    bbox: {
+                        let r = face.global_bounding_box();
+                        (r.x_min, r.y_min, r.x_max, r.y_max)
+                    },
+                    underline_position,
+                    underline_thickness,
+                    strikeout_position,
+                    strikeout_thickness,
+                })
+            })
+            .as_ref()
     }
 
     /// Get the glyph ID for a character.
+    ///
+    /// Uses the font's cmap table via `ttf_parser` when font data is loaded.
+    /// Falls back to returning the character code for ASCII when no font
+    /// data is available (the default typeface has no backing font).
     pub fn char_to_glyph(&self, c: char) -> u16 {
-        // Simple ASCII mapping for now
-        // A real implementation would use font tables
+        if let Some(data) = self.font_data() {
+            if let Ok(face) = ttf_parser::Face::parse(data, 0) {
+                return face.glyph_index(c).map(|g| g.0).unwrap_or(0);
+            }
+        }
+        // Fallback for the dataless default typeface — just use the codepoint
+        // for ASCII so existing non-data tests continue to produce non-zero
+        // glyph IDs.
         if c.is_ascii() {
             c as u16
         } else {
-            0 // .notdef glyph
+            0
         }
     }
 
@@ -253,6 +398,33 @@ impl Typeface {
     /// Get direct access to font data (for shaping).
     pub fn font_data(&self) -> Option<&[u8]> {
         self.data.as_ref().map(|d| d.as_slice())
+    }
+
+    /// Get raw font metrics in design units.
+    ///
+    /// Returns `None` if this typeface has no backing font data. These
+    /// metrics are cached on first access and do not require re-parsing.
+    ///
+    /// Consumers that need font-table metadata (PDF font descriptors,
+    /// SVG text layout) can use this instead of manually invoking
+    /// `ttf_parser::Face::parse()`.
+    pub fn raw_metrics(&self) -> Option<RawFontMetrics> {
+        let p = self.parsed()?;
+        Some(RawFontMetrics {
+            units_per_em: p.units_per_em,
+            ascender: p.ascender,
+            descender: p.descender,
+            line_gap: p.line_gap,
+            cap_height: p.cap_height,
+            x_height: p.x_height,
+            italic_angle: p.italic_angle,
+            is_monospaced: p.is_monospaced,
+            bbox: p.bbox,
+            underline_position: p.underline_position,
+            underline_thickness: p.underline_thickness,
+            strikeout_position: p.strikeout_position,
+            strikeout_thickness: p.strikeout_thickness,
+        })
     }
 }
 

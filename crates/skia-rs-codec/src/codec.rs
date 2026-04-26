@@ -618,9 +618,7 @@ impl ImageDecoder for WebpDecoder {
     #[cfg(feature = "webp")]
     fn decode<R: Read>(&self, mut reader: R) -> CodecResult<Image> {
         let mut data = Vec::new();
-        reader
-            .read_to_end(&mut data)
-            .map_err(|e| CodecError::Io(e))?;
+        reader.read_to_end(&mut data).map_err(CodecError::Io)?;
 
         let decoder = webp::Decoder::new(&data);
         let webp_image = decoder
@@ -629,9 +627,25 @@ impl ImageDecoder for WebpDecoder {
 
         let width = webp_image.width() as i32;
         let height = webp_image.height() as i32;
+        let has_alpha = webp_image.is_alpha();
 
-        // WebP returns RGBA
-        let pixels = webp_image.to_vec();
+        // WebP returns RGB for images without alpha and RGBA for images
+        // with alpha. Normalize to RGBA so the rest of the pipeline sees
+        // a predictable 4-byte-per-pixel layout.
+        let src = webp_image.to_vec();
+        let pixels = if has_alpha {
+            src
+        } else {
+            // Expand RGB -> RGBA with opaque alpha.
+            let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
+            for chunk in src.chunks_exact(3) {
+                rgba.push(chunk[0]);
+                rgba.push(chunk[1]);
+                rgba.push(chunk[2]);
+                rgba.push(255);
+            }
+            rgba
+        };
 
         let info = crate::ImageInfo::new(
             width,
@@ -2141,5 +2155,103 @@ mod tests {
 
         let dims = get_bmp_dimensions(&bmp).unwrap();
         assert_eq!(dims, (100, 50));
+    }
+
+    /// Build a small checkerboard Image for round-trip tests.
+    fn test_checkerboard(w: i32, h: i32) -> Image {
+        let info = crate::ImageInfo::new(
+            w,
+            h,
+            skia_rs_core::ColorType::Rgba8888,
+            skia_rs_core::AlphaType::Unpremul,
+        );
+        let row_bytes = (w as usize) * 4;
+        let mut pixels = vec![0u8; (h as usize) * row_bytes];
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                let off = y * row_bytes + x * 4;
+                let on = ((x + y) & 1) == 0;
+                pixels[off] = if on { 255 } else { 0 };
+                pixels[off + 1] = if on { 0 } else { 255 };
+                pixels[off + 2] = 0;
+                pixels[off + 3] = 255;
+            }
+        }
+        Image::from_raster_data_owned(info, pixels, row_bytes).unwrap()
+    }
+
+    #[cfg(feature = "png")]
+    #[test]
+    fn test_png_encode_decode_roundtrip() {
+        let image = test_checkerboard(4, 4);
+        let encoded = PngEncoder::new().encode_bytes(&image).unwrap();
+        assert_eq!(ImageFormat::from_magic(&encoded), ImageFormat::Png);
+
+        let decoded = PngDecoder::new().decode_bytes(&encoded).unwrap();
+        assert_eq!(decoded.dimensions(), (4, 4));
+
+        // PNG is lossless; pixel values should survive exactly. Alpha
+        // interpretation may differ, so compare RGB channels per pixel.
+        let src_pixels = image.peek_pixels().unwrap();
+        let dst_pixels = decoded.peek_pixels().unwrap();
+        for y in 0..4 {
+            for x in 0..4 {
+                let src_off = (y * 4 + x) * 4;
+                let dst_off = (y * 4 + x) * 4;
+                assert_eq!(
+                    src_pixels[src_off..src_off + 3],
+                    dst_pixels[dst_off..dst_off + 3],
+                    "pixel mismatch at ({}, {})",
+                    x,
+                    y
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "jpeg")]
+    #[test]
+    fn test_jpeg_encode_decode_roundtrip() {
+        // JPEG is lossy, but round-trip should preserve dimensions and
+        // yield a reasonable approximation. Use a larger, smoother source
+        // so quantization noise stays bounded.
+        let image = test_checkerboard(16, 16);
+        let encoded = JpegEncoder::new().encode_bytes(&image).unwrap();
+        assert_eq!(ImageFormat::from_magic(&encoded), ImageFormat::Jpeg);
+
+        let decoded = JpegDecoder::new().decode_bytes(&encoded).unwrap();
+        assert_eq!(decoded.dimensions(), (16, 16));
+    }
+
+    #[cfg(feature = "webp")]
+    #[test]
+    fn test_webp_encode_decode_roundtrip() {
+        let image = test_checkerboard(8, 8);
+        let encoded = WebpEncoder::lossless().encode_bytes(&image).unwrap();
+        assert_eq!(ImageFormat::from_magic(&encoded), ImageFormat::WebP);
+
+        let decoded = WebpDecoder::new().decode_bytes(&encoded).unwrap();
+        assert_eq!(decoded.dimensions(), (8, 8));
+    }
+
+    #[cfg(feature = "webp")]
+    #[test]
+    fn test_webp_lossy_roundtrip_dimensions() {
+        let image = test_checkerboard(16, 16);
+        let encoded = WebpEncoder::new().encode_bytes(&image).unwrap();
+        assert_eq!(ImageFormat::from_magic(&encoded), ImageFormat::WebP);
+
+        let decoded = WebpDecoder::new().decode_bytes(&encoded).unwrap();
+        assert_eq!(decoded.dimensions(), (16, 16));
+    }
+
+    #[test]
+    fn test_wbmp_encode_decode_roundtrip() {
+        // WBMP only supports 1-bit monochrome; feed a black/white pattern.
+        let image = test_checkerboard(4, 4);
+        let mut buf = Vec::new();
+        WbmpEncoder::new().encode(&image, &mut buf).unwrap();
+        let decoded = WbmpDecoder::new().decode_bytes(&buf).unwrap();
+        assert_eq!(decoded.dimensions(), (4, 4));
     }
 }

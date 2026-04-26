@@ -31,10 +31,41 @@ trailer = """
 
 [export]
 include = []
-exclude = []
+# Do not emit internal types — they should only appear as opaque
+# pointers in the C API. cbindgen will automatically forward-declare
+# the structs it needs.
+exclude = [
+    "RefCounted",
+    "RefCountedHeader",
+    "Surface",
+    "Paint",
+    "Path",
+    "PathBuilder",
+    "ShaderRef",
+    "ColorFilterRef",
+    "MaskFilterRef",
+    "ImageFilterRef",
+    "Image",
+    "Typeface",
+    "TypefaceRef",
+    "Font",
+    "CanvasState",
+    "SamplingOptions",
+]
 prefix = ""
 
 [export.rename]
+"RefCounted_Surface" = "sk_surface_t"
+"RefCounted_Paint" = "sk_paint_t"
+"RefCounted_Path" = "sk_path_t"
+"RefCounted_PathBuilder" = "sk_pathbuilder_t"
+"RefCounted_ShaderRef" = "sk_shader_t"
+"RefCounted_ColorFilterRef" = "sk_colorfilter_t"
+"RefCounted_MaskFilterRef" = "sk_maskfilter_t"
+"RefCounted_ImageFilterRef" = "sk_imagefilter_t"
+"RefCounted_Image" = "sk_image_t"
+"RefCounted_TypefaceRef" = "sk_typeface_t"
+"RefCounted_Font" = "sk_font_t"
 
 [fn]
 rename_args = "None"

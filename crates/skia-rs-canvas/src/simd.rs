@@ -152,11 +152,13 @@ pub fn fill_span_solid(dst: &mut [u8], color: Color) {
             unsafe { fill_span_blend_avx2(dst, color) };
             return;
         }
-        if caps.sse42 && len >= 4 {
-            // SAFETY: We've verified SSE4.1 support and have enough data
-            unsafe { fill_span_blend_sse41(dst, color) };
-            return;
-        }
+        // SSE4.1 path disabled due to correctness issues - it applies alpha
+        // uniformly rather than per-channel, producing incorrect color values
+        // for semi-transparent blends. Fall back to scalar until fixed.
+        // if caps.sse42 && len >= 4 {
+        //     unsafe { fill_span_blend_sse41(dst, color) };
+        //     return;
+        // }
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -632,6 +634,47 @@ mod tests {
                     "Pixel {} R incorrect: {}",
                     i,
                     chunk[0]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_fill_span_blend_half_alpha_correctness() {
+        // The blend formula is: result = (src * 255 + dst * (255 - src_alpha)) / 255
+        // This implements src-over where src RGB is treated as if fully opaque
+        // and then alpha-blended. For half-alpha white (255,255,255,128) over black:
+        // result = (255 * 255 + 0 * 127) / 255 = 255
+        //
+        // SIMD implementations may use >>8 (divide by 256) instead of /255 for
+        // performance, which can produce results that differ by ±1 due to rounding.
+        // This test verifies that SIMD paths are within tolerance of the scalar path.
+        let mut dst_scalar = vec![0u8; 64]; // 16 RGBA pixels, all black
+        let mut dst_simd = vec![0u8; 64];
+        let src = Color::from_argb(128, 255, 255, 255); // half-alpha white
+
+        // Fill with scalar path
+        fill_span_blend_scalar(&mut dst_scalar, src);
+
+        // Fill with SIMD path (will use AVX2/NEON if available, or fall back to scalar)
+        fill_span_solid(&mut dst_simd, src);
+
+        // Verify SIMD and scalar produce nearly identical results (±1 tolerance for rounding)
+        for (i, (chunk_scalar, chunk_simd)) in dst_scalar
+            .chunks_exact(4)
+            .zip(dst_simd.chunks_exact(4))
+            .enumerate()
+        {
+            for ch in 0..4 {
+                let diff = (chunk_scalar[ch] as i16 - chunk_simd[ch] as i16).abs();
+                assert!(
+                    diff <= 1,
+                    "Pixel {} channel {} differs by {}: scalar {} vs simd {}",
+                    i,
+                    ch,
+                    diff,
+                    chunk_scalar[ch],
+                    chunk_simd[ch]
                 );
             }
         }

@@ -7,6 +7,101 @@
 //! - Type system for SkSL types
 //! - Compilation to target languages (GLSL, SPIR-V, MSL, WGSL)
 
+/// Preprocess SkSL source: handle #define, #ifdef, #ifndef, #endif.
+///
+/// This is a minimal preprocessor that does NOT support macro functions,
+/// token pasting, or recursive expansion. Values are substituted as plain
+/// text. Complex cases are out of scope for baseline support.
+pub fn preprocess(src: &str) -> String {
+    let mut defines: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut out = String::with_capacity(src.len());
+    // Stack of "currently emitting" flags; top-of-stack controls whether lines are included
+    let mut emit_stack: Vec<bool> = vec![true];
+
+    for line in src.lines() {
+        let trimmed = line.trim_start();
+        let currently_emitting = *emit_stack.last().unwrap_or(&true);
+
+        if let Some(rest) = trimmed.strip_prefix("#define") {
+            if currently_emitting {
+                let rest = rest.trim_start();
+                if let Some(space) = rest.find(char::is_whitespace) {
+                    let name = rest[..space].trim().to_string();
+                    let value = rest[space..].trim().to_string();
+                    defines.insert(name, value);
+                } else if !rest.is_empty() {
+                    // #define NAME with no value: register as empty
+                    defines.insert(rest.trim().to_string(), String::new());
+                }
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("#undef") {
+            if currently_emitting {
+                defines.remove(rest.trim());
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("#ifdef") {
+            let name = rest.trim();
+            let cond = defines.contains_key(name);
+            emit_stack.push(currently_emitting && cond);
+        } else if let Some(rest) = trimmed.strip_prefix("#ifndef") {
+            let name = rest.trim();
+            let cond = !defines.contains_key(name);
+            emit_stack.push(currently_emitting && cond);
+        } else if trimmed.starts_with("#else") {
+            if emit_stack.len() > 0 {
+                let parent = if emit_stack.len() > 1 {
+                    emit_stack[emit_stack.len() - 2]
+                } else {
+                    true
+                };
+                let idx = emit_stack.len() - 1;
+                emit_stack[idx] = parent && !emit_stack[idx];
+            }
+        } else if trimmed.starts_with("#endif") {
+            emit_stack.pop();
+            if emit_stack.is_empty() {
+                emit_stack.push(true);
+            }
+        } else if currently_emitting {
+            // Substitute any defined names in the line (whole-word match)
+            let substituted = substitute_defines(line, &defines);
+            out.push_str(&substituted);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn substitute_defines(line: &str, defines: &std::collections::HashMap<String, String>) -> String {
+    if defines.is_empty() {
+        return line.to_string();
+    }
+    // Walk the line, replacing identifier tokens that match a define.
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.char_indices().peekable();
+    while let Some((start, c)) = chars.next() {
+        if c.is_ascii_alphabetic() || c == '_' {
+            let mut end = start + c.len_utf8();
+            while let Some(&(_, nc)) = chars.peek() {
+                if nc.is_ascii_alphanumeric() || nc == '_' {
+                    let (_, _) = chars.next().unwrap();
+                    end += nc.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            let ident = &line[start..end];
+            if let Some(value) = defines.get(ident) {
+                out.push_str(value);
+            } else {
+                out.push_str(ident);
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// SkSL token types.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
@@ -515,6 +610,33 @@ pub enum SkslType {
     Struct(String),
 }
 
+impl std::fmt::Display for SkslType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SkslType::Void => write!(f, "void"),
+            SkslType::Bool => write!(f, "bool"),
+            SkslType::Int => write!(f, "int"),
+            SkslType::Float => write!(f, "float"),
+            SkslType::Half => write!(f, "half"),
+            SkslType::Vec2 => write!(f, "vec2"),
+            SkslType::Vec3 => write!(f, "vec3"),
+            SkslType::Vec4 => write!(f, "vec4"),
+            SkslType::Half2 => write!(f, "half2"),
+            SkslType::Half3 => write!(f, "half3"),
+            SkslType::Half4 => write!(f, "half4"),
+            SkslType::Mat2 => write!(f, "mat2"),
+            SkslType::Mat3 => write!(f, "mat3"),
+            SkslType::Mat4 => write!(f, "mat4"),
+            SkslType::Sampler2D => write!(f, "sampler2D"),
+            SkslType::Shader => write!(f, "shader"),
+            SkslType::ColorFilter => write!(f, "colorFilter"),
+            SkslType::Blender => write!(f, "blender"),
+            SkslType::Array(inner, n) => write!(f, "{}[{}]", inner, n),
+            SkslType::Struct(name) => write!(f, "struct {}", name),
+        }
+    }
+}
+
 impl SkslType {
     /// Get the GLSL type name.
     pub fn glsl_name(&self) -> &'static str {
@@ -953,6 +1075,9 @@ impl<'a> Parser<'a> {
         let mut program = SkslProgram::default();
 
         while !self.check(&Token::Eof) {
+            // Skip layout qualifiers at the top level
+            self.skip_layout_qualifier();
+
             if self.check(&Token::Struct) {
                 program.structs.push(self.parse_struct()?);
             } else if self.check(&Token::Uniform) {
@@ -966,6 +1091,26 @@ impl<'a> Parser<'a> {
         }
 
         Ok(program)
+    }
+
+    fn skip_layout_qualifier(&mut self) {
+        if matches!(self.current, Token::Layout) {
+            self.advance(); // consume 'layout'
+            // Consume `(`
+            if matches!(self.current, Token::LParen) {
+                self.advance();
+                // Skip tokens until matching `)`
+                let mut depth = 1;
+                while depth > 0 {
+                    match self.advance() {
+                        Token::LParen => depth += 1,
+                        Token::RParen => depth -= 1,
+                        Token::Eof => break,
+                        _ => {}
+                    }
+                }
+            }
+        }
     }
 
     fn advance(&mut self) -> Token {
@@ -1116,6 +1261,9 @@ impl<'a> Parser<'a> {
 
         let mut params = Vec::new();
         while !self.check(&Token::RParen) {
+            // Skip layout qualifier before parameter
+            self.skip_layout_qualifier();
+
             let qualifier = if self.check(&Token::In) {
                 self.advance();
                 ParamQualifier::In
@@ -1741,5 +1889,128 @@ mod tests {
         assert_eq!(program.uniforms.len(), 2);
         assert_eq!(program.uniforms[0].name, "time");
         assert_eq!(program.uniforms[1].name, "resolution");
+    }
+
+    #[test]
+    fn test_preprocess_define_substitution() {
+        let src = "#define PI 3.14159\nfloat x = PI;";
+        let out = preprocess(src);
+        assert!(out.contains("3.14159"));
+        assert!(!out.contains("#define"));
+    }
+
+    #[test]
+    fn test_preprocess_ifdef_inclusion() {
+        let src = "#define DEBUG\n#ifdef DEBUG\nfloat debug_value = 1.0;\n#endif\nfloat x = 0.0;";
+        let out = preprocess(src);
+        assert!(out.contains("debug_value"));
+        assert!(out.contains("float x = 0.0"));
+    }
+
+    #[test]
+    fn test_preprocess_ifdef_exclusion() {
+        let src = "#ifdef UNDEFINED\nfloat hidden = 1.0;\n#endif\nfloat visible = 2.0;";
+        let out = preprocess(src);
+        assert!(!out.contains("hidden"));
+        assert!(out.contains("visible"));
+    }
+
+    #[test]
+    fn test_preprocess_ifndef_inclusion() {
+        let src = "#ifndef NOT_DEFINED\nfloat x = 1.0;\n#endif";
+        let out = preprocess(src);
+        assert!(out.contains("float x = 1.0"));
+    }
+
+    #[test]
+    fn test_preprocess_else_branch() {
+        let src = "#ifdef UNDEFINED\nfloat a = 1.0;\n#else\nfloat b = 2.0;\n#endif";
+        let out = preprocess(src);
+        assert!(!out.contains("float a"));
+        assert!(out.contains("float b = 2.0"));
+    }
+
+    #[test]
+    fn test_preprocess_nested_ifdef() {
+        let src = "#define OUTER\n#ifdef OUTER\n#define INNER\n#ifdef INNER\nfloat both = 1.0;\n#endif\n#endif";
+        let out = preprocess(src);
+        assert!(out.contains("both"));
+    }
+
+    #[test]
+    fn test_parse_empty_program() {
+        let mut parser = Parser::new("");
+        let result = parser.parse_program();
+        // Should parse as empty program or return clean error — not panic
+        let _ = result;
+    }
+
+    #[test]
+    fn test_parse_only_whitespace() {
+        let mut parser = Parser::new("   \n\t  \n");
+        let result = parser.parse_program();
+        let _ = result;
+    }
+
+    #[test]
+    fn test_parse_multiple_functions() {
+        let src =
+            "float square(float x) { return x * x; }\nhalf4 main(float2 p) { return half4(square(p.x), 0.0, 0.0, 1.0); }";
+        let mut parser = Parser::new(src);
+        let program = parser.parse_program();
+        assert!(
+            program.is_ok(),
+            "multi-function program should parse: {:?}",
+            program.err()
+        );
+    }
+
+    #[test]
+    fn test_parse_if_else() {
+        let src = "half4 main(float2 p) { if (p.x > 0.0) { return half4(1.0, 0.0, 0.0, 1.0); } else { return half4(0.0, 1.0, 0.0, 1.0); } }";
+        let mut parser = Parser::new(src);
+        let program = parser.parse_program();
+        assert!(
+            program.is_ok(),
+            "if/else program should parse: {:?}",
+            program.err()
+        );
+    }
+
+    #[test]
+    fn test_parse_for_loop() {
+        let src = "half4 main(float2 p) { float sum = 0.0; for (int i = 0; i < 4; i = i + 1) { sum = sum + 1.0; } return half4(sum, 0.0, 0.0, 1.0); }";
+        let mut parser = Parser::new(src);
+        let program = parser.parse_program();
+        assert!(
+            program.is_ok(),
+            "for loop program should parse: {:?}",
+            program.err()
+        );
+    }
+
+    #[test]
+    fn test_parse_compound_assign() {
+        let src =
+            "half4 main(float2 p) { float x = 1.0; x += 2.0; return half4(x, 0.0, 0.0, 1.0); }";
+        let mut parser = Parser::new(src);
+        let program = parser.parse_program();
+        assert!(
+            program.is_ok(),
+            "compound assign should parse: {:?}",
+            program.err()
+        );
+    }
+
+    #[test]
+    fn test_parse_ternary() {
+        let src = "half4 main(float2 p) { float x = p.x > 0.0 ? 1.0 : 0.0; return half4(x, 0.0, 0.0, 1.0); }";
+        let mut parser = Parser::new(src);
+        let program = parser.parse_program();
+        assert!(
+            program.is_ok(),
+            "ternary should parse: {:?}",
+            program.err()
+        );
     }
 }

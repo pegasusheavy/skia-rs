@@ -51,23 +51,25 @@
 
 ## Project Status Summary
 
-| Phase | Status | Progress |
-|-------|--------|----------|
-| Phase 0: Foundation | ✅ Complete | 100% |
-| Phase 1: Core Types | ✅ Complete | 100% |
-| Phase 2: Path System | ✅ Complete | 100% |
-| Phase 3: Paint & Shaders | ✅ Complete | 100% |
-| Phase 4: Canvas & Drawing | ✅ Complete | 100% |
-| Phase 5: Text & Fonts | ✅ Complete | 100% |
-| Phase 6: Image & Codec | ✅ Complete | 100% |
-| Phase 7: GPU Backend | ✅ Complete | 100% |
-| Phase 8: CPU Rasterizer | ✅ Complete | 100% |
-| Phase 9: Advanced Features | ✅ Complete | 100% |
-| Phase 10: FFI Layer | ✅ Complete | 100% |
-| Phase 11: Testing | ✅ Complete | 100% |
-| Phase 12: Documentation | ✅ Complete | 100% |
+**Comprehensive audit completed 2026-04-23:** 57 gaps identified across foundation crates.
 
-**Key Achievements:**
+| Phase | Status | Progress | Gaps |
+|-------|--------|----------|------|
+| Phase 0: Foundation | ✅ Complete | 100% | 0 |
+| Phase 1: Core Types | 🔧 Needs Work | 94% | 12 gaps (5 critical) |
+| Phase 2: Path System | 🔧 Needs Work | 87% | 14 gaps (6 critical, PathMeasure stub) |
+| Phase 3: Paint & Shaders | 🔧 Needs Work | 83% | 31 gaps (12 critical) |
+| Phase 4: Canvas & Drawing | ✅ Complete | 100% | 0 |
+| Phase 5: Text & Fonts | ✅ Complete | 100% | 0 |
+| Phase 6: Image & Codec | ✅ Complete | 100% | 0 |
+| Phase 7: GPU Backend | ✅ Complete | 100% | 0 |
+| Phase 8: CPU Rasterizer | ✅ Complete | 100% | 0 |
+| Phase 9: Advanced Features | ✅ Complete | 100% | 0 |
+| Phase 10: FFI Layer | ✅ Complete | 100% | 0 |
+| Phase 11: Testing | ✅ Complete | 100% | 0 |
+| Phase 12: Documentation | ✅ Complete | 100% | 0 |
+
+**Recent Achievements:**
 - Full CPU software rasterizer with anti-aliasing, SIMD optimization (SSE4.1, AVX2, NEON)
 - PNG/JPEG/GIF/WebP/BMP/ICO/WBMP/AVIF/RAW codec support
 - Complete path system with boolean operations and path effects
@@ -87,6 +89,102 @@
 - SkSL runtime effects with GLSL/WGSL/MSL compilation
 - Android platform APIs (HardwareBuffer, Bitmap, SurfaceTexture, Choreographer)
 - WASM target support with wasm-bindgen
+
+**Current Focus (2026-04-23):** Foundation API completion - addressing 57 gaps identified in comprehensive audit
+
+---
+
+## 🚨 Foundation API Completion (Current Priority)
+
+**Audit completed:** 2026-04-23  
+**Total gaps:** 57 (23 critical, 27 nice-to-have, 7 test coverage)  
+**Estimated effort:** 9-12 weeks  
+**Status:** Ready for implementation
+
+### Critical Gaps by Priority
+
+#### Immediate (1-3 days)
+- [ ] **Paint filter fields** (1 day) - Quick fix unlocking 810 lines of filter.rs module
+  - Add `mask_filter`, `color_filter`, `image_filter` fields to Paint struct
+  - See: `crates/skia-rs-paint/GAPS.md` GAP-C1
+  
+- [ ] **BlendMode::apply()** (2-3 days) - Unblocks entire blend system
+  - Implement Porter-Duff and separable/non-separable blend mode operations
+  - See: `crates/skia-rs-paint/GAPS.md` GAP-C6
+
+#### Short-term (1-2 weeks)
+- [ ] **Matrix divide-by-zero** (30 minutes) - Prevents inf/NaN in perspective transforms
+  - Add w==0 guard in Matrix::map_point()
+  - See: `crates/skia-rs-core/GAPS.md` GAP-C4
+
+- [ ] **Region::union() optimization** (1-2 days) - Prevents O(n) degradation
+  - Implement rectangle coalescing to prevent unbounded growth
+  - See: `crates/skia-rs-core/GAPS.md` GAP-C3
+
+- [ ] **IccProfile parsing** (3-5 days) - Enable color-managed workflows
+  - Parse ICC tag table instead of hardcoding sRGB
+  - See: `crates/skia-rs-core/GAPS.md` GAP-C1
+
+- [ ] **Orphan file consolidation** (1-2 days) - Remove duplicate Matrix implementations
+  - Consolidate geometry.rs Matrix and orphan matrix.rs
+  - Delete or expose orphan scalar.rs
+  - See: `crates/skia-rs-core/GAPS.md` GAP-C5
+
+- [ ] **Shader implementations** (1-2 weeks) - Complete stub shader types
+  - TwoPointConicalGradient::sample() (2-3 days)
+  - BlendShader::sample() (depends on BlendMode::apply)
+  - PerlinNoiseShader::sample() (3-4 days)
+  - ComposeShader::sample() (1 day)
+  - LocalMatrixShader::sample() (1 day)
+  - ImageShader pixel data + sample() (2-3 days)
+  - See: `crates/skia-rs-paint/GAPS.md` GAP-C3 through GAP-C8
+
+#### Medium-term (2-4 weeks)
+- [ ] **Boolean path operations** (2-3 weeks) - Handle partial overlaps correctly
+  - Implement Greiner-Hormann or Vatti clipping algorithm
+  - Fix subtract_polygon() to handle partial overlaps
+  - Replace convex-only constraint with robust algorithm
+  - See: `crates/skia-rs-path/GAPS.md` GAP-C4, GAP-C5
+
+- [ ] **DashEffect curve handling** (3-5 days) - Fix visibly incorrect dashed curves
+  - Apply dash intervals along flattened curve segments
+  - See: `crates/skia-rs-path/GAPS.md` GAP-C6
+
+- [ ] **SkSL backends** (1 week) - Complete WGSL and MSL code generation
+  - WGSL: 8 missing statement types (3-4 days)
+  - MSL: Fix function body emission (2-3 days)
+  - See: `crates/skia-rs-paint/GAPS.md` GAP-C11, GAP-C12
+
+#### Long-term (3+ weeks)
+- [ ] **PathMeasure implementation** (2-3 weeks) - Most complex gap
+  - Curve flattening with adaptive tolerance
+  - Cumulative length table per contour
+  - Point/tangent/matrix lookup via binary search
+  - Segment extraction
+  - **Unblocks:** TrimEffect, Path1DEffect
+  - See: `crates/skia-rs-path/GAPS.md` GAP-C1
+
+### Nice-to-Have Improvements (27 gaps)
+
+See individual GAPS.md files for complete list:
+- `crates/skia-rs-core/GAPS.md` - 7 nice-to-have gaps
+- `crates/skia-rs-path/GAPS.md` - 8 nice-to-have gaps  
+- `crates/skia-rs-paint/GAPS.md` - 12 nice-to-have gaps
+
+### Test Coverage Priorities
+
+**Zero test coverage:**
+- `skia-rs-path`: path.rs, builder.rs, measure.rs
+- `skia-rs-core`: Point3, RRect, Size, most Matrix44 ops, ICC parsing, complex Region ops
+- `skia-rs-paint`: Several shader types, filter implementations
+
+**Recommendation:** Add tests as part of gap implementation using TDD approach.
+
+### References
+- Audit summary: `docs/superpowers/plans/audit-summary.md`
+- Core gaps: `crates/skia-rs-core/GAPS.md`
+- Path gaps: `crates/skia-rs-path/GAPS.md`
+- Paint gaps: `crates/skia-rs-paint/GAPS.md`
 
 ---
 

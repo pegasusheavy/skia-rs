@@ -31,6 +31,13 @@ impl GlyphRun {
     }
 
     /// Get the bounds of this run.
+    ///
+    /// The vertical extent uses the font's ascent/descent (from real
+    /// `hhea`/`OS/2` tables when present). The horizontal extent spans
+    /// every glyph position with the right edge extended by the actual
+    /// per-glyph advance from `hmtx` — not the old `size * 0.5` guess,
+    /// which systematically under-reported width for wide glyphs and
+    /// over-reported for narrow ones.
     pub fn bounds(&self) -> Rect {
         if self.positions.is_empty() {
             return Rect::EMPTY;
@@ -46,9 +53,12 @@ impl GlyphRun {
         for (i, pos) in self.positions.iter().enumerate() {
             let x = self.origin.x + pos.x;
             left = left.min(x);
-            // Estimate glyph width
-            let width = self.font.size() * 0.5;
-            right = right.max(x + width);
+            let advance = self
+                .glyphs
+                .get(i)
+                .map(|&g| self.font.glyph_advance(g))
+                .unwrap_or_else(|| self.font.size() * 0.5);
+            right = right.max(x + advance);
         }
 
         Rect::new(left, top, right, bottom)

@@ -899,8 +899,16 @@ pub enum Corner {
 
 impl RRect {
     /// Creates a rounded rectangle with the same radius for all corners.
+    ///
+    /// Radii are clamped to `[0, width/2]` for x and `[0, height/2]` for y,
+    /// matching Skia's `SkRRect::setRectXY` behavior. Negative radii are clamped
+    /// to zero, and radii exceeding half the rect dimension are reduced to fit.
     #[inline]
     pub fn from_rect_xy(rect: Rect, x_rad: Scalar, y_rad: Scalar) -> Self {
+        let half_w = rect.width() * 0.5;
+        let half_h = rect.height() * 0.5;
+        let x_rad = x_rad.clamp(0.0, half_w);
+        let y_rad = y_rad.clamp(0.0, half_h);
         let radius = Point::new(x_rad, y_rad);
         Self {
             rect,
@@ -1069,10 +1077,13 @@ impl Matrix {
     }
 
     /// Creates a skew matrix.
+    ///
+    /// Takes raw skew factors (not angles), matching Skia's `SkMatrix::MakeSkew`.
+    /// To skew by an angle, pass `angle.tan()` as the parameter.
     #[inline]
     pub fn skew(kx: Scalar, ky: Scalar) -> Self {
         Self {
-            values: [1.0, kx.tan(), 0.0, ky.tan(), 1.0, 0.0, 0.0, 0.0, 1.0],
+            values: [1.0, kx, 0.0, ky, 1.0, 0.0, 0.0, 0.0, 1.0],
         }
     }
 
@@ -1158,6 +1169,10 @@ impl Matrix {
     }
 
     /// Transforms a point by this matrix.
+    ///
+    /// For perspective transformations (when the bottom row is not [0, 0, 1]),
+    /// the result is the projected point. If the perspective division would
+    /// produce w == 0, returns (0, 0) to avoid producing NaN or infinity.
     #[inline]
     pub fn map_point(&self, point: Point) -> Point {
         let m = &self.values;
@@ -1167,7 +1182,12 @@ impl Matrix {
         // Handle perspective
         if m[6] != 0.0 || m[7] != 0.0 || m[8] != 1.0 {
             let w = m[6] * point.x + m[7] * point.y + m[8];
-            Point { x: x / w, y: y / w }
+            if w == 0.0 {
+                Point { x: 0.0, y: 0.0 }
+            } else {
+                let w_inv = 1.0 / w;
+                Point { x: x * w_inv, y: y * w_inv }
+            }
         } else {
             Point { x, y }
         }
@@ -1207,9 +1227,16 @@ impl Matrix {
     }
 
     /// Computes the inverse matrix, or None if singular.
+    ///
+    /// Uses a singularity threshold appropriate for f32 precision. Matrices with
+    /// determinants below `Scalar::EPSILON * 256` are rejected to avoid producing
+    /// numerically meaningless inverses due to limited floating-point precision.
     pub fn invert(&self) -> Option<Self> {
         let det = self.determinant();
-        if det.abs() < 1e-10 {
+        // Skia uses 1/4096 ≈ 2.44e-4. We use a tighter bound that's
+        // still well above f32 epsilon (~1.19e-7).
+        const SINGULARITY_THRESHOLD: Scalar = Scalar::EPSILON * 256.0;
+        if det.abs() < SINGULARITY_THRESHOLD {
             return None;
         }
 
@@ -1276,5 +1303,115 @@ mod tests {
         let result = m.concat(&inv);
         assert!((result.values[0] - 1.0).abs() < 1e-6);
         assert!((result.values[4] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_matrix_map_point_perspective_zero_w() {
+        // Matrix that produces w=0 for the origin point.
+        // perspective row: w = x + y + 0 = 0 at (0, 0).
+        let matrix = Matrix {
+            values: [
+                1.0, 0.0, 0.0,
+                0.0, 1.0, 0.0,
+                1.0, 1.0, 0.0,
+            ],
+        };
+        let point = matrix.map_point(Point::new(0.0, 0.0));
+        // Should return (0, 0) instead of NaN/inf
+        assert!(point.x.is_finite(), "x should be finite, got {}", point.x);
+        assert!(point.y.is_finite(), "y should be finite, got {}", point.y);
+        assert_eq!(point.x, 0.0);
+        assert_eq!(point.y, 0.0);
+    }
+
+    #[test]
+    fn test_matrix_skew_raw_factors() {
+        // Skew with kx=0.5, ky=0.0 should produce a matrix where
+        // a point (0, 1) maps to (0.5, 1) - x is shifted by 0.5*y
+        let matrix = Matrix::skew(0.5, 0.0);
+        let point = matrix.map_point(Point::new(0.0, 1.0));
+        assert!((point.x - 0.5).abs() < 1e-6, "Expected x=0.5, got {}", point.x);
+        assert!((point.y - 1.0).abs() < 1e-6, "Expected y=1.0, got {}", point.y);
+
+        // Skew matrix values should match: [1, 0.5, 0, 0, 1, 0, 0, 0, 1]
+        let m = matrix.values;
+        assert_eq!(m[0], 1.0);
+        assert!((m[1] - 0.5).abs() < 1e-6);
+        assert_eq!(m[2], 0.0);
+        assert_eq!(m[3], 0.0);
+        assert_eq!(m[4], 1.0);
+        assert_eq!(m[5], 0.0);
+    }
+
+    #[test]
+    fn test_matrix_map_point_perspective_normal() {
+        // Verify normal perspective division still works.
+        // w = 2 for all points (persp_2 = 2, persp_0/1 = 0).
+        let matrix = Matrix {
+            values: [
+                1.0, 0.0, 0.0,
+                0.0, 1.0, 0.0,
+                0.0, 0.0, 2.0,
+            ],
+        };
+        let point = matrix.map_point(Point::new(4.0, 6.0));
+        // x/w = 4/2 = 2, y/w = 6/2 = 3
+        assert_eq!(point.x, 2.0);
+        assert_eq!(point.y, 3.0);
+    }
+
+    #[test]
+    fn test_rrect_from_rect_xy_clamps_radii() {
+        let rect = Rect::new(0.0, 0.0, 100.0, 50.0);
+
+        // Radii larger than half-dimensions should be clamped
+        let rrect = RRect::from_rect_xy(rect, 60.0, 30.0);
+        assert_eq!(rrect.radii[0].x, 50.0, "rx should clamp to width/2 = 50");
+        assert_eq!(rrect.radii[0].y, 25.0, "ry should clamp to height/2 = 25");
+    }
+
+    #[test]
+    fn test_rrect_from_rect_xy_negative_radii_clamped_to_zero() {
+        let rect = Rect::new(0.0, 0.0, 100.0, 50.0);
+
+        let rrect = RRect::from_rect_xy(rect, -5.0, -10.0);
+        assert_eq!(rrect.radii[0].x, 0.0);
+        assert_eq!(rrect.radii[0].y, 0.0);
+    }
+
+    #[test]
+    fn test_rrect_from_rect_xy_normal_radii_unchanged() {
+        let rect = Rect::new(0.0, 0.0, 100.0, 50.0);
+
+        let rrect = RRect::from_rect_xy(rect, 10.0, 5.0);
+        assert_eq!(rrect.radii[0].x, 10.0);
+        assert_eq!(rrect.radii[0].y, 5.0);
+    }
+
+    #[test]
+    fn test_matrix_invert_uses_appropriate_epsilon_for_f32() {
+        // Determinant ~1e-6 (above old 1e-10 but below f32 epsilon * 256 (~3e-5))
+        // This matrix should be considered singular for f32 precision, rejecting
+        // garbage inverses, but the old 1e-10 threshold would incorrectly pass it
+        let too_small = Matrix {
+            values: [
+                1e-3, 0.0, 0.0,
+                0.0, 1e-3, 0.0,  // det = 1e-6, above 1e-10 but below f32 safe threshold
+                0.0, 0.0, 1.0,
+            ],
+        };
+        assert!(too_small.invert().is_none(),
+                "Matrix with det 1e-6 should be singular for f32");
+
+        // Well above f32 epsilon * 256 - should invert successfully
+        let invertible = Matrix {
+            values: [
+                0.1, 0.0, 0.0,
+                0.0, 0.1, 0.0,  // det = 0.01
+                0.0, 0.0, 1.0,
+            ],
+        };
+        assert!(invertible.invert().is_some(),
+                "Matrix with determinant 0.01 should be invertible");
     }
 }

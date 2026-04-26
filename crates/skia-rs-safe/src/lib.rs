@@ -68,7 +68,7 @@ pub mod android;
 
 /// Convenience prelude for common types.
 pub mod prelude {
-    pub use skia_rs_canvas::{RasterCanvas, Surface};
+    pub use skia_rs_canvas::{Canvas, Surface};
     pub use skia_rs_core::{Color, Color4f, Matrix, Point, Rect, Scalar};
     pub use skia_rs_paint::{Paint, Style};
     pub use skia_rs_path::{Path, PathBuilder};

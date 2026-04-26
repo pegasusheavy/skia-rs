@@ -265,26 +265,74 @@ impl Matrix44 {
         }
     }
 
+    /// Build an orthographic projection matrix, returning `None` if any range is zero.
+    ///
+    /// This is a checked variant of [`Self::ortho`] that validates preconditions
+    /// instead of producing infinity or NaN. Use this when the projection
+    /// parameters come from untrusted sources.
+    pub fn ortho_checked(
+        left: Scalar,
+        right: Scalar,
+        bottom: Scalar,
+        top: Scalar,
+        near: Scalar,
+        far: Scalar,
+    ) -> Option<Self> {
+        if left == right || bottom == top || near == far {
+            return None;
+        }
+        Some(Self::ortho(left, right, bottom, top, near, far))
+    }
+
+    /// Build a perspective projection matrix, returning `None` if fov_y or aspect is zero.
+    ///
+    /// This is a checked variant of [`Self::perspective`] that validates
+    /// preconditions instead of producing infinity or NaN.
+    pub fn perspective_checked(
+        fov_y: Scalar,
+        aspect: Scalar,
+        near: Scalar,
+        far: Scalar,
+    ) -> Option<Self> {
+        if fov_y == 0.0 || near == far || aspect == 0.0 {
+            return None;
+        }
+        Some(Self::perspective(fov_y, aspect, near, far))
+    }
+
     /// Returns true if this is the identity matrix.
     pub fn is_identity(&self) -> bool {
         *self == Self::IDENTITY
     }
 
-    /// Get a matrix element by row and column.
+    /// Get the value at (row, col).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `row >= 4` or `col >= 4`.
     #[inline]
     pub fn get(&self, row: usize, col: usize) -> Scalar {
+        assert!(row < 4, "row out of bounds: {} (must be < 4)", row);
+        assert!(col < 4, "col out of bounds: {} (must be < 4)", col);
         self.values[col * 4 + row]
     }
 
-    /// Set a matrix element by row and column.
+    /// Set the value at (row, col).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `row >= 4` or `col >= 4`.
     #[inline]
     pub fn set(&mut self, row: usize, col: usize, value: Scalar) {
+        assert!(row < 4, "row out of bounds: {} (must be < 4)", row);
+        assert!(col < 4, "col out of bounds: {} (must be < 4)", col);
         self.values[col * 4 + row] = value;
     }
 
     /// Get a column as a 4-element array.
     #[inline]
     pub fn col(&self, idx: usize) -> [Scalar; 4] {
+        assert!(idx < 4, "col index out of bounds: {} (must be < 4)", idx);
         let base = idx * 4;
         [
             self.values[base],
@@ -297,6 +345,7 @@ impl Matrix44 {
     /// Get a row as a 4-element array.
     #[inline]
     pub fn row(&self, idx: usize) -> [Scalar; 4] {
+        assert!(idx < 4, "row index out of bounds: {} (must be < 4)", idx);
         [
             self.values[idx],
             self.values[idx + 4],
@@ -405,7 +454,10 @@ impl Matrix44 {
     /// Computes the inverse of this matrix, or None if singular.
     pub fn invert(&self) -> Option<Self> {
         let det = self.determinant();
-        if det.abs() < 1e-10 {
+        // Skia uses 1/4096 ≈ 2.44e-4. We use a tighter bound that's
+        // still well above f32 epsilon (~1.19e-7).
+        const SINGULARITY_THRESHOLD: Scalar = Scalar::EPSILON * 256.0;
+        if det.abs() < SINGULARITY_THRESHOLD {
             return None;
         }
 
@@ -586,5 +638,55 @@ mod tests {
         let r2 = m3_back.map_point(p);
         assert!((r1.x - r2.x).abs() < 1e-6);
         assert!((r1.y - r2.y).abs() < 1e-6);
+    }
+
+    #[test]
+    #[should_panic(expected = "row out of bounds")]
+    fn test_matrix44_get_row_out_of_bounds() {
+        let m = Matrix44::identity();
+        let _ = m.get(4, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "col out of bounds")]
+    fn test_matrix44_get_col_out_of_bounds() {
+        let m = Matrix44::identity();
+        let _ = m.get(0, 4);
+    }
+
+    #[test]
+    fn test_matrix44_ortho_zero_width_returns_none() {
+        let m = Matrix44::ortho_checked(5.0, 5.0, 0.0, 10.0, -1.0, 1.0);
+        assert!(m.is_none(), "ortho with zero width should return None");
+    }
+
+    #[test]
+    fn test_matrix44_ortho_zero_height_returns_none() {
+        let m = Matrix44::ortho_checked(0.0, 10.0, 5.0, 5.0, -1.0, 1.0);
+        assert!(m.is_none(), "ortho with zero height should return None");
+    }
+
+    #[test]
+    fn test_matrix44_ortho_zero_depth_returns_none() {
+        let m = Matrix44::ortho_checked(0.0, 10.0, 0.0, 10.0, 1.0, 1.0);
+        assert!(m.is_none(), "ortho with zero depth should return None");
+    }
+
+    #[test]
+    fn test_matrix44_ortho_normal_returns_some() {
+        let m = Matrix44::ortho_checked(0.0, 10.0, 0.0, 10.0, -1.0, 1.0);
+        assert!(m.is_some());
+    }
+
+    #[test]
+    fn test_matrix44_perspective_zero_fov_returns_none() {
+        let m = Matrix44::perspective_checked(0.0, 1.0, 0.1, 100.0);
+        assert!(m.is_none(), "perspective with zero fov should return None");
+    }
+
+    #[test]
+    fn test_matrix44_perspective_normal_returns_some() {
+        let m = Matrix44::perspective_checked(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 100.0);
+        assert!(m.is_some());
     }
 }

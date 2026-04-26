@@ -326,6 +326,13 @@ impl<'a> Rasterizer<'a> {
         self.use_advanced_clip = false;
     }
 
+    /// Set the clip stack (advanced mode).
+    pub fn set_clip_stack(&mut self, clip_stack: ClipStack) {
+        self.clip_stack = clip_stack;
+        self.clip = self.clip_stack.bounds();
+        self.use_advanced_clip = true;
+    }
+
     /// Get the device bounds as an IRect.
     fn device_bounds(&self) -> IRect {
         IRect::new(0, 0, self.buffer.width, self.buffer.height)

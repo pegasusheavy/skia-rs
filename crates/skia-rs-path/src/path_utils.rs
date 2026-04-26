@@ -103,19 +103,19 @@ pub fn stroke_to_fill(path: &Path, params: &StrokeParams) -> Option<Path> {
     let half_width = params.width / 2.0;
     let mut builder = PathBuilder::new();
 
-    // Collect path elements into contours
-    let mut contours: Vec<Vec<Point>> = Vec::new();
+    // Collect path elements into contours, tracking closed state per contour
+    let mut contours: Vec<(Vec<Point>, bool)> = Vec::new();
     let mut current_contour: Vec<Point> = Vec::new();
-    let mut is_closed = false;
+    let mut current_closed = false;
 
     for element in path.iter() {
         match element {
             PathElement::Move(p) => {
                 if !current_contour.is_empty() {
-                    contours.push(std::mem::take(&mut current_contour));
+                    contours.push((std::mem::take(&mut current_contour), current_closed));
                 }
                 current_contour.push(p);
-                is_closed = false;
+                current_closed = false;
             }
             PathElement::Line(p) => {
                 current_contour.push(p);
@@ -147,22 +147,22 @@ pub fn stroke_to_fill(path: &Path, params: &StrokeParams) -> Option<Path> {
                 }
             }
             PathElement::Close => {
-                is_closed = true;
+                current_closed = true;
             }
         }
     }
 
     if !current_contour.is_empty() {
-        contours.push(current_contour);
+        contours.push((current_contour, current_closed));
     }
 
-    // Process each contour
-    for contour in &contours {
+    // Process each contour using its own closed state
+    for (contour, is_closed) in &contours {
         if contour.len() < 2 {
             continue;
         }
 
-        stroke_contour(&mut builder, contour, is_closed, half_width, params);
+        stroke_contour(&mut builder, contour, *is_closed, half_width, params);
     }
 
     Some(builder.build())
@@ -279,9 +279,37 @@ fn stroke_contour(
                     ));
                 }
                 StrokeJoin::Round => {
-                    // Simplified: use multiple points to approximate round join
-                    left_side.push(Point::new(points[i].x + offset.x, points[i].y + offset.y));
-                    right_side.push(Point::new(points[i].x - offset.x, points[i].y - offset.y));
+                    // Generate arc segments for the outer side of the join.
+                    // Both the left and right sides sweep from their incoming
+                    // normal offset to their outgoing normal offset around the
+                    // join vertex, using line subdivision scaled to the angular
+                    // sweep (minimum 4 segments).
+                    let left_start_angle =
+                        (n1.y * half_width).atan2(n1.x * half_width);
+                    let left_end_angle =
+                        (n2.y * half_width).atan2(n2.x * half_width);
+                    let mut left_delta = left_end_angle - left_start_angle;
+                    if left_delta > std::f32::consts::PI {
+                        left_delta -= std::f32::consts::TAU;
+                    } else if left_delta < -std::f32::consts::PI {
+                        left_delta += std::f32::consts::TAU;
+                    }
+                    let n_segs = ((left_delta.abs()
+                        / std::f32::consts::FRAC_PI_4)
+                        .ceil() as usize)
+                        .max(4);
+                    for k in 0..=n_segs {
+                        let t = k as Scalar / n_segs as Scalar;
+                        let a = left_start_angle + left_delta * t;
+                        left_side.push(Point::new(
+                            points[i].x + a.cos() * half_width,
+                            points[i].y + a.sin() * half_width,
+                        ));
+                        right_side.push(Point::new(
+                            points[i].x - a.cos() * half_width,
+                            points[i].y - a.sin() * half_width,
+                        ));
+                    }
                 }
             }
         } else {
@@ -469,6 +497,25 @@ mod tests {
     }
 
     #[test]
+    fn test_stroke_to_fill_multi_contour_mixed_closed_open() {
+        // Path with two contours: first closed (triangle), second open (line).
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(10.0, 0.0);
+        builder.line_to(5.0, 10.0);
+        builder.close();
+        builder.move_to(20.0, 0.0);
+        builder.line_to(30.0, 0.0);
+        let path = builder.build();
+
+        let params = StrokeParams::new(2.0);
+        let result = stroke_to_fill(&path, &params);
+        assert!(result.is_some(), "stroke_to_fill should succeed for valid input");
+        let stroked = result.unwrap();
+        assert!(stroked.iter().count() > 0, "stroked path should not be empty");
+    }
+
+    #[test]
     fn test_stroke_params() {
         let params = StrokeParams::new(2.0)
             .with_cap(StrokeCap::Round)
@@ -479,5 +526,30 @@ mod tests {
         assert_eq!(params.cap, StrokeCap::Round);
         assert_eq!(params.join, StrokeJoin::Bevel);
         assert_eq!(params.miter_limit, 10.0);
+    }
+
+    #[test]
+    fn test_stroke_to_fill_round_join_generates_arc() {
+        // Two perpendicular lines meeting at right angle.
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(50.0, 0.0);
+        builder.line_to(50.0, 50.0);
+        let path = builder.build();
+
+        let params = StrokeParams::new(10.0).with_join(StrokeJoin::Round);
+        let result = stroke_to_fill(&path, &params);
+        assert!(result.is_some());
+
+        let stroked = result.unwrap();
+        let count = stroked.iter().count();
+        // Round join should produce more verbs than a straight-line join.
+        // For 90-degree turn with default segment count, expect at least 8+ extra verbs
+        // beyond the basic 5-6 a miter would emit.
+        assert!(
+            count > 10,
+            "Round join should generate arc segments, got {} verbs",
+            count
+        );
     }
 }

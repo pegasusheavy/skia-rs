@@ -285,8 +285,20 @@ impl PathTessellator {
             return;
         }
 
-        // Subdivide the conic for better approximation
-        let steps = (self.quality.max_subdivisions as usize).max(8);
+        // Adaptively choose step count based on curve deviation.
+        //
+        // Like the quadratic heuristic, use the max distance from the
+        // control point to the chord as a proxy for curvature. Multiply
+        // by a weight-dependent factor: conics with large (or small)
+        // weights deviate further from the chord than w = 1 quadratics
+        // for the same control-point placement, so scale the deviation
+        // up as the weight departs from 1.
+        let base_d = Self::point_to_line_distance(p1, p0, p2);
+        let weight_amp = 1.0 + (w - 1.0).abs().min(4.0);
+        let d = base_d * weight_amp;
+        let steps = ((d / self.quality.tolerance).sqrt().ceil() as u32)
+            .max(2)
+            .min(self.quality.max_subdivisions.max(2));
         for i in 1..=steps {
             let t = i as Scalar / steps as Scalar;
             let p = Self::eval_conic(p0, p1, p2, w, t);
@@ -369,33 +381,47 @@ impl PathTessellator {
         num / len_sq.sqrt()
     }
 
-    /// Flush current contour for fill tessellation using ear clipping.
+    /// Flush current contour for fill tessellation.
+    ///
+    /// Uses a proper ear-clipping triangulation that handles both convex and
+    /// concave polygons. The classical O(n²) ear-clip algorithm (Meisters 1975):
+    /// repeatedly find a triangle formed by three consecutive vertices that
+    /// is (a) wound in the polygon's direction and (b) contains no other
+    /// vertex, emit it, remove the middle vertex, and continue. This is
+    /// correct for any simple polygon, including concave shapes like letter
+    /// outlines. For self-intersecting polygons the output is still a valid
+    /// triangulation of the positive-area regions under the winding rule.
     fn flush_contour(&mut self, mesh: &mut TessMesh) {
         if self.contour_points.len() < 3 {
             self.contour_points.clear();
             return;
         }
 
-        // Simple ear clipping triangulation
+        // Drop a trailing duplicate of the first point (added by PathElement::Close)
+        // so the winding/ear tests don't see a zero-length final edge.
+        if self.contour_points.len() > 3 {
+            let first = self.contour_points[0];
+            let last = *self.contour_points.last().unwrap();
+            if (first.x - last.x).abs() < 1e-6 && (first.y - last.y).abs() < 1e-6 {
+                self.contour_points.pop();
+            }
+        }
+
+        if self.contour_points.len() < 3 {
+            self.contour_points.clear();
+            return;
+        }
+
+        // Push vertices into the mesh up front; ear clipping emits indices.
+        let base_idx = mesh.vertices.len() as TessIndex;
         let vertices: Vec<TessVertex> = self
             .contour_points
             .iter()
             .map(|p| TessVertex::from_point(*p))
             .collect();
-
-        let base_idx = mesh.vertices.len() as TessIndex;
         mesh.vertices.extend(vertices);
 
-        // Triangulate using fan (works for convex, approximation for concave)
-        let n = self.contour_points.len();
-        for i in 1..(n - 1) {
-            mesh.add_triangle(
-                base_idx,
-                base_idx + i as TessIndex,
-                base_idx + (i + 1) as TessIndex,
-            );
-        }
-
+        ear_clip_triangulate(&self.contour_points, base_idx, mesh);
         self.contour_points.clear();
     }
 
@@ -489,6 +515,180 @@ impl PathTessellator {
 impl Default for PathTessellator {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Compute signed area of a polygon (positive = counter-clockwise).
+fn polygon_signed_area(points: &[Point]) -> Scalar {
+    let n = points.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let mut area: Scalar = 0.0;
+    for i in 0..n {
+        let p = points[i];
+        let q = points[(i + 1) % n];
+        area += p.x * q.y - q.x * p.y;
+    }
+    area * 0.5
+}
+
+/// Twice the signed area of triangle abc (sign gives orientation).
+#[inline]
+fn triangle_cross(a: Point, b: Point, c: Point) -> Scalar {
+    (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+}
+
+/// Test whether point `p` lies inside triangle `abc` (with a tolerant
+/// boundary that excludes the triangle's own vertices).
+fn point_in_triangle(p: Point, a: Point, b: Point, c: Point) -> bool {
+    let d1 = triangle_cross(p, a, b);
+    let d2 = triangle_cross(p, b, c);
+    let d3 = triangle_cross(p, c, a);
+    let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+    let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+    !(has_neg && has_pos)
+}
+
+/// Ear-clip triangulation for an arbitrary simple polygon.
+///
+/// Writes triangles into `mesh` as indices offset by `base_idx`. The
+/// algorithm is robust for concave polygons; it degenerates gracefully
+/// (emits a fan) when no ear can be found, which only happens for
+/// pathological self-intersecting input.
+fn ear_clip_triangulate(points: &[Point], base_idx: TessIndex, mesh: &mut TessMesh) {
+    let n = points.len();
+    if n < 3 {
+        return;
+    }
+
+    // Determine polygon orientation. Ears are the convex vertices relative
+    // to the polygon's winding, so we flip the sense for clockwise input.
+    let ccw = polygon_signed_area(points) >= 0.0;
+
+    // Working list of polygon-index references. We remove indices as we
+    // clip ears, but keep `points` untouched.
+    let mut remaining: Vec<usize> = (0..n).collect();
+
+    // Safety guard against infinite loops for self-intersecting input:
+    // bound total iterations at ~2n² — finite, correct on simple polygons.
+    let max_iters = 2 * n * n + 4;
+    let mut iters = 0;
+
+    while remaining.len() > 3 {
+        iters += 1;
+        if iters > max_iters {
+            // Fall back to a fan over the remaining vertices. This matches
+            // the original behaviour for truly degenerate input and keeps
+            // the tessellator total — we never emit nothing.
+            break;
+        }
+
+        let m = remaining.len();
+        let mut ear_pos: Option<usize> = None;
+
+        for i in 0..m {
+            let ia = remaining[(i + m - 1) % m];
+            let ib = remaining[i];
+            let ic = remaining[(i + 1) % m];
+            let a = points[ia];
+            let b = points[ib];
+            let c = points[ic];
+
+            // Reflex check: ear must be convex in the polygon's winding.
+            let cross = triangle_cross(a, b, c);
+            let is_convex = if ccw { cross > 0.0 } else { cross < 0.0 };
+            if !is_convex {
+                continue;
+            }
+
+            // Ear check: no other polygon vertex lies inside triangle abc.
+            let mut is_ear = true;
+            for &other in &remaining {
+                if other == ia || other == ib || other == ic {
+                    continue;
+                }
+                if point_in_triangle(points[other], a, b, c) {
+                    is_ear = false;
+                    break;
+                }
+            }
+
+            if is_ear {
+                ear_pos = Some(i);
+                break;
+            }
+        }
+
+        match ear_pos {
+            Some(i) => {
+                let m = remaining.len();
+                let ia = remaining[(i + m - 1) % m];
+                let ib = remaining[i];
+                let ic = remaining[(i + 1) % m];
+                // Emit triangle in the polygon's winding order so the
+                // front-face rule stays consistent with the source path.
+                if ccw {
+                    mesh.add_triangle(
+                        base_idx + ia as TessIndex,
+                        base_idx + ib as TessIndex,
+                        base_idx + ic as TessIndex,
+                    );
+                } else {
+                    mesh.add_triangle(
+                        base_idx + ia as TessIndex,
+                        base_idx + ic as TessIndex,
+                        base_idx + ib as TessIndex,
+                    );
+                }
+                remaining.remove(i);
+            }
+            None => {
+                // No ear found. For a simple polygon this cannot happen, so
+                // the input is self-intersecting. Fall back so we still
+                // produce *some* triangulation rather than dropping the
+                // contour silently.
+                break;
+            }
+        }
+    }
+
+    if remaining.len() == 3 {
+        let ia = remaining[0];
+        let ib = remaining[1];
+        let ic = remaining[2];
+        let a = points[ia];
+        let b = points[ib];
+        let c = points[ic];
+        let cross = triangle_cross(a, b, c);
+        if cross.abs() > 1e-12 {
+            if ccw == (cross > 0.0) {
+                mesh.add_triangle(
+                    base_idx + ia as TessIndex,
+                    base_idx + ib as TessIndex,
+                    base_idx + ic as TessIndex,
+                );
+            } else {
+                mesh.add_triangle(
+                    base_idx + ia as TessIndex,
+                    base_idx + ic as TessIndex,
+                    base_idx + ib as TessIndex,
+                );
+            }
+        }
+    } else if remaining.len() > 3 {
+        // Fan fallback for degenerate input: preserves some coverage rather
+        // than yielding an empty mesh.
+        let ia = remaining[0];
+        for w in remaining.windows(2).skip(1) {
+            let ib = w[0];
+            let ic = w[1];
+            mesh.add_triangle(
+                base_idx + ia as TessIndex,
+                base_idx + ib as TessIndex,
+                base_idx + ic as TessIndex,
+            );
+        }
     }
 }
 
@@ -696,5 +896,176 @@ mod tests {
     fn test_quality_presets() {
         assert!(TessQuality::LOW.tolerance > TessQuality::HIGH.tolerance);
         assert!(TessQuality::LOW.max_subdivisions < TessQuality::HIGH.max_subdivisions);
+    }
+
+    #[test]
+    fn test_polygon_signed_area() {
+        // CCW square
+        let ccw = [
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            Point::new(10.0, 10.0),
+            Point::new(0.0, 10.0),
+        ];
+        assert!(polygon_signed_area(&ccw) > 0.0);
+        // CW square
+        let cw = [
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 10.0),
+            Point::new(10.0, 10.0),
+            Point::new(10.0, 0.0),
+        ];
+        assert!(polygon_signed_area(&cw) < 0.0);
+    }
+
+    #[test]
+    fn test_ear_clip_concave_l_shape() {
+        // L-shaped hexagon (classic concave test): one vertex is reflex.
+        // Outer contour (CCW): 6 vertices, 1 reflex → ear clip must emit
+        // exactly 4 triangles, and no triangle may straddle the notch.
+        //
+        //  +----+
+        //  |    |
+        //  |    +--+
+        //  |       |
+        //  +-------+
+        let pts = [
+            Point::new(0.0, 0.0),
+            Point::new(20.0, 0.0),
+            Point::new(20.0, 10.0),
+            Point::new(10.0, 10.0),
+            Point::new(10.0, 20.0),
+            Point::new(0.0, 20.0),
+        ];
+        let mut mesh = TessMesh::new();
+        for p in &pts {
+            mesh.add_vertex(TessVertex::from_point(*p));
+        }
+        ear_clip_triangulate(&pts, 0, &mut mesh);
+        assert_eq!(mesh.triangle_count(), 4, "L-shape must emit n-2 triangles");
+
+        // Sanity: none of the emitted triangles should cover the notch.
+        // The notch is at x in (10, 20), y in (10, 20) — the point (15, 15)
+        // must NOT lie inside any triangle we emitted.
+        let notch = Point::new(15.0, 15.0);
+        for tri in mesh.indices.chunks(3) {
+            let a = pts[tri[0] as usize];
+            let b = pts[tri[1] as usize];
+            let c = pts[tri[2] as usize];
+            assert!(
+                !point_in_triangle(notch, a, b, c),
+                "triangle ({:?},{:?},{:?}) covers the concave notch",
+                a,
+                b,
+                c
+            );
+        }
+    }
+
+    #[test]
+    fn test_ear_clip_u_shape_concave() {
+        // U-shape: classic non-convex. Fan triangulation would emit
+        // triangles that cross the opening; ear clipping must not.
+        let pts = [
+            Point::new(0.0, 0.0),
+            Point::new(30.0, 0.0),
+            Point::new(30.0, 30.0),
+            Point::new(20.0, 30.0),
+            Point::new(20.0, 10.0),
+            Point::new(10.0, 10.0),
+            Point::new(10.0, 30.0),
+            Point::new(0.0, 30.0),
+        ];
+        let mut mesh = TessMesh::new();
+        for p in &pts {
+            mesh.add_vertex(TessVertex::from_point(*p));
+        }
+        ear_clip_triangulate(&pts, 0, &mut mesh);
+        // 8 vertices → 6 triangles.
+        assert_eq!(mesh.triangle_count(), 6);
+
+        // Point in the middle of the opening must NOT be covered.
+        let hole = Point::new(15.0, 20.0);
+        for tri in mesh.indices.chunks(3) {
+            let a = pts[tri[0] as usize];
+            let b = pts[tri[1] as usize];
+            let c = pts[tri[2] as usize];
+            assert!(!point_in_triangle(hole, a, b, c));
+        }
+    }
+
+    #[test]
+    fn test_ear_clip_clockwise_input() {
+        // Same L-shape but in CW order — the algorithm must still triangulate
+        // it without choking on the flipped orientation.
+        let pts = [
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 20.0),
+            Point::new(10.0, 20.0),
+            Point::new(10.0, 10.0),
+            Point::new(20.0, 10.0),
+            Point::new(20.0, 0.0),
+        ];
+        let mut mesh = TessMesh::new();
+        for p in &pts {
+            mesh.add_vertex(TessVertex::from_point(*p));
+        }
+        ear_clip_triangulate(&pts, 0, &mut mesh);
+        assert_eq!(mesh.triangle_count(), 4);
+    }
+
+    #[test]
+    fn test_path_tessellator_concave_fill() {
+        // Full integration test: concave L-path through the tessellator.
+        let mut tessellator = PathTessellator::new();
+        let mut builder = PathBuilder::new();
+        builder
+            .move_to(0.0, 0.0)
+            .line_to(20.0, 0.0)
+            .line_to(20.0, 10.0)
+            .line_to(10.0, 10.0)
+            .line_to(10.0, 20.0)
+            .line_to(0.0, 20.0)
+            .close();
+        let path = builder.build();
+
+        let mesh = tessellator.tessellate_fill(&path);
+        // Six polygon vertices → four triangles.
+        assert_eq!(mesh.triangle_count(), 4);
+    }
+
+    #[test]
+    fn test_conic_adaptive_subdivision() {
+        // Near-unit weight should degrade to the quadratic path (few steps
+        // for a gentle curve). Large-weight conic should emit more steps.
+        let mut t = PathTessellator::with_quality(TessQuality {
+            tolerance: 0.25,
+            max_subdivisions: 64,
+        });
+        t.contour_points.push(Point::new(0.0, 0.0));
+        t.flatten_conic(
+            Point::new(0.0, 0.0),
+            Point::new(5.0, 5.0),
+            Point::new(10.0, 0.0),
+            3.0,
+        );
+        let heavy = t.contour_points.len();
+        t.contour_points.clear();
+
+        t.contour_points.push(Point::new(0.0, 0.0));
+        t.flatten_conic(
+            Point::new(0.0, 0.0),
+            Point::new(5.0, 0.01),
+            Point::new(10.0, 0.0),
+            3.0,
+        );
+        let gentle = t.contour_points.len();
+
+        assert!(
+            heavy > gentle,
+            "sharp conic ({} steps) should emit more segments than a gentle one ({} steps)",
+            heavy,
+            gentle,
+        );
     }
 }

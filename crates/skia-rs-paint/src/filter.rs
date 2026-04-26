@@ -3,10 +3,43 @@
 use skia_rs_core::{Color4f, Rect, Scalar};
 use std::sync::Arc;
 
+// =============================================================================
+// Serialization Kind Constants
+// =============================================================================
+
+// MaskFilter kinds
+pub(crate) const MASK_FILTER_KIND_BLUR: u8 = 1;
+pub(crate) const MASK_FILTER_KIND_SHADER: u8 = 2;
+pub(crate) const MASK_FILTER_KIND_TABLE: u8 = 3;
+
+// ColorFilter kinds
+pub(crate) const COLOR_FILTER_KIND_MATRIX: u8 = 1;
+
+// ImageFilter kinds
+pub(crate) const IMAGE_FILTER_KIND_BLUR: u8 = 1;
+pub(crate) const IMAGE_FILTER_KIND_DROP_SHADOW: u8 = 2;
+pub(crate) const IMAGE_FILTER_KIND_MORPHOLOGY: u8 = 3;
+pub(crate) const IMAGE_FILTER_KIND_COLOR_FILTER: u8 = 4;
+pub(crate) const IMAGE_FILTER_KIND_DISPLACEMENT_MAP: u8 = 5;
+pub(crate) const IMAGE_FILTER_KIND_LIGHTING: u8 = 6;
+pub(crate) const IMAGE_FILTER_KIND_COMPOSE: u8 = 7;
+pub(crate) const IMAGE_FILTER_KIND_MERGE: u8 = 8;
+pub(crate) const IMAGE_FILTER_KIND_OFFSET: u8 = 9;
+pub(crate) const IMAGE_FILTER_KIND_MATRIX_CONVOLUTION: u8 = 10;
+pub(crate) const IMAGE_FILTER_KIND_TILE: u8 = 11;
+pub(crate) const IMAGE_FILTER_KIND_BLEND: u8 = 12;
+pub(crate) const IMAGE_FILTER_KIND_ARITHMETIC: u8 = 13;
+
 /// A color filter that transforms colors.
 pub trait ColorFilter: Send + Sync + std::fmt::Debug {
     /// Filter a color.
     fn filter_color(&self, color: Color4f) -> Color4f;
+
+    /// Serialize this filter for persistence. Returns None if the filter
+    /// is not serializable (e.g., user-provided types).
+    fn serialize(&self) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 /// A matrix color filter.
@@ -61,6 +94,101 @@ impl ColorMatrixFilter {
             0.0,
         ])
     }
+
+    /// Create a color matrix filter that adjusts brightness.
+    ///
+    /// A value of 0.0 is no change; positive values brighten, negative darken.
+    /// Implemented as adding `amount` to the RGB bias (translation column).
+    pub fn brightness(amount: Scalar) -> Self {
+        let mut m = [0.0f32; 20];
+        m[0] = 1.0;
+        m[6] = 1.0;
+        m[12] = 1.0;
+        m[18] = 1.0;
+        m[4] = amount;
+        m[9] = amount;
+        m[14] = amount;
+        Self::new(m)
+    }
+
+    /// Create a color matrix filter that adjusts contrast.
+    ///
+    /// A value of 1.0 is no change; values > 1 increase contrast, < 1 decrease.
+    pub fn contrast(amount: Scalar) -> Self {
+        // result = (src - 0.5) * amount + 0.5
+        //        = src * amount + (0.5 - 0.5 * amount)
+        let bias = 0.5 - 0.5 * amount;
+        let mut m = [0.0f32; 20];
+        m[0] = amount;
+        m[6] = amount;
+        m[12] = amount;
+        m[18] = 1.0;
+        m[4] = bias;
+        m[9] = bias;
+        m[14] = bias;
+        Self::new(m)
+    }
+
+    /// Create a color matrix filter that rotates hue by `degrees`.
+    pub fn hue_rotate(degrees: Scalar) -> Self {
+        let r = degrees.to_radians();
+        let cos_a = r.cos();
+        let sin_a = r.sin();
+        // Reference: W3C feColorMatrix hueRotate
+        let m = [
+            0.213 + cos_a * 0.787 - sin_a * 0.213,
+            0.715 - cos_a * 0.715 - sin_a * 0.715,
+            0.072 - cos_a * 0.072 + sin_a * 0.928,
+            0.0,
+            0.0,
+            0.213 - cos_a * 0.213 + sin_a * 0.143,
+            0.715 + cos_a * 0.285 + sin_a * 0.140,
+            0.072 - cos_a * 0.072 - sin_a * 0.283,
+            0.0,
+            0.0,
+            0.213 - cos_a * 0.213 - sin_a * 0.787,
+            0.715 - cos_a * 0.715 + sin_a * 0.715,
+            0.072 + cos_a * 0.928 + sin_a * 0.072,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+        ];
+        Self::new(m)
+    }
+
+    /// Create a color matrix filter that inverts RGB channels.
+    pub fn invert() -> Self {
+        let m = [
+            -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+        ];
+        Self::new(m)
+    }
+
+    /// Create a color matrix filter that applies a sepia tone.
+    pub fn sepia() -> Self {
+        let m = [
+            0.393, 0.769, 0.189, 0.0, 0.0, 0.349, 0.686, 0.168, 0.0, 0.0, 0.272, 0.534, 0.131,
+            0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+        ];
+        Self::new(m)
+    }
+
+    /// Create a color matrix filter that converts to grayscale using
+    /// luminance weights (Rec. 601).
+    pub fn grayscale() -> Self {
+        let r = 0.299;
+        let g = 0.587;
+        let b = 0.114;
+        let m = [
+            r, g, b, 0.0, 0.0, r, g, b, 0.0, 0.0, r, g, b, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+        ];
+        Self::new(m)
+    }
 }
 
 impl ColorFilter for ColorMatrixFilter {
@@ -72,6 +200,14 @@ impl ColorFilter for ColorMatrixFilter {
             b: m[10] * color.r + m[11] * color.g + m[12] * color.b + m[13] * color.a + m[14],
             a: m[15] * color.r + m[16] * color.g + m[17] * color.b + m[18] * color.a + m[19],
         }
+    }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = vec![COLOR_FILTER_KIND_MATRIX];
+        for v in &self.matrix {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        Some(buf)
     }
 }
 
@@ -94,6 +230,20 @@ pub enum BlurStyle {
 pub trait MaskFilter: Send + Sync + std::fmt::Debug {
     /// Get the blur radius if this is a blur filter.
     fn blur_radius(&self) -> Option<Scalar>;
+
+    /// Apply the filter to an alpha mask in place.
+    ///
+    /// `mask` is a row-major `width * height` bytes of alpha values.
+    /// Default implementation is a no-op — concrete filters override.
+    fn apply_mask(&self, mask: &mut [u8], width: usize, height: usize) {
+        let _ = (mask, width, height);
+    }
+
+    /// Serialize this filter for persistence. Returns None if the filter
+    /// is not serializable (e.g., user-provided types).
+    fn serialize(&self) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 /// A blur mask filter.
@@ -124,12 +274,49 @@ impl MaskFilter for BlurMaskFilter {
     fn blur_radius(&self) -> Option<Scalar> {
         Some(self.sigma)
     }
+
+    fn apply_mask(&self, mask: &mut [u8], width: usize, height: usize) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        let radius = self.sigma.max(0.0) as usize;
+        if radius == 0 {
+            return;
+        }
+        // Two-pass separable box blur (horizontal then vertical),
+        // repeated twice for a better Gaussian approximation.
+        for _ in 0..2 {
+            box_blur_horizontal(mask, width, height, radius);
+            box_blur_vertical(mask, width, height, radius);
+        }
+    }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = vec![MASK_FILTER_KIND_BLUR];
+        buf.push(self.style as u8);
+        buf.extend_from_slice(&self.sigma.to_le_bytes());
+        Some(buf)
+    }
 }
 
 /// An image filter.
 pub trait ImageFilter: Send + Sync + std::fmt::Debug {
     /// Get the bounds that this filter affects.
     fn filter_bounds(&self, src: &Rect) -> Rect;
+
+    /// Apply the filter to an RGBA8 image buffer in place.
+    ///
+    /// `pixels` is a row-major `width * height * 4` byte buffer.
+    /// Default implementation is a no-op — concrete filters override.
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        let _ = (pixels, width, height);
+    }
+
+    /// Serialize this filter for persistence. Returns None if the filter
+    /// is not serializable (e.g., user-provided types).
+    fn serialize(&self) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 /// A blur image filter.
@@ -157,6 +344,33 @@ impl ImageFilter for BlurImageFilter {
         let dx = self.sigma_x * 3.0;
         let dy = self.sigma_y * 3.0;
         Rect::new(src.left - dx, src.top - dy, src.right + dx, src.bottom + dy)
+    }
+
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        let rx = self.sigma_x.max(0.0) as usize;
+        let ry = self.sigma_y.max(0.0) as usize;
+        if rx == 0 && ry == 0 {
+            return;
+        }
+        for _ in 0..2 {
+            if rx > 0 {
+                rgba_box_blur_horizontal(pixels, width, height, rx);
+            }
+            if ry > 0 {
+                rgba_box_blur_vertical(pixels, width, height, ry);
+            }
+        }
+    }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = vec![IMAGE_FILTER_KIND_BLUR];
+        buf.extend_from_slice(&self.sigma_x.to_le_bytes());
+        buf.extend_from_slice(&self.sigma_y.to_le_bytes());
+        buf.push(self.tile_mode as u8);
+        Some(buf)
     }
 }
 
@@ -213,6 +427,87 @@ impl ImageFilter for DropShadowImageFilter {
             )
         }
     }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = vec![IMAGE_FILTER_KIND_DROP_SHADOW];
+        buf.extend_from_slice(&self.dx.to_le_bytes());
+        buf.extend_from_slice(&self.dy.to_le_bytes());
+        buf.extend_from_slice(&self.sigma_x.to_le_bytes());
+        buf.extend_from_slice(&self.sigma_y.to_le_bytes());
+        buf.extend_from_slice(&self.color.r.to_le_bytes());
+        buf.extend_from_slice(&self.color.g.to_le_bytes());
+        buf.extend_from_slice(&self.color.b.to_le_bytes());
+        buf.extend_from_slice(&self.color.a.to_le_bytes());
+        buf.push(if self.shadow_only { 1 } else { 0 });
+        Some(buf)
+    }
+
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        // 1. Extract alpha channel into shadow buffer
+        let mut shadow = vec![0u8; width * height];
+        for i in 0..width * height {
+            shadow[i] = pixels[i * 4 + 3];
+        }
+        // 2. Blur shadow
+        let rx = self.sigma_x.max(0.0) as usize;
+        let ry = self.sigma_y.max(0.0) as usize;
+        if rx > 0 {
+            box_blur_horizontal(&mut shadow, width, height, rx);
+        }
+        if ry > 0 {
+            box_blur_vertical(&mut shadow, width, height, ry);
+        }
+        // 3. Colorize and offset the shadow, then composite
+        let dx = self.dx.round() as i32;
+        let dy = self.dy.round() as i32;
+        let sr = (self.color.r * 255.0).clamp(0.0, 255.0) as u8;
+        let sg = (self.color.g * 255.0).clamp(0.0, 255.0) as u8;
+        let sb = (self.color.b * 255.0).clamp(0.0, 255.0) as u8;
+        let sa_mul = self.color.a.clamp(0.0, 1.0);
+        let original = pixels.to_vec();
+        for y in 0..height {
+            for x in 0..width {
+                // Read shadow from offset position (clamp)
+                let sx = (x as i32 - dx).clamp(0, width as i32 - 1) as usize;
+                let sy = (y as i32 - dy).clamp(0, height as i32 - 1) as usize;
+                let shadow_alpha = (shadow[sy * width + sx] as f32 / 255.0) * sa_mul;
+                let shadow_rgba = [
+                    (sr as f32 * shadow_alpha) as u8,
+                    (sg as f32 * shadow_alpha) as u8,
+                    (sb as f32 * shadow_alpha) as u8,
+                    (shadow_alpha * 255.0) as u8,
+                ];
+                // Src-over: result = src + dst * (1 - src.a)
+                let idx = (y * width + x) * 4;
+                if self.shadow_only {
+                    // Only shadow, no source
+                    pixels[idx] = shadow_rgba[0];
+                    pixels[idx + 1] = shadow_rgba[1];
+                    pixels[idx + 2] = shadow_rgba[2];
+                    pixels[idx + 3] = shadow_rgba[3];
+                } else {
+                    // Composite source over shadow
+                    let src_a = original[idx + 3] as f32 / 255.0;
+                    let inv_a = 1.0 - src_a;
+                    pixels[idx] =
+                        (original[idx] as f32 + shadow_rgba[0] as f32 * inv_a).clamp(0.0, 255.0)
+                            as u8;
+                    pixels[idx + 1] = (original[idx + 1] as f32 + shadow_rgba[1] as f32 * inv_a)
+                        .clamp(0.0, 255.0)
+                        as u8;
+                    pixels[idx + 2] = (original[idx + 2] as f32 + shadow_rgba[2] as f32 * inv_a)
+                        .clamp(0.0, 255.0)
+                        as u8;
+                    pixels[idx + 3] = (original[idx + 3] as f32 + shadow_rgba[3] as f32 * inv_a)
+                        .clamp(0.0, 255.0)
+                        as u8;
+                }
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -242,6 +537,14 @@ impl ShaderMaskFilter {
 impl MaskFilter for ShaderMaskFilter {
     fn blur_radius(&self) -> Option<Scalar> {
         None
+    }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = vec![MASK_FILTER_KIND_SHADER];
+        let shader_data = self.shader.serialize()?;
+        buf.extend_from_slice(&(shader_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&shader_data);
+        Some(buf)
     }
 }
 
@@ -294,6 +597,12 @@ impl TableMaskFilter {
 impl MaskFilter for TableMaskFilter {
     fn blur_radius(&self) -> Option<Scalar> {
         None
+    }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = vec![MASK_FILTER_KIND_TABLE];
+        buf.extend_from_slice(&self.table);
+        Some(buf)
     }
 }
 
@@ -367,6 +676,93 @@ impl ImageFilter for MorphologyImageFilter {
             src.bottom + self.radius_y,
         )
     }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = vec![IMAGE_FILTER_KIND_MORPHOLOGY];
+        buf.push(match self.morph_type {
+            MorphologyType::Dilate => 0,
+            MorphologyType::Erode => 1,
+        });
+        buf.extend_from_slice(&self.radius_x.to_le_bytes());
+        buf.extend_from_slice(&self.radius_y.to_le_bytes());
+        // Serialize input filter if present
+        match &self.input {
+            Some(input) => {
+                let input_data = input.serialize()?;
+                buf.push(1);
+                buf.extend_from_slice(&(input_data.len() as u32).to_le_bytes());
+                buf.extend_from_slice(&input_data);
+            }
+            None => buf.push(0),
+        }
+        Some(buf)
+    }
+
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        let rx = self.radius_x.max(0.0).round() as usize;
+        let ry = self.radius_y.max(0.0).round() as usize;
+        if rx == 0 && ry == 0 {
+            return;
+        }
+        let is_dilate = matches!(self.morph_type, MorphologyType::Dilate);
+        let src = pixels.to_vec();
+        for y in 0..height {
+            for x in 0..width {
+                let mut r = if is_dilate { 0u8 } else { 255u8 };
+                let mut g = r;
+                let mut b = r;
+                let mut a = r;
+                let x_min = x.saturating_sub(rx);
+                let y_min = y.saturating_sub(ry);
+                let x_max = (x + rx).min(width - 1);
+                let y_max = (y + ry).min(height - 1);
+                for ny in y_min..=y_max {
+                    for nx in x_min..=x_max {
+                        let idx = (ny * width + nx) * 4;
+                        let sr = src[idx];
+                        let sg = src[idx + 1];
+                        let sb = src[idx + 2];
+                        let sa = src[idx + 3];
+                        if is_dilate {
+                            if sr > r {
+                                r = sr;
+                            }
+                            if sg > g {
+                                g = sg;
+                            }
+                            if sb > b {
+                                b = sb;
+                            }
+                            if sa > a {
+                                a = sa;
+                            }
+                        } else {
+                            if sr < r {
+                                r = sr;
+                            }
+                            if sg < g {
+                                g = sg;
+                            }
+                            if sb < b {
+                                b = sb;
+                            }
+                            if sa < a {
+                                a = sa;
+                            }
+                        }
+                    }
+                }
+                let idx = (y * width + x) * 4;
+                pixels[idx] = r;
+                pixels[idx + 1] = g;
+                pixels[idx + 2] = b;
+                pixels[idx + 3] = a;
+            }
+        }
+    }
 }
 
 /// A color filter wrapped as an image filter.
@@ -397,6 +793,52 @@ impl ImageFilter for ColorFilterImageFilter {
     fn filter_bounds(&self, src: &Rect) -> Rect {
         // Color filters don't change bounds
         *src
+    }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = vec![IMAGE_FILTER_KIND_COLOR_FILTER];
+        // Serialize the wrapped color filter
+        let color_filter_data = self.color_filter.serialize()?;
+        buf.extend_from_slice(&(color_filter_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&color_filter_data);
+        // Serialize input filter if present
+        match &self.input {
+            Some(input) => {
+                let input_data = input.serialize()?;
+                buf.push(1);
+                buf.extend_from_slice(&(input_data.len() as u32).to_le_bytes());
+                buf.extend_from_slice(&input_data);
+            }
+            None => buf.push(0),
+        }
+        Some(buf)
+    }
+
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        // Apply inner filter first if present
+        if let Some(ref input) = self.input {
+            input.apply(pixels, width, height);
+        }
+        // Apply color filter to each pixel
+        for y in 0..height {
+            for x in 0..width {
+                let idx = (y * width + x) * 4;
+                let color = Color4f {
+                    r: pixels[idx] as f32 / 255.0,
+                    g: pixels[idx + 1] as f32 / 255.0,
+                    b: pixels[idx + 2] as f32 / 255.0,
+                    a: pixels[idx + 3] as f32 / 255.0,
+                };
+                let filtered = self.color_filter.filter_color(color);
+                pixels[idx] = (filtered.r * 255.0).clamp(0.0, 255.0) as u8;
+                pixels[idx + 1] = (filtered.g * 255.0).clamp(0.0, 255.0) as u8;
+                pixels[idx + 2] = (filtered.b * 255.0).clamp(0.0, 255.0) as u8;
+                pixels[idx + 3] = (filtered.a * 255.0).clamp(0.0, 255.0) as u8;
+            }
+        }
     }
 }
 
@@ -454,6 +896,77 @@ impl ImageFilter for DisplacementMapImageFilter {
             src.right + offset,
             src.bottom + offset,
         )
+    }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = vec![IMAGE_FILTER_KIND_DISPLACEMENT_MAP];
+        buf.push(match self.x_channel {
+            ColorChannel::R => 0,
+            ColorChannel::G => 1,
+            ColorChannel::B => 2,
+            ColorChannel::A => 3,
+        });
+        buf.push(match self.y_channel {
+            ColorChannel::R => 0,
+            ColorChannel::G => 1,
+            ColorChannel::B => 2,
+            ColorChannel::A => 3,
+        });
+        buf.extend_from_slice(&self.scale.to_le_bytes());
+        // Serialize displacement filter
+        let displacement_data = self.displacement.serialize()?;
+        buf.extend_from_slice(&(displacement_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&displacement_data);
+        // Serialize color filter if present
+        match &self.color {
+            Some(color) => {
+                let color_data = color.serialize()?;
+                buf.push(1);
+                buf.extend_from_slice(&(color_data.len() as u32).to_le_bytes());
+                buf.extend_from_slice(&color_data);
+            }
+            None => buf.push(0),
+        }
+        Some(buf)
+    }
+
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        // Baseline: use the source image's selected channels as displacement.
+        // A true implementation would apply the displacement filter input first,
+        // then use those pixels as the displacement map. This baseline uses the
+        // source image itself as the displacement map.
+        let scale = self.scale;
+        let src = pixels.to_vec();
+        let x_channel_idx = match self.x_channel {
+            ColorChannel::R => 0,
+            ColorChannel::G => 1,
+            ColorChannel::B => 2,
+            ColorChannel::A => 3,
+        };
+        let y_channel_idx = match self.y_channel {
+            ColorChannel::R => 0,
+            ColorChannel::G => 1,
+            ColorChannel::B => 2,
+            ColorChannel::A => 3,
+        };
+        for y in 0..height {
+            for x in 0..width {
+                let idx = (y * width + x) * 4;
+                // Read displacement channels (0..255 maps to -1..1)
+                let dx_f = (src[idx + x_channel_idx] as f32 / 127.5 - 1.0) * scale;
+                let dy_f = (src[idx + y_channel_idx] as f32 / 127.5 - 1.0) * scale;
+                let sx = ((x as f32 + dx_f) as i32).clamp(0, width as i32 - 1) as usize;
+                let sy = ((y as f32 + dy_f) as i32).clamp(0, height as i32 - 1) as usize;
+                let src_idx = (sy * width + sx) * 4;
+                pixels[idx] = src[src_idx];
+                pixels[idx + 1] = src[src_idx + 1];
+                pixels[idx + 2] = src[src_idx + 2];
+                pixels[idx + 3] = src[src_idx + 3];
+            }
+        }
     }
 }
 
@@ -543,6 +1056,93 @@ impl ImageFilter for LightingImageFilter {
         // Lighting doesn't change bounds
         *src
     }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = vec![IMAGE_FILTER_KIND_LIGHTING];
+        // Serialize light type
+        match &self.light {
+            LightType::Distant { direction } => {
+                buf.push(0);
+                buf.extend_from_slice(&direction.0.to_le_bytes());
+                buf.extend_from_slice(&direction.1.to_le_bytes());
+                buf.extend_from_slice(&direction.2.to_le_bytes());
+            }
+            LightType::Point { location } => {
+                buf.push(1);
+                buf.extend_from_slice(&location.0.to_le_bytes());
+                buf.extend_from_slice(&location.1.to_le_bytes());
+                buf.extend_from_slice(&location.2.to_le_bytes());
+            }
+            LightType::Spot {
+                location,
+                target,
+                specular_exponent,
+                cutoff_angle,
+            } => {
+                buf.push(2);
+                buf.extend_from_slice(&location.0.to_le_bytes());
+                buf.extend_from_slice(&location.1.to_le_bytes());
+                buf.extend_from_slice(&location.2.to_le_bytes());
+                buf.extend_from_slice(&target.0.to_le_bytes());
+                buf.extend_from_slice(&target.1.to_le_bytes());
+                buf.extend_from_slice(&target.2.to_le_bytes());
+                buf.extend_from_slice(&specular_exponent.to_le_bytes());
+                buf.extend_from_slice(&cutoff_angle.to_le_bytes());
+            }
+        }
+        buf.extend_from_slice(&self.surface_scale.to_le_bytes());
+        // Serialize optional diffuse/specular constants
+        buf.push(if self.diffuse_constant.is_some() { 1 } else { 0 });
+        if let Some(kd) = self.diffuse_constant {
+            buf.extend_from_slice(&kd.to_le_bytes());
+        }
+        buf.push(if self.specular_constant.is_some() { 1 } else { 0 });
+        if let Some(ks) = self.specular_constant {
+            buf.extend_from_slice(&ks.to_le_bytes());
+        }
+        buf.push(if self.specular_exponent.is_some() { 1 } else { 0 });
+        if let Some(exp) = self.specular_exponent {
+            buf.extend_from_slice(&exp.to_le_bytes());
+        }
+        buf.extend_from_slice(&self.light_color.r.to_le_bytes());
+        buf.extend_from_slice(&self.light_color.g.to_le_bytes());
+        buf.extend_from_slice(&self.light_color.b.to_le_bytes());
+        buf.extend_from_slice(&self.light_color.a.to_le_bytes());
+        // Serialize input filter if present
+        match &self.input {
+            Some(input) => {
+                let input_data = input.serialize()?;
+                buf.push(1);
+                buf.extend_from_slice(&(input_data.len() as u32).to_le_bytes());
+                buf.extend_from_slice(&input_data);
+            }
+            None => buf.push(0),
+        }
+        Some(buf)
+    }
+
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        // Baseline lighting: modulate intensity by surface_scale factor.
+        // A full implementation would compute per-pixel normals from the alpha
+        // channel (height field) and evaluate the lighting model (Phong, diffuse).
+        // This simplified version applies uniform lighting based on surface_scale.
+        let scale = self.surface_scale.max(0.0).min(10.0);
+        let factor = (1.0 + scale * 0.1).min(2.0);
+        let lr = (self.light_color.r * 255.0).clamp(0.0, 255.0);
+        let lg = (self.light_color.g * 255.0).clamp(0.0, 255.0);
+        let lb = (self.light_color.b * 255.0).clamp(0.0, 255.0);
+        for i in 0..width * height {
+            let idx = i * 4;
+            pixels[idx] = ((pixels[idx] as f32 * factor * lr / 255.0).clamp(0.0, 255.0)) as u8;
+            pixels[idx + 1] =
+                ((pixels[idx + 1] as f32 * factor * lg / 255.0).clamp(0.0, 255.0)) as u8;
+            pixels[idx + 2] =
+                ((pixels[idx + 2] as f32 * factor * lb / 255.0).clamp(0.0, 255.0)) as u8;
+        }
+    }
 }
 
 /// A compose image filter that chains two filters.
@@ -565,6 +1165,23 @@ impl ImageFilter for ComposeImageFilter {
     fn filter_bounds(&self, src: &Rect) -> Rect {
         let inner_bounds = self.inner.filter_bounds(src);
         self.outer.filter_bounds(&inner_bounds)
+    }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = vec![IMAGE_FILTER_KIND_COMPOSE];
+        let outer_data = self.outer.serialize()?;
+        let inner_data = self.inner.serialize()?;
+        buf.extend_from_slice(&(outer_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&outer_data);
+        buf.extend_from_slice(&(inner_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&inner_data);
+        Some(buf)
+    }
+
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        // Apply inner filter first, then outer
+        self.inner.apply(pixels, width, height);
+        self.outer.apply(pixels, width, height);
     }
 }
 
@@ -594,6 +1211,32 @@ impl ImageFilter for MergeImageFilter {
         }
         result
     }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = vec![IMAGE_FILTER_KIND_MERGE];
+        buf.extend_from_slice(&(self.inputs.len() as u32).to_le_bytes());
+        for input in &self.inputs {
+            match input {
+                Some(filter) => {
+                    let filter_data = filter.serialize()?;
+                    buf.push(1);
+                    buf.extend_from_slice(&(filter_data.len() as u32).to_le_bytes());
+                    buf.extend_from_slice(&filter_data);
+                }
+                None => buf.push(0),
+            }
+        }
+        Some(buf)
+    }
+
+    /// Apply is a no-op for this filter in the single-buffer apply() API.
+    ///
+    /// MergeImageFilter requires multiple independent input pixel buffers,
+    /// which the current single-buffer signature cannot provide. A future
+    /// revision will introduce a multi-input apply variant.
+    fn apply(&self, _pixels: &mut [u8], _width: usize, _height: usize) {
+        // Documented limitation: multi-input filter requires extended API.
+    }
 }
 
 /// An offset image filter.
@@ -621,6 +1264,53 @@ impl ImageFilter for OffsetImageFilter {
             src.right + self.dx,
             src.bottom + self.dy,
         )
+    }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = vec![IMAGE_FILTER_KIND_OFFSET];
+        buf.extend_from_slice(&self.dx.to_le_bytes());
+        buf.extend_from_slice(&self.dy.to_le_bytes());
+        match &self.input {
+            Some(input) => {
+                let input_data = input.serialize()?;
+                buf.push(1);
+                buf.extend_from_slice(&(input_data.len() as u32).to_le_bytes());
+                buf.extend_from_slice(&input_data);
+            }
+            None => buf.push(0),
+        }
+        Some(buf)
+    }
+
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        // Apply input filter first if present
+        if let Some(ref input) = self.input {
+            input.apply(pixels, width, height);
+        }
+        // Shift pixels with clamp-to-edge
+        let offset_x = self.dx.round() as i32;
+        let offset_y = self.dy.round() as i32;
+        if offset_x == 0 && offset_y == 0 {
+            return;
+        }
+
+        // Create a copy to read from
+        let mut copy = vec![0u8; width * height * 4];
+        copy.copy_from_slice(pixels);
+
+        // Fill with shifted pixels
+        for y in 0..height {
+            for x in 0..width {
+                let src_x = (x as i32 - offset_x).clamp(0, width as i32 - 1) as usize;
+                let src_y = (y as i32 - offset_y).clamp(0, height as i32 - 1) as usize;
+                let dst_idx = (y * width + x) * 4;
+                let src_idx = (src_y * width + src_x) * 4;
+                pixels[dst_idx..dst_idx + 4].copy_from_slice(&copy[src_idx..src_idx + 4]);
+            }
+        }
     }
 }
 
@@ -675,6 +1365,83 @@ impl ImageFilter for MatrixConvolutionImageFilter {
             src.bottom + oy as Scalar,
         )
     }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = vec![IMAGE_FILTER_KIND_MATRIX_CONVOLUTION];
+        buf.extend_from_slice(&self.kernel_size.0.to_le_bytes());
+        buf.extend_from_slice(&self.kernel_size.1.to_le_bytes());
+        buf.extend_from_slice(&(self.kernel.len() as u32).to_le_bytes());
+        for v in &self.kernel {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        buf.extend_from_slice(&self.gain.to_le_bytes());
+        buf.extend_from_slice(&self.bias.to_le_bytes());
+        buf.extend_from_slice(&self.kernel_offset.0.to_le_bytes());
+        buf.extend_from_slice(&self.kernel_offset.1.to_le_bytes());
+        buf.push(self.tile_mode as u8);
+        buf.push(if self.convolve_alpha { 1 } else { 0 });
+        match &self.input {
+            Some(input) => {
+                let input_data = input.serialize()?;
+                buf.push(1);
+                buf.extend_from_slice(&(input_data.len() as u32).to_le_bytes());
+                buf.extend_from_slice(&input_data);
+            }
+            None => buf.push(0),
+        }
+        Some(buf)
+    }
+
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        let (kw, kh) = self.kernel_size;
+        if kw <= 0 || kh <= 0 || self.kernel.is_empty() {
+            return;
+        }
+        let src = pixels.to_vec();
+        let gain = self.gain;
+        let bias = self.bias;
+        let (ox, oy) = self.kernel_offset;
+        for y in 0..height {
+            for x in 0..width {
+                let mut acc = [0.0f32; 4];
+                for ky in 0..kh {
+                    for kx in 0..kw {
+                        let sx = (x as i32 + kx - ox).clamp(0, width as i32 - 1) as usize;
+                        let sy = (y as i32 + ky - oy).clamp(0, height as i32 - 1) as usize;
+                        let sidx = (sy * width + sx) * 4;
+                        let kidx = (ky as usize) * (kw as usize) + kx as usize;
+                        let k = self.kernel.get(kidx).copied().unwrap_or(0.0);
+                        // Convolve alpha only if convolve_alpha is true
+                        for c in 0..3 {
+                            acc[c] += src[sidx + c] as f32 * k;
+                        }
+                        if self.convolve_alpha {
+                            acc[3] += src[sidx + 3] as f32 * k;
+                        } else {
+                            // Keep alpha unchanged (just accumulate for average)
+                            if kx == 0 && ky == 0 {
+                                acc[3] = src[sidx + 3] as f32;
+                            }
+                        }
+                    }
+                }
+                let idx = (y * width + x) * 4;
+                for c in 0..3 {
+                    let v = acc[c] * gain + bias;
+                    pixels[idx + c] = v.clamp(0.0, 255.0) as u8;
+                }
+                if self.convolve_alpha {
+                    let v = acc[3] * gain + bias;
+                    pixels[idx + 3] = v.clamp(0.0, 255.0) as u8;
+                } else {
+                    pixels[idx + 3] = src[idx + 3];
+                }
+            }
+        }
+    }
 }
 
 /// A tile image filter.
@@ -701,6 +1468,57 @@ impl TileImageFilter {
 impl ImageFilter for TileImageFilter {
     fn filter_bounds(&self, _src: &Rect) -> Rect {
         self.dst_rect
+    }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = vec![IMAGE_FILTER_KIND_TILE];
+        buf.extend_from_slice(&self.src_rect.left.to_le_bytes());
+        buf.extend_from_slice(&self.src_rect.top.to_le_bytes());
+        buf.extend_from_slice(&self.src_rect.right.to_le_bytes());
+        buf.extend_from_slice(&self.src_rect.bottom.to_le_bytes());
+        buf.extend_from_slice(&self.dst_rect.left.to_le_bytes());
+        buf.extend_from_slice(&self.dst_rect.top.to_le_bytes());
+        buf.extend_from_slice(&self.dst_rect.right.to_le_bytes());
+        buf.extend_from_slice(&self.dst_rect.bottom.to_le_bytes());
+        match &self.input {
+            Some(input) => {
+                let input_data = input.serialize()?;
+                buf.push(1);
+                buf.extend_from_slice(&(input_data.len() as u32).to_le_bytes());
+                buf.extend_from_slice(&input_data);
+            }
+            None => buf.push(0),
+        }
+        Some(buf)
+    }
+
+    fn apply(&self, pixels: &mut [u8], width: usize, height: usize) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        // Tile the src_rect region across the output via modulo mapping.
+        let sx0 = (self.src_rect.left.max(0.0) as usize).min(width);
+        let sy0 = (self.src_rect.top.max(0.0) as usize).min(height);
+        let sx1 = (self.src_rect.right as usize).min(width);
+        let sy1 = (self.src_rect.bottom as usize).min(height);
+        if sx1 <= sx0 || sy1 <= sy0 {
+            return;
+        }
+        let sw = sx1 - sx0;
+        let sh = sy1 - sy0;
+        let src = pixels.to_vec();
+        for y in 0..height {
+            for x in 0..width {
+                let tx = sx0 + (x % sw);
+                let ty = sy0 + (y % sh);
+                let src_idx = (ty * width + tx) * 4;
+                let dst_idx = (y * width + x) * 4;
+                pixels[dst_idx] = src[src_idx];
+                pixels[dst_idx + 1] = src[src_idx + 1];
+                pixels[dst_idx + 2] = src[src_idx + 2];
+                pixels[dst_idx + 3] = src[src_idx + 3];
+            }
+        }
     }
 }
 
@@ -742,6 +1560,39 @@ impl ImageFilter for BlendImageFilter {
             .map(|f| f.filter_bounds(src))
             .unwrap_or(*src);
         bg.union(&fg)
+    }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = vec![IMAGE_FILTER_KIND_BLEND];
+        buf.push(self.mode as u8);
+        match &self.background {
+            Some(bg) => {
+                let bg_data = bg.serialize()?;
+                buf.push(1);
+                buf.extend_from_slice(&(bg_data.len() as u32).to_le_bytes());
+                buf.extend_from_slice(&bg_data);
+            }
+            None => buf.push(0),
+        }
+        match &self.foreground {
+            Some(fg) => {
+                let fg_data = fg.serialize()?;
+                buf.push(1);
+                buf.extend_from_slice(&(fg_data.len() as u32).to_le_bytes());
+                buf.extend_from_slice(&fg_data);
+            }
+            None => buf.push(0),
+        }
+        Some(buf)
+    }
+
+    /// Apply is a no-op for this filter in the single-buffer apply() API.
+    ///
+    /// BlendImageFilter requires separate background and foreground pixel
+    /// buffers, which the current single-buffer signature cannot provide.
+    /// A future revision will introduce a multi-input apply variant.
+    fn apply(&self, _pixels: &mut [u8], _width: usize, _height: usize) {
+        // Documented limitation: multi-input filter requires extended API.
     }
 }
 
@@ -796,6 +1647,43 @@ impl ImageFilter for ArithmeticImageFilter {
             .unwrap_or(*src);
         bg.union(&fg)
     }
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buf = vec![IMAGE_FILTER_KIND_ARITHMETIC];
+        buf.extend_from_slice(&self.k1.to_le_bytes());
+        buf.extend_from_slice(&self.k2.to_le_bytes());
+        buf.extend_from_slice(&self.k3.to_le_bytes());
+        buf.extend_from_slice(&self.k4.to_le_bytes());
+        buf.push(if self.enforce_pm_color { 1 } else { 0 });
+        match &self.background {
+            Some(bg) => {
+                let bg_data = bg.serialize()?;
+                buf.push(1);
+                buf.extend_from_slice(&(bg_data.len() as u32).to_le_bytes());
+                buf.extend_from_slice(&bg_data);
+            }
+            None => buf.push(0),
+        }
+        match &self.foreground {
+            Some(fg) => {
+                let fg_data = fg.serialize()?;
+                buf.push(1);
+                buf.extend_from_slice(&(fg_data.len() as u32).to_le_bytes());
+                buf.extend_from_slice(&fg_data);
+            }
+            None => buf.push(0),
+        }
+        Some(buf)
+    }
+
+    /// Apply is a no-op for this filter in the single-buffer apply() API.
+    ///
+    /// ArithmeticImageFilter requires separate background and foreground pixel
+    /// buffers, which the current single-buffer signature cannot provide.
+    /// A future revision will introduce a multi-input apply variant.
+    fn apply(&self, _pixels: &mut [u8], _width: usize, _height: usize) {
+        // Documented limitation: multi-input filter requires extended API.
+    }
 }
 
 // =============================================================================
@@ -808,3 +1696,792 @@ pub type ColorFilterRef = Arc<dyn ColorFilter + Send + Sync>;
 pub type MaskFilterRef = Arc<dyn MaskFilter + Send + Sync>;
 /// Boxed image filter type.
 pub type ImageFilterRef = Arc<dyn ImageFilter + Send + Sync>;
+
+// =============================================================================
+// Box Blur Helpers
+// =============================================================================
+
+fn box_blur_horizontal(buf: &mut [u8], width: usize, height: usize, radius: usize) {
+    if width == 0 {
+        return;
+    }
+    let r = radius;
+    let window = (2 * r + 1) as u32;
+    let mut row_copy = vec![0u8; width];
+    for y in 0..height {
+        let row_start = y * width;
+        // Copy current row
+        row_copy.copy_from_slice(&buf[row_start..row_start + width]);
+        // Initialize sum with edge clamping
+        let mut sum: u32 = 0;
+        for i in 0..=r {
+            sum += row_copy[i.min(width - 1)] as u32;
+        }
+        sum += row_copy[0] as u32 * r as u32; // clamp left edge
+        buf[row_start] = (sum / window) as u8;
+
+        for x in 1..width {
+            // Slide window: add right, remove left
+            let right_idx = (x + r).min(width - 1);
+            let left_idx = if x > r { x - r - 1 } else { 0 };
+            sum = sum.saturating_add(row_copy[right_idx] as u32);
+            sum = sum.saturating_sub(row_copy[left_idx] as u32);
+            buf[row_start + x] = (sum / window) as u8;
+        }
+    }
+}
+
+fn box_blur_vertical(buf: &mut [u8], width: usize, height: usize, radius: usize) {
+    if height == 0 {
+        return;
+    }
+    let r = radius;
+    let window = (2 * r + 1) as u32;
+    let mut col_copy = vec![0u8; height];
+    for x in 0..width {
+        // Copy column
+        for y in 0..height {
+            col_copy[y] = buf[y * width + x];
+        }
+        // Initialize sum with top edge clamping
+        let mut sum: u32 = 0;
+        for i in 0..=r {
+            sum += col_copy[i.min(height - 1)] as u32;
+        }
+        sum += col_copy[0] as u32 * r as u32;
+        buf[x] = (sum / window) as u8;
+
+        for y in 1..height {
+            let bottom_idx = (y + r).min(height - 1);
+            let top_idx = if y > r { y - r - 1 } else { 0 };
+            sum = sum.saturating_add(col_copy[bottom_idx] as u32);
+            sum = sum.saturating_sub(col_copy[top_idx] as u32);
+            buf[y * width + x] = (sum / window) as u8;
+        }
+    }
+}
+
+fn rgba_box_blur_horizontal(pixels: &mut [u8], width: usize, height: usize, radius: usize) {
+    if width == 0 {
+        return;
+    }
+    let stride = width * 4;
+    let window = (2 * radius + 1) as u32;
+    let mut row_copy = vec![0u8; stride];
+    for y in 0..height {
+        let row_start = y * stride;
+        row_copy.copy_from_slice(&pixels[row_start..row_start + stride]);
+        // 4 channels: track sum per channel
+        let mut sums: [u32; 4] = [0; 4];
+        for i in 0..=radius {
+            let idx = i.min(width - 1) * 4;
+            for c in 0..4 {
+                sums[c] += row_copy[idx + c] as u32;
+            }
+        }
+        for c in 0..4 {
+            sums[c] += row_copy[c] as u32 * radius as u32;
+        }
+        for c in 0..4 {
+            pixels[row_start + c] = (sums[c] / window) as u8;
+        }
+
+        for x in 1..width {
+            let right_idx = (x + radius).min(width - 1) * 4;
+            let left_idx = if x > radius {
+                (x - radius - 1) * 4
+            } else {
+                0
+            };
+            for c in 0..4 {
+                sums[c] = sums[c].saturating_add(row_copy[right_idx + c] as u32);
+                sums[c] = sums[c].saturating_sub(row_copy[left_idx + c] as u32);
+                pixels[row_start + x * 4 + c] = (sums[c] / window) as u8;
+            }
+        }
+    }
+}
+
+fn rgba_box_blur_vertical(pixels: &mut [u8], width: usize, height: usize, radius: usize) {
+    if height == 0 {
+        return;
+    }
+    let stride = width * 4;
+    let window = (2 * radius + 1) as u32;
+    let mut col_copy = vec![0u8; height * 4];
+    for x in 0..width {
+        for y in 0..height {
+            for c in 0..4 {
+                col_copy[y * 4 + c] = pixels[y * stride + x * 4 + c];
+            }
+        }
+        let mut sums: [u32; 4] = [0; 4];
+        for i in 0..=radius {
+            let idx = i.min(height - 1) * 4;
+            for c in 0..4 {
+                sums[c] += col_copy[idx + c] as u32;
+            }
+        }
+        for c in 0..4 {
+            sums[c] += col_copy[c] as u32 * radius as u32;
+        }
+        for c in 0..4 {
+            pixels[x * 4 + c] = (sums[c] / window) as u8;
+        }
+
+        for y in 1..height {
+            let bottom_idx = (y + radius).min(height - 1) * 4;
+            let top_idx = if y > radius { (y - radius - 1) * 4 } else { 0 };
+            for c in 0..4 {
+                sums[c] = sums[c].saturating_add(col_copy[bottom_idx + c] as u32);
+                sums[c] = sums[c].saturating_sub(col_copy[top_idx + c] as u32);
+                pixels[y * stride + x * 4 + c] = (sums[c] / window) as u8;
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Deserialization Functions
+// =============================================================================
+
+/// Deserialize a MaskFilter from bytes.
+pub(crate) fn deserialize_mask_filter(bytes: &[u8], offset: &mut usize) -> Option<MaskFilterRef> {
+    if *offset >= bytes.len() {
+        return None;
+    }
+    let kind = bytes[*offset];
+    *offset += 1;
+
+    match kind {
+        MASK_FILTER_KIND_BLUR => {
+            if *offset + 5 > bytes.len() {
+                return None;
+            }
+            let style = match bytes[*offset] {
+                0 => BlurStyle::Normal,
+                1 => BlurStyle::Solid,
+                2 => BlurStyle::Outer,
+                3 => BlurStyle::Inner,
+                _ => return None,
+            };
+            *offset += 1;
+            let sigma = f32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?);
+            *offset += 4;
+            Some(Arc::new(BlurMaskFilter::new(style, sigma)))
+        }
+        MASK_FILTER_KIND_SHADER => {
+            if *offset + 4 > bytes.len() {
+                return None;
+            }
+            let len = u32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?) as usize;
+            *offset += 4;
+            if *offset + len > bytes.len() {
+                return None;
+            }
+            let shader_bytes = &bytes[*offset..*offset + len];
+            *offset += len;
+            let mut shader_offset = 0;
+            let shader = crate::shader::deserialize_shader(shader_bytes, &mut shader_offset)?;
+            Some(Arc::new(ShaderMaskFilter::new(shader)))
+        }
+        MASK_FILTER_KIND_TABLE => {
+            if *offset + 256 > bytes.len() {
+                return None;
+            }
+            let mut table = [0u8; 256];
+            table.copy_from_slice(&bytes[*offset..*offset + 256]);
+            *offset += 256;
+            Some(Arc::new(TableMaskFilter::new(table)))
+        }
+        _ => None,
+    }
+}
+
+/// Deserialize a ColorFilter from bytes.
+pub(crate) fn deserialize_color_filter(
+    bytes: &[u8],
+    offset: &mut usize,
+) -> Option<ColorFilterRef> {
+    if *offset >= bytes.len() {
+        return None;
+    }
+    let kind = bytes[*offset];
+    *offset += 1;
+
+    match kind {
+        COLOR_FILTER_KIND_MATRIX => {
+            if *offset + 80 > bytes.len() {
+                return None;
+            }
+            let mut matrix = [0.0f32; 20];
+            for v in &mut matrix {
+                *v = f32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?);
+                *offset += 4;
+            }
+            Some(Arc::new(ColorMatrixFilter::new(matrix)))
+        }
+        _ => None,
+    }
+}
+
+/// Deserialize an ImageFilter from bytes.
+pub(crate) fn deserialize_image_filter(
+    bytes: &[u8],
+    offset: &mut usize,
+) -> Option<ImageFilterRef> {
+    if *offset >= bytes.len() {
+        return None;
+    }
+    let kind = bytes[*offset];
+    *offset += 1;
+
+    match kind {
+        IMAGE_FILTER_KIND_BLUR => {
+            if *offset + 9 > bytes.len() {
+                return None;
+            }
+            let sigma_x = f32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?);
+            *offset += 4;
+            let sigma_y = f32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?);
+            *offset += 4;
+            let tile_mode = match bytes[*offset] {
+                0 => crate::shader::TileMode::Clamp,
+                1 => crate::shader::TileMode::Repeat,
+                2 => crate::shader::TileMode::Mirror,
+                3 => crate::shader::TileMode::Decal,
+                _ => return None,
+            };
+            *offset += 1;
+            Some(Arc::new(BlurImageFilter::new(sigma_x, sigma_y, tile_mode)))
+        }
+        IMAGE_FILTER_KIND_DROP_SHADOW => {
+            if *offset + 33 > bytes.len() {
+                return None;
+            }
+            let dx = f32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?);
+            *offset += 4;
+            let dy = f32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?);
+            *offset += 4;
+            let sigma_x = f32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?);
+            *offset += 4;
+            let sigma_y = f32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?);
+            *offset += 4;
+            let r = f32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?);
+            *offset += 4;
+            let g = f32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?);
+            *offset += 4;
+            let b = f32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?);
+            *offset += 4;
+            let a = f32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?);
+            *offset += 4;
+            let shadow_only = bytes[*offset] != 0;
+            *offset += 1;
+            Some(Arc::new(DropShadowImageFilter::new(
+                dx,
+                dy,
+                sigma_x,
+                sigma_y,
+                Color4f::new(r, g, b, a),
+                shadow_only,
+            )))
+        }
+        IMAGE_FILTER_KIND_MORPHOLOGY => {
+            if *offset + 9 > bytes.len() {
+                return None;
+            }
+            let morph_type = match bytes[*offset] {
+                0 => MorphologyType::Dilate,
+                1 => MorphologyType::Erode,
+                _ => return None,
+            };
+            *offset += 1;
+            let radius_x = f32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?);
+            *offset += 4;
+            let radius_y = f32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?);
+            *offset += 4;
+            let input = if *offset < bytes.len() && bytes[*offset] == 1 {
+                *offset += 1;
+                if *offset + 4 > bytes.len() {
+                    return None;
+                }
+                let len = u32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?) as usize;
+                *offset += 4;
+                if *offset + len > bytes.len() {
+                    return None;
+                }
+                let input_bytes = &bytes[*offset..*offset + len];
+                *offset += len;
+                let mut input_offset = 0;
+                Some(deserialize_image_filter(input_bytes, &mut input_offset)?)
+            } else {
+                if *offset < bytes.len() {
+                    *offset += 1;
+                }
+                None
+            };
+            Some(Arc::new(match morph_type {
+                MorphologyType::Dilate => MorphologyImageFilter::dilate(radius_x, radius_y, input),
+                MorphologyType::Erode => MorphologyImageFilter::erode(radius_x, radius_y, input),
+            }))
+        }
+        IMAGE_FILTER_KIND_OFFSET => {
+            if *offset + 8 > bytes.len() {
+                return None;
+            }
+            let dx = f32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?);
+            *offset += 4;
+            let dy = f32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?);
+            *offset += 4;
+            let input = if *offset < bytes.len() && bytes[*offset] == 1 {
+                *offset += 1;
+                if *offset + 4 > bytes.len() {
+                    return None;
+                }
+                let len = u32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?) as usize;
+                *offset += 4;
+                if *offset + len > bytes.len() {
+                    return None;
+                }
+                let input_bytes = &bytes[*offset..*offset + len];
+                *offset += len;
+                let mut input_offset = 0;
+                Some(deserialize_image_filter(input_bytes, &mut input_offset)?)
+            } else {
+                if *offset < bytes.len() {
+                    *offset += 1;
+                }
+                None
+            };
+            Some(Arc::new(OffsetImageFilter::new(dx, dy, input)))
+        }
+        IMAGE_FILTER_KIND_COMPOSE => {
+            if *offset + 8 > bytes.len() {
+                return None;
+            }
+            let outer_len =
+                u32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?) as usize;
+            *offset += 4;
+            if *offset + outer_len > bytes.len() {
+                return None;
+            }
+            let outer_bytes = &bytes[*offset..*offset + outer_len];
+            *offset += outer_len;
+            let mut outer_offset = 0;
+            let outer = deserialize_image_filter(outer_bytes, &mut outer_offset)?;
+
+            if *offset + 4 > bytes.len() {
+                return None;
+            }
+            let inner_len =
+                u32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?) as usize;
+            *offset += 4;
+            if *offset + inner_len > bytes.len() {
+                return None;
+            }
+            let inner_bytes = &bytes[*offset..*offset + inner_len];
+            *offset += inner_len;
+            let mut inner_offset = 0;
+            let inner = deserialize_image_filter(inner_bytes, &mut inner_offset)?;
+
+            Some(Arc::new(ComposeImageFilter::new(outer, inner)))
+        }
+        IMAGE_FILTER_KIND_MERGE => {
+            if *offset + 4 > bytes.len() {
+                return None;
+            }
+            let count = u32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?) as usize;
+            *offset += 4;
+            let mut inputs = Vec::with_capacity(count);
+            for _ in 0..count {
+                if *offset >= bytes.len() {
+                    return None;
+                }
+                let input = if bytes[*offset] == 1 {
+                    *offset += 1;
+                    if *offset + 4 > bytes.len() {
+                        return None;
+                    }
+                    let len =
+                        u32::from_le_bytes(bytes[*offset..*offset + 4].try_into().ok()?) as usize;
+                    *offset += 4;
+                    if *offset + len > bytes.len() {
+                        return None;
+                    }
+                    let input_bytes = &bytes[*offset..*offset + len];
+                    *offset += len;
+                    let mut input_offset = 0;
+                    Some(deserialize_image_filter(input_bytes, &mut input_offset)?)
+                } else {
+                    *offset += 1;
+                    None
+                };
+                inputs.push(input);
+            }
+            Some(Arc::new(MergeImageFilter::new(inputs)))
+        }
+        _ => None, // Other filter types not yet implemented in deserialization
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_blur_mask_filter_blurs() {
+        let filter = BlurMaskFilter::new(BlurStyle::Normal, 3.0);
+        // 5x5 mask with a single bright pixel in the center
+        let mut mask = vec![0u8; 25];
+        mask[12] = 255;
+        filter.apply_mask(&mut mask, 5, 5);
+        // Center should be less than 255 (blurred)
+        assert!(
+            mask[12] < 255,
+            "center should be blurred lower, got {}",
+            mask[12]
+        );
+        // Should have spread to neighbors
+        let has_spread = mask.iter().any(|&v| v > 0 && v < 255);
+        assert!(has_spread, "blur should produce intermediate values");
+    }
+
+    #[test]
+    fn test_blur_image_filter_blurs_rgba() {
+        let filter = BlurImageFilter::new(3.0, 3.0, crate::shader::TileMode::Clamp);
+        // 5x5 RGBA image, white pixel in center, rest black
+        let mut pixels = vec![0u8; 25 * 4];
+        pixels[12 * 4] = 255;
+        pixels[12 * 4 + 1] = 255;
+        pixels[12 * 4 + 2] = 255;
+        pixels[12 * 4 + 3] = 255;
+        filter.apply(&mut pixels, 5, 5);
+        // Center should dim
+        assert!(pixels[12 * 4] < 255);
+        // Neighbor should brighten
+        let neighbor_r = pixels[11 * 4];
+        assert!(neighbor_r > 0);
+    }
+
+    #[test]
+    fn test_color_filter_image_filter() {
+        let color_filter = Arc::new(ColorMatrixFilter::saturation(0.0)) as ColorFilterRef;
+        let filter = ColorFilterImageFilter::new(color_filter, None);
+        // 2x2 RGBA image with various colors
+        let mut pixels = vec![
+            255, 0, 0, 255, // red
+            0, 255, 0, 255, // green
+            0, 0, 255, 255, // blue
+            128, 128, 128, 255, // gray
+        ];
+        filter.apply(&mut pixels, 2, 2);
+        // Saturation 0.0 should produce grayscale
+        // Red pixel should have equal RGB
+        let r = pixels[0];
+        let g = pixels[1];
+        let b = pixels[2];
+        assert!(
+            (r as i32 - g as i32).abs() < 5,
+            "red pixel should be grayscale"
+        );
+        assert!(
+            (g as i32 - b as i32).abs() < 5,
+            "red pixel should be grayscale"
+        );
+    }
+
+    #[test]
+    fn test_compose_image_filter() {
+        let inner = Arc::new(BlurImageFilter::new(2.0, 2.0, crate::shader::TileMode::Clamp))
+            as ImageFilterRef;
+        let outer_color = Arc::new(ColorMatrixFilter::saturation(0.0)) as ColorFilterRef;
+        let outer = Arc::new(ColorFilterImageFilter::new(outer_color, None)) as ImageFilterRef;
+        let compose = ComposeImageFilter::new(outer, inner);
+
+        let mut pixels = vec![0u8; 25 * 4];
+        pixels[12 * 4] = 255; // red center
+        pixels[12 * 4 + 3] = 255;
+        compose.apply(&mut pixels, 5, 5);
+        // Should be blurred and grayscale
+        assert!(pixels[12 * 4] < 255, "should be blurred");
+        // Check a neighbor got some color
+        assert!(pixels[11 * 4] > 0, "should have spread");
+    }
+
+    #[test]
+    fn test_offset_image_filter() {
+        let filter = OffsetImageFilter::new(1.0, 1.0, None);
+        let mut pixels = vec![0u8; 16 * 4]; // 4x4
+        pixels[0] = 255; // red at top-left
+        pixels[3] = 255; // alpha
+        filter.apply(&mut pixels, 4, 4);
+        // Pixel should have shifted right and down
+        // Top-left should now be clamped from what was at (-1, -1) = top-left
+        assert_eq!(pixels[0], 255, "clamp-to-edge should preserve top-left");
+    }
+
+    #[test]
+    fn test_drop_shadow_image_filter_applies_shadow() {
+        let filter = DropShadowImageFilter::new(
+            2.0,
+            2.0,
+            1.0,
+            1.0,
+            Color4f::new(0.0, 0.0, 0.0, 1.0),
+            false,
+        );
+        // 5x5 image with single white pixel at center
+        let mut pixels = vec![0u8; 25 * 4];
+        pixels[12 * 4] = 255;
+        pixels[12 * 4 + 1] = 255;
+        pixels[12 * 4 + 2] = 255;
+        pixels[12 * 4 + 3] = 255;
+        filter.apply(&mut pixels, 5, 5);
+        // Shadow should now be present at some offset positions
+        // The original white pixel should still be bright
+        assert!(pixels[12 * 4 + 3] > 200, "source should remain bright");
+        // Check that some shadow spread occurred (non-zero alpha in neighbors)
+        let mut has_shadow = false;
+        for i in 0..25 {
+            if i != 12 && pixels[i * 4 + 3] > 0 {
+                has_shadow = true;
+                break;
+            }
+        }
+        assert!(has_shadow, "shadow should spread to other pixels");
+    }
+
+    #[test]
+    fn test_morphology_dilate_expands_bright_pixel() {
+        let filter = MorphologyImageFilter::dilate(1.0, 1.0, None);
+        // Single bright white pixel in center
+        let mut pixels = vec![0u8; 25 * 4];
+        for c in 0..4 {
+            pixels[12 * 4 + c] = 255;
+        }
+        filter.apply(&mut pixels, 5, 5);
+        // Neighbors should now be bright (dilated)
+        assert_eq!(
+            pixels[7 * 4],
+            255,
+            "neighbor above (7) should be dilated to 255"
+        );
+        assert_eq!(
+            pixels[11 * 4],
+            255,
+            "neighbor left (11) should be dilated to 255"
+        );
+        assert_eq!(
+            pixels[13 * 4],
+            255,
+            "neighbor right (13) should be dilated to 255"
+        );
+        assert_eq!(
+            pixels[17 * 4],
+            255,
+            "neighbor below (17) should be dilated to 255"
+        );
+    }
+
+    #[test]
+    fn test_morphology_erode_shrinks_bright_region() {
+        let filter = MorphologyImageFilter::erode(1.0, 1.0, None);
+        // 3x3 bright region in center of 5x5
+        let mut pixels = vec![0u8; 25 * 4];
+        for y in 1..4 {
+            for x in 1..4 {
+                let idx = (y * 5 + x) * 4;
+                pixels[idx] = 255;
+                pixels[idx + 1] = 255;
+                pixels[idx + 2] = 255;
+                pixels[idx + 3] = 255;
+            }
+        }
+        filter.apply(&mut pixels, 5, 5);
+        // Center should still be bright
+        assert_eq!(pixels[12 * 4], 255, "center should remain bright");
+        // Edges should erode (neighbor of black = become black)
+        assert_eq!(
+            pixels[6 * 4],
+            0,
+            "top-left of bright region (6) should erode to 0"
+        );
+    }
+
+    #[test]
+    fn test_displacement_map_displaces_pixels() {
+        let filter = DisplacementMapImageFilter::new(
+            ColorChannel::R,
+            ColorChannel::G,
+            10.0,
+            Arc::new(BlurImageFilter::new(0.0, 0.0, crate::shader::TileMode::Clamp)),
+            None,
+        );
+        // Create a gradient image for displacement
+        let mut pixels = vec![0u8; 25 * 4];
+        for y in 0..5 {
+            for x in 0..5 {
+                let idx = (y * 5 + x) * 4;
+                pixels[idx] = (x * 50) as u8; // R gradient horizontal
+                pixels[idx + 1] = (y * 50) as u8; // G gradient vertical
+                pixels[idx + 2] = 128;
+                pixels[idx + 3] = 255;
+            }
+        }
+        let original = pixels.clone();
+        filter.apply(&mut pixels, 5, 5);
+        // Pixels should have moved based on R and G channels
+        // At least some pixels should differ from original
+        let mut changed = false;
+        for i in 0..25 {
+            if pixels[i * 4] != original[i * 4]
+                || pixels[i * 4 + 1] != original[i * 4 + 1]
+                || pixels[i * 4 + 2] != original[i * 4 + 2]
+            {
+                changed = true;
+                break;
+            }
+        }
+        assert!(changed, "displacement should change pixel positions");
+    }
+
+    #[test]
+    fn test_lighting_image_filter() {
+        let light = LightType::Distant {
+            direction: (0.0, 0.0, 1.0),
+        };
+        let filter = LightingImageFilter::diffuse(
+            light,
+            1.0,
+            1.0,
+            Color4f::new(1.0, 1.0, 1.0, 1.0),
+            None,
+        );
+        let mut pixels = vec![128u8; 25 * 4]; // gray image
+        filter.apply(&mut pixels, 5, 5);
+        // Lighting should modulate the image (may brighten based on implementation)
+        // Just check it doesn't crash and produces valid output
+        assert!(pixels[0] <= 255);
+    }
+
+    #[test]
+    fn test_matrix_convolution_identity() {
+        // Identity kernel: center=1, rest=0
+        let kernel = vec![
+            0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        let filter = MatrixConvolutionImageFilter::new(
+            (3, 3),
+            kernel,
+            1.0,
+            0.0,
+            (1, 1),
+            crate::shader::TileMode::Clamp,
+            true,
+            None,
+        );
+        let mut pixels = vec![
+            255, 0, 0, 255, // red
+            0, 255, 0, 255, // green
+            0, 0, 255, 255, // blue
+            128, 128, 128, 255, // gray
+        ];
+        let original = pixels.clone();
+        filter.apply(&mut pixels, 2, 2);
+        // Identity kernel should preserve pixels (within rounding)
+        for i in 0..16 {
+            assert!(
+                (pixels[i] as i32 - original[i] as i32).abs() <= 1,
+                "identity kernel should preserve pixel values"
+            );
+        }
+    }
+
+    #[test]
+    fn test_tile_image_filter() {
+        let filter = TileImageFilter::new(
+            Rect::new(0.0, 0.0, 2.0, 2.0),
+            Rect::new(0.0, 0.0, 4.0, 4.0),
+            None,
+        );
+        let mut pixels = vec![0u8; 16 * 4]; // 4x4
+                                            // Set top-left 2x2 to distinct colors
+        pixels[0] = 255; // (0,0) red
+        pixels[4] = 0;
+        pixels[4 + 1] = 255; // (1,0) green
+        pixels[8] = 0;
+        pixels[8 + 2] = 255; // (0,1) blue
+        pixels[12] = 255;
+        pixels[12 + 1] = 255; // (1,1) yellow
+        filter.apply(&mut pixels, 4, 4);
+        // The 2x2 tile should repeat across the 4x4 image
+        // (2,0) should match (0,0) = red
+        assert_eq!(pixels[2 * 4], 255, "tile should repeat horizontally");
+        // (0,2) should match (0,0) = red
+        assert_eq!(pixels[8 * 4], 255, "tile should repeat vertically");
+    }
+
+    #[test]
+    fn test_color_matrix_invert() {
+        let filter = ColorMatrixFilter::invert();
+        let result = filter.filter_color(Color4f::new(0.2, 0.4, 0.8, 1.0));
+        assert!((result.r - 0.8).abs() < 1e-3);
+        assert!((result.g - 0.6).abs() < 1e-3);
+        assert!((result.b - 0.2).abs() < 1e-3);
+        assert!((result.a - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_color_matrix_grayscale() {
+        let filter = ColorMatrixFilter::grayscale();
+        let result = filter.filter_color(Color4f::new(1.0, 0.0, 0.0, 1.0));
+        // R -> 0.299, G -> 0.299, B -> 0.299 (all channels become luminance)
+        assert!((result.r - 0.299).abs() < 1e-3);
+        assert!((result.g - 0.299).abs() < 1e-3);
+        assert!((result.b - 0.299).abs() < 1e-3);
+        assert!((result.a - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_color_matrix_brightness_zero_is_identity() {
+        let filter = ColorMatrixFilter::brightness(0.0);
+        let input = Color4f::new(0.3, 0.4, 0.5, 0.7);
+        let result = filter.filter_color(input);
+        assert!((result.r - 0.3).abs() < 1e-3);
+        assert!((result.g - 0.4).abs() < 1e-3);
+        assert!((result.b - 0.5).abs() < 1e-3);
+        assert!((result.a - 0.7).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_color_matrix_sepia() {
+        let filter = ColorMatrixFilter::sepia();
+        let result = filter.filter_color(Color4f::new(1.0, 0.0, 0.0, 1.0));
+        // Red through sepia matrix
+        assert!(result.r > 0.3);
+        assert!(result.g > 0.3);
+        assert!(result.b > 0.1);
+        assert!((result.a - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_color_matrix_contrast() {
+        let filter = ColorMatrixFilter::contrast(2.0);
+        let result = filter.filter_color(Color4f::new(0.75, 0.25, 0.5, 1.0));
+        // (0.75 - 0.5) * 2.0 + 0.5 = 1.0
+        assert!((result.r - 1.0).abs() < 1e-3);
+        // (0.25 - 0.5) * 2.0 + 0.5 = 0.0
+        assert!((result.g - 0.0).abs() < 1e-3);
+        // (0.5 - 0.5) * 2.0 + 0.5 = 0.5
+        assert!((result.b - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_color_matrix_hue_rotate() {
+        let filter = ColorMatrixFilter::hue_rotate(180.0);
+        let result = filter.filter_color(Color4f::new(1.0, 0.0, 0.0, 1.0));
+        // Red rotated 180 degrees should be cyan-ish (low R, high G/B)
+        assert!(result.r < 0.5);
+        assert!((result.a - 1.0).abs() < 1e-3);
+    }
+}

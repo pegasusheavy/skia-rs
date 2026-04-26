@@ -7,7 +7,8 @@
 //! - Hyphenation support
 //! - Text alignment and justification
 
-use crate::font::{Font, FontMetrics};
+use crate::font::Font;
+use crate::shaper::{Shaper, ShapedGlyph};
 use crate::text_blob::{TextBlob, TextBlobBuilder};
 use skia_rs_core::{Point, Rect, Scalar};
 
@@ -208,159 +209,472 @@ pub struct Paragraph {
     laid_out: bool,
 }
 
+/// A contiguous run of glyphs on a line that share a single TextStyle.
+///
+/// Each fragment carries its own font, color, background, and decoration so
+/// that `to_text_blob` (and decoration rendering) can emit the correct
+/// per-span styling. Positions are absolute x coordinates from the left
+/// edge of the paragraph box, with y measured relative to the line's
+/// baseline (y=0 at baseline).
+#[derive(Debug, Clone)]
+pub struct LineFragment {
+    /// Shaped glyph IDs.
+    pub glyphs: Vec<u16>,
+    /// Absolute x offsets from the paragraph's left edge (before baseline
+    /// y is applied).
+    pub positions: Vec<Point>,
+    /// The text style for this fragment (font, colors, decoration).
+    pub style: TextStyle,
+    /// Total advance of this fragment.
+    pub width: Scalar,
+}
+
 /// A line of text in a paragraph.
 #[derive(Debug, Clone)]
-struct TextLine {
-    /// Glyphs and positions for this line.
-    glyphs: Vec<(u16, Point)>,
-    /// Font for this line (simplified - assumes single font per line).
-    font: Font,
-    /// Line bounds.
-    bounds: Rect,
-    /// Baseline Y position.
-    baseline: Scalar,
+pub struct TextLine {
+    /// Per-style fragments that make up the line (in reading order).
+    pub fragments: Vec<LineFragment>,
+    /// Baseline Y position relative to the paragraph origin.
+    pub baseline: Scalar,
+    /// Line bounds (y range covers the whole line box).
+    pub bounds: Rect,
+    /// Maximum ascent (negative) used by any fragment on this line.
+    pub ascent: Scalar,
+    /// Maximum descent (positive) used by any fragment on this line.
+    pub descent: Scalar,
+    /// Total content width (sum of fragment widths before alignment).
+    pub width: Scalar,
+}
+
+/// A shaped cluster bundled with its style — the atomic unit fed to the
+/// line-break loop. A "cluster" is whatever contiguous group of shaped
+/// glyphs rustybuzz reports as belonging to a single input codepoint
+/// cluster; breaking inside a cluster would corrupt grapheme clusters
+/// (ligatures, combining marks, etc.).
+struct Cluster {
+    /// Shaped glyphs in this cluster.
+    glyphs: Vec<ShapedGlyph>,
+    /// Total advance (sum of x_advance + letter_spacing adjustments).
+    advance: Scalar,
+    /// Style applied to this cluster.
+    style: TextStyle,
+    /// Whether this cluster is a whitespace (or hard line break) cluster.
+    kind: ClusterKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClusterKind {
+    /// Visible glyph cluster (letters, punctuation, etc.).
+    Glyph,
+    /// One or more space characters — acts as a break opportunity.
+    Space,
+    /// Hard newline — forces a line break; advance is 0.
+    Newline,
 }
 
 impl Paragraph {
     /// Layout the paragraph to fit within the given width.
+    ///
+    /// Uses rustybuzz shaping via [`Shaper`] for real OpenType advances,
+    /// ligatures, kerning, RTL reordering, and so on. Each input
+    /// `TextRun` is shaped independently, then broken into per-cluster
+    /// units that participate in word-wrap. The resulting lines preserve
+    /// the original per-span [`TextStyle`] so that [`Self::to_text_blob`]
+    /// can emit one glyph run per style (preserving font, color, and
+    /// decoration per span).
+    ///
+    /// Word-wrap happens at whitespace cluster boundaries; if a single
+    /// word exceeds `width` it is still placed on its own line (no
+    /// mid-word breaking, matching the previous behaviour). Hard newlines
+    /// (`\n`) always force a line break.
     pub fn layout(&mut self, width: Scalar) {
         self.width = width;
         self.lines.clear();
+        self.height = 0.0;
 
-        // Collect run data first to avoid borrow issues
-        let runs_data: Vec<_> = self
-            .runs
-            .iter()
-            .map(|run| {
-                let font = run.style.font.clone();
-                let metrics = font.metrics();
-                let line_height = metrics.line_height() * self.style.height;
-                let char_width = font.size() * 0.5;
-                let chars: Vec<char> = run.text.chars().collect();
-                (
-                    font,
-                    line_height,
-                    char_width,
-                    run.style.letter_spacing,
-                    run.style.word_spacing,
-                    chars,
-                )
-            })
-            .collect();
+        let shaper = Shaper::new();
+        let mut clusters: Vec<Cluster> = Vec::new();
 
-        let mut current_line_glyphs: Vec<(u16, Point)> = Vec::new();
-        let mut current_x: Scalar = 0.0;
-        let mut current_y: Scalar = 0.0;
-        let mut current_font = Font::default();
-        let mut line_height: Scalar = 0.0;
+        // Shape every run, flattening into a stream of styled clusters.
+        for run in &self.runs {
+            Self::shape_run_into_clusters(&shaper, run, &mut clusters);
+        }
 
-        for (font, run_line_height, char_width, letter_spacing, word_spacing, chars) in runs_data {
-            current_font = font.clone();
-            line_height = line_height.max(run_line_height);
+        // Pack clusters into lines respecting max width and max_lines.
+        self.pack_clusters_into_lines(clusters, width);
 
-            for c in chars {
-                // Handle newlines
-                if c == '\n' {
-                    self.add_line(
-                        &mut current_line_glyphs,
-                        &current_font,
-                        current_y,
-                        line_height,
-                    );
-                    current_x = 0.0;
-                    current_y += line_height;
-                    line_height = run_line_height;
-                    continue;
+        // Compute final height from the last line's extent.
+        self.height = self
+            .lines
+            .last()
+            .map(|l| l.bounds.bottom)
+            .unwrap_or(0.0);
+        self.laid_out = true;
+    }
+
+    /// Shape a single `TextRun` and append per-cluster atoms to `out`.
+    ///
+    /// We split on whitespace/newline codepoints *before* shaping so that
+    /// each cluster's break-kind is known without re-inspecting the
+    /// post-shaping glyph stream (which no longer has a 1:1 mapping to
+    /// codepoints for ligated scripts).
+    fn shape_run_into_clusters(shaper: &Shaper, run: &TextRun, out: &mut Vec<Cluster>) {
+        // Segment the run's text at newlines and runs of whitespace so
+        // each segment becomes one cluster. Within visible segments we
+        // still shape the whole thing so ligatures/kerning survive.
+        let mut segment_start = 0usize;
+        let bytes = run.text.as_bytes();
+        let mut i = 0usize;
+        let push_visible = |out: &mut Vec<Cluster>, seg: &str| {
+            if seg.is_empty() {
+                return;
+            }
+            let shaped = shaper.shape_auto(seg, &run.style.font);
+            let glyphs: Vec<ShapedGlyph> = match shaped {
+                Some(runs) => runs.into_iter().flat_map(|r| r.glyphs).collect(),
+                None => fallback_shape(seg, &run.style.font),
+            };
+            // Cluster advance includes letter_spacing between every glyph.
+            // This is what the line-break loop compares against `width`,
+            // so it has to agree with `build_line`'s pen-advance loop
+            // (which adds x_advance + letter_spacing per glyph).
+            let advance: Scalar = glyphs
+                .iter()
+                .map(|g| g.x_advance + run.style.letter_spacing)
+                .sum();
+            out.push(Cluster {
+                glyphs,
+                advance,
+                style: run.style.clone(),
+                kind: ClusterKind::Glyph,
+            });
+        };
+
+        while i < bytes.len() {
+            // Advance to next char boundary. We know text is utf-8.
+            let ch = run.text[i..].chars().next().unwrap();
+            let ch_len = ch.len_utf8();
+
+            if ch == '\n' {
+                // Flush preceding visible text, then emit a newline cluster.
+                push_visible(out, &run.text[segment_start..i]);
+                out.push(Cluster {
+                    glyphs: Vec::new(),
+                    advance: 0.0,
+                    style: run.style.clone(),
+                    kind: ClusterKind::Newline,
+                });
+                i += ch_len;
+                segment_start = i;
+                continue;
+            }
+
+            if ch.is_whitespace() {
+                // Flush visible text, then consume a run of whitespace.
+                push_visible(out, &run.text[segment_start..i]);
+                let mut j = i;
+                while j < bytes.len() {
+                    let wsc = run.text[j..].chars().next().unwrap();
+                    if wsc == '\n' || !wsc.is_whitespace() {
+                        break;
+                    }
+                    j += wsc.len_utf8();
                 }
+                // Shape the whitespace to get real space advances.
+                let ws_text = &run.text[i..j];
+                let shaped = shaper.shape_auto(ws_text, &run.style.font);
+                let glyphs: Vec<ShapedGlyph> = match shaped {
+                    Some(runs) => runs.into_iter().flat_map(|r| r.glyphs).collect(),
+                    None => fallback_shape(ws_text, &run.style.font),
+                };
+                // Apply word_spacing once per whitespace cluster, matching
+                // the previous implementation's per-space bump.
+                let base: Scalar = glyphs.iter().map(|g| g.x_advance).sum();
+                let advance = base + run.style.word_spacing;
+                out.push(Cluster {
+                    glyphs,
+                    advance,
+                    style: run.style.clone(),
+                    kind: ClusterKind::Space,
+                });
+                i = j;
+                segment_start = j;
+                continue;
+            }
 
-                // Check for word wrap
-                let advance = char_width + letter_spacing;
-                if current_x + advance > width && current_x > 0.0 {
-                    // Word wrap
-                    self.add_line(
-                        &mut current_line_glyphs,
-                        &current_font,
-                        current_y,
-                        line_height,
-                    );
-                    current_x = 0.0;
-                    current_y += line_height;
+            i += ch_len;
+        }
 
-                    // Check max lines
-                    if self.style.max_lines > 0 && self.lines.len() >= self.style.max_lines {
-                        self.laid_out = true;
-                        self.height = current_y;
-                        return;
+        // Tail — any remaining visible text.
+        push_visible(out, &run.text[segment_start..]);
+    }
+
+    fn pack_clusters_into_lines(&mut self, clusters: Vec<Cluster>, width: Scalar) {
+        let mut pending: Vec<Cluster> = Vec::new();
+        let mut pending_advance: Scalar = 0.0;
+        let mut y: Scalar = 0.0;
+
+        let max_lines = self.style.max_lines;
+        let mut reached_max = false;
+
+        let flush = |this: &mut Self,
+                     line_clusters: &mut Vec<Cluster>,
+                     content_width: &mut Scalar,
+                     y: &mut Scalar,
+                     forced_break: bool| {
+            if line_clusters.is_empty() && !forced_break {
+                return false;
+            }
+            let line =
+                this.build_line(std::mem::take(line_clusters), *content_width, *y);
+            let line_height = line.bounds.height();
+            this.lines.push(line);
+            *content_width = 0.0;
+            *y += line_height;
+            if max_lines > 0 && this.lines.len() >= max_lines {
+                return true;
+            }
+            false
+        };
+
+        for cluster in clusters {
+            if reached_max {
+                break;
+            }
+
+            match cluster.kind {
+                ClusterKind::Newline => {
+                    reached_max =
+                        flush(self, &mut pending, &mut pending_advance, &mut y, true);
+                }
+                ClusterKind::Space => {
+                    // Try to add this space cluster to the current line. If
+                    // even the space alone overflows, we emit the current
+                    // line and drop the space (it would be trailing ws).
+                    if pending_advance + cluster.advance > width && pending_advance > 0.0 {
+                        // Wrap: current line is full. Drop the whitespace
+                        // cluster (trailing on the wrapped line; never
+                        // "starts" the next line — matches standard
+                        // soft-wrap behaviour).
+                        reached_max = flush(
+                            self,
+                            &mut pending,
+                            &mut pending_advance,
+                            &mut y,
+                            false,
+                        );
+                        // The space itself is consumed.
+                    } else {
+                        pending_advance += cluster.advance;
+                        pending.push(cluster);
                     }
                 }
-
-                let glyph_id = font.char_to_glyph(c);
-                current_line_glyphs.push((glyph_id, Point::new(current_x, 0.0)));
-                current_x += advance;
-
-                // Extra spacing for space characters
-                if c == ' ' {
-                    current_x += word_spacing;
+                ClusterKind::Glyph => {
+                    if pending_advance + cluster.advance > width && pending_advance > 0.0 {
+                        // Find the last break point — the last space cluster
+                        // in `pending`. If there is one, break there; else
+                        // this word is longer than the line so we ship the
+                        // current line as-is and start fresh with this
+                        // cluster (matches prior behaviour).
+                        let last_space_ix = pending.iter().rposition(|c| {
+                            matches!(c.kind, ClusterKind::Space)
+                        });
+                        if let Some(ix) = last_space_ix {
+                            // Split: everything up to `ix` stays on this line,
+                            // the space at `ix` is dropped, everything after
+                            // plus the new cluster goes to the next line.
+                            let after = pending.split_off(ix + 1);
+                            // Remove the space at `ix`.
+                            pending.pop();
+                            let line_width_before: Scalar =
+                                pending.iter().map(|c| c.advance).sum();
+                            let mut before_adv = line_width_before;
+                            reached_max = flush(
+                                self,
+                                &mut pending,
+                                &mut before_adv,
+                                &mut y,
+                                false,
+                            );
+                            // Now start the next line with `after` + cluster.
+                            pending = after;
+                            pending_advance = pending.iter().map(|c| c.advance).sum();
+                            if !reached_max {
+                                pending_advance += cluster.advance;
+                                pending.push(cluster);
+                            }
+                        } else {
+                            // No space to break at; ship the current line
+                            // and start a new one with this cluster.
+                            reached_max = flush(
+                                self,
+                                &mut pending,
+                                &mut pending_advance,
+                                &mut y,
+                                false,
+                            );
+                            if !reached_max {
+                                pending_advance = cluster.advance;
+                                pending.push(cluster);
+                            }
+                        }
+                    } else {
+                        pending_advance += cluster.advance;
+                        pending.push(cluster);
+                    }
                 }
             }
         }
 
-        // Finish last line
-        if !current_line_glyphs.is_empty() {
-            self.add_line(
-                &mut current_line_glyphs,
-                &current_font,
-                current_y,
-                line_height,
-            );
-            current_y += line_height;
+        if !reached_max && !pending.is_empty() {
+            // Flush final line.
+            let line = self.build_line(pending, pending_advance, y);
+            self.lines.push(line);
         }
 
-        self.height = current_y;
-        self.laid_out = true;
+        // Apply horizontal alignment in-place.
+        let align = self.style.text_align;
+        let box_width = self.width;
+        let is_rtl = matches!(self.style.text_direction, TextDirection::Rtl);
+        for line in &mut self.lines {
+            let offset = match align {
+                TextAlign::Left => 0.0,
+                TextAlign::Right => box_width - line.width,
+                TextAlign::Center => (box_width - line.width) / 2.0,
+                TextAlign::Justify => 0.0, // full justification not yet implemented
+                TextAlign::Start => {
+                    if is_rtl {
+                        box_width - line.width
+                    } else {
+                        0.0
+                    }
+                }
+                TextAlign::End => {
+                    if is_rtl {
+                        0.0
+                    } else {
+                        box_width - line.width
+                    }
+                }
+            };
+            if offset != 0.0 {
+                for frag in &mut line.fragments {
+                    for p in &mut frag.positions {
+                        p.x += offset;
+                    }
+                }
+                line.bounds = line.bounds.offset(offset, 0.0);
+            }
+        }
     }
 
-    fn add_line(&mut self, glyphs: &mut Vec<(u16, Point)>, font: &Font, y: Scalar, height: Scalar) {
-        if glyphs.is_empty() {
-            return;
+    fn build_line(
+        &self,
+        clusters: Vec<Cluster>,
+        content_width: Scalar,
+        y: Scalar,
+    ) -> TextLine {
+        // Derive per-line ascent/descent by taking the max over each
+        // cluster's font metrics (mixed-style lines use the tallest
+        // fragment's metrics as the line height).
+        let mut ascent: Scalar = 0.0;
+        let mut descent: Scalar = 0.0;
+        let mut leading: Scalar = 0.0;
+        for c in &clusters {
+            let m = c.style.font.metrics();
+            if m.ascent < ascent {
+                ascent = m.ascent;
+            }
+            if m.descent > descent {
+                descent = m.descent;
+            }
+            if m.leading > leading {
+                leading = m.leading;
+            }
+        }
+        if clusters.is_empty() {
+            // Empty line (e.g. bare newline). Use the paragraph's default
+            // style metrics so height is non-zero.
+            let default_font = Font::default();
+            let m = default_font.metrics();
+            ascent = m.ascent;
+            descent = m.descent;
+            leading = m.leading;
         }
 
-        let metrics = font.metrics();
-        let baseline = y - metrics.ascent;
+        let line_height = (-ascent + descent + leading) * self.style.height;
+        let baseline = y - ascent;
+        let bounds = Rect::from_xywh(0.0, y, self.width, line_height);
 
-        // Calculate line width
-        let line_width = glyphs
-            .last()
-            .map(|(_, p)| p.x + font.size() * 0.5)
-            .unwrap_or(0.0);
+        // Merge adjacent clusters with the same style into single fragments
+        // so to_text_blob produces one glyph run per style change rather
+        // than one per cluster.
+        let mut fragments: Vec<LineFragment> = Vec::new();
+        let mut cursor_x: Scalar = 0.0;
 
-        // Apply text alignment
-        let x_offset = match self.style.text_align {
-            TextAlign::Left | TextAlign::Start => 0.0,
-            TextAlign::Right | TextAlign::End => self.width - line_width,
-            TextAlign::Center => (self.width - line_width) / 2.0,
-            TextAlign::Justify => 0.0, // Would need more complex handling
-        };
+        for cluster in clusters {
+            // Merge into the last fragment when styles match.
+            let can_merge = fragments
+                .last()
+                .map(|f| styles_eq(&f.style, &cluster.style))
+                .unwrap_or(false);
 
-        // Offset glyphs
-        let adjusted_glyphs: Vec<(u16, Point)> = glyphs
-            .iter()
-            .map(|(g, p)| (*g, Point::new(p.x + x_offset, p.y)))
-            .collect();
+            if !can_merge {
+                fragments.push(LineFragment {
+                    glyphs: Vec::new(),
+                    positions: Vec::new(),
+                    style: cluster.style.clone(),
+                    width: 0.0,
+                });
+            }
+            let last = fragments.last_mut().unwrap();
 
-        self.lines.push(TextLine {
-            glyphs: adjusted_glyphs,
-            font: font.clone(),
-            bounds: Rect::from_xywh(0.0, y, self.width, height),
+            let is_space = matches!(cluster.kind, ClusterKind::Space);
+            let letter_spacing = if is_space {
+                // Letter spacing is a per-character feature; typographers
+                // don't apply it inside a whitespace cluster because the
+                // glyph set is just the space glyph. Skipping it here
+                // matches how word_spacing is applied separately below.
+                0.0
+            } else {
+                cluster.style.letter_spacing
+            };
+
+            // Lay out each shaped glyph at the running cursor. Glyph
+            // offsets (x_offset, y_offset) from shaping are applied to
+            // the draw position but do not advance the pen. The cursor
+            // advances by `x_advance + letter_spacing` per glyph.
+            for sg in cluster.glyphs {
+                last.glyphs.push(sg.glyph_id.0);
+                last.positions
+                    .push(Point::new(cursor_x + sg.x_offset, sg.y_offset));
+                cursor_x += sg.x_advance + letter_spacing;
+                last.width += sg.x_advance + letter_spacing;
+            }
+
+            // word_spacing is added after every whitespace cluster.
+            if is_space {
+                cursor_x += cluster.style.word_spacing;
+                last.width += cluster.style.word_spacing;
+            }
+        }
+
+        TextLine {
+            fragments,
             baseline,
-        });
-
-        glyphs.clear();
+            bounds,
+            ascent,
+            descent,
+            width: content_width,
+        }
     }
 
     /// Get the laid-out width.
     pub fn max_intrinsic_width(&self) -> Scalar {
-        self.width
+        self.lines
+            .iter()
+            .map(|l| l.width)
+            .fold(0.0f32, |a, b| a.max(b))
     }
 
     /// Get the laid-out height.
@@ -380,15 +694,20 @@ impl Paragraph {
 
     /// Get the width of a specific line.
     pub fn line_width(&self, line: usize) -> Option<Scalar> {
-        self.lines.get(line).map(|l| {
-            l.glyphs
-                .last()
-                .map(|(_, p)| p.x + l.font.size() * 0.5)
-                .unwrap_or(0.0)
-        })
+        self.lines.get(line).map(|l| l.width)
+    }
+
+    /// Get access to the laid-out lines (for decoration rendering, hit
+    /// testing, etc.).
+    pub fn lines(&self) -> &[TextLine] {
+        &self.lines
     }
 
     /// Convert the paragraph to a text blob for drawing.
+    ///
+    /// Emits one glyph run per (line, fragment) so that downstream rendering
+    /// can honour per-span font, color, and decoration. Glyph positions are
+    /// absolute in the paragraph coordinate space.
     pub fn to_text_blob(&self) -> Option<TextBlob> {
         if !self.laid_out || self.lines.is_empty() {
             return None;
@@ -397,15 +716,17 @@ impl Paragraph {
         let mut builder = TextBlobBuilder::new();
 
         for line in &self.lines {
-            let positions: Vec<Point> = line
-                .glyphs
-                .iter()
-                .map(|(_, p)| Point::new(p.x, line.baseline + p.y))
-                .collect();
-
-            let glyphs: Vec<u16> = line.glyphs.iter().map(|(g, _)| *g).collect();
-
-            builder.add_positioned_run(&line.font, &glyphs, &positions);
+            for frag in &line.fragments {
+                if frag.glyphs.is_empty() {
+                    continue;
+                }
+                let positions: Vec<Point> = frag
+                    .positions
+                    .iter()
+                    .map(|p| Point::new(p.x, line.baseline + p.y))
+                    .collect();
+                builder.add_positioned_run(&frag.style.font, &frag.glyphs, &positions);
+            }
         }
 
         builder.build()
@@ -415,6 +736,55 @@ impl Paragraph {
     pub fn bounds(&self) -> Rect {
         Rect::from_xywh(0.0, 0.0, self.width, self.height)
     }
+}
+
+/// Best-effort fallback when `Shaper::shape_auto` returns `None` (e.g. when
+/// the font has no backing data — the dataless default typeface). Produces
+/// one glyph per character using the typeface's cmap fallback and the
+/// font's default glyph advance, so paragraphs built on the default
+/// typeface still lay out visibly rather than collapsing to an empty line.
+fn fallback_shape(text: &str, font: &Font) -> Vec<ShapedGlyph> {
+    use crate::shaper::GlyphId;
+    text.chars()
+        .enumerate()
+        .map(|(i, c)| {
+            let gid = font.char_to_glyph(c);
+            let adv = font.glyph_advance(gid);
+            ShapedGlyph {
+                glyph_id: GlyphId(gid),
+                cluster: i as u32,
+                x_advance: adv,
+                y_advance: 0.0,
+                x_offset: 0.0,
+                y_offset: 0.0,
+            }
+        })
+        .collect()
+}
+
+/// Compare two text styles by the fields that affect glyph run emission.
+/// Fonts are compared by typeface identity and size/scale/skew so two
+/// otherwise-identical styles merge into one run.
+fn styles_eq(a: &TextStyle, b: &TextStyle) -> bool {
+    let fa = &a.font;
+    let fb = &b.font;
+    let typefaces_match = std::sync::Arc::ptr_eq(fa.typeface_ref(), fb.typeface_ref());
+    typefaces_match
+        && fa.size() == fb.size()
+        && fa.scale_x() == fb.scale_x()
+        && fa.skew_x() == fb.skew_x()
+        && a.color == b.color
+        && a.background_color == b.background_color
+        && decoration_eq(&a.decoration, &b.decoration)
+}
+
+fn decoration_eq(a: &TextDecoration, b: &TextDecoration) -> bool {
+    a.underline == b.underline
+        && a.overline == b.overline
+        && a.line_through == b.line_through
+        && a.color == b.color
+        && a.style == b.style
+        && a.thickness == b.thickness
 }
 
 // =============================================================================

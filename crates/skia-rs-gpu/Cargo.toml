@@ -35,6 +35,10 @@ wgpu = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
 parking_lot = { workspace = true }
 thiserror = { workspace = true }
+# naga is a direct dep for real WGSL validation. wgpu already pulls it in
+# transitively at the same major version; declaring it explicitly lets us
+# call naga::front::wgsl outside the wgpu-backend feature gate.
+naga = { version = "23", features = ["wgsl-in"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wgpu = { workspace = true, features = ["webgpu", "webgl"], optional = true }

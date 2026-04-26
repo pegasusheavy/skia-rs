@@ -174,11 +174,11 @@ pub mod prelude {
 /// Version information for the skia-rs library.
 pub mod version {
     /// The major version number.
-    pub const MAJOR: u32 = 0;
+    pub const MAJOR: u32 = parse_component(env!("CARGO_PKG_VERSION_MAJOR"));
     /// The minor version number.
-    pub const MINOR: u32 = 2;
+    pub const MINOR: u32 = parse_component(env!("CARGO_PKG_VERSION_MINOR"));
     /// The patch version number.
-    pub const PATCH: u32 = 0;
+    pub const PATCH: u32 = parse_component(env!("CARGO_PKG_VERSION_PATCH"));
 
     /// The full version string.
     pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -188,6 +188,26 @@ pub mod version {
     pub const fn as_tuple() -> (u32, u32, u32) {
         (MAJOR, MINOR, PATCH)
     }
+
+    /// Parse a decimal version component at compile time.
+    ///
+    /// Previously each component was a hand-maintained `const` literal; if
+    /// one fell behind the workspace version the constants desynced from
+    /// `CARGO_PKG_VERSION` and the unit test comparing them against the
+    /// string version failed. Deriving each component from its own cargo
+    /// env var makes the drift impossible.
+    const fn parse_component(s: &str) -> u32 {
+        let bytes = s.as_bytes();
+        let mut i = 0;
+        let mut n: u32 = 0;
+        while i < bytes.len() {
+            let b = bytes[i];
+            assert!(b >= b'0' && b <= b'9', "version component must be decimal");
+            n = n * 10 + (b - b'0') as u32;
+            i += 1;
+        }
+        n
+    }
 }
 
 #[cfg(test)]
@@ -196,8 +216,15 @@ mod tests {
 
     #[test]
     fn test_version() {
-        assert_eq!(version::VERSION, "0.2.0");
-        assert_eq!(version::as_tuple(), (0, 2, 0));
+        assert_eq!(version::VERSION, env!("CARGO_PKG_VERSION"));
+        let parts: Vec<u32> = env!("CARGO_PKG_VERSION")
+            .split('.')
+            .map(|p| p.parse().unwrap())
+            .collect();
+        assert_eq!(
+            version::as_tuple(),
+            (parts[0], parts[1], parts[2])
+        );
     }
 
     #[test]

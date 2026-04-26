@@ -21,12 +21,9 @@ serde = ["dep:serde", "skia-rs-core/serde"]
 [dependencies]
 skia-rs-core = { workspace = true }
 smallvec = { workspace = true }
-arrayvec = { workspace = true }
-thiserror = { workspace = true }
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]
-proptest = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true

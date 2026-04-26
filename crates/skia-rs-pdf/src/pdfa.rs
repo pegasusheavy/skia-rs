@@ -752,7 +752,9 @@ impl PdfADocument {
             instance_id: Some(inst_id),
         });
 
-        self.xmp_metadata.as_mut().unwrap()
+        self.xmp_metadata
+            .as_mut()
+            .expect("xmp_metadata was just set above")
     }
 
     /// Set sRGB output intent.
@@ -770,26 +772,44 @@ impl PdfADocument {
 // Helpers
 // =============================================================================
 
-/// Generate a UUID v4.
+/// Generate a UUID v4 — pseudo-random, seeded from both the high-
+/// resolution clock *and* a process-wide monotonic counter so that two
+/// invocations within the same nanosecond still produce distinct ids.
+///
+/// Not cryptographically secure (no `getrandom` dependency pulled in for
+/// this), but unique under all realistic conditions including rapid-fire
+/// document creation on the same thread.
 fn uuid_v4() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
+    let nanos = now.as_nanos() as u64;
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
 
-    // Simple pseudo-random UUID (not cryptographically secure)
-    let seed = now.as_nanos() as u64;
-    let a = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-    let b = a.wrapping_mul(6364136223846793005).wrapping_add(1);
+    // Combine the clock and the counter through a splitmix64-style mixer
+    // so the output bits look uniformly distributed.
+    let mut x = nanos ^ counter.wrapping_mul(0x9E3779B97F4A7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D049BB133111EB);
+    x ^= x >> 31;
+
+    let mut y = x.wrapping_mul(6364136223846793005).wrapping_add(counter);
+    y = (y ^ (y >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    y = (y ^ (y >> 27)).wrapping_mul(0x94D049BB133111EB);
+    y ^= y >> 31;
 
     format!(
         "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        (a >> 32) as u32,
-        (a >> 16) as u16 & 0xFFFF,
-        (a & 0x0FFF),
-        0x8000 | ((b >> 48) as u16 & 0x3FFF),
-        b & 0xFFFFFFFFFFFF
+        (x >> 32) as u32,
+        ((x >> 16) as u16),
+        (x & 0x0FFF),
+        0x8000 | ((y >> 48) as u16 & 0x3FFF),
+        y & 0xFFFF_FFFF_FFFF
     )
 }
 
@@ -967,5 +987,233 @@ mod tests {
                     .iter()
                     .any(|e| e.code == PdfAErrorCode::TransparencyNotAllowed)
         );
+    }
+
+    fn base_pdfa_doc(level: PdfALevel) -> PdfADocument {
+        let mut doc = PdfADocument::new();
+        doc.create_xmp_metadata(level);
+        doc.document_id = Some("test".to_string());
+        doc
+    }
+
+    #[test]
+    fn test_validator_missing_document_id() {
+        let mut doc = PdfADocument::new();
+        doc.create_xmp_metadata(PdfALevel::A1b);
+        doc.document_id = None;
+
+        let mut v = PdfAValidator::new(PdfALevel::A1b);
+        let errs = v.validate(&doc).unwrap_err();
+        assert!(errs.iter().any(|e| e.code == PdfAErrorCode::MissingDocumentId));
+    }
+
+    #[test]
+    fn test_validator_missing_pdfa_id() {
+        let mut doc = PdfADocument::new();
+        // XMP present but with no pdfa_level.
+        doc.xmp_metadata = Some(XmpMetadata::new());
+        doc.document_id = Some("id".to_string());
+
+        let mut v = PdfAValidator::new(PdfALevel::A1b);
+        let errs = v.validate(&doc).unwrap_err();
+        assert!(errs.iter().any(|e| e.code == PdfAErrorCode::MissingPdfaId));
+    }
+
+    #[test]
+    fn test_validator_font_missing_cmap() {
+        let mut doc = base_pdfa_doc(PdfALevel::A1b);
+        doc.register_font(
+            "NoCMap",
+            PdfAFontInfo {
+                is_embedded: true,
+                has_cmap: false,
+                has_widths: true,
+            },
+        );
+        let mut v = PdfAValidator::new(PdfALevel::A1b);
+        let errs = v.validate(&doc).unwrap_err();
+        assert!(errs.iter().any(|e| e.code == PdfAErrorCode::FontMissingCmap));
+    }
+
+    #[test]
+    fn test_validator_font_missing_widths() {
+        let mut doc = base_pdfa_doc(PdfALevel::A1b);
+        doc.register_font(
+            "NoWidths",
+            PdfAFontInfo {
+                is_embedded: true,
+                has_cmap: true,
+                has_widths: false,
+            },
+        );
+        let mut v = PdfAValidator::new(PdfALevel::A1b);
+        let errs = v.validate(&doc).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.code == PdfAErrorCode::FontMissingWidths)
+        );
+    }
+
+    #[test]
+    fn test_validator_missing_output_intent() {
+        let mut doc = base_pdfa_doc(PdfALevel::A1b);
+        doc.uses_device_colors = true;
+        // output_intent deliberately None.
+        let mut v = PdfAValidator::new(PdfALevel::A1b);
+        let errs = v.validate(&doc).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.code == PdfAErrorCode::MissingOutputIntent)
+        );
+    }
+
+    #[test]
+    fn test_validator_uncalibrated_color_space() {
+        let mut doc = base_pdfa_doc(PdfALevel::A1b);
+        doc.uncalibrated_colors
+            .insert("DeviceN-Foo".to_string());
+        let mut v = PdfAValidator::new(PdfALevel::A1b);
+        let errs = v.validate(&doc).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.code == PdfAErrorCode::UncalibratedColorSpace)
+        );
+    }
+
+    #[test]
+    fn test_validator_jpeg2000_rejected_in_a1() {
+        let mut doc = base_pdfa_doc(PdfALevel::A1b);
+        doc.uses_jpeg2000 = true;
+        let mut v = PdfAValidator::new(PdfALevel::A1b);
+        let errs = v.validate(&doc).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.code == PdfAErrorCode::Jpeg2000NotAllowed)
+        );
+    }
+
+    #[test]
+    fn test_validator_jpeg2000_allowed_in_a2() {
+        let mut doc = base_pdfa_doc(PdfALevel::A2b);
+        doc.uses_jpeg2000 = true;
+        let mut v = PdfAValidator::new(PdfALevel::A2b);
+        let result = v.validate(&doc);
+        assert!(
+            result.is_ok()
+                || !result
+                    .unwrap_err()
+                    .iter()
+                    .any(|e| e.code == PdfAErrorCode::Jpeg2000NotAllowed)
+        );
+    }
+
+    #[test]
+    fn test_validator_lzw_always_rejected() {
+        let mut doc = base_pdfa_doc(PdfALevel::A2b);
+        doc.uses_lzw = true;
+        let mut v = PdfAValidator::new(PdfALevel::A2b);
+        let errs = v.validate(&doc).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.code == PdfAErrorCode::LzwCompressionNotAllowed)
+        );
+    }
+
+    #[test]
+    fn test_validator_structure_required_in_a1a() {
+        let doc = base_pdfa_doc(PdfALevel::A1a);
+        // has_structure defaults to false.
+        let mut v = PdfAValidator::new(PdfALevel::A1a);
+        let errs = v.validate(&doc).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.code == PdfAErrorCode::MissingDocumentStructure)
+        );
+    }
+
+    #[test]
+    fn test_validator_encryption_rejected() {
+        let mut doc = base_pdfa_doc(PdfALevel::A1b);
+        doc.is_encrypted = true;
+        let mut v = PdfAValidator::new(PdfALevel::A1b);
+        let errs = v.validate(&doc).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.code == PdfAErrorCode::EncryptionNotAllowed)
+        );
+    }
+
+    #[test]
+    fn test_validator_javascript_rejected() {
+        let mut doc = base_pdfa_doc(PdfALevel::A1b);
+        doc.has_javascript = true;
+        let mut v = PdfAValidator::new(PdfALevel::A1b);
+        let errs = v.validate(&doc).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.code == PdfAErrorCode::JavaScriptNotAllowed)
+        );
+    }
+
+    #[test]
+    fn test_validator_embedded_files_rejected_in_a2() {
+        let mut doc = base_pdfa_doc(PdfALevel::A2b);
+        doc.embedded_files.push(EmbeddedFileInfo {
+            name: "x.bin".into(),
+            mime_type: None,
+            relationship: None,
+        });
+        let mut v = PdfAValidator::new(PdfALevel::A2b);
+        let errs = v.validate(&doc).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.code == PdfAErrorCode::EmbeddedFilesNotAllowed)
+        );
+    }
+
+    #[test]
+    fn test_validator_a3_requires_file_relationship() {
+        let mut doc = base_pdfa_doc(PdfALevel::A3b);
+        doc.embedded_files.push(EmbeddedFileInfo {
+            name: "x.bin".into(),
+            mime_type: None,
+            relationship: None,
+        });
+        let mut v = PdfAValidator::new(PdfALevel::A3b);
+        let errs = v.validate(&doc).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.code == PdfAErrorCode::MissingFileRelationship)
+        );
+    }
+
+    #[test]
+    fn test_validator_a3_accepts_file_with_relationship() {
+        let mut doc = base_pdfa_doc(PdfALevel::A3b);
+        doc.embedded_files.push(EmbeddedFileInfo {
+            name: "x.bin".into(),
+            mime_type: Some("application/octet-stream".into()),
+            relationship: Some("Data".into()),
+        });
+        let mut v = PdfAValidator::new(PdfALevel::A3b);
+        let result = v.validate(&doc);
+        assert!(
+            result.is_ok()
+                || !result
+                    .unwrap_err()
+                    .iter()
+                    .any(|e| e.code == PdfAErrorCode::MissingFileRelationship)
+        );
+    }
+
+    #[test]
+    fn test_uuid_v4_is_unique_in_tight_loop() {
+        use std::collections::HashSet;
+        let mut seen: HashSet<String> = HashSet::new();
+        for _ in 0..1_000 {
+            let id = uuid_v4();
+            assert_eq!(id.len(), 36);
+            assert!(seen.insert(id), "duplicate UUID in tight loop");
+        }
     }
 }

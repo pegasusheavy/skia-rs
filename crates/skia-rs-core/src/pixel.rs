@@ -600,6 +600,13 @@ pub fn convert_pixels(
     let width = src_info.width() as usize;
     let height = src_info.height() as usize;
 
+    // Compute alpha conversion mode once; apply per-row for cache locality.
+    let alpha_conv = AlphaConversion::from_alpha_types(
+        src_info.alpha_type,
+        dst_info.alpha_type,
+        dst_info.color_type.has_alpha(),
+    );
+
     for y in 0..height {
         let src_row_start = y * src_row_bytes;
         let dst_row_start = y * dst_row_bytes;
@@ -610,26 +617,55 @@ pub fn convert_pixels(
             &mut dst[dst_row_start..],
             dst_info.color_type,
             width,
+            alpha_conv,
         )?;
     }
 
     Ok(())
 }
 
-/// Convert a single row of pixels.
+/// How to convert alpha during pixel conversion.
+#[derive(Clone, Copy, Debug)]
+enum AlphaConversion {
+    None,
+    Premultiply,
+    Unpremultiply,
+}
+
+impl AlphaConversion {
+    fn from_alpha_types(src: AlphaType, dst: AlphaType, color_has_alpha: bool) -> Self {
+        if !color_has_alpha || src == dst {
+            return AlphaConversion::None;
+        }
+        match (src, dst) {
+            (AlphaType::Unpremul, AlphaType::Premul) => AlphaConversion::Premultiply,
+            (AlphaType::Premul, AlphaType::Unpremul) => AlphaConversion::Unpremultiply,
+            _ => AlphaConversion::None,
+        }
+    }
+}
+
+/// Convert a single row of pixels, applying alpha conversion in the same pass.
 fn convert_row(
     src: &[u8],
     src_type: ColorType,
     dst: &mut [u8],
     dst_type: ColorType,
     width: usize,
+    alpha_conv: AlphaConversion,
 ) -> Result<(), PixelError> {
     use ColorType::*;
 
     // Same format - just copy
     if src_type == dst_type {
         let bpp = src_type.bytes_per_pixel();
-        dst[..width * bpp].copy_from_slice(&src[..width * bpp]);
+        let row_len = width * bpp;
+        dst[..row_len].copy_from_slice(&src[..row_len]);
+        match alpha_conv {
+            AlphaConversion::None => {}
+            AlphaConversion::Premultiply => premultiply_in_place(&mut dst[..row_len]),
+            AlphaConversion::Unpremultiply => unpremultiply_in_place(&mut dst[..row_len]),
+        }
         return Ok(());
     }
 
@@ -764,6 +800,13 @@ fn convert_row(
         _ => return Err(PixelError::UnsupportedColorType),
     }
 
+    // Apply alpha conversion to the row while it is still hot in cache.
+    match alpha_conv {
+        AlphaConversion::None => {}
+        AlphaConversion::Premultiply => premultiply_in_place(&mut dst[..width * dst_type.bytes_per_pixel()]),
+        AlphaConversion::Unpremultiply => unpremultiply_in_place(&mut dst[..width * dst_type.bytes_per_pixel()]),
+    }
+
     Ok(())
 }
 
@@ -880,5 +923,66 @@ mod tests {
 
         // Should be close to original (with some precision loss)
         assert!(pixels[0] > 190 && pixels[0] < 210);
+    }
+
+    #[test]
+    fn test_convert_pixels_unpremul_to_premul() {
+        // Source: 1 unpremul pixel: red=255, green=128, blue=64, alpha=128
+        let src = vec![255u8, 128, 64, 128];
+        let src_info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Unpremul).unwrap();
+
+        // Destination: 1 premul pixel
+        let mut dst = vec![0u8; 4];
+        let dst_info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Premul).unwrap();
+
+        let result = convert_pixels(&src, &src_info, 4, &mut dst, &dst_info, 4);
+        assert!(result.is_ok());
+
+        // Premul: r' = r * a / 255 = 255 * 128 / 255 = 128
+        //         g' = 128 * 128 / 255 = 64
+        //         b' = 64 * 128 / 255 = 32
+        //         a' = 128 (unchanged)
+        assert_eq!(dst[0], 128, "red should be premultiplied");
+        assert_eq!(dst[1], 64, "green should be premultiplied");
+        assert_eq!(dst[2], 32, "blue should be premultiplied");
+        assert_eq!(dst[3], 128, "alpha unchanged");
+    }
+
+    #[test]
+    fn test_convert_pixels_premul_to_unpremul() {
+        // Source: 1 premul pixel: r=128, g=64, b=32, a=128
+        // (was r=255, g=128, b=64 unpremul)
+        let src = vec![128u8, 64, 32, 128];
+        let src_info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Premul).unwrap();
+
+        let mut dst = vec![0u8; 4];
+        let dst_info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Unpremul).unwrap();
+
+        let result = convert_pixels(&src, &src_info, 4, &mut dst, &dst_info, 4);
+        assert!(result.is_ok());
+
+        // Unpremul: r' = r * 255 / a = 128 * 255 / 128 = 255
+        //           g' = 64 * 255 / 128 = 127 (rounding)
+        //           b' = 32 * 255 / 128 = 63
+        //           a' = 128 (unchanged)
+        assert_eq!(dst[0], 255);
+        assert!((dst[1] as i32 - 127).abs() <= 1, "green ~127, got {}", dst[1]);
+        assert!((dst[2] as i32 - 63).abs() <= 1, "blue ~63, got {}", dst[2]);
+        assert_eq!(dst[3], 128);
+    }
+
+    #[test]
+    fn test_convert_pixels_same_alpha_type_no_op() {
+        // Same alpha type should not modify pixel values (regression check)
+        let src = vec![100u8, 150, 200, 128];
+        let src_info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Premul).unwrap();
+
+        let mut dst = vec![0u8; 4];
+        let dst_info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Premul).unwrap();
+
+        let result = convert_pixels(&src, &src_info, 4, &mut dst, &dst_info, 4);
+        assert!(result.is_ok());
+
+        assert_eq!(dst, src.as_slice());
     }
 }

@@ -1,7 +1,7 @@
 //! SVG DOM representation.
 
+use crate::css::Stylesheet;
 use skia_rs_core::{Color, Matrix, Point, Rect, Scalar};
-use skia_rs_paint::Paint;
 use skia_rs_path::Path;
 use std::collections::HashMap;
 
@@ -16,6 +16,12 @@ pub struct SvgDom {
     pub height: Scalar,
     /// View box.
     pub view_box: Option<Rect>,
+    /// Merged stylesheet extracted from `<style>` elements during parsing.
+    ///
+    /// Populated by `parse_svg`. Applied automatically by `render_svg` so
+    /// that CSS-styled nodes inherit their declared properties. Empty when
+    /// the source document contains no `<style>` blocks.
+    pub stylesheet: Stylesheet,
 }
 
 impl SvgDom {

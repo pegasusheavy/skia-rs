@@ -2,6 +2,7 @@
 
 use skia_rs_core::{Point, Rect, Scalar};
 use smallvec::SmallVec;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 /// Path fill type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -87,13 +88,23 @@ pub enum PathConvexity {
     #[default]
     Unknown = 0,
     /// Path is convex.
-    Convex,
+    Convex = 1,
     /// Path is concave.
-    Concave,
+    Concave = 2,
+}
+
+impl PathConvexity {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => PathConvexity::Convex,
+            2 => PathConvexity::Concave,
+            _ => PathConvexity::Unknown,
+        }
+    }
 }
 
 /// A 2D geometric path.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug)]
 pub struct Path {
     /// Path verbs.
     pub(crate) verbs: SmallVec<[Verb; 16]>,
@@ -105,8 +116,66 @@ pub struct Path {
     pub(crate) fill_type: FillType,
     /// Cached bounds (lazily computed).
     pub(crate) bounds: Option<Rect>,
-    /// Cached convexity.
-    pub(crate) convexity: PathConvexity,
+    /// Cached convexity (stored as u8 for Send+Sync via AtomicU8).
+    pub(crate) convexity: AtomicU8,
+}
+
+impl Default for Path {
+    fn default() -> Self {
+        Self {
+            verbs: SmallVec::new(),
+            points: SmallVec::new(),
+            conic_weights: SmallVec::new(),
+            fill_type: FillType::default(),
+            bounds: None,
+            convexity: AtomicU8::new(PathConvexity::Unknown as u8),
+        }
+    }
+}
+
+impl Clone for Path {
+    fn clone(&self) -> Self {
+        Self {
+            verbs: self.verbs.clone(),
+            points: self.points.clone(),
+            conic_weights: self.conic_weights.clone(),
+            fill_type: self.fill_type,
+            bounds: self.bounds,
+            convexity: AtomicU8::new(self.convexity.load(Ordering::Relaxed)),
+        }
+    }
+}
+
+impl PartialEq for Path {
+    fn eq(&self, other: &Self) -> bool {
+        self.verbs == other.verbs
+            && self.points == other.points
+            && self.conic_weights == other.conic_weights
+            && self.fill_type == other.fill_type
+    }
+}
+
+#[inline]
+fn axis_of(p: Point, axis: usize) -> Scalar {
+    if axis == 0 { p.x } else { p.y }
+}
+
+#[inline]
+fn record_axis_bound(
+    axis: usize,
+    val: Scalar,
+    min_x: &mut Scalar,
+    max_x: &mut Scalar,
+    min_y: &mut Scalar,
+    max_y: &mut Scalar,
+) {
+    if axis == 0 {
+        if val < *min_x { *min_x = val; }
+        if val > *max_x { *max_x = val; }
+    } else {
+        if val < *min_y { *min_y = val; }
+        if val > *max_y { *max_y = val; }
+    }
 }
 
 impl Path {
@@ -274,25 +343,84 @@ impl Path {
         None
     }
 
-    /// Check if the path represents an oval.
+    /// Returns true if this path is a simple oval (ellipse).
+    ///
+    /// Verifies both verb structure (Move, 4 curves, Close) AND that the
+    /// curve endpoints lie on the cardinal points of the bounding ellipse
+    /// (left, right, top, bottom). This rejects 4-cubic paths that share
+    /// the verb pattern but have arbitrary geometry.
     pub fn is_oval(&self) -> bool {
-        // Ovals typically have 4 cubic curves or 4 conics
-        let cubic_count = self.verbs.iter().filter(|v| **v == Verb::Cubic).count();
-        let conic_count = self.verbs.iter().filter(|v| **v == Verb::Conic).count();
+        let elements: Vec<_> = self.iter().collect();
+        if elements.len() != 6 {
+            return false;
+        }
 
-        (cubic_count == 4 && self.verbs.len() == 6) // Move + 4 Cubic + Close
-            || (conic_count == 4 && self.verbs.len() == 6) // Move + 4 Conic + Close
+        let start = match elements[0] {
+            PathElement::Move(p) => p,
+            _ => return false,
+        };
+        if !matches!(elements[5], PathElement::Close) {
+            return false;
+        }
+
+        let all_cubic = elements[1..5]
+            .iter()
+            .all(|e| matches!(e, PathElement::Cubic(_, _, _)));
+        let all_conic = elements[1..5]
+            .iter()
+            .all(|e| matches!(e, PathElement::Conic(_, _, _)));
+        if !all_cubic && !all_conic {
+            return false;
+        }
+
+        let bounds = self.bounds();
+        let cx = (bounds.left + bounds.right) * 0.5;
+        let cy = (bounds.top + bounds.bottom) * 0.5;
+        if bounds.right - bounds.left <= 0.0 || bounds.bottom - bounds.top <= 0.0 {
+            return false;
+        }
+
+        let tolerance = ((bounds.right - bounds.left) + (bounds.bottom - bounds.top)) * 1e-4;
+        let on_cardinal = |p: Point| -> bool {
+            let on_h = (p.y - cy).abs() < tolerance
+                && ((p.x - bounds.left).abs() < tolerance
+                    || (p.x - bounds.right).abs() < tolerance);
+            let on_v = (p.x - cx).abs() < tolerance
+                && ((p.y - bounds.top).abs() < tolerance
+                    || (p.y - bounds.bottom).abs() < tolerance);
+            on_h || on_v
+        };
+
+        if !on_cardinal(start) {
+            return false;
+        }
+
+        for elem in &elements[1..5] {
+            let end = match *elem {
+                PathElement::Cubic(_, _, p) => p,
+                PathElement::Conic(_, p, _) => p,
+                _ => return false,
+            };
+            if !on_cardinal(end) {
+                return false;
+            }
+        }
+
+        true
     }
 
     /// Get the convexity of the path.
     pub fn convexity(&self) -> PathConvexity {
-        if self.convexity != PathConvexity::Unknown {
-            return self.convexity;
+        let cached = PathConvexity::from_u8(self.convexity.load(Ordering::Relaxed));
+        if cached != PathConvexity::Unknown {
+            return cached;
         }
 
         // Simple convexity check based on cross product signs
         if self.points.len() < 3 {
-            return PathConvexity::Convex;
+            let result = PathConvexity::Convex;
+            self.convexity.store(result as u8, Ordering::Relaxed);
+            return result;
         }
 
         let mut sign = 0i32;
@@ -310,12 +438,16 @@ impl Path {
                 if sign == 0 {
                     sign = current_sign;
                 } else if sign != current_sign {
-                    return PathConvexity::Concave;
+                    let result = PathConvexity::Concave;
+                    self.convexity.store(result as u8, Ordering::Relaxed);
+                    return result;
                 }
             }
         }
 
-        PathConvexity::Convex
+        let result = PathConvexity::Convex;
+        self.convexity.store(result as u8, Ordering::Relaxed);
+        result
     }
 
     /// Check if the path is convex.
@@ -390,7 +522,7 @@ impl Path {
 
         self.verbs = new_verbs;
         self.bounds = None;
-        self.convexity = PathConvexity::Unknown;
+        self.convexity.store(PathConvexity::Unknown as u8, Ordering::Relaxed);
     }
 
     /// Transform the path by a matrix.
@@ -399,7 +531,7 @@ impl Path {
             *point = matrix.map_point(*point);
         }
         self.bounds = None;
-        self.convexity = PathConvexity::Unknown;
+        self.convexity.store(PathConvexity::Unknown as u8, Ordering::Relaxed);
     }
 
     /// Create a transformed copy of the path.
@@ -510,10 +642,125 @@ impl Path {
         }
     }
 
-    /// Compute tight bounds (considering curve control points).
+    /// Returns the tight bounding rectangle of this path.
+    ///
+    /// Unlike `bounds()`, this computes the bounds from the actual curve
+    /// extents, not the control-point bounding box. For cubic and quadratic
+    /// Bezier curves with control points outside the actual curve range,
+    /// tight_bounds() may be significantly smaller than bounds().
+    ///
+    /// Conics fall back to control-polygon bounds (exact extrema for rational
+    /// curves would require solving a quartic).
     pub fn tight_bounds(&self) -> Rect {
-        // For now, same as bounds (which already considers all points)
-        self.bounds()
+        if self.verbs.is_empty() {
+            return Rect::EMPTY;
+        }
+
+        let mut min_x = Scalar::INFINITY;
+        let mut min_y = Scalar::INFINITY;
+        let mut max_x = Scalar::NEG_INFINITY;
+        let mut max_y = Scalar::NEG_INFINITY;
+
+        let include = |p: Point, min_x: &mut Scalar, min_y: &mut Scalar, max_x: &mut Scalar, max_y: &mut Scalar| {
+            if p.x < *min_x { *min_x = p.x; }
+            if p.y < *min_y { *min_y = p.y; }
+            if p.x > *max_x { *max_x = p.x; }
+            if p.y > *max_y { *max_y = p.y; }
+        };
+
+        let mut current = Point::new(0.0, 0.0);
+
+        for elem in self.iter() {
+            match elem {
+                PathElement::Move(p) | PathElement::Line(p) => {
+                    include(p, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+                    current = p;
+                }
+                PathElement::Quad(c, p) => {
+                    include(current, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+                    include(p, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+                    // Quadratic extremum per axis: t = (start - ctrl) / (start - 2*ctrl + end)
+                    for axis in 0..2 {
+                        let s = axis_of(current, axis);
+                        let cv = axis_of(c, axis);
+                        let e = axis_of(p, axis);
+                        let denom = s - 2.0 * cv + e;
+                        if denom.abs() > 1e-9 {
+                            let t = (s - cv) / denom;
+                            if t > 0.0 && t < 1.0 {
+                                let mt = 1.0 - t;
+                                let val = mt * mt * s + 2.0 * mt * t * cv + t * t * e;
+                                record_axis_bound(axis, val, &mut min_x, &mut max_x, &mut min_y, &mut max_y);
+                            }
+                        }
+                    }
+                    current = p;
+                }
+                PathElement::Cubic(c1, c2, p) => {
+                    include(current, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+                    include(p, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+                    // Cubic extrema per axis: solve 3*a*t^2 + 2*b*t + c = 0 where
+                    // B'(t) = 3*(1-t)^2*(c1-s) + 6*(1-t)*t*(c2-c1) + 3*t^2*(e-c2)
+                    // Expanding into quadratic: a*t^2 + b*t + cc
+                    for axis in 0..2 {
+                        let s = axis_of(current, axis);
+                        let c1v = axis_of(c1, axis);
+                        let c2v = axis_of(c2, axis);
+                        let e = axis_of(p, axis);
+                        let a = 3.0 * (e - 3.0 * c2v + 3.0 * c1v - s);
+                        let b = 6.0 * (c2v - 2.0 * c1v + s);
+                        let cc = 3.0 * (c1v - s);
+
+                        let mut roots: [Scalar; 2] = [Scalar::NAN, Scalar::NAN];
+                        let mut n_roots = 0;
+
+                        if a.abs() < 1e-9 {
+                            // Linear: b*t + cc = 0
+                            if b.abs() > 1e-9 {
+                                let t = -cc / b;
+                                roots[0] = t;
+                                n_roots = 1;
+                            }
+                        } else {
+                            let disc = b * b - 4.0 * a * cc;
+                            if disc >= 0.0 {
+                                let sqrt_disc = disc.sqrt();
+                                roots[0] = (-b + sqrt_disc) / (2.0 * a);
+                                roots[1] = (-b - sqrt_disc) / (2.0 * a);
+                                n_roots = 2;
+                            }
+                        }
+
+                        for i in 0..n_roots {
+                            let t = roots[i];
+                            if t.is_finite() && t > 0.0 && t < 1.0 {
+                                let mt = 1.0 - t;
+                                let val = mt * mt * mt * s
+                                    + 3.0 * mt * mt * t * c1v
+                                    + 3.0 * mt * t * t * c2v
+                                    + t * t * t * e;
+                                record_axis_bound(axis, val, &mut min_x, &mut max_x, &mut min_y, &mut max_y);
+                            }
+                        }
+                    }
+                    current = p;
+                }
+                PathElement::Conic(c, p, _w) => {
+                    // Rational extrema require quartic solve; use control polygon
+                    // as a correct (if looser) upper bound.
+                    include(current, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+                    include(c, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+                    include(p, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
+                    current = p;
+                }
+                PathElement::Close => {}
+            }
+        }
+
+        if min_x == Scalar::INFINITY {
+            return Rect::EMPTY;
+        }
+        Rect::new(min_x, min_y, max_x, max_y)
     }
 
     /// Get the total length of the path.
@@ -638,5 +885,97 @@ impl<'a> Iterator for PathIter<'a> {
         };
 
         Some(element)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::PathBuilder;
+
+    #[test]
+    fn test_is_oval_true_for_actual_oval() {
+        let mut builder = PathBuilder::new();
+        builder.add_oval(&Rect::new(0.0, 0.0, 100.0, 50.0));
+        let path = builder.build();
+        assert!(path.is_oval(), "add_oval result should report is_oval=true");
+    }
+
+    #[test]
+    fn test_is_oval_false_for_random_cubics() {
+        // 4 cubics with arbitrary control points — should NOT be detected.
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.cubic_to(10.0, 0.0, 20.0, 5.0, 30.0, 10.0);
+        builder.cubic_to(40.0, 15.0, 50.0, 20.0, 60.0, 25.0);
+        builder.cubic_to(70.0, 30.0, 80.0, 35.0, 90.0, 40.0);
+        builder.cubic_to(95.0, 45.0, 100.0, 47.0, 0.0, 0.0);
+        builder.close();
+        let path = builder.build();
+        assert!(!path.is_oval(), "Random 4-cubic path should not be detected as oval");
+    }
+
+    #[test]
+    fn test_path_convexity_returns_consistent_result() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(10.0, 0.0);
+        builder.line_to(10.0, 10.0);
+        builder.line_to(0.0, 10.0);
+        builder.close();
+        let path = builder.build();
+
+        let c1 = path.convexity();
+        let c2 = path.convexity();
+        assert_eq!(c1, c2);
+    }
+
+    #[test]
+    fn test_tight_bounds_smaller_than_bounds_for_curves() {
+        // A cubic Bezier where control points extend far beyond the actual curve.
+        // The "loose" bounds (bounds()) include control points; tight should be tighter.
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.cubic_to(50.0, 100.0, 50.0, -100.0, 100.0, 0.0);
+        let path = builder.build();
+
+        let loose = path.bounds();
+        let tight = path.tight_bounds();
+
+        // Loose bounds include y=±100 control points
+        assert!(
+            loose.top <= -99.0 || loose.bottom >= 99.0,
+            "Loose bounds should include control points (top={}, bottom={})",
+            loose.top, loose.bottom
+        );
+
+        // Tight bounds should be strictly tighter on at least one of top/bottom
+        assert!(
+            tight.top > loose.top || tight.bottom < loose.bottom,
+            "Tight bounds should be tighter than loose for this off-axis cubic"
+        );
+
+        // For this symmetric S-cubic, actual extrema are approximately ±19.245
+        assert!(
+            tight.bottom < 30.0 && tight.top > -30.0,
+            "Tight bounds should reflect actual curve range (got top={}, bottom={})",
+            tight.top, tight.bottom
+        );
+    }
+
+    #[test]
+    fn test_tight_bounds_same_as_bounds_for_lines() {
+        // For line-only paths, tight_bounds should equal bounds
+        let mut builder = PathBuilder::new();
+        builder.move_to(10.0, 20.0);
+        builder.line_to(30.0, 40.0);
+        let path = builder.build();
+
+        let loose = path.bounds();
+        let tight = path.tight_bounds();
+        assert!((loose.left - tight.left).abs() < 1e-4);
+        assert!((loose.right - tight.right).abs() < 1e-4);
+        assert!((loose.top - tight.top).abs() < 1e-4);
+        assert!((loose.bottom - tight.bottom).abs() < 1e-4);
     }
 }

@@ -30,6 +30,7 @@ pub mod debug;
 pub mod glyph_cache;
 pub mod gradient;
 pub mod msaa;
+pub mod paint_bridge;
 pub mod pipeline;
 pub mod sdf;
 pub mod shader;

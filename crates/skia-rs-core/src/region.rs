@@ -35,18 +35,13 @@ pub enum RegionOp {
 pub struct Region {
     /// The rectangles composing this region (in scanline order).
     rects: Vec<IRect>,
-    /// Cached bounds of the region.
-    bounds: IRect,
 }
 
 impl Region {
     /// Create an empty region.
     #[inline]
     pub fn new() -> Self {
-        Self {
-            rects: Vec::new(),
-            bounds: IRect::empty(),
-        }
+        Self { rects: Vec::new() }
     }
 
     /// Create a region from a single rectangle.
@@ -54,10 +49,7 @@ impl Region {
         if rect.is_empty() {
             return Self::new();
         }
-        Self {
-            rects: vec![rect],
-            bounds: rect,
-        }
+        Self { rects: vec![rect] }
     }
 
     /// Create a region from a floating-point rectangle (rounds outward).
@@ -83,10 +75,17 @@ impl Region {
         self.rects.len() > 1
     }
 
-    /// Returns the bounds of the region.
+    /// Returns the bounding rectangle of this region.
     #[inline]
     pub fn bounds(&self) -> IRect {
-        self.bounds
+        if self.rects.is_empty() {
+            return IRect::empty();
+        }
+        let mut bounds = self.rects[0];
+        for rect in &self.rects[1..] {
+            bounds = bounds.union(rect);
+        }
+        bounds
     }
 
     /// Returns the number of rectangles in the region.
@@ -110,7 +109,6 @@ impl Region {
     /// Clear the region to empty.
     pub fn set_empty(&mut self) {
         self.rects.clear();
-        self.bounds = IRect::empty();
     }
 
     /// Set the region to a single rectangle.
@@ -121,20 +119,18 @@ impl Region {
         }
         self.rects.clear();
         self.rects.push(rect);
-        self.bounds = rect;
         true
     }
 
     /// Set the region to another region.
     pub fn set_region(&mut self, other: &Region) -> bool {
         self.rects = other.rects.clone();
-        self.bounds = other.bounds;
         !self.is_empty()
     }
 
     /// Returns true if the point is contained in the region.
     pub fn contains(&self, x: i32, y: i32) -> bool {
-        if !self.bounds.contains(x, y) {
+        if !self.bounds().contains(x, y) {
             return false;
         }
         for rect in &self.rects {
@@ -155,7 +151,8 @@ impl Region {
         }
 
         // Quick bounds check
-        if let Some(intersection) = self.bounds.intersect(rect) {
+        let bounds = self.bounds();
+        if let Some(intersection) = bounds.intersect(rect) {
             if intersection != *rect {
                 return false;
             }
@@ -168,18 +165,62 @@ impl Region {
             return true;
         }
 
-        // For complex regions, we'd need a more sophisticated algorithm
-        // This is a simplified check that may have false negatives
+        // For complex regions: verify each y-band of the query rect is
+        // x-covered by the union of region rects active in that band.
+        let query_top = rect.top;
+        let query_bottom = rect.bottom;
+
+        // Collect y-edges from region rects that overlap the query range
+        let mut y_edges: Vec<i32> = vec![query_top, query_bottom];
         for r in &self.rects {
-            if r.left <= rect.left
-                && r.top <= rect.top
-                && r.right >= rect.right
-                && r.bottom >= rect.bottom
-            {
-                return true;
+            if r.top < query_bottom && r.bottom > query_top {
+                if r.top > query_top && r.top < query_bottom {
+                    y_edges.push(r.top);
+                }
+                if r.bottom > query_top && r.bottom < query_bottom {
+                    y_edges.push(r.bottom);
+                }
             }
         }
-        false
+        y_edges.sort_unstable();
+        y_edges.dedup();
+
+        // Process each y-band
+        let mut x_intervals: Vec<(i32, i32)> = Vec::with_capacity(self.rects.len());
+        for window in y_edges.windows(2) {
+            let band_top = window[0];
+            let band_bottom = window[1];
+
+            x_intervals.clear();
+            x_intervals.extend(
+                self.rects
+                    .iter()
+                    .filter(|r| r.top <= band_top && r.bottom >= band_bottom)
+                    .map(|r| (r.left, r.right)),
+            );
+
+            if x_intervals.is_empty() {
+                return false;
+            }
+
+            x_intervals.sort_unstable_by_key(|&(l, _)| l);
+
+            let mut covered_right = rect.left;
+            for (l, r) in x_intervals.iter().copied() {
+                if l > covered_right {
+                    return false; // Gap in coverage
+                }
+                covered_right = covered_right.max(r);
+                if covered_right >= rect.right {
+                    break;
+                }
+            }
+            if covered_right < rect.right {
+                return false;
+            }
+        }
+
+        true
     }
 
     /// Returns true if this region intersects with a rectangle.
@@ -187,7 +228,7 @@ impl Region {
         if self.is_empty() || rect.is_empty() {
             return false;
         }
-        if self.bounds.intersect(rect).is_none() {
+        if self.bounds().intersect(rect).is_none() {
             return false;
         }
         for r in &self.rects {
@@ -203,7 +244,7 @@ impl Region {
         if self.is_empty() || other.is_empty() {
             return false;
         }
-        if self.bounds.intersect(&other.bounds).is_none() {
+        if self.bounds().intersect(&other.bounds()).is_none() {
             return false;
         }
         for r1 in &self.rects {
@@ -221,7 +262,6 @@ impl Region {
         for rect in &mut self.rects {
             *rect = rect.offset(dx, dy);
         }
-        self.bounds = self.bounds.offset(dx, dy);
     }
 
     /// Returns a translated copy of this region.
@@ -262,7 +302,7 @@ impl Region {
         }
 
         // Quick bounds check
-        if self.bounds.intersect(&other.bounds).is_none() {
+        if self.bounds().intersect(&other.bounds()).is_none() {
             self.set_empty();
             return false;
         }
@@ -277,7 +317,6 @@ impl Region {
         }
 
         self.rects = result_rects;
-        self.recompute_bounds();
         !self.is_empty()
     }
 
@@ -290,11 +329,14 @@ impl Region {
             return self.set_region(other);
         }
 
-        // Simple implementation: just combine all rectangles
-        // A proper implementation would merge overlapping rectangles
-        self.rects.extend(other.rects.iter().cloned());
-        self.bounds = self.bounds.union(&other.bounds);
-        true
+        // Combine all rects, then canonicalize to scanline form so overlapping
+        // and adjacent rects are merged.  Without this the rect list grows
+        // without bound on repeated unions, making all O(n) region ops slow.
+        let mut all_rects = std::mem::take(&mut self.rects);
+        all_rects.extend(other.rects.iter().cloned());
+
+        self.rects = canonicalize_rects(&all_rects);
+        !self.is_empty()
     }
 
     /// XOR this region with another.
@@ -318,7 +360,7 @@ impl Region {
         }
 
         // Quick bounds check
-        if self.bounds.intersect(&other.bounds).is_none() {
+        if self.bounds().intersect(&other.bounds()).is_none() {
             return !self.is_empty();
         }
 
@@ -337,21 +379,7 @@ impl Region {
         }
 
         self.rects = result_rects;
-        self.recompute_bounds();
         !self.is_empty()
-    }
-
-    /// Recompute the bounds from the rectangles.
-    fn recompute_bounds(&mut self) {
-        if self.rects.is_empty() {
-            self.bounds = IRect::empty();
-            return;
-        }
-
-        self.bounds = self.rects[0];
-        for rect in &self.rects[1..] {
-            self.bounds = self.bounds.union(rect);
-        }
     }
 }
 
@@ -396,6 +424,111 @@ fn subtract_rect(rect1: &IRect, rect2: &IRect) -> Vec<IRect> {
             if !right.is_empty() {
                 result.push(right);
             }
+        }
+    }
+
+    result
+}
+
+/// Canonicalize a list of rectangles into scanline form.
+///
+/// Returns a minimal list of non-overlapping rectangles whose union equals
+/// the union of the input rectangles.  The algorithm works in three passes:
+///
+/// 1. Collect all unique horizontal y-edges from the input rects.
+/// 2. For each consecutive pair of y-edges (a "band"), collect the
+///    x-intervals contributed by every input rect that spans the full band
+///    height, then merge overlapping/adjacent intervals into a sorted,
+///    non-overlapping list.
+/// 3. Attempt to extend the previous output band downward when the current
+///    band has an identical x-interval list, eliminating redundant splits.
+///
+/// The result is equivalent to Skia's canonical SkRegion scanline format.
+fn canonicalize_rects(input: &[IRect]) -> Vec<IRect> {
+    if input.is_empty() {
+        return Vec::new();
+    }
+
+    // Collect all unique y-edges, skipping empty rects.
+    let mut y_edges: Vec<i32> = Vec::with_capacity(input.len() * 2);
+    for r in input {
+        if r.is_empty() {
+            continue;
+        }
+        y_edges.push(r.top);
+        y_edges.push(r.bottom);
+    }
+    if y_edges.is_empty() {
+        return Vec::new();
+    }
+    y_edges.sort_unstable();
+    y_edges.dedup();
+
+    let mut result: Vec<IRect> = Vec::new();
+    let mut prev_band: Option<(i32, i32, Vec<(i32, i32)>)> = None;
+
+    // Reusable buffers - allocate once, clear per-band.
+    let mut intervals: Vec<(i32, i32)> = Vec::with_capacity(input.len());
+    let mut merged: Vec<(i32, i32)> = Vec::with_capacity(input.len());
+
+    for window in y_edges.windows(2) {
+        let band_top = window[0];
+        let band_bottom = window[1];
+
+        intervals.clear();
+        intervals.extend(
+            input
+                .iter()
+                .filter(|r| !r.is_empty() && r.top <= band_top && r.bottom >= band_bottom)
+                .map(|r| (r.left, r.right)),
+        );
+
+        if intervals.is_empty() {
+            if let Some((top, bottom, ints)) = prev_band.take() {
+                for (l, r) in ints {
+                    result.push(IRect::new(l, top, r, bottom));
+                }
+            }
+            continue;
+        }
+
+        intervals.sort_unstable_by_key(|&(l, _)| l);
+        merged.clear();
+        let mut cur = intervals[0];
+        for &(l, r) in &intervals[1..] {
+            if l <= cur.1 {
+                if r > cur.1 {
+                    cur.1 = r;
+                }
+            } else {
+                merged.push(cur);
+                cur = (l, r);
+            }
+        }
+        merged.push(cur);
+
+        // Try to extend the previous band downward when x-intervals match.
+        match prev_band.take() {
+            Some((prev_top, prev_bottom, ref prev_intervals))
+                if prev_bottom == band_top && prev_intervals == &merged =>
+            {
+                prev_band = Some((prev_top, band_bottom, std::mem::take(&mut merged)));
+            }
+            Some((prev_top, prev_bottom, prev_intervals)) => {
+                for (l, r) in prev_intervals {
+                    result.push(IRect::new(l, prev_top, r, prev_bottom));
+                }
+                prev_band = Some((band_top, band_bottom, std::mem::take(&mut merged)));
+            }
+            None => {
+                prev_band = Some((band_top, band_bottom, std::mem::take(&mut merged)));
+            }
+        }
+    }
+
+    if let Some((top, bottom, intervals)) = prev_band {
+        for (l, r) in intervals {
+            result.push(IRect::new(l, top, r, bottom));
         }
     }
 
@@ -502,5 +635,95 @@ mod tests {
         assert!(region.is_complex());
         // Should have 4 fragments around the hole
         assert_eq!(region.rect_count(), 4);
+    }
+
+    #[test]
+    fn test_region_contains_rect_spanning_two_components() {
+        // Build a complex region from two adjacent rectangles
+        // [0,0,10,10] and [10,0,20,10] - together they form [0,0,20,10]
+        let mut region = Region::from_rect(IRect::new(0, 0, 10, 10));
+        let other = Region::from_rect(IRect::new(10, 0, 20, 10));
+        region.op_region(&other, RegionOp::Union);
+
+        // A query rect [5,2,15,8] is contained by the union but not by
+        // either individual rect
+        let query = IRect::new(5, 2, 15, 8);
+        assert!(
+            region.contains_rect(&query),
+            "Region should contain rect spanning multiple components"
+        );
+    }
+
+    #[test]
+    fn test_region_contains_rect_truly_outside() {
+        let region = Region::from_rect(IRect::new(0, 0, 10, 10));
+        let query = IRect::new(20, 20, 30, 30);
+        assert!(!region.contains_rect(&query));
+    }
+
+    #[test]
+    fn test_region_contains_rect_partial_overlap_not_contained() {
+        let region = Region::from_rect(IRect::new(0, 0, 10, 10));
+        let query = IRect::new(5, 5, 15, 15); // half outside
+        assert!(!region.contains_rect(&query));
+    }
+
+    #[test]
+    fn test_region_union_merges_adjacent_horizontal() {
+        // [0,0,10,10] union [10,0,20,10] should produce a single rect [0,0,20,10]
+        let mut region = Region::from_rect(IRect::new(0, 0, 10, 10));
+        let other = Region::from_rect(IRect::new(10, 0, 20, 10));
+        region.op_region(&other, RegionOp::Union);
+
+        let rects = region.rects();
+        assert_eq!(rects.len(), 1, "Adjacent horizontal rects should merge");
+        assert_eq!(rects[0], IRect::new(0, 0, 20, 10));
+    }
+
+    #[test]
+    fn test_region_union_merges_overlapping() {
+        // [0,0,10,10] union [5,0,15,10] should produce [0,0,15,10]
+        let mut region = Region::from_rect(IRect::new(0, 0, 10, 10));
+        let other = Region::from_rect(IRect::new(5, 0, 15, 10));
+        region.op_region(&other, RegionOp::Union);
+
+        let rects = region.rects();
+        assert_eq!(rects.len(), 1, "Overlapping rects should merge");
+        assert_eq!(rects[0], IRect::new(0, 0, 15, 10));
+    }
+
+    #[test]
+    fn test_region_union_disjoint_keeps_both() {
+        // [0,0,10,10] union [20,20,30,30] should keep both
+        let mut region = Region::from_rect(IRect::new(0, 0, 10, 10));
+        let other = Region::from_rect(IRect::new(20, 20, 30, 30));
+        region.op_region(&other, RegionOp::Union);
+
+        let rects = region.rects();
+        assert_eq!(rects.len(), 2, "Disjoint rects should not merge");
+    }
+
+    #[test]
+    fn test_region_union_repeated_does_not_grow_unboundedly() {
+        let mut region = Region::from_rect(IRect::new(0, 0, 10, 10));
+        let other = Region::from_rect(IRect::new(0, 0, 10, 10));
+
+        for _ in 0..100 {
+            region.op_region(&other, RegionOp::Union);
+        }
+
+        let rects = region.rects();
+        assert_eq!(rects.len(), 1, "Repeated union with same rect should stay at 1");
+    }
+
+    #[test]
+    fn test_region_union_repeated_disjoint_grows_linearly() {
+        let mut region = Region::new();
+        for i in 0..50 {
+            let other = Region::from_rect(IRect::new(i * 20, 0, i * 20 + 10, 10));
+            region.op_region(&other, RegionOp::Union);
+        }
+        let rects = region.rects();
+        assert_eq!(rects.len(), 50, "50 disjoint rects should remain 50 rects");
     }
 }

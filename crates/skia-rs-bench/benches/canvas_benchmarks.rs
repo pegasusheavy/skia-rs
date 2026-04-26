@@ -476,7 +476,11 @@ fn bench_surface(c: &mut Criterion) {
     group.bench_function("canvas", |b| {
         b.iter_batched(
             || Surface::new_raster(&info, None).unwrap(),
-            |mut surface| surface.canvas(),
+            |mut surface| {
+                // `Canvas` now borrows from `Surface`, so take the canvas
+                // inside the closure and drop it before returning.
+                let _ = surface.canvas();
+            },
             criterion::BatchSize::SmallInput,
         )
     });

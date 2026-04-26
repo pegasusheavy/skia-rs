@@ -288,6 +288,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
 
 [[package]]
+name = "cbindgen"
+version = "0.29.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "befbfd072a8e81c02f8c507aefce431fe5e7d051f83d48a23ffc9b9fe5a11799"
+dependencies = [
+ "heck",
+ "indexmap",
+ "log",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_json",
+ "syn",
+ "tempfile",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.51"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1930,6 +1948,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_spanned"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1967,7 +1994,7 @@ checksum = "56199f7ddabf13fe5074ce809e7d3f42b42ae711800501b5b16ea82ad029c39d"
 
 [[package]]
 name = "skia-rs"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
  "skia-rs-canvas",
  "skia-rs-codec",
@@ -1985,7 +2012,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-bench"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
  "criterion",
  "rand 0.8.5",
@@ -2000,7 +2027,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-canvas"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
  "proptest",
  "skia-rs-codec",
@@ -2014,7 +2041,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-codec"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
  "avif-decode",
  "gif",
@@ -2026,13 +2053,14 @@ dependencies = [
  "ravif",
  "rawloader",
  "skia-rs-core",
+ "skia-rs-paint",
  "thiserror 2.0.17",
  "webp",
 ]
 
 [[package]]
 name = "skia-rs-core"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
  "bitflags 2.10.0",
  "bytemuck",
@@ -2047,8 +2075,9 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-ffi"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
+ "cbindgen",
  "libc",
  "skia-rs-canvas",
  "skia-rs-codec",
@@ -2061,11 +2090,12 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-gpu"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
  "ash",
  "glow 0.16.0",
  "metal",
+ "naga",
  "parking_lot",
  "pollster",
  "proptest",
@@ -2078,9 +2108,10 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-paint"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
  "bitflags 2.10.0",
+ "naga",
  "proptest",
  "serde",
  "skia-rs-core",
@@ -2090,19 +2121,16 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-path"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
- "arrayvec",
- "proptest",
  "serde",
  "skia-rs-core",
  "smallvec",
- "thiserror 2.0.17",
 ]
 
 [[package]]
 name = "skia-rs-pdf"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
  "flate2",
  "pdf-writer",
@@ -2113,11 +2141,12 @@ dependencies = [
  "skia-rs-path",
  "skia-rs-text",
  "thiserror 2.0.17",
+ "ttf-parser",
 ]
 
 [[package]]
 name = "skia-rs-safe"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
  "bitflags 2.10.0",
  "js-sys",
@@ -2139,7 +2168,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-skottie"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
  "proptest",
  "serde",
@@ -2153,21 +2182,24 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-svg"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
+ "base64",
  "proptest",
  "roxmltree",
  "skia-rs-canvas",
+ "skia-rs-codec",
  "skia-rs-core",
  "skia-rs-paint",
  "skia-rs-path",
+ "skia-rs-text",
  "thiserror 2.0.17",
  "usvg",
 ]
 
 [[package]]
 name = "skia-rs-text"
-version = "0.2.0"
+version = "0.2.5"
 dependencies = [
  "fontdb",
  "proptest",
@@ -2378,9 +2410,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
 dependencies = [
  "serde",
- "serde_spanned",
- "toml_datetime",
+ "serde_spanned 0.6.9",
+ "toml_datetime 0.6.11",
  "toml_edit",
+]
+
+[[package]]
+name = "toml"
+version = "0.9.12+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf92845e79fc2e2def6a5d828f0801e29a2f8acc037becc5ab08595c7d5e9863"
+dependencies = [
+ "indexmap",
+ "serde_core",
+ "serde_spanned 1.1.1",
+ "toml_datetime 0.7.5+spec-1.1.0",
+ "toml_parser",
+ "toml_writer",
+ "winnow 0.7.14",
 ]
 
 [[package]]
@@ -2393,6 +2440,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml_datetime"
+version = "0.7.5+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "toml_edit"
 version = "0.22.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2400,10 +2456,25 @@ checksum = "41fe8c660ae4257887cf66394862d21dbca4a6ddd26f04a3560410406a2f819a"
 dependencies = [
  "indexmap",
  "serde",
- "serde_spanned",
- "toml_datetime",
- "winnow",
+ "serde_spanned 0.6.9",
+ "toml_datetime 0.6.11",
+ "winnow 0.7.14",
 ]
+
+[[package]]
+name = "toml_parser"
+version = "1.1.2+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2abe9b86193656635d2411dc43050282ca48aa31c2451210f4202550afb7526"
+dependencies = [
+ "winnow 1.0.2",
+]
+
+[[package]]
+name = "toml_writer"
+version = "1.1.1+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 
 [[package]]
 name = "ttf-parser"
@@ -2930,6 +3001,12 @@ checksum = "5a5364e9d77fcdeeaa6062ced926ee3381faa2ee02d3eb83a5c27a8825540829"
 dependencies = [
  "memchr",
 ]
+
+[[package]]
+name = "winnow"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ee1708bef14716a11bae175f579062d4554d95be2c6829f518df847b7b3fdd0"
 
 [[package]]
 name = "wit-bindgen"

@@ -1,5 +1,7 @@
 //! Blend modes for compositing.
 
+use skia_rs_core::Color4f;
+
 /// Porter-Duff and other blend modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(u8)]
@@ -160,5 +162,365 @@ impl BlendMode {
     pub fn is_non_separable(&self) -> bool {
         let v = *self as u8;
         v >= (BlendMode::Hue as u8) && v <= (BlendMode::Luminosity as u8)
+    }
+
+    /// Apply this blend mode to src over dst, producing the composited color.
+    ///
+    /// Inputs and output are premultiplied linear-space Color4f values.
+    /// All color components and alpha are in the [0.0, 1.0] range.
+    ///
+    /// The separable RGB modes apply the formula per-channel.
+    /// Non-separable modes (Hue, Saturation, Color, Luminosity) operate
+    /// on the RGB color as a whole, converting through HSL space.
+    pub fn apply(&self, src: Color4f, dst: Color4f) -> Color4f {
+        // Premultiplied alpha compositing formulas.
+        // For Porter-Duff modes: result = Fa*src + Fb*dst, then clipped.
+        // For separable blend modes: RGB computed per-channel, alpha via src-over.
+        // For non-separable: HSL blending.
+
+        match self {
+            // --- Porter-Duff modes ---
+            BlendMode::Clear => Color4f::new(0.0, 0.0, 0.0, 0.0),
+            BlendMode::Src => src,
+            BlendMode::Dst => dst,
+            BlendMode::SrcOver => porter_duff(src, dst, 1.0, 1.0 - src.a),
+            BlendMode::DstOver => porter_duff(src, dst, 1.0 - dst.a, 1.0),
+            BlendMode::SrcIn => porter_duff(src, dst, dst.a, 0.0),
+            BlendMode::DstIn => porter_duff(src, dst, 0.0, src.a),
+            BlendMode::SrcOut => porter_duff(src, dst, 1.0 - dst.a, 0.0),
+            BlendMode::DstOut => porter_duff(src, dst, 0.0, 1.0 - src.a),
+            BlendMode::SrcATop => porter_duff(src, dst, dst.a, 1.0 - src.a),
+            BlendMode::DstATop => porter_duff(src, dst, 1.0 - dst.a, src.a),
+            BlendMode::Xor => porter_duff(src, dst, 1.0 - dst.a, 1.0 - src.a),
+
+            // --- Arithmetic ---
+            BlendMode::Plus => {
+                let r = (src.r + dst.r).min(1.0);
+                let g = (src.g + dst.g).min(1.0);
+                let b = (src.b + dst.b).min(1.0);
+                let a = (src.a + dst.a).min(1.0);
+                Color4f::new(r, g, b, a)
+            }
+            BlendMode::Modulate => Color4f::new(
+                src.r * dst.r,
+                src.g * dst.g,
+                src.b * dst.b,
+                src.a * dst.a,
+            ),
+
+            // --- Separable blend modes (RGB via f, alpha via src-over) ---
+            BlendMode::Screen => separable_blend(src, dst, |s, d| s + d - s * d),
+            BlendMode::Overlay => separable_blend(src, dst, |s, d| {
+                if 2.0 * d <= dst.a {
+                    2.0 * s * d
+                } else {
+                    src.a * dst.a - 2.0 * (dst.a - d) * (src.a - s)
+                }
+            }),
+            BlendMode::Darken => separable_blend(src, dst, |s, d| {
+                (s * dst.a).min(d * src.a) + s * (1.0 - dst.a) + d * (1.0 - src.a)
+            }),
+            BlendMode::Lighten => separable_blend(src, dst, |s, d| {
+                (s * dst.a).max(d * src.a) + s * (1.0 - dst.a) + d * (1.0 - src.a)
+            }),
+            BlendMode::ColorDodge => separable_blend(src, dst, |s, d| {
+                if d == 0.0 {
+                    s * (1.0 - dst.a)
+                } else if s == src.a {
+                    src.a * dst.a + s * (1.0 - dst.a) + d * (1.0 - src.a)
+                } else {
+                    let factor = (d * src.a) / (src.a - s).max(1e-7);
+                    (src.a * dst.a * factor.min(1.0))
+                        + s * (1.0 - dst.a)
+                        + d * (1.0 - src.a)
+                }
+            }),
+            BlendMode::ColorBurn => separable_blend(src, dst, |s, d| {
+                if d == dst.a {
+                    src.a * dst.a + s * (1.0 - dst.a) + d * (1.0 - src.a)
+                } else if s == 0.0 {
+                    d * (1.0 - src.a)
+                } else {
+                    let factor = 1.0 - ((dst.a - d) * src.a / s).min(1.0);
+                    src.a * dst.a * factor + s * (1.0 - dst.a) + d * (1.0 - src.a)
+                }
+            }),
+            BlendMode::HardLight => separable_blend(src, dst, |s, d| {
+                if 2.0 * s <= src.a {
+                    2.0 * s * d
+                } else {
+                    src.a * dst.a - 2.0 * (src.a - s) * (dst.a - d)
+                }
+            }),
+            BlendMode::SoftLight => separable_blend(src, dst, |s, d| soft_light_channel(s, d, src.a, dst.a)),
+            BlendMode::Difference => separable_blend(src, dst, |s, d| {
+                s + d - 2.0 * (s * dst.a).min(d * src.a)
+            }),
+            BlendMode::Exclusion => separable_blend(src, dst, |s, d| {
+                s + d - 2.0 * s * d
+            }),
+            BlendMode::Multiply => separable_blend(src, dst, |s, d| {
+                s * (1.0 - dst.a) + d * (1.0 - src.a) + s * d
+            }),
+
+            // --- Non-separable modes ---
+            BlendMode::Hue => non_separable_blend(src, dst, NonSepMode::Hue),
+            BlendMode::Saturation => non_separable_blend(src, dst, NonSepMode::Saturation),
+            BlendMode::Color => non_separable_blend(src, dst, NonSepMode::Color),
+            BlendMode::Luminosity => non_separable_blend(src, dst, NonSepMode::Luminosity),
+        }
+    }
+}
+
+fn porter_duff(src: Color4f, dst: Color4f, fa: f32, fb: f32) -> Color4f {
+    Color4f::new(
+        (src.r * fa + dst.r * fb).clamp(0.0, 1.0),
+        (src.g * fa + dst.g * fb).clamp(0.0, 1.0),
+        (src.b * fa + dst.b * fb).clamp(0.0, 1.0),
+        (src.a * fa + dst.a * fb).clamp(0.0, 1.0),
+    )
+}
+
+/// Apply a per-channel separable blend function `f(src_channel, dst_channel)`.
+///
+/// For separable blend modes, alpha follows src-over (a = sa + da - sa*da)
+/// and the RGB channels apply `f` to the premultiplied channels then add
+/// the standard Porter-Duff source-over weighting.
+fn separable_blend<F>(src: Color4f, dst: Color4f, f: F) -> Color4f
+where
+    F: Fn(f32, f32) -> f32,
+{
+    let a = src.a + dst.a - src.a * dst.a;
+    Color4f::new(
+        f(src.r, dst.r).clamp(0.0, 1.0),
+        f(src.g, dst.g).clamp(0.0, 1.0),
+        f(src.b, dst.b).clamp(0.0, 1.0),
+        a.clamp(0.0, 1.0),
+    )
+}
+
+fn soft_light_channel(s: f32, d: f32, sa: f32, da: f32) -> f32 {
+    // W3C compositing Level 1 soft-light formula
+    if 2.0 * s <= sa {
+        d - (sa - 2.0 * s) * d * (da - d) / da.max(1e-7)
+    } else if 4.0 * d <= da {
+        let di = if da > 0.0 { d / da } else { 0.0 };
+        let m = 16.0 * di * di * di - 12.0 * di * di - 3.0 * di;
+        d * sa + (2.0 * s - sa) * (m * da - d)
+    } else {
+        let di = if da > 0.0 { d / da } else { 0.0 };
+        d * sa + (2.0 * s - sa) * (di.sqrt() * da - d)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum NonSepMode {
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
+}
+
+/// Non-separable blend: operate on the RGB triplet as a whole.
+/// Operates in unpremultiplied space then re-premultiplies.
+fn non_separable_blend(src: Color4f, dst: Color4f, mode: NonSepMode) -> Color4f {
+    // Unpremultiply to linear RGB
+    let s_rgb = if src.a > 0.0 {
+        [src.r / src.a, src.g / src.a, src.b / src.a]
+    } else {
+        [0.0, 0.0, 0.0]
+    };
+    let d_rgb = if dst.a > 0.0 {
+        [dst.r / dst.a, dst.g / dst.a, dst.b / dst.a]
+    } else {
+        [0.0, 0.0, 0.0]
+    };
+
+    let blended = match mode {
+        NonSepMode::Hue => set_lum(set_sat(s_rgb, sat(d_rgb)), lum(d_rgb)),
+        NonSepMode::Saturation => set_lum(set_sat(d_rgb, sat(s_rgb)), lum(d_rgb)),
+        NonSepMode::Color => set_lum(s_rgb, lum(d_rgb)),
+        NonSepMode::Luminosity => set_lum(d_rgb, lum(s_rgb)),
+    };
+
+    // Composite over dst using src-over
+    let a = src.a + dst.a - src.a * dst.a;
+    let r = blended[0] * src.a * dst.a + src.r * (1.0 - dst.a) + dst.r * (1.0 - src.a);
+    let g = blended[1] * src.a * dst.a + src.g * (1.0 - dst.a) + dst.g * (1.0 - src.a);
+    let b = blended[2] * src.a * dst.a + src.b * (1.0 - dst.a) + dst.b * (1.0 - src.a);
+    Color4f::new(r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0), a.clamp(0.0, 1.0))
+}
+
+// W3C-compatible HSL helpers for non-separable blend modes.
+
+fn lum(c: [f32; 3]) -> f32 {
+    0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2]
+}
+
+fn sat(c: [f32; 3]) -> f32 {
+    let max = c[0].max(c[1]).max(c[2]);
+    let min = c[0].min(c[1]).min(c[2]);
+    max - min
+}
+
+fn clip_color(c: [f32; 3]) -> [f32; 3] {
+    let l = lum(c);
+    let n = c[0].min(c[1]).min(c[2]);
+    let x = c[0].max(c[1]).max(c[2]);
+    let mut out = c;
+    if n < 0.0 {
+        for i in 0..3 {
+            out[i] = l + (out[i] - l) * l / (l - n).max(1e-7);
+        }
+    }
+    if x > 1.0 {
+        for i in 0..3 {
+            out[i] = l + (out[i] - l) * (1.0 - l) / (x - l).max(1e-7);
+        }
+    }
+    out
+}
+
+fn set_lum(c: [f32; 3], l: f32) -> [f32; 3] {
+    let d = l - lum(c);
+    clip_color([c[0] + d, c[1] + d, c[2] + d])
+}
+
+fn set_sat(c: [f32; 3], s: f32) -> [f32; 3] {
+    // Sort channels to find min, mid, max
+    let mut idx = [0, 1, 2];
+    idx.sort_by(|&a, &b| c[a].partial_cmp(&c[b]).unwrap_or(std::cmp::Ordering::Equal));
+    let min_i = idx[0];
+    let mid_i = idx[1];
+    let max_i = idx[2];
+
+    let mut out = [0.0_f32; 3];
+    if c[max_i] > c[min_i] {
+        out[mid_i] = (c[mid_i] - c[min_i]) * s / (c[max_i] - c[min_i]);
+        out[max_i] = s;
+    } else {
+        out[mid_i] = 0.0;
+        out[max_i] = 0.0;
+    }
+    out[min_i] = 0.0;
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn c(r: f32, g: f32, b: f32, a: f32) -> Color4f {
+        Color4f::new(r, g, b, a)
+    }
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-4
+    }
+
+    fn colors_close(a: Color4f, b: Color4f) -> bool {
+        close(a.r, b.r) && close(a.g, b.g) && close(a.b, b.b) && close(a.a, b.a)
+    }
+
+    #[test]
+    fn test_blend_clear() {
+        let src = c(1.0, 0.5, 0.25, 0.8);
+        let dst = c(0.2, 0.3, 0.4, 1.0);
+        assert!(colors_close(BlendMode::Clear.apply(src, dst), c(0.0, 0.0, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn test_blend_src() {
+        let src = c(1.0, 0.5, 0.25, 0.8);
+        let dst = c(0.2, 0.3, 0.4, 1.0);
+        assert!(colors_close(BlendMode::Src.apply(src, dst), src));
+    }
+
+    #[test]
+    fn test_blend_dst() {
+        let src = c(1.0, 0.5, 0.25, 0.8);
+        let dst = c(0.2, 0.3, 0.4, 1.0);
+        assert!(colors_close(BlendMode::Dst.apply(src, dst), dst));
+    }
+
+    #[test]
+    fn test_blend_src_over_opaque() {
+        // Opaque src over any dst should equal src
+        let src = c(0.5, 0.5, 0.5, 1.0);
+        let dst = c(0.2, 0.3, 0.4, 1.0);
+        assert!(colors_close(BlendMode::SrcOver.apply(src, dst), src));
+    }
+
+    #[test]
+    fn test_blend_src_over_half_alpha() {
+        // Half-alpha src over opaque dst = half src + half dst (premultiplied)
+        let src = c(0.4, 0.0, 0.0, 0.5); // premul: 0.4 = 0.8 * 0.5
+        let dst = c(0.0, 0.4, 0.0, 1.0); // premul: 0.4 = 0.4 * 1.0
+        let result = BlendMode::SrcOver.apply(src, dst);
+        // R = src.r + dst.r * (1 - src.a) = 0.4 + 0 = 0.4
+        // G = 0 + 0.4 * 0.5 = 0.2
+        // B = 0
+        // A = 0.5 + 1.0 * 0.5 = 1.0
+        assert!(close(result.r, 0.4), "r was {}", result.r);
+        assert!(close(result.g, 0.2), "g was {}", result.g);
+        assert!(close(result.b, 0.0), "b was {}", result.b);
+        assert!(close(result.a, 1.0), "a was {}", result.a);
+    }
+
+    #[test]
+    fn test_blend_plus() {
+        let src = c(0.3, 0.4, 0.5, 0.5);
+        let dst = c(0.2, 0.1, 0.4, 0.5);
+        let result = BlendMode::Plus.apply(src, dst);
+        assert!(close(result.r, 0.5));
+        assert!(close(result.g, 0.5));
+        assert!(close(result.b, 0.9));
+        assert!(close(result.a, 1.0));
+    }
+
+    #[test]
+    fn test_blend_plus_clamps() {
+        let src = c(0.8, 0.8, 0.8, 0.8);
+        let dst = c(0.8, 0.8, 0.8, 0.8);
+        let result = BlendMode::Plus.apply(src, dst);
+        assert!(close(result.r, 1.0));
+        assert!(close(result.a, 1.0));
+    }
+
+    #[test]
+    fn test_blend_modulate() {
+        let src = c(0.5, 0.5, 0.5, 1.0);
+        let dst = c(0.5, 0.5, 0.5, 1.0);
+        let result = BlendMode::Modulate.apply(src, dst);
+        assert!(close(result.r, 0.25));
+        assert!(close(result.g, 0.25));
+        assert!(close(result.b, 0.25));
+    }
+
+    #[test]
+    fn test_blend_screen() {
+        // Screen: 1 - (1-s)(1-d) = s + d - sd
+        let src = c(0.5, 0.0, 0.0, 1.0);
+        let dst = c(0.0, 0.5, 0.0, 1.0);
+        let result = BlendMode::Screen.apply(src, dst);
+        assert!(close(result.r, 0.5));
+        assert!(close(result.g, 0.5));
+    }
+
+    #[test]
+    fn test_all_modes_produce_finite_output() {
+        // Regression: no mode should produce NaN or infinity
+        let src = c(0.3, 0.7, 0.2, 0.8);
+        let dst = c(0.6, 0.4, 0.9, 0.5);
+        // Iterate via from_u8 on range
+        for i in 0..29u8 {
+            if let Some(mode) = BlendMode::from_u8(i) {
+                let r = mode.apply(src, dst);
+                assert!(r.r.is_finite(), "{:?} produced NaN r", mode);
+                assert!(r.g.is_finite(), "{:?} produced NaN g", mode);
+                assert!(r.b.is_finite(), "{:?} produced NaN b", mode);
+                assert!(r.a.is_finite(), "{:?} produced NaN a", mode);
+            }
+        }
     }
 }
