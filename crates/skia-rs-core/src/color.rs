@@ -98,17 +98,18 @@ impl Color {
         self.0
     }
 
-    /// Parse a CSS color string (CSS Color Level 3).
+    /// Parse a CSS color string (CSS Color Level 3 & 4).
     ///
     /// Supports:
     /// - Hex: `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`
     /// - Functional: `rgb(r, g, b)`, `rgba(r, g, b, a)`,
     ///   `hsl(h, s%, l%)`, `hsla(h, s%, l%, a)`
     /// - Named: all CSS Color Level 3 names (transparent, red, aliceblue, …)
+    /// - CSS Color Level 4: `lab()`, `lch()`, `oklab()`, `oklch()`, `hwb()`,
+    ///   `color(srgb|srgb-linear|display-p3 ...)`
     ///
-    /// Returns `None` if the string does not match any of the above forms.
-    /// CSS Color Level 4 (lab, lch, oklab, oklch, hwb, color()) is not yet
-    /// supported — those require color-space infrastructure.
+    /// Level 4 colors are converted to sRGB; out-of-gamut values are clamped.
+    /// Returns `None` if the string does not match any supported form.
     pub fn from_css(s: &str) -> Option<Self> {
         let s = s.trim();
 
@@ -127,6 +128,26 @@ impl Color {
         }
         if let Some(inner) = s.strip_prefix("hsl(").and_then(|r| r.strip_suffix(')')) {
             return Self::parse_hsl_inner(inner, false);
+        }
+
+        // CSS Color Level 4
+        if let Some(inner) = s.strip_prefix("lab(").and_then(|r| r.strip_suffix(')')) {
+            return Self::parse_lab(inner);
+        }
+        if let Some(inner) = s.strip_prefix("lch(").and_then(|r| r.strip_suffix(')')) {
+            return Self::parse_lch(inner);
+        }
+        if let Some(inner) = s.strip_prefix("oklab(").and_then(|r| r.strip_suffix(')')) {
+            return Self::parse_oklab(inner);
+        }
+        if let Some(inner) = s.strip_prefix("oklch(").and_then(|r| r.strip_suffix(')')) {
+            return Self::parse_oklch(inner);
+        }
+        if let Some(inner) = s.strip_prefix("hwb(").and_then(|r| r.strip_suffix(')')) {
+            return Self::parse_hwb(inner);
+        }
+        if let Some(inner) = s.strip_prefix("color(").and_then(|r| r.strip_suffix(')')) {
+            return Self::parse_color_function(inner);
         }
 
         Self::named_color(s)
@@ -213,6 +234,285 @@ impl Color {
             to_u8(rf),
             to_u8(gf),
             to_u8(bf),
+        ))
+    }
+
+    // -------------------------------------------------------------------------
+    // CSS Color Level 4 parsers
+    // -------------------------------------------------------------------------
+
+    /// Split color function components on whitespace/comma, handling slash-separated alpha.
+    fn split_components(s: &str) -> (Vec<&str>, Option<&str>) {
+        if let Some((main, alpha)) = s.split_once('/') {
+            let parts: Vec<&str> = main
+                .split(|c| c == ' ' || c == ',')
+                .filter(|p| !p.is_empty())
+                .collect();
+            (parts, Some(alpha.trim()))
+        } else {
+            let parts: Vec<&str> = s
+                .split(|c| c == ' ' || c == ',')
+                .filter(|p| !p.is_empty())
+                .collect();
+            (parts, None)
+        }
+    }
+
+    /// Parse alpha component (number 0..1 or percentage 0..100%).
+    fn parse_alpha(s: &str) -> Option<u8> {
+        let s = s.trim();
+        if let Some(pct) = s.strip_suffix('%') {
+            let v: f32 = pct.parse().ok()?;
+            Some((v * 2.55).round().clamp(0.0, 255.0) as u8)
+        } else {
+            let v: f32 = s.parse().ok()?;
+            Some((v * 255.0).round().clamp(0.0, 255.0) as u8)
+        }
+    }
+
+    /// Convert linear sRGB component to sRGB u8.
+    fn linear_to_srgb_u8(x: f32) -> u8 {
+        let c = if x <= 0.0 {
+            0.0
+        } else if x >= 1.0 {
+            1.0
+        } else if x <= 0.0031308 {
+            12.92 * x
+        } else {
+            1.055 * x.powf(1.0 / 2.4) - 0.055
+        };
+        (c * 255.0).round() as u8
+    }
+
+    /// Convert Oklab to linear sRGB.
+    /// Reference: https://bottosson.github.io/posts/oklab/
+    fn oklab_to_linear_srgb(l: f32, a: f32, b: f32) -> (f32, f32, f32) {
+        let l_ = l + 0.3963377774 * a + 0.2158037573 * b;
+        let m_ = l - 0.1055613458 * a - 0.0638541728 * b;
+        let s_ = l - 0.0894841775 * a - 1.2914855480 * b;
+
+        let l_cubed = l_ * l_ * l_;
+        let m_cubed = m_ * m_ * m_;
+        let s_cubed = s_ * s_ * s_;
+
+        let r = 4.0767245293 * l_cubed - 3.3072168827 * m_cubed + 0.2307590544 * s_cubed;
+        let g = -1.2681437731 * l_cubed + 2.6093323231 * m_cubed - 0.3411344290 * s_cubed;
+        let b = -0.0041119885 * l_cubed - 0.7034763098 * m_cubed + 1.7068625689 * s_cubed;
+
+        (r, g, b)
+    }
+
+    /// Convert CIE Lab (D50) to linear sRGB.
+    fn lab_to_linear_srgb(l: f32, a: f32, b: f32) -> (f32, f32, f32) {
+        // Lab → XYZ (D50 whitepoint)
+        let fy = (l + 16.0) / 116.0;
+        let fx = a / 500.0 + fy;
+        let fz = fy - b / 200.0;
+
+        let lab_f_inverse = |t: f32| {
+            let k = (6.0_f32 / 29.0_f32).powi(3);
+            if t.powi(3) > k {
+                t.powi(3)
+            } else {
+                (t - 16.0 / 116.0) * 3.0 * (6.0_f32 / 29.0_f32).powi(2)
+            }
+        };
+
+        // D50 whitepoint
+        let wx = 0.96422;
+        let wy = 1.0;
+        let wz = 0.82521;
+        let x_d50 = wx * lab_f_inverse(fx);
+        let y_d50 = wy * lab_f_inverse(fy);
+        let z_d50 = wz * lab_f_inverse(fz);
+
+        // Bradford-adapt D50 XYZ → D65 XYZ
+        let x_d65 = 0.9555766 * x_d50 + -0.0230393 * y_d50 + 0.0631636 * z_d50;
+        let y_d65 = -0.0282895 * x_d50 + 1.0099416 * y_d50 + 0.0210077 * z_d50;
+        let z_d65 = 0.0122982 * x_d50 + -0.0204830 * y_d50 + 1.3299098 * z_d50;
+
+        // XYZ (D65) → linear sRGB
+        let r = 3.2404542 * x_d65 + -1.5371385 * y_d65 + -0.4985314 * z_d65;
+        let g = -0.9692660 * x_d65 + 1.8760108 * y_d65 + 0.0415560 * z_d65;
+        let b = 0.0556434 * x_d65 + -0.2040259 * y_d65 + 1.0572252 * z_d65;
+
+        (r, g, b)
+    }
+
+    /// Convert cylindrical LCH to Cartesian Lab.
+    fn lch_to_lab(l: f32, c: f32, h_deg: f32) -> (f32, f32, f32) {
+        let h_rad = h_deg.to_radians();
+        (l, c * h_rad.cos(), c * h_rad.sin())
+    }
+
+    fn parse_oklab(s: &str) -> Option<Self> {
+        let (parts, alpha) = Self::split_components(s);
+        if parts.len() != 3 {
+            return None;
+        }
+        let l = Self::parse_oklab_l(parts[0])?;
+        let a: f32 = parts[1].trim().parse().ok()?;
+        let b: f32 = parts[2].trim().parse().ok()?;
+        let alpha_u8 = alpha.and_then(Self::parse_alpha).unwrap_or(255);
+
+        let (lin_r, lin_g, lin_b) = Self::oklab_to_linear_srgb(l, a, b);
+        let r = Self::linear_to_srgb_u8(lin_r);
+        let g = Self::linear_to_srgb_u8(lin_g);
+        let b_ = Self::linear_to_srgb_u8(lin_b);
+        Some(Self::from_argb(alpha_u8, r, g, b_))
+    }
+
+    fn parse_oklab_l(s: &str) -> Option<f32> {
+        let s = s.trim();
+        if let Some(pct) = s.strip_suffix('%') {
+            Some(pct.parse::<f32>().ok()? / 100.0)
+        } else {
+            s.parse::<f32>().ok()
+        }
+    }
+
+    fn parse_oklch(s: &str) -> Option<Self> {
+        let (parts, alpha) = Self::split_components(s);
+        if parts.len() != 3 {
+            return None;
+        }
+        let l = Self::parse_oklab_l(parts[0])?;
+        let c: f32 = if let Some(pct) = parts[1].trim().strip_suffix('%') {
+            pct.parse::<f32>().ok()? / 100.0
+        } else {
+            parts[1].trim().parse().ok()?
+        };
+        let h: f32 = parts[2].trim().trim_end_matches("deg").parse().ok()?;
+        let alpha_u8 = alpha.and_then(Self::parse_alpha).unwrap_or(255);
+
+        let (l, a, b) = Self::lch_to_lab(l, c, h);
+        let (lin_r, lin_g, lin_b) = Self::oklab_to_linear_srgb(l, a, b);
+        let r = Self::linear_to_srgb_u8(lin_r);
+        let g = Self::linear_to_srgb_u8(lin_g);
+        let b_ = Self::linear_to_srgb_u8(lin_b);
+        Some(Self::from_argb(alpha_u8, r, g, b_))
+    }
+
+    fn parse_lab(s: &str) -> Option<Self> {
+        let (parts, alpha) = Self::split_components(s);
+        if parts.len() != 3 {
+            return None;
+        }
+        let l = Self::parse_lab_l(parts[0])?;
+        let a: f32 = parts[1].trim().parse().ok()?;
+        let b: f32 = parts[2].trim().parse().ok()?;
+        let alpha_u8 = alpha.and_then(Self::parse_alpha).unwrap_or(255);
+
+        let (lin_r, lin_g, lin_b) = Self::lab_to_linear_srgb(l, a, b);
+        let r = Self::linear_to_srgb_u8(lin_r);
+        let g = Self::linear_to_srgb_u8(lin_g);
+        let b_ = Self::linear_to_srgb_u8(lin_b);
+        Some(Self::from_argb(alpha_u8, r, g, b_))
+    }
+
+    fn parse_lab_l(s: &str) -> Option<f32> {
+        let s = s.trim();
+        if let Some(pct) = s.strip_suffix('%') {
+            Some(pct.parse::<f32>().ok()?)
+        } else {
+            s.parse::<f32>().ok()
+        }
+    }
+
+    fn parse_lch(s: &str) -> Option<Self> {
+        let (parts, alpha) = Self::split_components(s);
+        if parts.len() != 3 {
+            return None;
+        }
+        let l = Self::parse_lab_l(parts[0])?;
+        let c: f32 = parts[1].trim().parse().ok()?;
+        let h: f32 = parts[2].trim().trim_end_matches("deg").parse().ok()?;
+        let alpha_u8 = alpha.and_then(Self::parse_alpha).unwrap_or(255);
+
+        let (l, a, b) = Self::lch_to_lab(l, c, h);
+        let (lin_r, lin_g, lin_b) = Self::lab_to_linear_srgb(l, a, b);
+        let r = Self::linear_to_srgb_u8(lin_r);
+        let g = Self::linear_to_srgb_u8(lin_g);
+        let b_ = Self::linear_to_srgb_u8(lin_b);
+        Some(Self::from_argb(alpha_u8, r, g, b_))
+    }
+
+    fn parse_hwb(s: &str) -> Option<Self> {
+        let (parts, alpha) = Self::split_components(s);
+        if parts.len() != 3 {
+            return None;
+        }
+        let h: f32 = parts[0].trim().trim_end_matches("deg").parse().ok()?;
+        let w: f32 = parts[1].trim().trim_end_matches('%').parse::<f32>().ok()? / 100.0;
+        let b: f32 = parts[2].trim().trim_end_matches('%').parse::<f32>().ok()? / 100.0;
+        let alpha_u8 = alpha.and_then(Self::parse_alpha).unwrap_or(255);
+
+        // If w + b >= 1, return gray
+        let sum = w + b;
+        let (w, b) = if sum >= 1.0 {
+            (w / sum, b / sum)
+        } else {
+            (w, b)
+        };
+
+        // Get pure hue via HSL
+        let (hr, hg, hb) = hsl_to_rgb(h, 1.0, 0.5);
+        let blend = |ch: f32| ch * (1.0 - w - b) + w;
+        let r = blend(hr);
+        let g = blend(hg);
+        let b_ch = blend(hb);
+
+        let to_u8 = |x: f32| (x * 255.0).round().clamp(0.0, 255.0) as u8;
+        Some(Self::from_argb(alpha_u8, to_u8(r), to_u8(g), to_u8(b_ch)))
+    }
+
+    fn parse_color_function(s: &str) -> Option<Self> {
+        let (parts, alpha) = Self::split_components(s);
+        if parts.len() != 4 {
+            return None;
+        }
+        let space = parts[0];
+        let r: f32 = parts[1].trim().parse().ok()?;
+        let g: f32 = parts[2].trim().parse().ok()?;
+        let b: f32 = parts[3].trim().parse().ok()?;
+        let alpha_u8 = alpha.and_then(Self::parse_alpha).unwrap_or(255);
+
+        let (lin_r, lin_g, lin_b) = match space {
+            "srgb" => {
+                // sRGB gamma space → linear
+                let to_linear = |x: f32| {
+                    if x <= 0.04045 {
+                        x / 12.92
+                    } else {
+                        ((x + 0.055) / 1.055).powf(2.4)
+                    }
+                };
+                (to_linear(r), to_linear(g), to_linear(b))
+            }
+            "srgb-linear" => (r, g, b),
+            "display-p3" => {
+                // P3 → linear sRGB matrix (approximate)
+                let lr = 1.2249 * r + -0.2247 * g + 0.0000 * b;
+                let lg = -0.0420 * r + 1.0419 * g + 0.0000 * b;
+                let lb = -0.0197 * r + -0.0786 * g + 1.0980 * b;
+                (lr, lg, lb)
+            }
+            "a98-rgb" => {
+                // Adobe RGB → linear sRGB (approximate)
+                let lr = 1.04788 * r + -0.02908 * g + -0.00923 * b;
+                let lg = -0.01726 * r + 0.99835 * g + 0.00754 * b;
+                let lb = 0.00612 * r + -0.03608 * g + 1.03988 * b;
+                (lr, lg, lb)
+            }
+            // rec2020 and prophoto-rgb not supported — no matrix
+            _ => return None,
+        };
+
+        Some(Self::from_argb(
+            alpha_u8,
+            Self::linear_to_srgb_u8(lin_r),
+            Self::linear_to_srgb_u8(lin_g),
+            Self::linear_to_srgb_u8(lin_b),
         ))
     }
 
@@ -2096,5 +2396,160 @@ mod tests {
             ColorGamut::DisplayP3,
             "Display P3 primaries must be classified as ColorGamut::DisplayP3",
         );
+    }
+
+    // CSS Color Level 4 tests
+
+    #[test]
+    fn test_color_from_css_oklab_white() {
+        // oklab(1 0 0) = white
+        let c = Color::from_css("oklab(1 0 0)").unwrap();
+        assert!(c.red() >= 250, "r={}", c.red());
+        assert!(c.green() >= 250, "g={}", c.green());
+        assert!(c.blue() >= 250, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_color_from_css_oklab_black() {
+        // oklab(0 0 0) = black
+        let c = Color::from_css("oklab(0 0 0)").unwrap();
+        assert!(c.red() < 10, "r={}", c.red());
+        assert!(c.green() < 10, "g={}", c.green());
+        assert!(c.blue() < 10, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_color_from_css_oklab_red_is_red_ish() {
+        // oklab(0.628 0.2256 0.1257) ≈ sRGB red
+        let c = Color::from_css("oklab(0.628 0.2256 0.1257)").unwrap();
+        assert!(c.red() > 200, "r={}", c.red());
+        assert!(c.green() < 50, "g={}", c.green());
+        assert!(c.blue() < 50, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_color_from_css_oklch_equivalent_to_oklab() {
+        // oklch(0.5 0.1 0) = oklab(0.5 0.1 0)
+        let c1 = Color::from_css("oklch(0.5 0.1 0)").unwrap();
+        let c2 = Color::from_css("oklab(0.5 0.1 0)").unwrap();
+        assert!((c1.red() as i16 - c2.red() as i16).abs() <= 1);
+        assert!((c1.green() as i16 - c2.green() as i16).abs() <= 1);
+        assert!((c1.blue() as i16 - c2.blue() as i16).abs() <= 1);
+    }
+
+    #[test]
+    fn test_color_from_css_lab_black() {
+        let c = Color::from_css("lab(0 0 0)").unwrap();
+        assert!(c.red() < 10, "r={}", c.red());
+        assert!(c.green() < 10, "g={}", c.green());
+        assert!(c.blue() < 10, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_color_from_css_lab_white() {
+        let c = Color::from_css("lab(100 0 0)").unwrap();
+        assert!(c.red() >= 250, "r={}", c.red());
+        assert!(c.green() >= 250, "g={}", c.green());
+        assert!(c.blue() >= 250, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_color_from_css_lch_equivalent_to_lab() {
+        // lch(50 50 0) = lab(50 50 0)
+        let c1 = Color::from_css("lch(50 50 0)").unwrap();
+        let c2 = Color::from_css("lab(50 50 0)").unwrap();
+        assert!((c1.red() as i16 - c2.red() as i16).abs() <= 1);
+        assert!((c1.green() as i16 - c2.green() as i16).abs() <= 1);
+        assert!((c1.blue() as i16 - c2.blue() as i16).abs() <= 1);
+    }
+
+    #[test]
+    fn test_color_from_css_hwb_red() {
+        // hwb(0 0% 0%) = pure red
+        let c = Color::from_css("hwb(0 0% 0%)").unwrap();
+        assert!(c.red() >= 250, "r={}", c.red());
+        assert!(c.green() < 10, "g={}", c.green());
+        assert!(c.blue() < 10, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_color_from_css_hwb_white() {
+        // hwb(0 100% 0%) = white
+        let c = Color::from_css("hwb(0 100% 0%)").unwrap();
+        assert!(c.red() >= 250, "r={}", c.red());
+        assert!(c.green() >= 250, "g={}", c.green());
+        assert!(c.blue() >= 250, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_color_from_css_hwb_black() {
+        // hwb(0 0% 100%) = black
+        let c = Color::from_css("hwb(0 0% 100%)").unwrap();
+        assert!(c.red() < 10, "r={}", c.red());
+        assert!(c.green() < 10, "g={}", c.green());
+        assert!(c.blue() < 10, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_color_from_css_color_function_srgb() {
+        // color(srgb 1 0 0) = red
+        let c = Color::from_css("color(srgb 1 0 0)").unwrap();
+        assert!(c.red() >= 250, "r={}", c.red());
+        assert!(c.green() < 10, "g={}", c.green());
+        assert!(c.blue() < 10, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_color_from_css_color_function_srgb_linear() {
+        // color(srgb-linear 1 0 0) = red in linear space
+        let c = Color::from_css("color(srgb-linear 1 0 0)").unwrap();
+        assert!(c.red() >= 250, "r={}", c.red());
+        assert!(c.green() < 10, "g={}", c.green());
+        assert!(c.blue() < 10, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_color_from_css_color_function_display_p3() {
+        // color(display-p3 1 0 0) = P3 red (slightly outside sRGB)
+        let c = Color::from_css("color(display-p3 1 0 0)").unwrap();
+        // Should clamp to sRGB red
+        assert!(c.red() >= 250, "r={}", c.red());
+    }
+
+    #[test]
+    fn test_color_from_css_alpha_slash_syntax() {
+        // oklab(1 0 0 / 0.5) = half-alpha white
+        let c = Color::from_css("oklab(1 0 0 / 0.5)").unwrap();
+        assert!(c.alpha() > 120 && c.alpha() < 135, "a={}", c.alpha());
+    }
+
+    #[test]
+    fn test_color_from_css_alpha_percentage() {
+        // oklab(1 0 0 / 50%) = half-alpha white
+        let c = Color::from_css("oklab(1 0 0 / 50%)").unwrap();
+        assert!(c.alpha() > 120 && c.alpha() < 135, "a={}", c.alpha());
+    }
+
+    #[test]
+    fn test_color_from_css_oklab_percentage_lightness() {
+        // oklab(100% 0 0) = white
+        let c = Color::from_css("oklab(100% 0 0)").unwrap();
+        assert!(c.red() >= 250, "r={}", c.red());
+        assert!(c.green() >= 250, "g={}", c.green());
+        assert!(c.blue() >= 250, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_color_from_css_level4_comma_syntax() {
+        // Support legacy comma syntax: oklab(1, 0, 0)
+        let c = Color::from_css("oklab(1, 0, 0)").unwrap();
+        assert!(c.red() >= 250, "r={}", c.red());
+    }
+
+    #[test]
+    fn test_color_from_css_unsupported_color_space_returns_none() {
+        // rec2020 and prophoto-rgb not supported
+        assert!(Color::from_css("color(rec2020 1 0 0)").is_none());
+        assert!(Color::from_css("color(prophoto-rgb 1 0 0)").is_none());
     }
 }
