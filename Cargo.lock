@@ -2384,6 +2384,7 @@ name = "skia-rs-svg"
 version = "0.2.5"
 dependencies = [
  "base64",
+ "flate2",
  "proptest",
  "roxmltree",
  "skia-rs-canvas",
