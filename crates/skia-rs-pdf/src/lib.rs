@@ -32,3 +32,15 @@ pub use transparency::{
     ExtGStateKey, ExtGraphicsState, PdfBlendMode, SoftMask, SoftMaskSubtype, TransparencyGroup,
     TransparencyManager,
 };
+
+/// Test-only re-export of the TrueType subsetter. Stable under `#[cfg(test)]`
+/// and integration tests; not part of the public SemVer surface. Exposes
+/// the byte-level glyf/loca pruning so tests can drive it against custom
+/// fixtures without going through the PDF emission pipeline.
+#[doc(hidden)]
+pub fn subset_truetype_for_tests(
+    data: &[u8],
+    glyphs: &std::collections::BTreeSet<u16>,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    font::subset::subset_truetype(data, glyphs).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+}
