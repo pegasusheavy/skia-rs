@@ -2,6 +2,21 @@
 //!
 //! This module provides a direct OpenGL API backend for cases where
 //! low-level OpenGL access is needed beyond what wgpu provides.
+//!
+//! # Executor
+//!
+//! The OpenGL executor ([`OpenGLContext::new_wgpu_executor`], enabled when the
+//! `wgpu-backend` feature is also on) delegates to wgpu configured with
+//! [`wgpu::Backends::GL`]. This lets GL shaders, state, and resources flow
+//! through the same `CommandBuffer` / `RenderPipelineDescriptor` abstractions
+//! used by the primary wgpu backend via naga-generated GLSL.
+//!
+//! A native GL bypass (direct `glCreateProgram` / `glUseProgram` calls against
+//! the `glow::Context`) is not provided by the executor — callers needing
+//! GL-specific state (extensions, direct-state-access, bindless textures,
+//! `NV_command_list`) can still use the raw `glow::Context` exposed via
+//! [`OpenGLContext::gl`], but the default command-buffer execution path
+//! goes through wgpu's GL backend.
 
 #[cfg(feature = "opengl")]
 use glow::HasContext;
@@ -1140,6 +1155,51 @@ impl GpuContext for OpenGLContext {
     }
 }
 
+/// Build an OpenGL-backed [`crate::wgpu_backend::WgpuContext`].
+///
+/// Constructs a standalone `wgpu::Instance` restricted to `Backends::GL`
+/// and requests an adapter + device through it. The result is a standard
+/// `WgpuContext` that [`crate::wgpu_backend::WgpuExecutor`] consumes — same
+/// command-buffer semantics, same pipeline-descriptor translation, routed
+/// through wgpu's GL backend (which emits GLSL via naga).
+///
+/// This is not a native-GL executor. Callers wanting direct `glUseProgram` /
+/// `glDrawElements` control should skip this and use [`OpenGLContext::gl`]
+/// with hand-rolled GL code. See the module-level docs for the rationale.
+///
+/// Returns `Err(GpuError::DeviceCreation)` if the host has no GL driver that
+/// wgpu can enumerate. This is expected on headless CI without GPU access;
+/// callers should degrade gracefully.
+#[cfg(all(feature = "opengl", feature = "wgpu-backend"))]
+pub fn new_opengl_wgpu_context() -> GpuResult<crate::wgpu_backend::WgpuContext> {
+    crate::wgpu_backend::WgpuContext::new_with_backends_blocking(wgpu::Backends::GL)
+}
+
+#[cfg(all(feature = "opengl", feature = "wgpu-backend"))]
+impl OpenGLContext {
+    /// Create a [`crate::wgpu_backend::WgpuExecutor`] routed through wgpu's
+    /// OpenGL backend.
+    ///
+    /// Note this does *not* reuse the existing `glow::Context` — wgpu owns
+    /// its own GL context internally. The two live side-by-side: use
+    /// [`Self::gl`] for raw GL state, use the returned executor for
+    /// command-buffer replay.
+    ///
+    /// See [`new_opengl_wgpu_context`] for the standalone constructor that
+    /// returns the underlying [`crate::wgpu_backend::WgpuContext`] if you
+    /// need access to the device/queue for custom surface creation.
+    pub fn new_wgpu_executor(
+        &self,
+    ) -> GpuResult<(
+        crate::wgpu_backend::WgpuContext,
+        crate::wgpu_backend::WgpuExecutor,
+    )> {
+        let ctx = new_opengl_wgpu_context()?;
+        let executor = crate::wgpu_backend::WgpuExecutor::new(&ctx);
+        Ok((ctx, executor))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1189,5 +1249,28 @@ mod tests {
     fn test_compare_func() {
         let func = GLCompareFunc::Less;
         assert_eq!(func, GLCompareFunc::Less);
+    }
+
+    /// Smoke test for the wgpu-routed executor. On hosts without a GL
+    /// driver this returns Err rather than panicking — the test passes in
+    /// either outcome, the point is to catch a regression where the
+    /// adapter construction panics or produces a wgpu instance with the
+    /// wrong backend mask.
+    #[cfg(feature = "wgpu-backend")]
+    #[test]
+    fn test_opengl_wgpu_executor_construction_does_not_panic() {
+        match new_opengl_wgpu_context() {
+            Ok(ctx) => {
+                // Confirm the resulting adapter is actually the GL backend,
+                // not a silent fallback to Vulkan/Metal/DX12. wgpu reports
+                // this through `adapter_info().backend`.
+                assert_eq!(ctx.backend_type(), GpuBackendType::OpenGL);
+                let _executor = crate::wgpu_backend::WgpuExecutor::new(&ctx);
+            }
+            Err(GpuError::DeviceCreation(_)) => {
+                // Expected on headless CI without a GL driver.
+            }
+            Err(other) => panic!("unexpected error kind: {:?}", other),
+        }
     }
 }

@@ -54,7 +54,7 @@ The problem — elaborated in the critical gaps below — is that the frontend t
 ## Critical Gaps
 
 ### C-1: No backend executes the crate's own `CommandBuffer` / `RenderPipelineDescriptor`
-**Status:** RESOLVED (wgpu) / DEFERRED (OpenGL, Vulkan, Metal)
+**Status:** RESOLVED (wgpu, and OpenGL/Vulkan/Metal via wgpu routing — P7H)
 
 **Resolution:** Added `WgpuExecutor`, `WgpuPipelineCache`, and
 `build_wgpu_pipeline` in `wgpu_backend.rs`. The executor accepts a
@@ -70,13 +70,51 @@ multisample, topology, cull/polygon/front-face.
 Returned `ExecuteStats` reports draw/indexed-draw/pipeline-switch/bytes
 copied so callers can instrument the loop.
 
-**Deferred:** OpenGL/Vulkan/Metal command-buffer executors. The OpenGL
-state-machine model, Vulkan's upfront render-pass/framebuffer binding, and
-Metal's MTLCommandBuffer semantics each require substantially different
-integration than the wgpu encoder/pass abstraction. Per the pragmatic
-scope in the task plan, deferred to follow-up work. Those backends
-continue to expose their raw handles (`glow::Context`, `ash::Device`,
-`metal::Device`) for consumers that need backend-specific control today.
+**OpenGL/Vulkan/Metal (P7H):** Added thin adapter layers that construct a
+`WgpuContext` restricted to the target backend mask and return a
+`WgpuExecutor` wrapping it:
+
+* `OpenGLContext::new_wgpu_executor()` → `Backends::GL`
+* `VulkanContext::new_wgpu_executor()` → `Backends::VULKAN`
+* `MetalContext::new_wgpu_executor()` → `Backends::METAL`
+
+Plus module-level constructors `new_opengl_wgpu_context()`,
+`new_vulkan_wgpu_context()`, `new_metal_wgpu_context()` for callers who
+need the underlying `WgpuContext`. `WgpuContext::new_with_backends`
+(and the blocking variant) is the shared plumbing: it accepts any
+`wgpu::Backends` mask and routes adapter + device creation through it.
+
+This is a documented layering choice, not a native-level
+implementation. The command stream still flows through wgpu's own
+translator (naga → GLSL for GL, naga → SPIR-V for Vulkan, naga → MSL
+for Metal) and wgpu's internal command recorder. Callers needing
+native bypass (direct `glDrawElements`, `vkCmdDraw`, or
+`MTLRenderCommandEncoder` calls with API-specific state) can still use
+`OpenGLContext::gl()`, `VulkanContext::device()` /
+`VulkanContext::instance()`, and `MetalContext::device()` /
+`MetalContext::command_queue()` respectively — the native handles are
+preserved and unchanged.
+
+A true native executor for each API would duplicate wgpu's resource
+tracker, descriptor sync, barrier planner, and swapchain transitions
+(~thousands of lines per backend). That's out of scope for
+skia-rs-gpu's rendering needs. If a caller emerges with a concrete
+requirement that wgpu's backend routing cannot satisfy (e.g.
+`NV_command_list`, `VK_EXT_mesh_shader`, or Metal argument buffers
+beyond wgpu's bind-group mapping), that work is a separate per-API
+effort tracked outside this gap.
+
+Tests added:
+* `wgpu_backend::test_new_with_backends_accepts_individual_backends`:
+  verifies `Backends::empty()` does not silently fall back to
+  `Backends::all()`.
+* `opengl_backend::test_opengl_wgpu_executor_construction_does_not_panic`:
+  constructs an executor, asserts backend type is `GpuBackendType::OpenGL`
+  on hosts with a GL driver, accepts `DeviceCreation` on headless CI.
+* `vulkan_backend::test_vulkan_wgpu_executor_construction_does_not_panic`:
+  same for Vulkan.
+* `metal_backend::test_metal_wgpu_executor_construction_does_not_panic`:
+  same for Metal (non-Apple CI returns `DeviceCreation`, which is a pass).
 
 **File:** backends (`wgpu_backend.rs`, `opengl_backend.rs`, `vulkan_backend.rs`, `metal_backend.rs`) plus `command.rs` / `pipeline.rs`
 **Severity:** Critical
@@ -113,7 +151,7 @@ require keyhole-bridge construction, also deferred.
 **Effort:** Medium (implement proper ear-clipping with holes handling, or use the Skia-style loop triangulator, or delegate to the `lyon` crate which already has a robust tessellator; ~300 lines for in-house ear clipping, ~50 lines to switch to lyon).
 
 ### C-3: Stencil-then-cover (`prepare_stencil_cover`) does not integrate with actual GPU stencil buffers
-**Status:** RESOLVED (wgpu) / DEFERRED (OpenGL, Vulkan, Metal)
+**Status:** RESOLVED (wgpu, and OpenGL/Vulkan/Metal transitively via P7H wgpu routing)
 
 **Resolution:** Added `WgpuStencilSurface` in `wgpu_backend.rs` that
 allocates a matching `Depth24PlusStencil8` attachment sized to a
@@ -136,8 +174,13 @@ The conversion helpers (`convert_compare`, `convert_stencil_op`,
 two-pass integration relies on a real GPU and falls under T-2 (CI GPU
 tests, deferred).
 
-**Deferred:** Same reasoning as C-1 — OpenGL/Vulkan/Metal stencil paths
-require backend-specific two-pass draw sequences.
+**OpenGL/Vulkan/Metal (P7H):** The wgpu executors returned by
+`OpenGLContext::new_wgpu_executor` / `VulkanContext::new_wgpu_executor` /
+`MetalContext::new_wgpu_executor` use the same `WgpuStencilSurface` +
+two-pass pipeline mechanism. A native-API stencil executor that hand-
+writes `glStencilFunc` / `vkCmdSetStencilReference` /
+`MTLDepthStencilDescriptor` sequences is deferred along with the native
+command-buffer executors for the same reason described in C-1.
 
 **File:** `stencil_cover.rs` (entire module)
 **Severity:** Critical
