@@ -19,12 +19,14 @@
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
+pub mod animation;
 pub mod codec;
 pub mod generator;
 pub mod gpu_image;
 pub mod image;
 pub mod lazy_image;
 
+pub use animation::*;
 pub use codec::*;
 pub use generator::*;
 pub use gpu_image::*;
