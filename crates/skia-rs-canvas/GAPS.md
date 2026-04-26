@@ -263,7 +263,7 @@ Prioritised by impact and dependency order:
 1. **Resolve Canvas architecture (C-1..C-7, C-9, C-10).** Pick option 1 or 2 from Implementation Notes. This unblocks 9 critical gaps and enables Picture playback.
 2. **Upgrade Canvas clip stack to `ClipStack` (C-8, N-1).** Requires a `ClipStack`-based clip representation; unblocks difference clipping, AA clipping, and path clipping.
 3. **Implement `draw_points` (C-4).** Independent of the architectural work; can be done as soon as `draw_point` and `draw_line` are available at the Canvas layer.
-4. **Document or implement `flush` (C-11).** If raster-only in the near term, replace the TODO with a doc note; otherwise wire to GpuSurface.
+4. ~~**Document or implement `flush` (C-11).**~~ — **Done in P5-5.** Raster `flush` is a documented no-op; GPU backends route through `GpuSurface::flush`.
 5. **Fix `draw_vertices` color handling (N-5).** Per-triangle colour indexing and barycentric interpolation.
 6. **Fix `clip_rect_aa` region-mask branch (N-4).** One-liner.
 7. **Unify `Canvas` and `RasterCanvas` state (N-3).** Architectural cleanup; optional if option 2 above is chosen.
