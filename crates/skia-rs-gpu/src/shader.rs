@@ -334,10 +334,31 @@ fn fs_main() -> @location(0) vec4<f32> {
 "#;
 }
 
+/// Detailed validation result for WGSL shaders.
+#[derive(Debug, Clone)]
+pub struct ValidationReport {
+    /// True if naga successfully parsed the source.
+    pub valid: bool,
+    /// Human-readable error message if parsing failed.
+    pub error: Option<String>,
+}
+
+impl ValidationReport {
+    /// Convenience: true when the shader parses.
+    pub fn is_valid(&self) -> bool {
+        self.valid
+    }
+
+    /// Get the error message, if any.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+}
+
 /// Shader compiler for WGSL shaders.
 pub struct ShaderCompiler {
     /// Cached shader source validation results.
-    validation_cache: parking_lot::RwLock<HashMap<u64, bool>>,
+    validation_cache: parking_lot::RwLock<HashMap<u64, ValidationReport>>,
 }
 
 impl ShaderCompiler {
@@ -350,44 +371,68 @@ impl ShaderCompiler {
 
     /// Validate WGSL shader source.
     ///
-    /// Returns true if the shader is valid WGSL.
+    /// Returns true if the shader is valid WGSL according to naga's WGSL
+    /// front-end parser. This is the same parser that wgpu uses internally,
+    /// so a passing shader here will also be accepted by wgpu's pipeline
+    /// creation (modulo target-specific limits).
     pub fn validate(&self, source: &str) -> bool {
-        let hash = Self::hash_source(source);
-
-        // Check cache first
-        if let Some(&valid) = self.validation_cache.read().get(&hash) {
-            return valid;
-        }
-
-        // Basic validation - check for required components
-        let valid = self.basic_validate(source);
-
-        // Cache result
-        self.validation_cache.write().insert(hash, valid);
-
-        valid
+        self.validate_detailed(source).valid
     }
 
-    /// Basic WGSL validation.
-    fn basic_validate(&self, source: &str) -> bool {
-        // Check for basic WGSL structure
-        // A proper implementation would use naga for full validation
+    /// Validate WGSL and return a detailed report with the first parse error.
+    ///
+    /// Cached by source hash so repeated calls on the same source are free.
+    pub fn validate_detailed(&self, source: &str) -> ValidationReport {
+        let hash = Self::hash_source(source);
 
-        // Must have at least one entry point
-        let has_vertex = source.contains("@vertex");
-        let has_fragment = source.contains("@fragment");
-        let has_compute = source.contains("@compute");
-
-        if !has_vertex && !has_fragment && !has_compute {
-            return false;
+        if let Some(report) = self.validation_cache.read().get(&hash) {
+            return report.clone();
         }
 
-        // Check for basic syntax (fn keyword)
-        if !source.contains("fn ") {
-            return false;
-        }
+        let report = Self::naga_validate(source);
+        self.validation_cache.write().insert(hash, report.clone());
+        report
+    }
 
-        true
+    /// Parse WGSL via naga and produce a `ValidationReport`.
+    ///
+    /// Historically this function used substring matching ("@vertex" + "fn ")
+    /// which accepted essentially any text. That defeated the point of
+    /// advertising shader validation: malformed shaders only surfaced at
+    /// pipeline-creation time with cryptic backend errors.
+    ///
+    /// We now run two passes:
+    ///   1. `naga::front::wgsl::parse_str` — catches syntax errors and
+    ///      undeclared-identifier errors.
+    ///   2. `naga::valid::Validator` with the default capabilities — catches
+    ///      semantic errors (wrong return type, bad bind-group layout,
+    ///      incompatible operations, etc.) that only surface after the
+    ///      module IR has been built.
+    fn naga_validate(source: &str) -> ValidationReport {
+        let module = match naga::front::wgsl::parse_str(source) {
+            Ok(m) => m,
+            Err(err) => {
+                return ValidationReport {
+                    valid: false,
+                    error: Some(err.emit_to_string(source)),
+                };
+            }
+        };
+
+        let mut validator = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        );
+        match validator.validate(&module) {
+            Ok(_info) => ValidationReport {
+                valid: true,
+                error: None,
+            },
+            Err(err) => ValidationReport {
+                valid: false,
+                error: Some(format!("WGSL validation failed: {}", err)),
+            },
+        }
     }
 
     /// Hash shader source for caching.
@@ -516,8 +561,77 @@ mod tests {
         // Valid fragment shader
         assert!(compiler.validate(builtin::SOLID_COLOR_FS));
 
-        // Invalid shader (no entry point)
+        // Invalid: not WGSL at all.
         assert!(!compiler.validate("let x = 1;"));
+    }
+
+    #[test]
+    fn test_shader_validation_rejects_malformed_wgsl() {
+        // Regression test for C-4/T-4: the old substring check accepted any
+        // string containing "@vertex" and "fn ". naga-backed validation
+        // must reject shaders with real syntax/type errors.
+        let compiler = ShaderCompiler::new();
+
+        // Syntax error: missing closing brace.
+        let bad_syntax = r#"
+@vertex
+fn vs_main() -> @builtin(position) vec4<f32> {
+    return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+"#;
+        assert!(!compiler.validate(bad_syntax));
+
+        // Undeclared identifier.
+        let undeclared = r#"
+@vertex
+fn vs_main() -> @builtin(position) vec4<f32> {
+    return undeclared_variable;
+}
+"#;
+        assert!(!compiler.validate(undeclared));
+
+        // Wrong type in return.
+        let type_error = r#"
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    return 42;
+}
+"#;
+        assert!(!compiler.validate(type_error));
+
+        // The detailed report should include an error string for these.
+        let report = compiler.validate_detailed(bad_syntax);
+        assert!(!report.is_valid());
+        assert!(report.error().is_some());
+    }
+
+    #[test]
+    fn test_shader_validation_accepts_all_builtins() {
+        // Every built-in WGSL shader must actually parse — previously this
+        // was implicitly true because the substring check was trivial.
+        let compiler = ShaderCompiler::new();
+        for (name, src) in [
+            ("SOLID_COLOR_VS", builtin::SOLID_COLOR_VS),
+            ("SOLID_COLOR_FS", builtin::SOLID_COLOR_FS),
+            ("TEXTURED_VS", builtin::TEXTURED_VS),
+            ("TEXTURED_FS", builtin::TEXTURED_FS),
+            ("GRADIENT_VS", builtin::GRADIENT_VS),
+            ("LINEAR_GRADIENT_FS", builtin::LINEAR_GRADIENT_FS),
+            ("RADIAL_GRADIENT_FS", builtin::RADIAL_GRADIENT_FS),
+            ("BLUR_CS", builtin::BLUR_CS),
+            ("BLIT_VS", builtin::BLIT_VS),
+            ("BLIT_FS", builtin::BLIT_FS),
+            ("PATH_FILL_VS", builtin::PATH_FILL_VS),
+            ("PATH_STENCIL_FS", builtin::PATH_STENCIL_FS),
+            ("PATH_COVER_FS", builtin::PATH_COVER_FS),
+        ] {
+            let report = compiler.validate_detailed(src);
+            assert!(
+                report.is_valid(),
+                "built-in shader {} failed WGSL validation: {:?}",
+                name,
+                report.error()
+            );
+        }
     }
 
     #[test]

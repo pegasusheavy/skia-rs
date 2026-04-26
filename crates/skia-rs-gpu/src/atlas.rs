@@ -174,6 +174,10 @@ pub struct TextureAtlas {
     layers: Vec<AtlasLayer>,
     /// Entry lookup by ID.
     entries: HashMap<AtlasEntryId, AtlasRegion>,
+    /// IDs of entries that have been freed and are eligible for removal on
+    /// the next `compact()`. Kept as a set for O(1) membership checks
+    /// during compaction.
+    freed: std::collections::HashSet<AtlasEntryId>,
     /// Next entry ID.
     next_id: u64,
     /// Generation counter (incremented on reset).
@@ -190,6 +194,7 @@ impl TextureAtlas {
             config,
             layers,
             entries: HashMap::new(),
+            freed: std::collections::HashSet::new(),
             next_id: 0,
             generation: 0,
         }
@@ -293,20 +298,132 @@ impl TextureAtlas {
             layer.reset();
         }
         self.entries.clear();
+        self.freed.clear();
         self.generation += 1;
         // Keep only first layer
         self.layers.truncate(1);
     }
 
-    /// Compact the atlas by removing unused entries.
-    ///
-    /// This requires re-uploading data, so returns the IDs that need updating.
-    pub fn compact(&mut self) -> Vec<AtlasEntryId> {
-        // For simplicity, just reset and return all IDs
-        let ids: Vec<AtlasEntryId> = self.entries.keys().copied().collect();
-        self.reset();
-        ids
+    /// Mark an entry as freed. The slot remains occupied until the next
+    /// `compact()` call; this lets callers drop cached data they no longer
+    /// need without immediately forcing a repack.
+    pub fn free(&mut self, id: AtlasEntryId) -> bool {
+        if self.entries.contains_key(&id) {
+            self.freed.insert(id);
+            true
+        } else {
+            false
+        }
     }
+
+    /// Number of entries currently marked as freed but not yet repacked.
+    pub fn freed_count(&self) -> usize {
+        self.freed.len()
+    }
+
+    /// Result of a compaction pass.
+    ///
+    /// Callers get back the set of entries whose atlas region changed and
+    /// therefore need their GPU texture data re-uploaded to the new slots.
+    /// Entries whose region did not change are not included.
+    ///
+    /// `removed` lists entries that were freed and are no longer in the atlas.
+    pub fn compact(&mut self) -> CompactResult {
+        // Gather current entries into a sorted list (largest first gives
+        // best shelf-pack behaviour for new placements). Drop any that
+        // were previously marked as freed.
+        let old_entries: Vec<(AtlasEntryId, AtlasRegion)> = self
+            .entries
+            .iter()
+            .filter(|(id, _)| !self.freed.contains(id))
+            .map(|(id, region)| (*id, *region))
+            .collect();
+
+        let removed: Vec<AtlasEntryId> = self.freed.iter().copied().collect();
+
+        // Clear the layers — we're about to replay all surviving entries
+        // into a fresh packing.
+        for layer in &mut self.layers {
+            layer.reset();
+        }
+        // Keep just one layer; we may grow it back during re-insertion.
+        self.layers.truncate(1);
+        self.entries.clear();
+        self.freed.clear();
+        self.generation += 1;
+
+        // Sort by height descending for shelf-pack stability. Shelf-pack
+        // works best when the tallest rectangles go down first so later
+        // rectangles fit under existing shelves.
+        let mut sorted = old_entries;
+        sorted.sort_by(|a, b| b.1.height.cmp(&a.1.height).then(b.1.width.cmp(&a.1.width)));
+
+        let mut remapped: Vec<(AtlasEntryId, AtlasRegion, AtlasRegion)> = Vec::new();
+
+        for (id, old_region) in sorted {
+            let mut placed = false;
+            for (layer_idx, layer) in self.layers.iter_mut().enumerate() {
+                if let Some((x, y)) = layer.allocate(old_region.width, old_region.height, self.config.padding) {
+                    let new_region = AtlasRegion {
+                        x,
+                        y,
+                        width: old_region.width,
+                        height: old_region.height,
+                        layer: layer_idx as u32,
+                    };
+                    self.entries.insert(id, new_region);
+                    if (old_region.x, old_region.y, old_region.layer)
+                        != (new_region.x, new_region.y, new_region.layer)
+                    {
+                        remapped.push((id, old_region, new_region));
+                    }
+                    placed = true;
+                    break;
+                }
+            }
+
+            if !placed && self.layers.len() < self.config.max_layers as usize {
+                let mut new_layer = AtlasLayer::new(self.config.width, self.config.height);
+                if let Some((x, y)) = new_layer.allocate(old_region.width, old_region.height, self.config.padding) {
+                    let layer_idx = self.layers.len();
+                    self.layers.push(new_layer);
+                    let new_region = AtlasRegion {
+                        x,
+                        y,
+                        width: old_region.width,
+                        height: old_region.height,
+                        layer: layer_idx as u32,
+                    };
+                    self.entries.insert(id, new_region);
+                    if (old_region.x, old_region.y, old_region.layer)
+                        != (new_region.x, new_region.y, new_region.layer)
+                    {
+                        remapped.push((id, old_region, new_region));
+                    }
+                    placed = true;
+                }
+            }
+
+            if !placed {
+                // Unable to re-pack — this only happens if the atlas has
+                // pathological fragmentation across max_layers. Re-insert
+                // at its original slot so the caller doesn't lose data.
+                self.entries.insert(id, old_region);
+            }
+        }
+
+        CompactResult { remapped, removed }
+    }
+}
+
+/// Result of a `TextureAtlas::compact()` call.
+#[derive(Debug, Clone, Default)]
+pub struct CompactResult {
+    /// Entries whose region moved during repacking. Each tuple is
+    /// (id, old_region, new_region).
+    pub remapped: Vec<(AtlasEntryId, AtlasRegion, AtlasRegion)>,
+    /// Entries that were freed and dropped from the atlas.
+    pub removed: Vec<AtlasEntryId>,
 }
 
 /// Atlas manager for multiple atlases by type.
@@ -510,5 +627,112 @@ mod tests {
             assert!(looked_up.is_some());
             assert_eq!(looked_up.unwrap().width, region.width);
         }
+    }
+
+    #[test]
+    fn test_atlas_free_and_compact_removes_entries() {
+        let mut atlas = TextureAtlas::new(AtlasConfig {
+            width: 512,
+            height: 512,
+            max_layers: 1,
+            padding: 0,
+            allow_resize: false,
+        });
+
+        let mut ids = Vec::new();
+        for _ in 0..4 {
+            if let Some((id, _)) = atlas.allocate_with_id(64, 64) {
+                ids.push(id);
+            }
+        }
+        assert_eq!(atlas.entry_count(), 4);
+
+        // Free two entries.
+        assert!(atlas.free(ids[1]));
+        assert!(atlas.free(ids[2]));
+        assert_eq!(atlas.freed_count(), 2);
+
+        let result = atlas.compact();
+        assert_eq!(result.removed.len(), 2);
+        assert_eq!(atlas.entry_count(), 2);
+        assert_eq!(atlas.freed_count(), 0);
+
+        // Surviving ids still resolve.
+        assert!(atlas.lookup(ids[0]).is_some());
+        assert!(atlas.lookup(ids[3]).is_some());
+        // Removed ids are gone.
+        assert!(atlas.lookup(ids[1]).is_none());
+        assert!(atlas.lookup(ids[2]).is_none());
+    }
+
+    #[test]
+    fn test_atlas_compact_reclaims_space() {
+        // After compacting away freed entries we should be able to allocate
+        // new rectangles that previously hit "Full".
+        let mut atlas = TextureAtlas::new(AtlasConfig {
+            width: 128,
+            height: 128,
+            max_layers: 1,
+            padding: 0,
+            allow_resize: false,
+        });
+
+        // Fill most of a 128-wide shelf with 60x60 rectangles.
+        let a = atlas.allocate_with_id(60, 60).unwrap().0;
+        let b = atlas.allocate_with_id(60, 60).unwrap().0;
+        let c = atlas.allocate_with_id(60, 60).unwrap().0;
+        assert_eq!(atlas.entry_count(), 3);
+
+        // Trying to fit a 60x60 on top should still succeed once we have a
+        // second shelf, but a 100x100 should not fit until we free & compact.
+        match atlas.allocate(100, 100) {
+            AtlasAllocResult::Full => {}
+            other => panic!("expected Full, got {:?}", other),
+        }
+
+        // Free all three entries and compact.
+        atlas.free(a);
+        atlas.free(b);
+        atlas.free(c);
+        atlas.compact();
+
+        // Now the 100x100 should fit.
+        match atlas.allocate(100, 100) {
+            AtlasAllocResult::Success(_) => {}
+            other => panic!("expected Success, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_atlas_free_unknown_returns_false() {
+        let mut atlas = TextureAtlas::new(AtlasConfig::default());
+        assert!(!atlas.free(AtlasEntryId::new(9999)));
+    }
+
+    #[test]
+    fn test_atlas_compact_without_frees_is_noop_ish() {
+        let mut atlas = TextureAtlas::new(AtlasConfig {
+            width: 256,
+            height: 256,
+            max_layers: 1,
+            padding: 0,
+            allow_resize: false,
+        });
+
+        let (id_a, _) = atlas.allocate_with_id(50, 50).unwrap();
+        let (id_b, _) = atlas.allocate_with_id(50, 50).unwrap();
+
+        let before_a = *atlas.lookup(id_a).unwrap();
+        let before_b = *atlas.lookup(id_b).unwrap();
+
+        let result = atlas.compact();
+        assert!(result.removed.is_empty());
+
+        // Both entries still resolve (possibly with the same regions,
+        // possibly remapped).
+        let after_a = *atlas.lookup(id_a).unwrap();
+        let after_b = *atlas.lookup(id_b).unwrap();
+        assert_eq!(before_a.width, after_a.width);
+        assert_eq!(before_b.width, after_b.width);
     }
 }

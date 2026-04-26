@@ -590,35 +590,61 @@ impl ShaderDebugger {
     fn validate_wgsl(&self, source: &str, shader_type: ShaderType) -> ValidationResult {
         let mut result = ValidationResult::valid();
 
-        // Check for entry point
-        let entry_point = match shader_type {
-            ShaderType::Vertex => "@vertex",
-            ShaderType::Fragment => "@fragment",
-            ShaderType::Compute => "@compute",
-            _ => "",
+        // Parse with naga's WGSL frontend. If this fails we surface the
+        // exact parse error as a shader error rather than just reporting
+        // the absence of "@vertex"/"fn ".
+        let module = match naga::front::wgsl::parse_str(source) {
+            Ok(m) => m,
+            Err(err) => {
+                result.errors.push(ShaderError {
+                    message: err.emit_to_string(source),
+                    line: 0,
+                    column: 0,
+                    code: Some("E001".to_string()),
+                    snippet: None,
+                });
+                result.is_valid = false;
+                return result;
+            }
         };
 
-        if !entry_point.is_empty() && !source.contains(entry_point) {
+        // Validate the IR (catches type errors, bad bindings, etc.).
+        let mut validator = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        );
+        if let Err(err) = validator.validate(&module) {
             result.errors.push(ShaderError {
-                message: format!("Missing {} entry point annotation", entry_point),
-                line: 0,
-                column: 0,
-                code: Some("E001".to_string()),
-                snippet: None,
-            });
-            result.is_valid = false;
-        }
-
-        // Check for fn main or named entry point
-        if !source.contains("fn ") {
-            result.errors.push(ShaderError {
-                message: "No function definitions found".to_string(),
+                message: format!("WGSL semantic validation failed: {}", err),
                 line: 0,
                 column: 0,
                 code: Some("E002".to_string()),
                 snippet: None,
             });
             result.is_valid = false;
+            return result;
+        }
+
+        // Sanity check: the requested shader type must have a matching
+        // entry-point stage in the module.
+        let required_stage = match shader_type {
+            ShaderType::Vertex => Some(naga::ShaderStage::Vertex),
+            ShaderType::Fragment => Some(naga::ShaderStage::Fragment),
+            ShaderType::Compute => Some(naga::ShaderStage::Compute),
+            _ => None,
+        };
+        if let Some(stage) = required_stage {
+            let has_stage = module.entry_points.iter().any(|ep| ep.stage == stage);
+            if !has_stage {
+                result.errors.push(ShaderError {
+                    message: format!("No {:?} entry point in WGSL module", stage),
+                    line: 0,
+                    column: 0,
+                    code: Some("E003".to_string()),
+                    snippet: None,
+                });
+                result.is_valid = false;
+            }
         }
 
         result
@@ -870,6 +896,41 @@ fn main(@location(0) position: vec3<f32>) -> @builtin(position) vec4<f32> {
 "#;
         let result = debugger.validate_shader(wgsl, ShaderType::Vertex, ShaderLanguage::Wgsl);
         assert!(result.is_valid);
+    }
+
+    #[test]
+    fn test_wgsl_validation_rejects_malformed() {
+        // The old substring-based validator accepted any string with
+        // "@vertex" and "fn ". naga-backed validation must reject real
+        // syntax errors.
+        let debugger = ShaderDebugger::new();
+
+        let syntax_error = r#"
+@vertex
+fn main() -> @builtin(position) vec4<f32> {
+    return vec4<f32>(0.0, 0.0, 0.0
+}
+"#;
+        let result =
+            debugger.validate_shader(syntax_error, ShaderType::Vertex, ShaderLanguage::Wgsl);
+        assert!(!result.is_valid);
+        assert!(!result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_wgsl_validation_requires_matching_stage() {
+        // A fragment-only source compiled as a vertex shader must fail.
+        let debugger = ShaderDebugger::new();
+
+        let fragment_only = r#"
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+}
+"#;
+        let result =
+            debugger.validate_shader(fragment_only, ShaderType::Vertex, ShaderLanguage::Wgsl);
+        assert!(!result.is_valid);
     }
 
     #[test]

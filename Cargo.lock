@@ -2095,6 +2095,7 @@ dependencies = [
  "ash",
  "glow 0.16.0",
  "metal",
+ "naga",
  "parking_lot",
  "pollster",
  "proptest",
@@ -2140,6 +2141,7 @@ dependencies = [
  "skia-rs-path",
  "skia-rs-text",
  "thiserror 2.0.17",
+ "ttf-parser",
 ]
 
 [[package]]
