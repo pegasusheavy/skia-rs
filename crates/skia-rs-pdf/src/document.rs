@@ -9,38 +9,14 @@ use skia_rs_core::Scalar;
 use std::io::Write;
 
 /// Error type for PDF document operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum PdfError {
     /// I/O error during write.
-    Io(std::io::Error),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
     /// PDF/A validation failure.
+    #[error("PDF/A validation failed: {}", _0.join(", "))]
     Validation(Vec<String>),
-}
-
-impl std::fmt::Display for PdfError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PdfError::Io(e) => write!(f, "I/O error: {}", e),
-            PdfError::Validation(msgs) => {
-                write!(f, "PDF/A validation failed: {}", msgs.join(", "))
-            }
-        }
-    }
-}
-
-impl std::error::Error for PdfError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            PdfError::Io(e) => Some(e),
-            PdfError::Validation(_) => None,
-        }
-    }
-}
-
-impl From<std::io::Error> for PdfError {
-    fn from(e: std::io::Error) -> Self {
-        PdfError::Io(e)
-    }
 }
 
 /// PDF document metadata.

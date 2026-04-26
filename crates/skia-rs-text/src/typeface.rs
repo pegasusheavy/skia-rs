@@ -92,7 +92,6 @@ pub enum FontSlant {
 #[derive(Debug, Clone)]
 struct ParsedTypeface {
     units_per_em: u16,
-    num_glyphs: u16,
     ascender: i16,
     descender: i16,
     line_gap: i16,
@@ -101,6 +100,10 @@ struct ParsedTypeface {
     italic_angle: f32,
     is_monospaced: bool,
     bbox: (i16, i16, i16, i16), // xmin, ymin, xmax, ymax
+    underline_position: Option<i16>,
+    underline_thickness: Option<i16>,
+    strikeout_position: Option<i16>,
+    strikeout_thickness: Option<i16>,
 }
 
 /// Raw font metrics extracted from OpenType/TrueType tables.
@@ -128,6 +131,15 @@ pub struct RawFontMetrics {
     pub is_monospaced: bool,
     /// Global bounding box: (xmin, ymin, xmax, ymax) in font units.
     pub bbox: (i16, i16, i16, i16),
+    /// Underline center position (font units, positive = above baseline).
+    /// From the `post` table.
+    pub underline_position: Option<i16>,
+    /// Underline stroke thickness (font units). From the `post` table.
+    pub underline_thickness: Option<i16>,
+    /// Strikeout center position (font units). From the OS/2 table.
+    pub strikeout_position: Option<i16>,
+    /// Strikeout stroke thickness (font units). From the OS/2 table.
+    pub strikeout_thickness: Option<i16>,
 }
 
 /// Font style combining weight, width, and slant.
@@ -327,9 +339,16 @@ impl Typeface {
             .get_or_init(|| {
                 let data = self.font_data()?;
                 let face = ttf_parser::Face::parse(data, 0).ok()?;
+                let (underline_position, underline_thickness) = face
+                    .underline_metrics()
+                    .map(|lm| (Some(lm.position), Some(lm.thickness)))
+                    .unwrap_or((None, None));
+                let (strikeout_position, strikeout_thickness) = face
+                    .strikeout_metrics()
+                    .map(|lm| (Some(lm.position), Some(lm.thickness)))
+                    .unwrap_or((None, None));
                 Some(ParsedTypeface {
                     units_per_em: face.units_per_em(),
-                    num_glyphs: face.number_of_glyphs(),
                     ascender: face.ascender(),
                     descender: face.descender(),
                     line_gap: face.line_gap(),
@@ -341,6 +360,10 @@ impl Typeface {
                         let r = face.global_bounding_box();
                         (r.x_min, r.y_min, r.x_max, r.y_max)
                     },
+                    underline_position,
+                    underline_thickness,
+                    strikeout_position,
+                    strikeout_thickness,
                 })
             })
             .as_ref()
@@ -397,6 +420,10 @@ impl Typeface {
             italic_angle: p.italic_angle,
             is_monospaced: p.is_monospaced,
             bbox: p.bbox,
+            underline_position: p.underline_position,
+            underline_thickness: p.underline_thickness,
+            strikeout_position: p.strikeout_position,
+            strikeout_thickness: p.strikeout_thickness,
         })
     }
 }

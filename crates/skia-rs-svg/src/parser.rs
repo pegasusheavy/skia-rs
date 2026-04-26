@@ -523,6 +523,12 @@ pub(crate) fn parse_paint(s: &str) -> Option<SvgPaint> {
 /// `hsl()`, `hsla()`, and the full X11 / CSS Color Level 3 named color
 /// table.
 pub(crate) fn parse_color(s: &str) -> Option<Color> {
+    // "currentcolor" requires context from the inheritance chain; returning
+    // None here lets the caller propagate the inherited paint instead of
+    // resolving it to a literal color.
+    if s.trim().eq_ignore_ascii_case("currentcolor") {
+        return None;
+    }
     Color::from_css(s)
 }
 

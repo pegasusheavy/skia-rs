@@ -428,8 +428,9 @@ fn decode_image_href(href: &str) -> Option<Vec<u8>> {
 /// Decode a base64-encoded string (standard alphabet, ignores whitespace
 /// and padding).
 fn decode_base64(input: &str) -> Option<Vec<u8>> {
-    // Remove all whitespace (the original hand-rolled decoder tolerated embedded whitespace).
-    let cleaned: String = input.chars().filter(|c| !c.is_whitespace()).collect();
+    // Filter ASCII whitespace directly on bytes — no UTF-8 round-trip needed
+    // since base64 data is always ASCII.
+    let cleaned: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
     STANDARD.decode(&cleaned).ok()
 }
 

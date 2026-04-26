@@ -129,7 +129,7 @@ impl Color {
             return Self::parse_hsl_inner(inner, false);
         }
 
-        Self::named_color(&s.to_ascii_lowercase())
+        Self::named_color(s)
     }
 
     fn parse_hex_color(hex: &str) -> Option<Self> {
@@ -165,50 +165,25 @@ impl Color {
     }
 
     fn parse_rgb_inner(inner: &str) -> Option<Self> {
-        let parts: Vec<u8> = inner
-            .split(',')
-            .filter_map(|p| p.trim().parse().ok())
-            .collect();
-        if parts.len() == 3 {
-            Some(Self::from_rgb(parts[0], parts[1], parts[2]))
-        } else {
-            None
+        let mut it = inner.split(',');
+        let r: u8 = it.next()?.trim().parse().ok()?;
+        let g: u8 = it.next()?.trim().parse().ok()?;
+        let b: u8 = it.next()?.trim().parse().ok()?;
+        if it.next().is_some() {
+            return None;
         }
+        Some(Self::from_rgb(r, g, b))
     }
 
     fn parse_rgba_inner(inner: &str) -> Option<Self> {
-        let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
-        if parts.len() == 4 {
-            let r: u8 = parts[0].parse().ok()?;
-            let g: u8 = parts[1].parse().ok()?;
-            let b: u8 = parts[2].parse().ok()?;
-            let a: f32 = parts[3].parse().ok()?;
-            Some(Self::from_argb(
-                (a * 255.0).round().clamp(0.0, 255.0) as u8,
-                r,
-                g,
-                b,
-            ))
-        } else {
-            None
-        }
-    }
-
-    fn parse_hsl_inner(inner: &str, with_alpha: bool) -> Option<Self> {
-        let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
-        if parts.len() < 3 {
+        let mut it = inner.split(',');
+        let r: u8 = it.next()?.trim().parse().ok()?;
+        let g: u8 = it.next()?.trim().parse().ok()?;
+        let b: u8 = it.next()?.trim().parse().ok()?;
+        let a: f32 = it.next()?.trim().parse().ok()?;
+        if it.next().is_some() {
             return None;
         }
-        let h: f32 = parts[0].trim_end_matches("deg").parse().ok()?;
-        let s: f32 = parts[1].trim_end_matches('%').parse::<f32>().ok()? / 100.0;
-        let l: f32 = parts[2].trim_end_matches('%').parse::<f32>().ok()? / 100.0;
-        let a: f32 = if with_alpha && parts.len() >= 4 {
-            parts[3].parse().ok()?
-        } else {
-            1.0
-        };
-
-        let (r, g, b) = Self::hsl_to_rgb(h, s, l);
         Some(Self::from_argb(
             (a * 255.0).round().clamp(0.0, 255.0) as u8,
             r,
@@ -217,194 +192,200 @@ impl Color {
         ))
     }
 
-    fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
-        let h = h.rem_euclid(360.0) / 360.0;
-
-        if s == 0.0 {
-            let v = (l * 255.0).round() as u8;
-            return (v, v, v);
-        }
-
-        let q = if l < 0.5 {
-            l * (1.0 + s)
+    fn parse_hsl_inner(inner: &str, with_alpha: bool) -> Option<Self> {
+        let mut it = inner.split(',');
+        let h: f32 = it.next()?.trim().trim_end_matches("deg").parse().ok()?;
+        let s: f32 = it.next()?.trim().trim_end_matches('%').parse::<f32>().ok()? / 100.0;
+        let l: f32 = it.next()?.trim().trim_end_matches('%').parse::<f32>().ok()? / 100.0;
+        let a: f32 = if with_alpha {
+            it.next()?.trim().parse().ok()?
         } else {
-            l + s - l * s
+            if it.next().is_some() {
+                return None;
+            }
+            1.0
         };
-        let p = 2.0 * l - q;
 
+        let (rf, gf, bf) = hsl_to_rgb(h, s, l);
         let to_u8 = |x: f32| (x * 255.0).round().clamp(0.0, 255.0) as u8;
-        (
-            to_u8(Self::hue_to_rgb(p, q, h + 1.0 / 3.0)),
-            to_u8(Self::hue_to_rgb(p, q, h)),
-            to_u8(Self::hue_to_rgb(p, q, h - 1.0 / 3.0)),
-        )
-    }
-
-    fn hue_to_rgb(p: f32, q: f32, mut t: f32) -> f32 {
-        if t < 0.0 {
-            t += 1.0;
-        }
-        if t > 1.0 {
-            t -= 1.0;
-        }
-        if t < 1.0 / 6.0 {
-            return p + (q - p) * 6.0 * t;
-        }
-        if t < 1.0 / 2.0 {
-            return q;
-        }
-        if t < 2.0 / 3.0 {
-            return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
-        }
-        p
+        Some(Self::from_argb(
+            (a * 255.0).round().clamp(0.0, 255.0) as u8,
+            to_u8(rf),
+            to_u8(gf),
+            to_u8(bf),
+        ))
     }
 
     fn named_color(s: &str) -> Option<Self> {
-        // CSS Color Level 3 named colors (subset of the X11 set). The compiler
-        // collapses this to a perfect hash at -O1.
-        Some(match s {
-            "aliceblue" => Self::from_rgb(240, 248, 255),
-            "antiquewhite" => Self::from_rgb(250, 235, 215),
-            "aqua" | "cyan" => Self::from_rgb(0, 255, 255),
-            "aquamarine" => Self::from_rgb(127, 255, 212),
-            "azure" => Self::from_rgb(240, 255, 255),
-            "beige" => Self::from_rgb(245, 245, 220),
-            "bisque" => Self::from_rgb(255, 228, 196),
-            "black" => Self::BLACK,
-            "blanchedalmond" => Self::from_rgb(255, 235, 205),
-            "blue" => Self::from_rgb(0, 0, 255),
-            "blueviolet" => Self::from_rgb(138, 43, 226),
-            "brown" => Self::from_rgb(165, 42, 42),
-            "burlywood" => Self::from_rgb(222, 184, 135),
-            "cadetblue" => Self::from_rgb(95, 158, 160),
-            "chartreuse" => Self::from_rgb(127, 255, 0),
-            "chocolate" => Self::from_rgb(210, 105, 30),
-            "coral" => Self::from_rgb(255, 127, 80),
-            "cornflowerblue" => Self::from_rgb(100, 149, 237),
-            "cornsilk" => Self::from_rgb(255, 248, 220),
-            "crimson" => Self::from_rgb(220, 20, 60),
-            "darkblue" => Self::from_rgb(0, 0, 139),
-            "darkcyan" => Self::from_rgb(0, 139, 139),
-            "darkgoldenrod" => Self::from_rgb(184, 134, 11),
-            "darkgray" | "darkgrey" => Self::from_rgb(169, 169, 169),
-            "darkgreen" => Self::from_rgb(0, 100, 0),
-            "darkkhaki" => Self::from_rgb(189, 183, 107),
-            "darkmagenta" => Self::from_rgb(139, 0, 139),
-            "darkolivegreen" => Self::from_rgb(85, 107, 47),
-            "darkorange" => Self::from_rgb(255, 140, 0),
-            "darkorchid" => Self::from_rgb(153, 50, 204),
-            "darkred" => Self::from_rgb(139, 0, 0),
-            "darksalmon" => Self::from_rgb(233, 150, 122),
-            "darkseagreen" => Self::from_rgb(143, 188, 143),
-            "darkslateblue" => Self::from_rgb(72, 61, 139),
-            "darkslategray" | "darkslategrey" => Self::from_rgb(47, 79, 79),
-            "darkturquoise" => Self::from_rgb(0, 206, 209),
-            "darkviolet" => Self::from_rgb(148, 0, 211),
-            "deeppink" => Self::from_rgb(255, 20, 147),
-            "deepskyblue" => Self::from_rgb(0, 191, 255),
-            "dimgray" | "dimgrey" => Self::from_rgb(105, 105, 105),
-            "dodgerblue" => Self::from_rgb(30, 144, 255),
-            "firebrick" => Self::from_rgb(178, 34, 34),
-            "floralwhite" => Self::from_rgb(255, 250, 240),
-            "forestgreen" => Self::from_rgb(34, 139, 34),
-            "fuchsia" | "magenta" => Self::from_rgb(255, 0, 255),
-            "gainsboro" => Self::from_rgb(220, 220, 220),
-            "ghostwhite" => Self::from_rgb(248, 248, 255),
-            "gold" => Self::from_rgb(255, 215, 0),
-            "goldenrod" => Self::from_rgb(218, 165, 32),
-            "gray" | "grey" => Self::from_rgb(128, 128, 128),
-            "green" => Self::from_rgb(0, 128, 0),
-            "greenyellow" => Self::from_rgb(173, 255, 47),
-            "honeydew" => Self::from_rgb(240, 255, 240),
-            "hotpink" => Self::from_rgb(255, 105, 180),
-            "indianred" => Self::from_rgb(205, 92, 92),
-            "indigo" => Self::from_rgb(75, 0, 130),
-            "ivory" => Self::from_rgb(255, 255, 240),
-            "khaki" => Self::from_rgb(240, 230, 140),
-            "lavender" => Self::from_rgb(230, 230, 250),
-            "lavenderblush" => Self::from_rgb(255, 240, 245),
-            "lawngreen" => Self::from_rgb(124, 252, 0),
-            "lemonchiffon" => Self::from_rgb(255, 250, 205),
-            "lightblue" => Self::from_rgb(173, 216, 230),
-            "lightcoral" => Self::from_rgb(240, 128, 128),
-            "lightcyan" => Self::from_rgb(224, 255, 255),
-            "lightgoldenrodyellow" => Self::from_rgb(250, 250, 210),
-            "lightgray" | "lightgrey" => Self::from_rgb(211, 211, 211),
-            "lightgreen" => Self::from_rgb(144, 238, 144),
-            "lightpink" => Self::from_rgb(255, 182, 193),
-            "lightsalmon" => Self::from_rgb(255, 160, 122),
-            "lightseagreen" => Self::from_rgb(32, 178, 170),
-            "lightskyblue" => Self::from_rgb(135, 206, 250),
-            "lightslategray" | "lightslategrey" => Self::from_rgb(119, 136, 153),
-            "lightsteelblue" => Self::from_rgb(176, 196, 222),
-            "lightyellow" => Self::from_rgb(255, 255, 224),
-            "lime" => Self::from_rgb(0, 255, 0),
-            "limegreen" => Self::from_rgb(50, 205, 50),
-            "linen" => Self::from_rgb(250, 240, 230),
-            "maroon" => Self::from_rgb(128, 0, 0),
-            "mediumaquamarine" => Self::from_rgb(102, 205, 170),
-            "mediumblue" => Self::from_rgb(0, 0, 205),
-            "mediumorchid" => Self::from_rgb(186, 85, 211),
-            "mediumpurple" => Self::from_rgb(147, 112, 219),
-            "mediumseagreen" => Self::from_rgb(60, 179, 113),
-            "mediumslateblue" => Self::from_rgb(123, 104, 238),
-            "mediumspringgreen" => Self::from_rgb(0, 250, 154),
-            "mediumturquoise" => Self::from_rgb(72, 209, 204),
-            "mediumvioletred" => Self::from_rgb(199, 21, 133),
-            "midnightblue" => Self::from_rgb(25, 25, 112),
-            "mintcream" => Self::from_rgb(245, 255, 250),
-            "mistyrose" => Self::from_rgb(255, 228, 225),
-            "moccasin" => Self::from_rgb(255, 228, 181),
-            "navajowhite" => Self::from_rgb(255, 222, 173),
-            "navy" => Self::from_rgb(0, 0, 128),
-            "oldlace" => Self::from_rgb(253, 245, 230),
-            "olive" => Self::from_rgb(128, 128, 0),
-            "olivedrab" => Self::from_rgb(107, 142, 35),
-            "orange" => Self::from_rgb(255, 165, 0),
-            "orangered" => Self::from_rgb(255, 69, 0),
-            "orchid" => Self::from_rgb(218, 112, 214),
-            "palegoldenrod" => Self::from_rgb(238, 232, 170),
-            "palegreen" => Self::from_rgb(152, 251, 152),
-            "paleturquoise" => Self::from_rgb(175, 238, 238),
-            "palevioletred" => Self::from_rgb(219, 112, 147),
-            "papayawhip" => Self::from_rgb(255, 239, 213),
-            "peachpuff" => Self::from_rgb(255, 218, 185),
-            "peru" => Self::from_rgb(205, 133, 63),
-            "pink" => Self::from_rgb(255, 192, 203),
-            "plum" => Self::from_rgb(221, 160, 221),
-            "powderblue" => Self::from_rgb(176, 224, 230),
-            "purple" => Self::from_rgb(128, 0, 128),
-            "rebeccapurple" => Self::from_rgb(102, 51, 153),
-            "red" => Self::from_rgb(255, 0, 0),
-            "rosybrown" => Self::from_rgb(188, 143, 143),
-            "royalblue" => Self::from_rgb(65, 105, 225),
-            "saddlebrown" => Self::from_rgb(139, 69, 19),
-            "salmon" => Self::from_rgb(250, 128, 114),
-            "sandybrown" => Self::from_rgb(244, 164, 96),
-            "seagreen" => Self::from_rgb(46, 139, 87),
-            "seashell" => Self::from_rgb(255, 245, 238),
-            "sienna" => Self::from_rgb(160, 82, 45),
-            "silver" => Self::from_rgb(192, 192, 192),
-            "skyblue" => Self::from_rgb(135, 206, 235),
-            "slateblue" => Self::from_rgb(106, 90, 205),
-            "slategray" | "slategrey" => Self::from_rgb(112, 128, 144),
-            "snow" => Self::from_rgb(255, 250, 250),
-            "springgreen" => Self::from_rgb(0, 255, 127),
-            "steelblue" => Self::from_rgb(70, 130, 180),
-            "tan" => Self::from_rgb(210, 180, 140),
-            "teal" => Self::from_rgb(0, 128, 128),
-            "thistle" => Self::from_rgb(216, 191, 216),
-            "tomato" => Self::from_rgb(255, 99, 71),
-            "turquoise" => Self::from_rgb(64, 224, 208),
-            "violet" => Self::from_rgb(238, 130, 238),
-            "wheat" => Self::from_rgb(245, 222, 179),
-            "white" => Self::WHITE,
-            "whitesmoke" => Self::from_rgb(245, 245, 245),
-            "yellow" => Self::from_rgb(255, 255, 0),
-            "yellowgreen" => Self::from_rgb(154, 205, 50),
-            "transparent" => Self::TRANSPARENT,
-            _ => return None,
-        })
+        // CSS Color Level 3 named colors (subset of the X11 set).
+        // Table is scanned with eq_ignore_ascii_case so callers do not need
+        // to pre-lowercase the input — no heap allocation on the hot path.
+        const TABLE: &[(&str, (u8, u8, u8))] = &[
+            ("aliceblue", (240, 248, 255)),
+            ("antiquewhite", (250, 235, 215)),
+            ("aqua", (0, 255, 255)),
+            ("aquamarine", (127, 255, 212)),
+            ("azure", (240, 255, 255)),
+            ("beige", (245, 245, 220)),
+            ("bisque", (255, 228, 196)),
+            ("blanchedalmond", (255, 235, 205)),
+            ("blue", (0, 0, 255)),
+            ("blueviolet", (138, 43, 226)),
+            ("brown", (165, 42, 42)),
+            ("burlywood", (222, 184, 135)),
+            ("cadetblue", (95, 158, 160)),
+            ("chartreuse", (127, 255, 0)),
+            ("chocolate", (210, 105, 30)),
+            ("coral", (255, 127, 80)),
+            ("cornflowerblue", (100, 149, 237)),
+            ("cornsilk", (255, 248, 220)),
+            ("crimson", (220, 20, 60)),
+            ("cyan", (0, 255, 255)),
+            ("darkblue", (0, 0, 139)),
+            ("darkcyan", (0, 139, 139)),
+            ("darkgoldenrod", (184, 134, 11)),
+            ("darkgray", (169, 169, 169)),
+            ("darkgreen", (0, 100, 0)),
+            ("darkgrey", (169, 169, 169)),
+            ("darkkhaki", (189, 183, 107)),
+            ("darkmagenta", (139, 0, 139)),
+            ("darkolivegreen", (85, 107, 47)),
+            ("darkorange", (255, 140, 0)),
+            ("darkorchid", (153, 50, 204)),
+            ("darkred", (139, 0, 0)),
+            ("darksalmon", (233, 150, 122)),
+            ("darkseagreen", (143, 188, 143)),
+            ("darkslateblue", (72, 61, 139)),
+            ("darkslategray", (47, 79, 79)),
+            ("darkslategrey", (47, 79, 79)),
+            ("darkturquoise", (0, 206, 209)),
+            ("darkviolet", (148, 0, 211)),
+            ("deeppink", (255, 20, 147)),
+            ("deepskyblue", (0, 191, 255)),
+            ("dimgray", (105, 105, 105)),
+            ("dimgrey", (105, 105, 105)),
+            ("dodgerblue", (30, 144, 255)),
+            ("firebrick", (178, 34, 34)),
+            ("floralwhite", (255, 250, 240)),
+            ("forestgreen", (34, 139, 34)),
+            ("fuchsia", (255, 0, 255)),
+            ("gainsboro", (220, 220, 220)),
+            ("ghostwhite", (248, 248, 255)),
+            ("gold", (255, 215, 0)),
+            ("goldenrod", (218, 165, 32)),
+            ("gray", (128, 128, 128)),
+            ("green", (0, 128, 0)),
+            ("greenyellow", (173, 255, 47)),
+            ("grey", (128, 128, 128)),
+            ("honeydew", (240, 255, 240)),
+            ("hotpink", (255, 105, 180)),
+            ("indianred", (205, 92, 92)),
+            ("indigo", (75, 0, 130)),
+            ("ivory", (255, 255, 240)),
+            ("khaki", (240, 230, 140)),
+            ("lavender", (230, 230, 250)),
+            ("lavenderblush", (255, 240, 245)),
+            ("lawngreen", (124, 252, 0)),
+            ("lemonchiffon", (255, 250, 205)),
+            ("lightblue", (173, 216, 230)),
+            ("lightcoral", (240, 128, 128)),
+            ("lightcyan", (224, 255, 255)),
+            ("lightgoldenrodyellow", (250, 250, 210)),
+            ("lightgray", (211, 211, 211)),
+            ("lightgreen", (144, 238, 144)),
+            ("lightgrey", (211, 211, 211)),
+            ("lightpink", (255, 182, 193)),
+            ("lightsalmon", (255, 160, 122)),
+            ("lightseagreen", (32, 178, 170)),
+            ("lightskyblue", (135, 206, 250)),
+            ("lightslategray", (119, 136, 153)),
+            ("lightslategrey", (119, 136, 153)),
+            ("lightsteelblue", (176, 196, 222)),
+            ("lightyellow", (255, 255, 224)),
+            ("lime", (0, 255, 0)),
+            ("limegreen", (50, 205, 50)),
+            ("linen", (250, 240, 230)),
+            ("magenta", (255, 0, 255)),
+            ("maroon", (128, 0, 0)),
+            ("mediumaquamarine", (102, 205, 170)),
+            ("mediumblue", (0, 0, 205)),
+            ("mediumorchid", (186, 85, 211)),
+            ("mediumpurple", (147, 112, 219)),
+            ("mediumseagreen", (60, 179, 113)),
+            ("mediumslateblue", (123, 104, 238)),
+            ("mediumspringgreen", (0, 250, 154)),
+            ("mediumturquoise", (72, 209, 204)),
+            ("mediumvioletred", (199, 21, 133)),
+            ("midnightblue", (25, 25, 112)),
+            ("mintcream", (245, 255, 250)),
+            ("mistyrose", (255, 228, 225)),
+            ("moccasin", (255, 228, 181)),
+            ("navajowhite", (255, 222, 173)),
+            ("navy", (0, 0, 128)),
+            ("oldlace", (253, 245, 230)),
+            ("olive", (128, 128, 0)),
+            ("olivedrab", (107, 142, 35)),
+            ("orange", (255, 165, 0)),
+            ("orangered", (255, 69, 0)),
+            ("orchid", (218, 112, 214)),
+            ("palegoldenrod", (238, 232, 170)),
+            ("palegreen", (152, 251, 152)),
+            ("paleturquoise", (175, 238, 238)),
+            ("palevioletred", (219, 112, 147)),
+            ("papayawhip", (255, 239, 213)),
+            ("peachpuff", (255, 218, 185)),
+            ("peru", (205, 133, 63)),
+            ("pink", (255, 192, 203)),
+            ("plum", (221, 160, 221)),
+            ("powderblue", (176, 224, 230)),
+            ("purple", (128, 0, 128)),
+            ("rebeccapurple", (102, 51, 153)),
+            ("red", (255, 0, 0)),
+            ("rosybrown", (188, 143, 143)),
+            ("royalblue", (65, 105, 225)),
+            ("saddlebrown", (139, 69, 19)),
+            ("salmon", (250, 128, 114)),
+            ("sandybrown", (244, 164, 96)),
+            ("seagreen", (46, 139, 87)),
+            ("seashell", (255, 245, 238)),
+            ("sienna", (160, 82, 45)),
+            ("silver", (192, 192, 192)),
+            ("skyblue", (135, 206, 235)),
+            ("slateblue", (106, 90, 205)),
+            ("slategray", (112, 128, 144)),
+            ("slategrey", (112, 128, 144)),
+            ("snow", (255, 250, 250)),
+            ("springgreen", (0, 255, 127)),
+            ("steelblue", (70, 130, 180)),
+            ("tan", (210, 180, 140)),
+            ("teal", (0, 128, 128)),
+            ("thistle", (216, 191, 216)),
+            ("tomato", (255, 99, 71)),
+            ("turquoise", (64, 224, 208)),
+            ("violet", (238, 130, 238)),
+            ("wheat", (245, 222, 179)),
+            ("whitesmoke", (245, 245, 245)),
+            ("yellow", (255, 255, 0)),
+            ("yellowgreen", (154, 205, 50)),
+        ];
+
+        // Special-case the two colors that do not decode to from_rgb(…) alone.
+        if s.eq_ignore_ascii_case("black") {
+            return Some(Self::BLACK);
+        }
+        if s.eq_ignore_ascii_case("white") {
+            return Some(Self::WHITE);
+        }
+        if s.eq_ignore_ascii_case("transparent") {
+            return Some(Self::TRANSPARENT);
+        }
+
+        for &(name, (r, g, b)) in TABLE {
+            if s.eq_ignore_ascii_case(name) {
+                return Some(Self::from_rgb(r, g, b));
+            }
+        }
+        None
     }
 }
 
@@ -1561,6 +1542,17 @@ mod tests {
         assert!(Color::from_css("#gg0000").is_none());
         assert!(Color::from_css("").is_none());
         assert!(Color::from_css("rgb(999, 0, 0)").is_none());
+    }
+
+    #[test]
+    fn test_color_from_css_named_case_insensitive() {
+        // Named-color lookup must be case-insensitive without allocating.
+        assert_eq!(Color::from_css("RED"), Color::from_css("red"));
+        assert_eq!(Color::from_css("Red"), Color::from_css("red"));
+        assert_eq!(Color::from_css("AliceBlue"), Color::from_css("aliceblue"));
+        assert_eq!(Color::from_css("TRANSPARENT"), Color::from_css("transparent"));
+        assert_eq!(Color::from_css("WHITE"), Color::from_css("white"));
+        assert_eq!(Color::from_css("BLACK"), Color::from_css("black"));
     }
 
     #[test]
