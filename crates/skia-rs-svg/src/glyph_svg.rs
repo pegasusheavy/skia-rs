@@ -29,7 +29,11 @@
 
 use crate::dom::SvgDom;
 use crate::parser::parse_svg;
+use crate::render::render_svg;
 use flate2::read::GzDecoder;
+use skia_rs_canvas::Canvas;
+use skia_rs_core::Point;
+use skia_rs_text::Font;
 use std::io::Read;
 
 /// gzip magic bytes (`0x1f 0x8b`) — the two-byte prefix of every gzip
@@ -56,6 +60,38 @@ pub fn glyph_svg_to_dom(raw: &[u8]) -> Option<SvgDom> {
     let decoded = decode_glyph_svg_bytes(raw)?;
     let text = std::str::from_utf8(&decoded).ok()?;
     parse_svg(text).ok()
+}
+
+/// Render an SVG-in-OpenType glyph at the given origin on the supplied
+/// canvas.
+///
+/// This is the convenience entry point that ties together
+/// [`Font::glyph_svg`] (read the table), [`glyph_svg_to_dom`] (decode +
+/// parse), and [`render_svg`] (rasterise). It is the SVG-glyph
+/// counterpart to `Canvas::draw_color_glyph`'s COLR path, kept in this
+/// crate to avoid a dependency cycle (skia-rs-svg already depends on
+/// skia-rs-canvas).
+///
+/// Returns `true` when the glyph had an SVG entry and was drawn,
+/// `false` otherwise so the caller can fall through to an outline /
+/// COLR path.
+pub fn draw_glyph_svg(
+    canvas: &mut Canvas<'_>,
+    font: &Font,
+    glyph: u16,
+    origin: Point,
+) -> bool {
+    let Some(raw) = font.glyph_svg(glyph) else {
+        return false;
+    };
+    let Some(dom) = glyph_svg_to_dom(&raw) else {
+        return false;
+    };
+    canvas.save();
+    canvas.translate(origin.x, origin.y);
+    render_svg(&dom, canvas);
+    canvas.restore();
+    true
 }
 
 /// Decompress gzipped SVG bytes (if the input is gzipped) and return
@@ -140,6 +176,23 @@ mod tests {
         // rather than panic.
         let garbage: &[u8] = &[0xff, 0xfe, 0xfd, 0xfc];
         assert!(glyph_svg_to_dom(garbage).is_none());
+    }
+
+    #[test]
+    fn draw_glyph_svg_returns_false_when_font_has_no_svg_table() {
+        use skia_rs_canvas::{Canvas, raster::PixelBuffer};
+        use skia_rs_core::Point;
+        use skia_rs_text::Font;
+
+        let mut buffer = PixelBuffer::new(16, 16);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        // Default dataless font — no SVG table.
+        let font = Font::from_size(16.0);
+        let drawn = draw_glyph_svg(&mut canvas, &font, 1, Point::new(0.0, 0.0));
+        assert!(
+            !drawn,
+            "dataless font has no SVG table; draw_glyph_svg must return false"
+        );
     }
 
     #[test]
