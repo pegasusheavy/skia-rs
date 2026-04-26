@@ -284,6 +284,20 @@ impl Color {
         (c * 255.0).round() as u8
     }
 
+    /// Shared plumbing for CSS Color Level 4 functional notations.
+    /// Takes linear RGB components and optional alpha string, converts to
+    /// sRGB u8, and assembles the final Color.
+    fn compose_level4(
+        linear_rgb: (f32, f32, f32),
+        alpha: Option<&str>,
+    ) -> Option<Self> {
+        let alpha_u8 = alpha.and_then(Self::parse_alpha).unwrap_or(255);
+        let r = Self::linear_to_srgb_u8(linear_rgb.0);
+        let g = Self::linear_to_srgb_u8(linear_rgb.1);
+        let b = Self::linear_to_srgb_u8(linear_rgb.2);
+        Some(Self::from_argb(alpha_u8, r, g, b))
+    }
+
     /// Convert Oklab to linear sRGB.
     /// Reference: https://bottosson.github.io/posts/oklab/
     fn oklab_to_linear_srgb(l: f32, a: f32, b: f32) -> (f32, f32, f32) {
@@ -303,7 +317,9 @@ impl Color {
     }
 
     /// Convert CIE Lab (D50) to linear sRGB.
-    fn lab_to_linear_srgb(l: f32, a: f32, b: f32) -> (f32, f32, f32) {
+    /// CSS Color Level 4 specifies D50 whitepoint with Bradford chromatic
+    /// adaptation to D65 for sRGB.
+    pub(crate) fn lab_to_linear_srgb(l: f32, a: f32, b: f32) -> (f32, f32, f32) {
         // Lab → XYZ (D50 whitepoint)
         let fy = (l + 16.0) / 116.0;
         let fx = a / 500.0 + fy;
@@ -353,13 +369,8 @@ impl Color {
         let l = Self::parse_oklab_l(parts[0])?;
         let a: f32 = parts[1].trim().parse().ok()?;
         let b: f32 = parts[2].trim().parse().ok()?;
-        let alpha_u8 = alpha.and_then(Self::parse_alpha).unwrap_or(255);
-
-        let (lin_r, lin_g, lin_b) = Self::oklab_to_linear_srgb(l, a, b);
-        let r = Self::linear_to_srgb_u8(lin_r);
-        let g = Self::linear_to_srgb_u8(lin_g);
-        let b_ = Self::linear_to_srgb_u8(lin_b);
-        Some(Self::from_argb(alpha_u8, r, g, b_))
+        let rgb = Self::oklab_to_linear_srgb(l, a, b);
+        Self::compose_level4(rgb, alpha)
     }
 
     fn parse_oklab_l(s: &str) -> Option<f32> {
@@ -383,14 +394,9 @@ impl Color {
             parts[1].trim().parse().ok()?
         };
         let h: f32 = parts[2].trim().trim_end_matches("deg").parse().ok()?;
-        let alpha_u8 = alpha.and_then(Self::parse_alpha).unwrap_or(255);
-
         let (l, a, b) = Self::lch_to_lab(l, c, h);
-        let (lin_r, lin_g, lin_b) = Self::oklab_to_linear_srgb(l, a, b);
-        let r = Self::linear_to_srgb_u8(lin_r);
-        let g = Self::linear_to_srgb_u8(lin_g);
-        let b_ = Self::linear_to_srgb_u8(lin_b);
-        Some(Self::from_argb(alpha_u8, r, g, b_))
+        let rgb = Self::oklab_to_linear_srgb(l, a, b);
+        Self::compose_level4(rgb, alpha)
     }
 
     fn parse_lab(s: &str) -> Option<Self> {
@@ -401,13 +407,8 @@ impl Color {
         let l = Self::parse_lab_l(parts[0])?;
         let a: f32 = parts[1].trim().parse().ok()?;
         let b: f32 = parts[2].trim().parse().ok()?;
-        let alpha_u8 = alpha.and_then(Self::parse_alpha).unwrap_or(255);
-
-        let (lin_r, lin_g, lin_b) = Self::lab_to_linear_srgb(l, a, b);
-        let r = Self::linear_to_srgb_u8(lin_r);
-        let g = Self::linear_to_srgb_u8(lin_g);
-        let b_ = Self::linear_to_srgb_u8(lin_b);
-        Some(Self::from_argb(alpha_u8, r, g, b_))
+        let rgb = Self::lab_to_linear_srgb(l, a, b);
+        Self::compose_level4(rgb, alpha)
     }
 
     fn parse_lab_l(s: &str) -> Option<f32> {
@@ -427,14 +428,9 @@ impl Color {
         let l = Self::parse_lab_l(parts[0])?;
         let c: f32 = parts[1].trim().parse().ok()?;
         let h: f32 = parts[2].trim().trim_end_matches("deg").parse().ok()?;
-        let alpha_u8 = alpha.and_then(Self::parse_alpha).unwrap_or(255);
-
         let (l, a, b) = Self::lch_to_lab(l, c, h);
-        let (lin_r, lin_g, lin_b) = Self::lab_to_linear_srgb(l, a, b);
-        let r = Self::linear_to_srgb_u8(lin_r);
-        let g = Self::linear_to_srgb_u8(lin_g);
-        let b_ = Self::linear_to_srgb_u8(lin_b);
-        Some(Self::from_argb(alpha_u8, r, g, b_))
+        let rgb = Self::lab_to_linear_srgb(l, a, b);
+        Self::compose_level4(rgb, alpha)
     }
 
     fn parse_hwb(s: &str) -> Option<Self> {
@@ -475,9 +471,8 @@ impl Color {
         let r: f32 = parts[1].trim().parse().ok()?;
         let g: f32 = parts[2].trim().parse().ok()?;
         let b: f32 = parts[3].trim().parse().ok()?;
-        let alpha_u8 = alpha.and_then(Self::parse_alpha).unwrap_or(255);
 
-        let (lin_r, lin_g, lin_b) = match space {
+        let rgb = match space {
             "srgb" => {
                 // sRGB gamma space → linear
                 let to_linear = |x: f32| {
@@ -508,12 +503,7 @@ impl Color {
             _ => return None,
         };
 
-        Some(Self::from_argb(
-            alpha_u8,
-            Self::linear_to_srgb_u8(lin_r),
-            Self::linear_to_srgb_u8(lin_g),
-            Self::linear_to_srgb_u8(lin_b),
-        ))
+        Self::compose_level4(rgb, alpha)
     }
 
     fn named_color(s: &str) -> Option<Self> {
@@ -2012,31 +2002,10 @@ pub fn rgb_to_lab(r: Scalar, g: Scalar, b: Scalar) -> (Scalar, Scalar, Scalar) {
 
 /// Lab to RGB conversion.
 ///
-/// Returns linear (R, G, B) values.
+/// Uses D50 whitepoint with Bradford chromatic adaptation to D65 per CSS Color
+/// Level 4 spec. Returns linear (R, G, B) values in [0, 1].
 pub fn lab_to_rgb(l: Scalar, a: Scalar, b: Scalar) -> (Scalar, Scalar, Scalar) {
-    // D65 reference white
-    let ref_x = 0.95047;
-    let ref_y = 1.00000;
-    let ref_z = 1.08883;
-
-    let fy = (l + 16.0) / 116.0;
-    let fx = a / 500.0 + fy;
-    let fz = fy - b / 200.0;
-
-    let f_inv = |t: Scalar| -> Scalar {
-        let t3 = t * t * t;
-        if t3 > 0.008856 {
-            t3
-        } else {
-            (t - 16.0 / 116.0) / 7.787
-        }
-    };
-
-    let x = ref_x * f_inv(fx);
-    let y = ref_y * f_inv(fy);
-    let z = ref_z * f_inv(fz);
-
-    xyz_to_rgb(x, y, z)
+    Color::lab_to_linear_srgb(l, a, b)
 }
 
 /// Calculate the perceived luminance of an sRGB color.
@@ -2451,6 +2420,16 @@ mod tests {
         assert!(c.red() >= 250, "r={}", c.red());
         assert!(c.green() >= 250, "g={}", c.green());
         assert!(c.blue() >= 250, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_lab_to_rgb_uses_d50_whitepoint() {
+        // CIE Lab (100, 0, 0) should produce very-near-white in sRGB
+        // under D50 + Bradford D50→D65 chromatic adaptation to sRGB.
+        let (r, g, b) = lab_to_rgb(100.0, 0.0, 0.0);
+        assert!(r > 0.99, "r = {}", r);
+        assert!(g > 0.99, "g = {}", g);
+        assert!(b > 0.99, "b = {}", b);
     }
 
     #[test]

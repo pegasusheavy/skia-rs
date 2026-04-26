@@ -73,6 +73,59 @@
 // Perspective 2 index.
 #define Matrix_PERSP_2 8
 
+// Clip operation for canvas clipping functions.
+enum sk_clip_op_t
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    // Intersect the existing clip with the new region.
+    sk_clip_op_t_Intersect = 0,
+    // Subtract the new region from the existing clip (difference).
+    sk_clip_op_t_Difference = 1,
+};
+#ifndef __cplusplus
+typedef uint32_t sk_clip_op_t;
+#endif // __cplusplus
+
+// Region operation for region manipulation functions.
+enum sk_region_op_t
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    // Subtract the operand from the target.
+    sk_region_op_t_Difference = 0,
+    // Intersect target and operand.
+    sk_region_op_t_Intersect = 1,
+    // Union target and operand.
+    sk_region_op_t_Union = 2,
+    // Exclusive-or target and operand.
+    sk_region_op_t_Xor = 3,
+    // Subtract target from operand (reverse difference).
+    sk_region_op_t_ReverseDifference = 4,
+    // Replace target with operand.
+    sk_region_op_t_Replace = 5,
+};
+#ifndef __cplusplus
+typedef uint32_t sk_region_op_t;
+#endif // __cplusplus
+
+// Trim path effect mode.
+enum sk_trim_mode_t
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    // Normal trim: keep segment from start to end.
+    sk_trim_mode_t_Normal = 0,
+    // Inverted trim: discard segment from start to end.
+    sk_trim_mode_t_Inverted = 1,
+};
+#ifndef __cplusplus
+typedef uint32_t sk_trim_mode_t;
+#endif // __cplusplus
+
 // Mipmap mode for image sampling.
 enum MipmapMode
 #ifdef __cplusplus
@@ -790,16 +843,16 @@ void sk_canvas_draw_path(struct sk_canvas_t *canvas,
 // Intersect or subtract a rectangle from the clip.
 //
 // `op` follows [`ClipOp`]: 0 = Intersect, 1 = Difference. Returns false if
-// the canvas handle is null or `op` is out of range; otherwise true.
+// the canvas handle is null; otherwise true.
 bool sk_canvas_clip_rect(struct sk_canvas_t *canvas,
                          const struct sk_rect_t *rect,
-                         uint32_t op,
+                         sk_clip_op_t op,
                          bool anti_alias);
 
 // Intersect or subtract a path from the clip.
 bool sk_canvas_clip_path(struct sk_canvas_t *canvas,
                          const sk_path_t *path,
-                         uint32_t op,
+                         sk_clip_op_t op,
                          bool anti_alias);
 
 // Fill `out` with the device-space integer clip bounds of this canvas.
@@ -1105,12 +1158,10 @@ sk_region_t *sk_region_new(void);
 bool sk_region_set_rect(sk_region_t *region,
                         const struct sk_irect_t *rect);
 
-// Apply a rect op on the region. `op` follows [`RegionOp`]:
-// 0=Difference, 1=Intersect, 2=Union, 3=Xor, 4=ReverseDifference,
-// 5=Replace.
+// Apply a rect op on the region.
 bool sk_region_op_rect(sk_region_t *region,
                        const struct sk_irect_t *rect,
-                       uint32_t op);
+                       sk_region_op_t op);
 
 // Get the region's integer bounds.
 bool sk_region_get_bounds(const sk_region_t *region,
@@ -1139,10 +1190,10 @@ sk_patheffect_t *sk_patheffect_new_dash(const float *intervals,
                                         float phase);
 
 // Create a trim path effect. `start` and `end` are normalized lengths
-// in [0, 1]; `mode` follows [`TrimMode`]: 0=Normal, 1=Inverted.
+// in [0, 1].
 sk_patheffect_t *sk_patheffect_new_trim(float start,
                                         float end,
-                                        uint32_t mode);
+                                        sk_trim_mode_t mode);
 
 // Attach a path effect to a paint, or clear it if `effect` is null. The
 // paint takes its own [`Arc`] reference; the caller retains their own.

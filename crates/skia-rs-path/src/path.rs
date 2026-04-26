@@ -568,6 +568,7 @@ impl Path {
         let mut current = Point::zero();
         let mut contour_start = Point::zero();
         const TOL: Scalar = 0.1;
+        let mut pts: Vec<Point> = Vec::with_capacity(32);
 
         for element in self.iter() {
             match element {
@@ -582,7 +583,7 @@ impl Path {
                     current = end;
                 }
                 PathElement::Quad(ctrl, end) => {
-                    let mut pts = Vec::with_capacity(16);
+                    pts.clear();
                     flatten_quad_adaptive(&mut pts, current, ctrl, end, TOL);
                     let mut prev = current;
                     for pt in &pts {
@@ -594,7 +595,7 @@ impl Path {
                     current = end;
                 }
                 PathElement::Conic(ctrl, end, w) => {
-                    let mut pts = Vec::with_capacity(16);
+                    pts.clear();
                     flatten_conic_adaptive(&mut pts, current, ctrl, end, w, TOL);
                     let mut prev = current;
                     for pt in &pts {
@@ -606,7 +607,7 @@ impl Path {
                     current = end;
                 }
                 PathElement::Cubic(c1, c2, end) => {
-                    let mut pts = Vec::with_capacity(16);
+                    pts.clear();
                     flatten_cubic_adaptive(&mut pts, current, c1, c2, end, TOL);
                     let mut prev = current;
                     for pt in &pts {
@@ -763,6 +764,7 @@ impl Path {
         let mut current = Point::zero();
         let mut contour_start = Point::zero();
         const TOL: Scalar = 0.25;
+        let mut pts: Vec<Point> = Vec::with_capacity(32);
 
         for element in self.iter() {
             match element {
@@ -775,7 +777,7 @@ impl Path {
                     current = end;
                 }
                 PathElement::Quad(ctrl, end) => {
-                    let mut pts = Vec::with_capacity(16);
+                    pts.clear();
                     flatten_quad_adaptive(&mut pts, current, ctrl, end, TOL);
                     let mut prev = current;
                     for pt in &pts {
@@ -785,7 +787,7 @@ impl Path {
                     current = end;
                 }
                 PathElement::Conic(ctrl, end, w) => {
-                    let mut pts = Vec::with_capacity(16);
+                    pts.clear();
                     flatten_conic_adaptive(&mut pts, current, ctrl, end, w, TOL);
                     let mut prev = current;
                     for pt in &pts {
@@ -795,7 +797,7 @@ impl Path {
                     current = end;
                 }
                 PathElement::Cubic(c1, c2, end) => {
-                    let mut pts = Vec::with_capacity(16);
+                    pts.clear();
                     flatten_cubic_adaptive(&mut pts, current, c1, c2, end, TOL);
                     let mut prev = current;
                     for pt in &pts {

@@ -273,6 +273,44 @@ use skia_rs_text::{Font, TextBlob, Typeface, TypefaceRef};
 // Type Definitions
 // =============================================================================
 
+/// Clip operation for canvas clipping functions.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy)]
+pub enum sk_clip_op_t {
+    /// Intersect the existing clip with the new region.
+    Intersect = 0,
+    /// Subtract the new region from the existing clip (difference).
+    Difference = 1,
+}
+
+/// Region operation for region manipulation functions.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy)]
+pub enum sk_region_op_t {
+    /// Subtract the operand from the target.
+    Difference = 0,
+    /// Intersect target and operand.
+    Intersect = 1,
+    /// Union target and operand.
+    Union = 2,
+    /// Exclusive-or target and operand.
+    Xor = 3,
+    /// Subtract target from operand (reverse difference).
+    ReverseDifference = 4,
+    /// Replace target with operand.
+    Replace = 5,
+}
+
+/// Trim path effect mode.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy)]
+pub enum sk_trim_mode_t {
+    /// Normal trim: keep segment from start to end.
+    Normal = 0,
+    /// Inverted trim: discard segment from start to end.
+    Inverted = 1,
+}
+
 /// C-compatible point structure.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
@@ -1837,12 +1875,12 @@ pub unsafe extern "C" fn sk_canvas_draw_path(
 /// Intersect or subtract a rectangle from the clip.
 ///
 /// `op` follows [`ClipOp`]: 0 = Intersect, 1 = Difference. Returns false if
-/// the canvas handle is null or `op` is out of range; otherwise true.
+/// the canvas handle is null; otherwise true.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_canvas_clip_rect(
     canvas: *mut sk_canvas_t,
     rect: *const sk_rect_t,
-    op: u32,
+    op: sk_clip_op_t,
     anti_alias: bool,
 ) -> bool {
     catch_panic(|| {
@@ -1853,9 +1891,8 @@ pub unsafe extern "C" fn sk_canvas_clip_rect(
             return false;
         };
         let clip_op = match op {
-            0 => ClipOp::Intersect,
-            1 => ClipOp::Difference,
-            _ => return false,
+            sk_clip_op_t::Intersect => ClipOp::Intersect,
+            sk_clip_op_t::Difference => ClipOp::Difference,
         };
         c.state.clips.push(ClipEntry::Rect {
             rect: Rect::from(*r),
@@ -1871,7 +1908,7 @@ pub unsafe extern "C" fn sk_canvas_clip_rect(
 pub unsafe extern "C" fn sk_canvas_clip_path(
     canvas: *mut sk_canvas_t,
     path: *const sk_path_t,
-    op: u32,
+    op: sk_clip_op_t,
     anti_alias: bool,
 ) -> bool {
     catch_panic(|| {
@@ -1882,9 +1919,8 @@ pub unsafe extern "C" fn sk_canvas_clip_path(
             return false;
         };
         let clip_op = match op {
-            0 => ClipOp::Intersect,
-            1 => ClipOp::Difference,
-            _ => return false,
+            sk_clip_op_t::Intersect => ClipOp::Intersect,
+            sk_clip_op_t::Difference => ClipOp::Difference,
         };
         c.state.clips.push(ClipEntry::Path {
             path: p.clone(),
@@ -3022,14 +3058,12 @@ pub unsafe extern "C" fn sk_region_set_rect(
     })
 }
 
-/// Apply a rect op on the region. `op` follows [`RegionOp`]:
-/// 0=Difference, 1=Intersect, 2=Union, 3=Xor, 4=ReverseDifference,
-/// 5=Replace.
+/// Apply a rect op on the region.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_region_op_rect(
     region: *mut sk_region_t,
     rect: *const sk_irect_t,
-    op: u32,
+    op: sk_region_op_t,
 ) -> bool {
     catch_panic(|| {
         let Some(r) = RefCounted::get_mut(region) else {
@@ -3039,13 +3073,12 @@ pub unsafe extern "C" fn sk_region_op_rect(
             return false;
         };
         let region_op = match op {
-            0 => RegionOp::Difference,
-            1 => RegionOp::Intersect,
-            2 => RegionOp::Union,
-            3 => RegionOp::Xor,
-            4 => RegionOp::ReverseDifference,
-            5 => RegionOp::Replace,
-            _ => return false,
+            sk_region_op_t::Difference => RegionOp::Difference,
+            sk_region_op_t::Intersect => RegionOp::Intersect,
+            sk_region_op_t::Union => RegionOp::Union,
+            sk_region_op_t::Xor => RegionOp::Xor,
+            sk_region_op_t::ReverseDifference => RegionOp::ReverseDifference,
+            sk_region_op_t::Replace => RegionOp::Replace,
         };
         r.op_rect(
             IRect::new(src.left, src.top, src.right, src.bottom),
@@ -3135,18 +3168,17 @@ pub unsafe extern "C" fn sk_patheffect_new_dash(
 }
 
 /// Create a trim path effect. `start` and `end` are normalized lengths
-/// in [0, 1]; `mode` follows [`TrimMode`]: 0=Normal, 1=Inverted.
+/// in [0, 1].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_patheffect_new_trim(
     start: f32,
     end: f32,
-    mode: u32,
+    mode: sk_trim_mode_t,
 ) -> *mut sk_patheffect_t {
     catch_panic(|| {
         let trim_mode = match mode {
-            0 => TrimMode::Normal,
-            1 => TrimMode::Inverted,
-            _ => return ptr::null_mut(),
+            sk_trim_mode_t::Normal => TrimMode::Normal,
+            sk_trim_mode_t::Inverted => TrimMode::Inverted,
         };
         match TrimEffect::new(start, end, trim_mode) {
             Some(e) => {
@@ -3725,7 +3757,7 @@ mod tests {
                 right: 7.0,
                 bottom: 7.0,
             };
-            assert!(sk_canvas_clip_rect(canvas, &clip_rect, 0, false));
+            assert!(sk_canvas_clip_rect(canvas, &clip_rect, sk_clip_op_t::Intersect, false));
 
             // Draw a full-canvas white rect — only the inner box survives.
             let paint = sk_paint_new();
@@ -3767,7 +3799,7 @@ mod tests {
             let path = sk_pathbuilder_detach(b);
             sk_pathbuilder_delete(b);
 
-            assert!(sk_canvas_clip_path(canvas, path, 0, true));
+            assert!(sk_canvas_clip_path(canvas, path, sk_clip_op_t::Intersect, true));
 
             sk_path_unref(path);
             sk_canvas_release(canvas);
@@ -3786,8 +3818,8 @@ mod tests {
                 right: 5.0,
                 bottom: 5.0,
             };
-            // op=99 is invalid — returns false without touching clips.
-            assert!(!sk_canvas_clip_rect(canvas, &rect, 99, false));
+            // Difference op should work.
+            assert!(sk_canvas_clip_rect(canvas, &rect, sk_clip_op_t::Difference, false));
             sk_canvas_release(canvas);
             sk_surface_unref(surface);
         }
@@ -3824,7 +3856,7 @@ mod tests {
                 right: 6.0,
                 bottom: 6.0,
             };
-            sk_canvas_clip_rect(canvas, &inner, 0, false);
+            sk_canvas_clip_rect(canvas, &inner, sk_clip_op_t::Intersect, false);
             assert!(sk_canvas_get_clip_ibounds(canvas, &mut bounds));
             assert!(bounds.left >= 2 && bounds.right <= 6);
 
@@ -4066,12 +4098,12 @@ mod tests {
                 right: 20,
                 bottom: 20,
             };
-            assert!(sk_region_op_rect(r, &other, 2)); // union
+            assert!(sk_region_op_rect(r, &other, sk_region_op_t::Union));
             assert!(sk_region_get_bounds(r, &mut bounds));
             assert_eq!(bounds.right, 20);
 
-            // Invalid op returns false.
-            assert!(!sk_region_op_rect(r, &other, 99));
+            // Test intersect op.
+            assert!(sk_region_op_rect(r, &other, sk_region_op_t::Intersect));
 
             sk_region_ref(r);
             assert_eq!(sk_refcnt_get_count(r as *const sk_refcnt_t), 2);
@@ -4089,7 +4121,7 @@ mod tests {
             assert!(!dash.is_null());
 
             // Trim effect.
-            let trim = sk_patheffect_new_trim(0.25, 0.75, 0);
+            let trim = sk_patheffect_new_trim(0.25, 0.75, sk_trim_mode_t::Normal);
             assert!(!trim.is_null());
 
             // Attaching to a paint.
@@ -4100,9 +4132,12 @@ mod tests {
             sk_paint_set_path_effect(paint, ptr::null());
             sk_paint_unref(paint);
 
-            // Rejects invalid trim modes / empty dash.
-            let bogus = sk_patheffect_new_trim(0.0, 1.0, 99);
-            assert!(bogus.is_null());
+            // Test inverted trim mode.
+            let inverted = sk_patheffect_new_trim(0.0, 1.0, sk_trim_mode_t::Inverted);
+            assert!(!inverted.is_null());
+            sk_patheffect_unref(inverted);
+
+            // Rejects empty dash.
             let empty = sk_patheffect_new_dash(ptr::null(), 0, 0.0);
             assert!(empty.is_null());
 
