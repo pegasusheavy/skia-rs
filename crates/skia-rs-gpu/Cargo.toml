@@ -28,6 +28,7 @@ webgpu = ["wgpu-backend"]
 skia-rs-core = { workspace = true }
 skia-rs-path = { workspace = true }
 skia-rs-paint = { workspace = true }
+skia-rs-codec = { workspace = true }
 ash = { workspace = true, optional = true }
 glow = { workspace = true, optional = true }
 metal = { workspace = true, optional = true }

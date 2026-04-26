@@ -2297,6 +2297,7 @@ dependencies = [
  "parking_lot",
  "pollster",
  "proptest",
+ "skia-rs-codec",
  "skia-rs-core",
  "skia-rs-paint",
  "skia-rs-path",
