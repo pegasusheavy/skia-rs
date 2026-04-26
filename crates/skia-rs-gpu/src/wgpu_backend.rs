@@ -1247,6 +1247,233 @@ impl WgpuStencilSurface {
     }
 }
 
+// =============================================================================
+// GpuImageBackend implementation
+//
+// Uploads raster pixels into a real `wgpu::Texture` and reads them back via
+// a staging buffer + async map. The backend owns the textures behind an
+// `Arc<RwLock<HashMap<u64, wgpu::Texture>>>` so `upload`/`read_back`/`release`
+// can look up textures by the `GpuTextureHandle.id` assigned at upload time.
+// =============================================================================
+
+use skia_rs_codec::{
+    GpuImageBackend, GpuImageError, GpuTextureFormat as CodecGpuTextureFormat,
+    GpuTextureHandle as CodecGpuTextureHandle, ImageInfo as CodecImageInfo,
+    GpuBackend as CodecGpuBackend,
+};
+
+/// A [`GpuImageBackend`] implementation backed by a shared wgpu device/queue.
+///
+/// Install the backend on a `GpuImage` via `GpuImage::set_backend`. Uploads
+/// create a standalone `wgpu::Texture` (2D, `COPY_DST | COPY_SRC | TEXTURE_BINDING`)
+/// and are tracked in an internal map keyed by an opaque handle id. `read_back`
+/// copies the texture into a temporary staging buffer, maps it, and fills the
+/// destination buffer. `release` drops the cached texture, freeing device
+/// memory.
+#[derive(Clone)]
+pub struct WgpuGpuImageBackend {
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    textures: Arc<Mutex<HashMap<u64, wgpu::Texture>>>,
+    next_id: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl std::fmt::Debug for WgpuGpuImageBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WgpuGpuImageBackend")
+            .field(
+                "live_textures",
+                &self.textures.lock().len(),
+            )
+            .finish()
+    }
+}
+
+impl WgpuGpuImageBackend {
+    /// Build a backend from an existing `WgpuContext`.
+    pub fn new(context: &WgpuContext) -> Self {
+        Self {
+            device: context.device.clone(),
+            queue: context.queue.clone(),
+            textures: Arc::new(Mutex::new(HashMap::new())),
+            next_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+        }
+    }
+
+    /// Number of live GPU textures held by this backend.
+    pub fn live_texture_count(&self) -> usize {
+        self.textures.lock().len()
+    }
+}
+
+fn codec_format_to_wgpu(format: CodecGpuTextureFormat) -> Result<wgpu::TextureFormat, GpuImageError> {
+    Ok(match format {
+        CodecGpuTextureFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,
+        CodecGpuTextureFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
+        CodecGpuTextureFormat::Bgra8Unorm => wgpu::TextureFormat::Bgra8Unorm,
+        CodecGpuTextureFormat::Bgra8UnormSrgb => wgpu::TextureFormat::Bgra8UnormSrgb,
+        CodecGpuTextureFormat::Rgb10a2Unorm => wgpu::TextureFormat::Rgb10a2Unorm,
+        CodecGpuTextureFormat::Rgba16Float => wgpu::TextureFormat::Rgba16Float,
+    })
+}
+
+impl GpuImageBackend for WgpuGpuImageBackend {
+    fn upload(
+        &self,
+        info: &CodecImageInfo,
+        format: CodecGpuTextureFormat,
+        pixels: &[u8],
+        row_bytes: usize,
+    ) -> Result<CodecGpuTextureHandle, GpuImageError> {
+        if info.is_empty() {
+            return Err(GpuImageError::UploadFailed("empty image".into()));
+        }
+        let wgpu_format = codec_format_to_wgpu(format)?;
+        let width = info.width() as u32;
+        let height = info.height() as u32;
+
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("skia-rs gpu image"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu_format,
+            usage: wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+
+        self.queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            pixels,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(row_bytes as u32),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        // Ensure the write is visible to subsequent read-backs immediately.
+        self.queue.submit(std::iter::empty::<wgpu::CommandBuffer>());
+
+        let id = self
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.textures.lock().insert(id, texture);
+
+        Ok(CodecGpuTextureHandle {
+            id,
+            backend: CodecGpuBackend::WebGpu,
+        })
+    }
+
+    fn read_back(
+        &self,
+        handle: &CodecGpuTextureHandle,
+        info: &CodecImageInfo,
+        format: CodecGpuTextureFormat,
+        dst: &mut [u8],
+        dst_row_bytes: usize,
+    ) -> Result<(), GpuImageError> {
+        let width = info.width() as u32;
+        let height = info.height() as u32;
+        let bpp = format.bytes_per_pixel() as u32;
+        // wgpu requires buffer rows to be aligned to COPY_BYTES_PER_ROW_ALIGNMENT (256).
+        let unpadded_bpr = width * bpp;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded_bpr = unpadded_bpr.div_ceil(align) * align;
+        let buffer_size = (padded_bpr * height) as u64;
+
+        let textures = self.textures.lock();
+        let texture = textures
+            .get(&handle.id)
+            .ok_or_else(|| GpuImageError::ReadBackFailed(format!("unknown handle {}", handle.id)))?;
+
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("skia-rs gpu image staging"),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("skia-rs gpu image readback"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyBuffer {
+                buffer: &staging,
+                layout: wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bpr),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(Some(encoder.finish()));
+
+        // Release the textures lock before blocking on map_async.
+        drop(textures);
+
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.device.poll(wgpu::Maintain::Wait);
+        rx.recv()
+            .map_err(|e| GpuImageError::ReadBackFailed(e.to_string()))?
+            .map_err(|e| GpuImageError::ReadBackFailed(e.to_string()))?;
+
+        let data = slice.get_mapped_range();
+        for y in 0..height as usize {
+            let src_off = y * padded_bpr as usize;
+            let dst_off = y * dst_row_bytes;
+            let len = unpadded_bpr as usize;
+            if dst_off + len > dst.len() {
+                return Err(GpuImageError::ReadBackFailed("dst buffer too small".into()));
+            }
+            dst[dst_off..dst_off + len].copy_from_slice(&data[src_off..src_off + len]);
+        }
+        drop(data);
+        staging.unmap();
+
+        Ok(())
+    }
+
+    fn release(&self, handle: &CodecGpuTextureHandle) {
+        // Dropping the texture releases GPU memory.
+        self.textures.lock().remove(&handle.id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

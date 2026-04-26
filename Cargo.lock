@@ -1393,15 +1393,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nasm-rs"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe4d98d0065f4b1daf164b3eafb11974c94662e5e2396cf03f32d0bb5c17da51"
-dependencies = [
- "rayon",
-]
-
-[[package]]
 name = "ndk-sys"
 version = "0.5.0+25.2.9519653"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1839,7 +1830,6 @@ dependencies = [
  "av1-grain",
  "bitstream-io",
  "built",
- "cc",
  "cfg-if",
  "interpolate_name",
  "itertools 0.12.1",
@@ -1847,7 +1837,6 @@ dependencies = [
  "libfuzzer-sys",
  "log",
  "maybe-rayon",
- "nasm-rs",
  "new_debug_unreachable",
  "noop_proc_macro",
  "num-derive",
@@ -2192,7 +2181,7 @@ checksum = "56199f7ddabf13fe5074ce809e7d3f42b42ae711800501b5b16ea82ad029c39d"
 
 [[package]]
 name = "skia-rs"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "skia-rs-canvas",
  "skia-rs-codec",
@@ -2210,7 +2199,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-bench"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "criterion",
  "rand 0.8.5",
@@ -2225,7 +2214,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-canvas"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "proptest",
  "skia-rs-codec",
@@ -2239,7 +2228,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-codec"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "avif-decode",
  "gif",
@@ -2258,7 +2247,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-core"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "bitflags 2.10.0",
  "bytemuck",
@@ -2273,7 +2262,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-ffi"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "cbindgen",
  "libc",
@@ -2288,7 +2277,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-gpu"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "ash",
  "glow 0.16.0",
@@ -2297,6 +2286,7 @@ dependencies = [
  "parking_lot",
  "pollster",
  "proptest",
+ "skia-rs-codec",
  "skia-rs-core",
  "skia-rs-paint",
  "skia-rs-path",
@@ -2306,7 +2296,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-paint"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "bitflags 2.10.0",
  "naga",
@@ -2319,7 +2309,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-path"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "geo",
  "serde",
@@ -2329,7 +2319,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-pdf"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "flate2",
  "pdf-writer",
@@ -2345,7 +2335,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-safe"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "bitflags 2.10.0",
  "js-sys",
@@ -2367,7 +2357,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-skottie"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "proptest",
  "serde",
@@ -2381,7 +2371,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-svg"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "base64",
  "flate2",
@@ -2399,7 +2389,7 @@ dependencies = [
 
 [[package]]
 name = "skia-rs-text"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "fontdb",
  "proptest",

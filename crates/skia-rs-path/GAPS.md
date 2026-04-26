@@ -362,10 +362,11 @@ The crate produces 4 warnings:
 4. `field 'path' is never read` in measure.rs:9 (confirms PathMeasure stub)
 
 ### Cascade effect from PathMeasure stub
-Three pieces of functionality are blocked by GAP-C1:
-- `TrimEffect::apply()` (GAP-C2) -- explicitly deferred per comment
-- `Path1DEffect::apply()` (GAP-C3) -- calls PathMeasure, silently returns empty
-- Any future path-animation or path-following API
+PathMeasure (GAP-C1) has been implemented. The previously blocked
+downstream effects are now live:
+- `TrimEffect::apply()` (GAP-C2) — uses `PathMeasure::get_segment`.
+- `Path1DEffect::apply()` (GAP-C3) — iterates along the measured path.
+- Path-animation / path-following APIs can now be built on top.
 
 ### Pattern: Fixed-step curve approximation
 Multiple modules approximate curves with fixed subdivision steps (8 for quads, 12
@@ -386,11 +387,11 @@ correctly. A production-quality implementation would need either:
 
 ## Recommendations
 
-1. **Implement PathMeasure** (GAP-C1, 2-3 weeks) -- Highest priority. Unblocks
-   GAP-C2 and GAP-C3 automatically. Start with linear segments, then add curve
-   flattening with adaptive tolerance.
+1. ~~**Implement PathMeasure**~~ — **Done.** `PathMeasure` uses adaptive
+   flattening and is consumed by `TrimEffect`, `Path1DEffect`,
+   `Path::length`, and `Path::contains`.
 
-2. **Fix TrimEffect** (GAP-C2, 1-2 days) -- Quick win once PathMeasure ships.
+2. ~~**Fix TrimEffect**~~ — **Done.** Resolved alongside GAP-C1.
 
 3. **Fix DashEffect curve handling** (GAP-C6, 3-5 days) -- Flatten curves to lines
    before applying dash logic, matching Skia's approach.

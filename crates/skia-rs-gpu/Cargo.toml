@@ -28,9 +28,9 @@ webgpu = ["wgpu-backend"]
 skia-rs-core = { workspace = true }
 skia-rs-path = { workspace = true }
 skia-rs-paint = { workspace = true }
+skia-rs-codec = { workspace = true }
 ash = { workspace = true, optional = true }
 glow = { workspace = true, optional = true }
-metal = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
 parking_lot = { workspace = true }
@@ -39,6 +39,15 @@ thiserror = { workspace = true }
 # transitively at the same major version; declaring it explicitly lets us
 # call naga::front::wgsl outside the wgpu-backend feature gate.
 naga = { version = "23", features = ["wgsl-in"] }
+
+# The `metal` crate pulls `core-graphics-types` with an Apple-only
+# `framework` link directive, so it can only be built for macOS / iOS
+# targets. The `metal` feature is still declarable on other platforms
+# (e.g. for documenting it on docs.rs with mocked backends) but the
+# dependency itself is gated here so `cargo check --all-features` works
+# on Linux.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+metal = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wgpu = { workspace = true, features = ["webgpu", "webgl"], optional = true }

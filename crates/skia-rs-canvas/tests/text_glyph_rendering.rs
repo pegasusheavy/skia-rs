@@ -94,6 +94,29 @@ fn draw_string_no_op_for_dataless_typeface() {
 }
 
 #[test]
+fn draw_color_glyph_returns_false_for_outline_font() {
+    // demo.ttf has no COLR / CPAL / SVG / CBDT data — every glyph is a
+    // pure outline. `draw_color_glyph` must report "not a color glyph"
+    // so the caller falls back to the outline path. Regression test for
+    // the COLR v1 dispatch entry point.
+    let mut buffer = PixelBuffer::new(64, 64);
+    let mut canvas = Canvas::new_raster(&mut buffer);
+    let font = demo_font(24.0);
+    let mut paint = Paint::new();
+    paint.set_color(Color::WHITE.into());
+    let handled = canvas.draw_color_glyph(
+        1,
+        skia_rs_core::Point::new(10.0, 40.0),
+        &font,
+        &paint,
+    );
+    assert!(
+        !handled,
+        "demo.ttf is outline-only; draw_color_glyph must not claim the glyph"
+    );
+}
+
+#[test]
 fn draw_text_blob_renders_non_rectangular_glyph() {
     use skia_rs_core::Point;
     use skia_rs_text::{TextBlob, TextBlobBuilder};

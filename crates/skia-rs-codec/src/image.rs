@@ -17,6 +17,16 @@ pub enum SamplingOptions {
     /// Bilinear filtering: blend the four surrounding source pixels. Good
     /// for photographs and gradient-heavy content.
     Linear,
+    /// Mitchell-Netravali cubic filter (B=C=1/3). Matches Skia's
+    /// `SkMitchellSampling`. Sharper than bilinear with modest ringing.
+    Mitchell,
+    /// Catmull-Rom cubic filter (B=0, C=1/2). Matches Skia's
+    /// `SkCubicSampling` with the Catmull-Rom preset. Sharper than Mitchell
+    /// with more ringing.
+    CatmullRom,
+    /// Lanczos-3 windowed sinc filter (a=3). Highest quality for photo
+    /// downscaling; 6-tap per axis.
+    Lanczos3,
 }
 
 /// Simplified image info for codec use (avoids Result-based construction).
@@ -460,7 +470,12 @@ impl Image {
     /// - [`SamplingOptions::Nearest`]: fastest, appropriate for pixel art
     ///   and thumbnails, visibly blocky when upscaled.
     /// - [`SamplingOptions::Linear`]: bilinear filtering, adequate for
-    ///   photographs; the default for quality-sensitive resampling.
+    ///   photographs.
+    /// - [`SamplingOptions::Mitchell`] / [`SamplingOptions::CatmullRom`]:
+    ///   cubic (4-tap per axis) filters; sharper than linear with a small
+    ///   cost bump.
+    /// - [`SamplingOptions::Lanczos3`]: 6-tap per axis windowed sinc, best
+    ///   quality for photographic downscaling.
     pub fn make_scaled_with(
         &self,
         width: i32,
@@ -541,6 +556,22 @@ impl Image {
                     }
                 }
             }
+            SamplingOptions::Mitchell
+            | SamplingOptions::CatmullRom
+            | SamplingOptions::Lanczos3 => {
+                resample_separable(
+                    &self.inner.pixels,
+                    src_w,
+                    src_h,
+                    src_row_bytes,
+                    bytes_per_pixel,
+                    &mut new_pixels,
+                    width as usize,
+                    height as usize,
+                    new_row_bytes,
+                    sampling,
+                );
+            }
         }
 
         Self::from_raster_data_owned(new_info, new_pixels, new_row_bytes)
@@ -583,6 +614,194 @@ impl Image {
         filter.apply(&mut rgba, width as usize, height as usize);
 
         Self::from_raster_data_owned(dst_info, rgba, rgba_row_bytes)
+    }
+}
+
+// =============================================================================
+// Separable resamplers (Mitchell, Catmull-Rom, Lanczos3)
+//
+// Two-pass approach: horizontal then vertical. Each pass builds per-destination
+// pixel (src-index, weight) lists once and reuses them across every row/column,
+// which is dramatically cheaper than recomputing per output pixel.
+// =============================================================================
+
+#[inline]
+fn cubic_bc(t: f32, b: f32, c: f32) -> f32 {
+    // Mitchell-Netravali family:
+    //   f(t) = 1/6 * [ (12-9B-6C)|t|^3 + (-18+12B+6C)|t|^2 + (6-2B) ] for |t|<1
+    //          1/6 * [ (-B-6C)|t|^3 + (6B+30C)|t|^2 + (-12B-48C)|t| + (8B+24C) ]
+    //          for 1<=|t|<2
+    //          0 otherwise.
+    let t = t.abs();
+    if t < 1.0 {
+        let t2 = t * t;
+        let t3 = t2 * t;
+        ((12.0 - 9.0 * b - 6.0 * c) * t3
+            + (-18.0 + 12.0 * b + 6.0 * c) * t2
+            + (6.0 - 2.0 * b))
+            / 6.0
+    } else if t < 2.0 {
+        let t2 = t * t;
+        let t3 = t2 * t;
+        ((-b - 6.0 * c) * t3
+            + (6.0 * b + 30.0 * c) * t2
+            + (-12.0 * b - 48.0 * c) * t
+            + (8.0 * b + 24.0 * c))
+            / 6.0
+    } else {
+        0.0
+    }
+}
+
+#[inline]
+fn sinc_pi(x: f32) -> f32 {
+    if x.abs() < 1e-8 {
+        1.0
+    } else {
+        let px = std::f32::consts::PI * x;
+        px.sin() / px
+    }
+}
+
+#[inline]
+fn lanczos3(t: f32) -> f32 {
+    let t = t.abs();
+    if t >= 3.0 {
+        0.0
+    } else {
+        sinc_pi(t) * sinc_pi(t / 3.0)
+    }
+}
+
+/// Kernel radius in source units. For upscales the kernel is evaluated at
+/// unit spacing; for downscales the kernel is stretched to `scale` to avoid
+/// aliasing (standard box-widening trick).
+#[inline]
+fn kernel_weight(sampling: SamplingOptions, t: f32) -> f32 {
+    match sampling {
+        SamplingOptions::Mitchell => cubic_bc(t, 1.0 / 3.0, 1.0 / 3.0),
+        SamplingOptions::CatmullRom => cubic_bc(t, 0.0, 0.5),
+        SamplingOptions::Lanczos3 => lanczos3(t),
+        // Handled elsewhere.
+        SamplingOptions::Nearest | SamplingOptions::Linear => 0.0,
+    }
+}
+
+#[inline]
+fn kernel_radius(sampling: SamplingOptions) -> f32 {
+    match sampling {
+        SamplingOptions::Mitchell | SamplingOptions::CatmullRom => 2.0,
+        SamplingOptions::Lanczos3 => 3.0,
+        SamplingOptions::Nearest | SamplingOptions::Linear => 1.0,
+    }
+}
+
+/// Per-output-pixel list of (src-sample-index, weight) pairs.
+struct Taps {
+    // Flattened: for output i, tap_count indices start at i*max_taps.
+    indices: Vec<i32>,
+    weights: Vec<f32>,
+    tap_count: usize,
+}
+
+fn build_taps(
+    src_len: usize,
+    dst_len: usize,
+    sampling: SamplingOptions,
+) -> Taps {
+    let scale = src_len as f32 / dst_len as f32;
+    // When downscaling, stretch the kernel by `scale` so the anti-aliasing
+    // footprint matches the reduction ratio. When upscaling, leave it alone.
+    let filter_scale = if scale > 1.0 { scale } else { 1.0 };
+    let support = kernel_radius(sampling) * filter_scale;
+    let tap_count = (support.ceil() as usize) * 2;
+    let max_idx = src_len as i32 - 1;
+
+    let mut indices = vec![0i32; dst_len * tap_count];
+    let mut weights = vec![0f32; dst_len * tap_count];
+
+    for i in 0..dst_len {
+        let center = (i as f32 + 0.5) * scale - 0.5;
+        let left = (center - support + 0.5).floor() as i32;
+        let mut sum = 0.0f32;
+        for k in 0..tap_count {
+            let sx = left + k as i32;
+            let t = (sx as f32 - center) / filter_scale;
+            let w = kernel_weight(sampling, t);
+            let clamped = sx.clamp(0, max_idx);
+            indices[i * tap_count + k] = clamped;
+            weights[i * tap_count + k] = w;
+            sum += w;
+        }
+        if sum > 0.0 {
+            let inv = 1.0 / sum;
+            for w in &mut weights[i * tap_count..(i + 1) * tap_count] {
+                *w *= inv;
+            }
+        }
+    }
+
+    Taps { indices, weights, tap_count }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resample_separable(
+    src: &[u8],
+    src_w: usize,
+    src_h: usize,
+    src_row_bytes: usize,
+    bpp: usize,
+    dst: &mut [u8],
+    dst_w: usize,
+    dst_h: usize,
+    dst_row_bytes: usize,
+    sampling: SamplingOptions,
+) {
+    // Horizontal pass: src_w columns -> dst_w columns, same src_h rows.
+    let h_taps = build_taps(src_w, dst_w, sampling);
+    let intermediate_row_bytes = dst_w * bpp;
+    let mut intermediate = vec![0f32; src_h * dst_w * bpp];
+
+    for y in 0..src_h {
+        let src_row = &src[y * src_row_bytes..y * src_row_bytes + src_w * bpp];
+        let dst_row = &mut intermediate[y * dst_w * bpp..y * dst_w * bpp + dst_w * bpp];
+        for x in 0..dst_w {
+            let base = x * h_taps.tap_count;
+            let mut acc = [0f32; 4];
+            for k in 0..h_taps.tap_count {
+                let sx = h_taps.indices[base + k] as usize;
+                let w = h_taps.weights[base + k];
+                let p = &src_row[sx * bpp..sx * bpp + bpp];
+                for c in 0..bpp {
+                    acc[c] += p[c] as f32 * w;
+                }
+            }
+            for c in 0..bpp {
+                dst_row[x * bpp + c] = acc[c];
+            }
+        }
+    }
+
+    // Vertical pass: src_h rows -> dst_h rows, dst_w columns.
+    let v_taps = build_taps(src_h, dst_h, sampling);
+
+    for y in 0..dst_h {
+        let base = y * v_taps.tap_count;
+        let dst_row = &mut dst[y * dst_row_bytes..y * dst_row_bytes + intermediate_row_bytes];
+        for x in 0..dst_w {
+            let mut acc = [0f32; 4];
+            for k in 0..v_taps.tap_count {
+                let sy = v_taps.indices[base + k] as usize;
+                let w = v_taps.weights[base + k];
+                let p = &intermediate[sy * dst_w * bpp + x * bpp..sy * dst_w * bpp + x * bpp + bpp];
+                for c in 0..bpp {
+                    acc[c] += p[c] * w;
+                }
+            }
+            for c in 0..bpp {
+                dst_row[x * bpp + c] = acc[c].round().clamp(0.0, 255.0) as u8;
+            }
+        }
     }
 }
 
@@ -671,6 +890,78 @@ mod tests {
         let p3 = up.read_pixel(3, 0).unwrap();
         assert!(p0.r < 0.01 && p1.r < 0.01);
         assert!(p2.r > 0.99 && p3.r > 0.99);
+    }
+
+    #[test]
+    fn test_image_scaled_mitchell_monotone_upscale() {
+        // Ramp 4x1 -> 16x1. Mitchell should remain monotonic across the
+        // ramp (no reversals) and preserve endpoints approximately.
+        let info = ImageInfo::new(4, 1, ColorType::Rgba8888, AlphaType::Premul);
+        let mut src = Vec::with_capacity(16);
+        for &g in &[0u8, 85, 170, 255] {
+            src.extend_from_slice(&[g, g, g, 255]);
+        }
+        let image = Image::from_raster_data(&info, &src, 16).unwrap();
+        let up = image.make_scaled_with(16, 1, SamplingOptions::Mitchell).unwrap();
+        assert_eq!(up.dimensions(), (16, 1));
+
+        let mut last = -1.0f32;
+        let mut strictly_increasing = 0;
+        for x in 0..16 {
+            let p = up.read_pixel(x, 0).unwrap();
+            // Allow small ringing tolerance below 0 / above 1 still monotone.
+            if p.r > last {
+                strictly_increasing += 1;
+            }
+            last = p.r;
+        }
+        // Mitchell rings mildly; require at least mostly-increasing behavior.
+        assert!(strictly_increasing >= 13, "got {} monotone steps", strictly_increasing);
+    }
+
+    #[test]
+    fn test_image_scaled_catmullrom_preserves_endpoints() {
+        // A uniform image downscaled with Catmull-Rom should stay uniform.
+        let info = ImageInfo::new(8, 8, ColorType::Rgba8888, AlphaType::Premul);
+        let src = vec![200u8; 8 * 8 * 4];
+        let image = Image::from_raster_data(&info, &src, 32).unwrap();
+        let down = image
+            .make_scaled_with(4, 4, SamplingOptions::CatmullRom)
+            .unwrap();
+        for y in 0..4 {
+            for x in 0..4 {
+                let p = down.read_pixel(x, y).unwrap();
+                // Uniform source => uniform output (within rounding).
+                assert!((p.r - 200.0 / 255.0).abs() < 0.02, "{},{} = {}", x, y, p.r);
+            }
+        }
+    }
+
+    #[test]
+    fn test_image_scaled_lanczos3_downscale_reduces_aliasing() {
+        // High-frequency source (1-pixel stripes). Lanczos should produce
+        // a much more uniform grey than nearest-neighbor when downscaled
+        // to a single row where stripes vanish.
+        let info = ImageInfo::new(16, 1, ColorType::Rgba8888, AlphaType::Premul);
+        let mut src = Vec::with_capacity(64);
+        for x in 0..16 {
+            let g = if x & 1 == 0 { 0u8 } else { 255 };
+            src.extend_from_slice(&[g, g, g, 255]);
+        }
+        let image = Image::from_raster_data(&info, &src, 64).unwrap();
+        let down = image.make_scaled_with(4, 1, SamplingOptions::Lanczos3).unwrap();
+        // Each 4-pixel group contains 2 black + 2 white so the average is 127.5.
+        // Lanczos should land near grey (with some kernel asymmetry tolerance).
+        for x in 0..4 {
+            let p = down.read_pixel(x, 0).unwrap();
+            let grey = p.r * 255.0;
+            assert!(
+                (grey - 127.5).abs() < 35.0,
+                "Lanczos downscale x={} got {}",
+                x,
+                grey,
+            );
+        }
     }
 
     #[test]

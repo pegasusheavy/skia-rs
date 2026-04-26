@@ -661,11 +661,7 @@ fn convert_row(
         let bpp = src_type.bytes_per_pixel();
         let row_len = width * bpp;
         dst[..row_len].copy_from_slice(&src[..row_len]);
-        match alpha_conv {
-            AlphaConversion::None => {}
-            AlphaConversion::Premultiply => premultiply_in_place(&mut dst[..row_len]),
-            AlphaConversion::Unpremultiply => unpremultiply_in_place(&mut dst[..row_len]),
-        }
+        apply_alpha_conversion(&mut dst[..row_len], dst_type, width, alpha_conv);
         return Ok(());
     }
 
@@ -797,17 +793,343 @@ fn convert_row(
             }
         }
 
+        // ---- F16 (IEEE 754 binary16) ----
+        (Rgba8888, RgbaF16) | (Rgba8888, RgbaF16Norm) => {
+            for i in 0..width {
+                let si = i * 4;
+                let di = i * 8;
+                for c in 0..4 {
+                    let bytes = f16_to_bytes(src[si + c] as f32 / 255.0);
+                    dst[di + c * 2] = bytes[0];
+                    dst[di + c * 2 + 1] = bytes[1];
+                }
+            }
+        }
+        (RgbaF16, Rgba8888) | (RgbaF16Norm, Rgba8888) => {
+            for i in 0..width {
+                let si = i * 8;
+                let di = i * 4;
+                for c in 0..4 {
+                    let v = f16_from_bytes([src[si + c * 2], src[si + c * 2 + 1]]);
+                    dst[di + c] = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                }
+            }
+        }
+        (Bgra8888, RgbaF16) | (Bgra8888, RgbaF16Norm) => {
+            for i in 0..width {
+                let si = i * 4;
+                let di = i * 8;
+                let channels = [src[si + 2], src[si + 1], src[si], src[si + 3]];
+                for c in 0..4 {
+                    let bytes = f16_to_bytes(channels[c] as f32 / 255.0);
+                    dst[di + c * 2] = bytes[0];
+                    dst[di + c * 2 + 1] = bytes[1];
+                }
+            }
+        }
+        (RgbaF16, Bgra8888) | (RgbaF16Norm, Bgra8888) => {
+            for i in 0..width {
+                let si = i * 8;
+                let di = i * 4;
+                let r = f16_from_bytes([src[si], src[si + 1]]);
+                let g = f16_from_bytes([src[si + 2], src[si + 3]]);
+                let b = f16_from_bytes([src[si + 4], src[si + 5]]);
+                let a = f16_from_bytes([src[si + 6], src[si + 7]]);
+                dst[di] = (b.clamp(0.0, 1.0) * 255.0).round() as u8;
+                dst[di + 1] = (g.clamp(0.0, 1.0) * 255.0).round() as u8;
+                dst[di + 2] = (r.clamp(0.0, 1.0) * 255.0).round() as u8;
+                dst[di + 3] = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+        }
+
+        // ---- F32 (IEEE 754 binary32) ----
+        (Rgba8888, RgbaF32) => {
+            for i in 0..width {
+                let si = i * 4;
+                let di = i * 16;
+                for c in 0..4 {
+                    let v = (src[si + c] as f32 / 255.0).to_le_bytes();
+                    dst[di + c * 4..di + c * 4 + 4].copy_from_slice(&v);
+                }
+            }
+        }
+        (RgbaF32, Rgba8888) => {
+            for i in 0..width {
+                let si = i * 16;
+                let di = i * 4;
+                for c in 0..4 {
+                    let v = f32_from_le(&src[si + c * 4..si + c * 4 + 4]);
+                    dst[di + c] = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                }
+            }
+        }
+        (Bgra8888, RgbaF32) => {
+            for i in 0..width {
+                let si = i * 4;
+                let di = i * 16;
+                let channels = [src[si + 2], src[si + 1], src[si], src[si + 3]];
+                for c in 0..4 {
+                    let v = (channels[c] as f32 / 255.0).to_le_bytes();
+                    dst[di + c * 4..di + c * 4 + 4].copy_from_slice(&v);
+                }
+            }
+        }
+        (RgbaF32, Bgra8888) => {
+            for i in 0..width {
+                let si = i * 16;
+                let di = i * 4;
+                let r = f32_from_le(&src[si..si + 4]);
+                let g = f32_from_le(&src[si + 4..si + 8]);
+                let b = f32_from_le(&src[si + 8..si + 12]);
+                let a = f32_from_le(&src[si + 12..si + 16]);
+                dst[di] = (b.clamp(0.0, 1.0) * 255.0).round() as u8;
+                dst[di + 1] = (g.clamp(0.0, 1.0) * 255.0).round() as u8;
+                dst[di + 2] = (r.clamp(0.0, 1.0) * 255.0).round() as u8;
+                dst[di + 3] = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+        }
+
+        // ---- F16 <-> F32 ----
+        (RgbaF16 | RgbaF16Norm, RgbaF32) => {
+            for i in 0..width {
+                let si = i * 8;
+                let di = i * 16;
+                for c in 0..4 {
+                    let v = f16_from_bytes([src[si + c * 2], src[si + c * 2 + 1]]);
+                    dst[di + c * 4..di + c * 4 + 4].copy_from_slice(&v.to_le_bytes());
+                }
+            }
+        }
+        (RgbaF32, RgbaF16) | (RgbaF32, RgbaF16Norm) => {
+            for i in 0..width {
+                let si = i * 16;
+                let di = i * 8;
+                for c in 0..4 {
+                    let v = f32_from_le(&src[si + c * 4..si + c * 4 + 4]);
+                    let bytes = f16_to_bytes(v);
+                    dst[di + c * 2] = bytes[0];
+                    dst[di + c * 2 + 1] = bytes[1];
+                }
+            }
+        }
+
         _ => return Err(PixelError::UnsupportedColorType),
     }
 
-    // Apply alpha conversion to the row while it is still hot in cache.
-    match alpha_conv {
-        AlphaConversion::None => {}
-        AlphaConversion::Premultiply => premultiply_in_place(&mut dst[..width * dst_type.bytes_per_pixel()]),
-        AlphaConversion::Unpremultiply => unpremultiply_in_place(&mut dst[..width * dst_type.bytes_per_pixel()]),
-    }
+    apply_alpha_conversion(
+        &mut dst[..width * dst_type.bytes_per_pixel()],
+        dst_type,
+        width,
+        alpha_conv,
+    );
 
     Ok(())
+}
+
+/// Apply alpha premultiply / unpremultiply to a row, dispatching on the
+/// destination color type so F16/F32 rows use float math.
+#[inline]
+fn apply_alpha_conversion(
+    row: &mut [u8],
+    color_type: ColorType,
+    width: usize,
+    alpha_conv: AlphaConversion,
+) {
+    use ColorType::*;
+    match alpha_conv {
+        AlphaConversion::None => {}
+        AlphaConversion::Premultiply => match color_type {
+            RgbaF16 | RgbaF16Norm => premultiply_in_place_f16(row, width),
+            RgbaF32 => premultiply_in_place_f32(row, width),
+            _ => premultiply_in_place(row),
+        },
+        AlphaConversion::Unpremultiply => match color_type {
+            RgbaF16 | RgbaF16Norm => unpremultiply_in_place_f16(row, width),
+            RgbaF32 => unpremultiply_in_place_f32(row, width),
+            _ => unpremultiply_in_place(row),
+        },
+    }
+}
+
+// =============================================================================
+// IEEE 754 binary16 (F16) <-> f32 conversion
+//
+// Skia stores RGBA F16 as 4 consecutive little-endian half-floats per pixel.
+// We do straight IEEE conversion (not storage-only, so subnormals and ±Inf
+// round correctly).
+// =============================================================================
+
+/// Decode a single IEEE 754 binary16 from little-endian bytes into f32.
+#[inline]
+fn f16_from_bytes(bytes: [u8; 2]) -> f32 {
+    let bits = u16::from_le_bytes(bytes);
+    let sign = (bits >> 15) as u32 & 0x1;
+    let exp = (bits >> 10) as u32 & 0x1f;
+    let mant = bits as u32 & 0x3ff;
+
+    let f32_bits = if exp == 0 {
+        if mant == 0 {
+            sign << 31
+        } else {
+            // Subnormal — normalize into f32 representation.
+            let mut m = mant;
+            let mut e: i32 = -14;
+            while (m & 0x400) == 0 {
+                m <<= 1;
+                e -= 1;
+            }
+            let m = m & 0x3ff;
+            let exp32 = (e + 127) as u32;
+            (sign << 31) | (exp32 << 23) | (m << 13)
+        }
+    } else if exp == 0x1f {
+        // Inf / NaN
+        (sign << 31) | (0xff << 23) | (mant << 13)
+    } else {
+        let exp32 = (exp + (127 - 15)) as u32;
+        (sign << 31) | (exp32 << 23) | (mant << 13)
+    };
+
+    f32::from_bits(f32_bits)
+}
+
+/// Encode an f32 as IEEE 754 binary16, little-endian. NaN/Inf preserved.
+#[inline]
+fn f16_to_bytes(v: f32) -> [u8; 2] {
+    let bits = v.to_bits();
+    let sign = ((bits >> 31) & 0x1) as u16;
+    let exp32 = ((bits >> 23) & 0xff) as i32;
+    let mant = bits & 0x7f_ffff;
+
+    let result: u16 = if exp32 == 0xff {
+        // Inf / NaN
+        let m = (mant >> 13) as u16;
+        (sign << 15) | (0x1f << 10) | if mant != 0 { m.max(1) } else { 0 }
+    } else if exp32 == 0 {
+        // Zero / subnormal f32 -> zero f16
+        sign << 15
+    } else {
+        let new_exp = exp32 - 127 + 15;
+        if new_exp >= 0x1f {
+            // Overflow -> Inf
+            (sign << 15) | (0x1f << 10)
+        } else if new_exp <= 0 {
+            // Underflow -> subnormal or zero
+            if new_exp < -10 {
+                sign << 15
+            } else {
+                let shift = 14 - new_exp;
+                let mant_with_implicit = mant | 0x80_0000;
+                let shifted = mant_with_implicit >> shift;
+                // Round-to-nearest-even on the bit just below the kept mantissa.
+                let round_bit = (mant_with_implicit >> (shift - 1)) & 0x1;
+                let m = (shifted as u16) + round_bit as u16;
+                (sign << 15) | m
+            }
+        } else {
+            // Normal f16
+            let m = (mant >> 13) as u16;
+            let round_bit = ((mant >> 12) & 0x1) as u16;
+            let sticky = ((mant & 0xfff) != 0) as u16;
+            let mut out = (sign << 15) | ((new_exp as u16) << 10) | m;
+            // Round-to-nearest-even
+            if round_bit == 1 && (sticky == 1 || (m & 0x1) == 1) {
+                out = out.wrapping_add(1);
+            }
+            out
+        }
+    };
+
+    result.to_le_bytes()
+}
+
+#[inline]
+fn f32_from_le(bytes: &[u8]) -> f32 {
+    f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+fn premultiply_in_place_f16(row: &mut [u8], width: usize) {
+    for i in 0..width {
+        let off = i * 8;
+        let a = f16_from_bytes([row[off + 6], row[off + 7]]);
+        if a >= 1.0 {
+            continue;
+        }
+        let r = f16_from_bytes([row[off], row[off + 1]]) * a;
+        let g = f16_from_bytes([row[off + 2], row[off + 3]]) * a;
+        let b = f16_from_bytes([row[off + 4], row[off + 5]]) * a;
+        let rb = f16_to_bytes(r);
+        let gb = f16_to_bytes(g);
+        let bb = f16_to_bytes(b);
+        row[off] = rb[0];
+        row[off + 1] = rb[1];
+        row[off + 2] = gb[0];
+        row[off + 3] = gb[1];
+        row[off + 4] = bb[0];
+        row[off + 5] = bb[1];
+    }
+}
+
+fn unpremultiply_in_place_f16(row: &mut [u8], width: usize) {
+    for i in 0..width {
+        let off = i * 8;
+        let a = f16_from_bytes([row[off + 6], row[off + 7]]);
+        if a <= 0.0 {
+            row[off..off + 6].fill(0);
+            continue;
+        }
+        if a >= 1.0 {
+            continue;
+        }
+        let inv = 1.0 / a;
+        let r = f16_from_bytes([row[off], row[off + 1]]) * inv;
+        let g = f16_from_bytes([row[off + 2], row[off + 3]]) * inv;
+        let b = f16_from_bytes([row[off + 4], row[off + 5]]) * inv;
+        let rb = f16_to_bytes(r);
+        let gb = f16_to_bytes(g);
+        let bb = f16_to_bytes(b);
+        row[off] = rb[0];
+        row[off + 1] = rb[1];
+        row[off + 2] = gb[0];
+        row[off + 3] = gb[1];
+        row[off + 4] = bb[0];
+        row[off + 5] = bb[1];
+    }
+}
+
+fn premultiply_in_place_f32(row: &mut [u8], width: usize) {
+    for i in 0..width {
+        let off = i * 16;
+        let a = f32_from_le(&row[off + 12..off + 16]);
+        if a >= 1.0 {
+            continue;
+        }
+        for c in 0..3 {
+            let co = off + c * 4;
+            let v = f32_from_le(&row[co..co + 4]) * a;
+            row[co..co + 4].copy_from_slice(&v.to_le_bytes());
+        }
+    }
+}
+
+fn unpremultiply_in_place_f32(row: &mut [u8], width: usize) {
+    for i in 0..width {
+        let off = i * 16;
+        let a = f32_from_le(&row[off + 12..off + 16]);
+        if a <= 0.0 {
+            row[off..off + 12].fill(0);
+            continue;
+        }
+        if a >= 1.0 {
+            continue;
+        }
+        let inv = 1.0 / a;
+        for c in 0..3 {
+            let co = off + c * 4;
+            let v = f32_from_le(&row[co..co + 4]) * inv;
+            row[co..co + 4].copy_from_slice(&v.to_le_bytes());
+        }
+    }
 }
 
 /// Swizzle RGBA to BGRA (or vice versa) in place.
@@ -984,5 +1306,98 @@ mod tests {
         assert!(result.is_ok());
 
         assert_eq!(dst, src.as_slice());
+    }
+
+    #[test]
+    fn test_f16_codec_roundtrip_selected_values() {
+        // Spot-check the half-float encode/decode pair for a handful of
+        // representative values: zero, small normal, 1.0, values inside
+        // [0, 1], and sign.
+        for &v in &[0.0f32, 0.25, 0.5, 1.0, -1.0, 0.003_921_569] {
+            let bytes = f16_to_bytes(v);
+            let back = f16_from_bytes(bytes);
+            assert!(
+                (back - v).abs() <= (v.abs() * 1e-3 + 1e-3),
+                "f16 roundtrip of {} got {}",
+                v,
+                back
+            );
+        }
+    }
+
+    #[test]
+    fn test_convert_pixels_rgba8_to_f32() {
+        let src = vec![255u8, 128, 0, 255];
+        let src_info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Unpremul).unwrap();
+        let dst_info = ImageInfo::new(1, 1, ColorType::RgbaF32, AlphaType::Unpremul).unwrap();
+        let mut dst = vec![0u8; 16];
+        convert_pixels(&src, &src_info, 4, &mut dst, &dst_info, 16).unwrap();
+        let r = f32_from_le(&dst[0..4]);
+        let g = f32_from_le(&dst[4..8]);
+        let b = f32_from_le(&dst[8..12]);
+        let a = f32_from_le(&dst[12..16]);
+        assert!((r - 1.0).abs() < 1e-3);
+        assert!((g - 128.0 / 255.0).abs() < 1e-3);
+        assert!((b - 0.0).abs() < 1e-3);
+        assert!((a - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_convert_pixels_f32_to_rgba8_clamps() {
+        // F32 values outside [0,1] must clamp.
+        let mut src = vec![0u8; 16];
+        src[0..4].copy_from_slice(&2.0f32.to_le_bytes());
+        src[4..8].copy_from_slice(&0.5f32.to_le_bytes());
+        src[8..12].copy_from_slice(&(-0.1f32).to_le_bytes());
+        src[12..16].copy_from_slice(&1.0f32.to_le_bytes());
+        let src_info = ImageInfo::new(1, 1, ColorType::RgbaF32, AlphaType::Unpremul).unwrap();
+        let dst_info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Unpremul).unwrap();
+        let mut dst = vec![0u8; 4];
+        convert_pixels(&src, &src_info, 16, &mut dst, &dst_info, 4).unwrap();
+        assert_eq!(dst, &[255, 128, 0, 255]);
+    }
+
+    #[test]
+    fn test_convert_pixels_rgba8_to_f16() {
+        let src = vec![255u8, 128, 0, 255];
+        let src_info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Unpremul).unwrap();
+        let dst_info = ImageInfo::new(1, 1, ColorType::RgbaF16, AlphaType::Unpremul).unwrap();
+        let mut dst = vec![0u8; 8];
+        convert_pixels(&src, &src_info, 4, &mut dst, &dst_info, 8).unwrap();
+        assert!((f16_from_bytes([dst[0], dst[1]]) - 1.0).abs() < 1e-2);
+        assert!((f16_from_bytes([dst[2], dst[3]]) - 128.0 / 255.0).abs() < 1e-2);
+        assert!((f16_from_bytes([dst[4], dst[5]]) - 0.0).abs() < 1e-2);
+        assert!((f16_from_bytes([dst[6], dst[7]]) - 1.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn test_convert_pixels_f16_to_rgba8_roundtrip() {
+        // RGBA8 -> F16 -> RGBA8 should come back close to the input.
+        let src = vec![200u8, 100, 50, 255];
+        let src_info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Unpremul).unwrap();
+        let mid_info = ImageInfo::new(1, 1, ColorType::RgbaF16, AlphaType::Unpremul).unwrap();
+        let dst_info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Unpremul).unwrap();
+        let mut mid = vec![0u8; 8];
+        let mut dst = vec![0u8; 4];
+        convert_pixels(&src, &src_info, 4, &mut mid, &mid_info, 8).unwrap();
+        convert_pixels(&mid, &mid_info, 8, &mut dst, &dst_info, 4).unwrap();
+        for (a, b) in src.iter().zip(dst.iter()) {
+            assert!((*a as i32 - *b as i32).abs() <= 1, "mismatch {} vs {}", a, b);
+        }
+    }
+
+    #[test]
+    fn test_convert_pixels_f32_premultiply_unpremul() {
+        // Convert RGBA8 unpremul -> F32 premul, verify premultiply happened.
+        let src = vec![255u8, 128, 0, 128];
+        let src_info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Unpremul).unwrap();
+        let dst_info = ImageInfo::new(1, 1, ColorType::RgbaF32, AlphaType::Premul).unwrap();
+        let mut dst = vec![0u8; 16];
+        convert_pixels(&src, &src_info, 4, &mut dst, &dst_info, 16).unwrap();
+        let r = f32_from_le(&dst[0..4]);
+        let a = f32_from_le(&dst[12..16]);
+        // r should be 1.0 * (128/255) ≈ 0.502
+        assert!((r - 128.0 / 255.0).abs() < 1e-2, "premul red = {}", r);
+        assert!((a - 128.0 / 255.0).abs() < 1e-3, "alpha = {}", a);
     }
 }
