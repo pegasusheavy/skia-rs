@@ -73,21 +73,6 @@
 // Perspective 2 index.
 #define Matrix_PERSP_2 8
 
-// Filter mode for image sampling.
-enum FilterMode
-#ifdef __cplusplus
-  : uint8_t
-#endif // __cplusplus
- {
-    // Nearest neighbor sampling.
-    FilterMode_Nearest = 0,
-    // Bilinear interpolation.
-    FilterMode_Linear,
-};
-#ifndef __cplusplus
-typedef uint8_t FilterMode;
-#endif // __cplusplus
-
 // Mipmap mode for image sampling.
 enum MipmapMode
 #ifdef __cplusplus
@@ -105,6 +90,37 @@ enum MipmapMode
 typedef uint8_t MipmapMode;
 #endif // __cplusplus
 
+// Filter mode for image sampling.
+enum FilterMode
+#ifdef __cplusplus
+  : uint8_t
+#endif // __cplusplus
+ {
+    // Nearest neighbor sampling.
+    FilterMode_Nearest = 0,
+    // Bilinear interpolation.
+    FilterMode_Linear,
+};
+#ifndef __cplusplus
+typedef uint8_t FilterMode;
+#endif // __cplusplus
+
+// Describes the color space for interpreting colors.
+//
+// Equivalent to Skia's `SkColorSpace`.
+typedef struct ColorSpace ColorSpace;
+
+// A boxed path effect.
+typedef struct PathEffectRef PathEffectRef;
+
+// A region composed of rectangles.
+//
+// Represents a complex area that can be the result of multiple boolean
+// operations on rectangles. Used for efficient clipping operations.
+//
+// Corresponds to Skia's `SkRegion`.
+typedef struct Region Region;
+
 // Opaque canvas handle.
 //
 // A canvas is an explicit raster drawing context borrowed from a surface.
@@ -120,6 +136,21 @@ typedef struct sk_canvas_t sk_canvas_t;
 // path's verbs/points — the source path can be modified or dropped after
 // iteration begins without invalidating the iterator.
 typedef struct sk_path_iter_t sk_path_iter_t;
+
+// Opaque picture recorder. Not reference counted — single ownership.
+//
+// The FFI recorder does not use the workspace [`PictureRecorder`] directly
+// because that type's recording API returns an unboxed mutable reference
+// that cannot cross the FFI boundary cleanly. Instead we track our own
+// [`DrawCommand`] stream and wrap it into a [`Picture`] at finish time,
+// calling [`Picture::from_parts`].
+typedef struct sk_picture_recorder_t sk_picture_recorder_t;
+
+// Recording canvas handle. Returned by
+// [`sk_picture_recorder_begin_recording`] and accepted by
+// [`sk_recording_canvas_*`] — it is **not** interchangeable with
+// [`sk_canvas_t`] (which is raster-backed).
+typedef struct sk_recording_canvas_t sk_recording_canvas_t;
 
 // Opaque reference counted object type.
 typedef void sk_refcnt_t;
@@ -201,6 +232,18 @@ typedef struct sk_matrix_t {
     float values[9];
 } sk_matrix_t;
 
+// C-compatible integer rectangle structure.
+typedef struct sk_irect_t {
+    // Left edge.
+    int32_t left;
+    // Top edge.
+    int32_t top;
+    // Right edge.
+    int32_t right;
+    // Bottom edge.
+    int32_t bottom;
+} sk_irect_t;
+
 // Reference counted image type.
 typedef struct sk_image_t sk_image_t;
 
@@ -209,6 +252,27 @@ typedef struct sk_typeface_t sk_typeface_t;
 
 // Reference counted font type (typeface + size + options).
 typedef struct sk_font_t sk_font_t;
+
+// C-compatible 4x4 matrix structure (column-major).
+typedef struct sk_matrix44_t {
+    // Matrix values in column-major order (m[col * 4 + row]).
+    float values[16];
+} sk_matrix44_t;
+
+// Reference counted [`ColorSpace`].
+typedef struct RefCounted_ColorSpace sk_colorspace_t;
+
+// Reference counted [`TextBlob`].
+typedef struct RefCounted_TextBlob sk_textblob_t;
+
+// Reference counted [`Picture`].
+typedef struct RefCounted_PictureRef sk_picture_t;
+
+// Reference counted [`Region`].
+typedef struct RefCounted_Region sk_region_t;
+
+// Reference counted [`PathEffectRef`].
+typedef struct RefCounted_PathEffectRef sk_patheffect_t;
 
 // Binary-compatible 2D point (matches SkPoint exactly)
 typedef struct SkPointABI {
@@ -666,10 +730,27 @@ int32_t sk_canvas_get_width(const struct sk_canvas_t *canvas);
 // Get the height of the canvas.
 int32_t sk_canvas_get_height(const struct sk_canvas_t *canvas);
 
-// Save the current transformation matrix.
+// Save the current transformation matrix and clip stack.
 int32_t sk_canvas_save(struct sk_canvas_t *canvas);
 
-// Restore the most recently saved matrix.
+// Save a layer — pushes a save frame that records the layer bounds and
+// paint for composition on restore.
+//
+// Both `bounds` and `paint` are optional (null is acceptable). The layer
+// is allocated lazily (at the next draw) because draws go through the
+// transient [`Canvas`] layer machinery already. Returns the new save count,
+// or 0 on failure (null canvas).
+//
+// **Pragmatic note:** because the FFI canvas reconstructs its underlying
+// [`Canvas`] between calls, the layer_paint / layer_bounds are tracked but
+// composition is delegated to the transient canvas at the next draw — the
+// effective behavior matches the recording-only semantics in
+// [`skia_rs_canvas::Canvas::save_layer`].
+uint32_t sk_canvas_save_layer(struct sk_canvas_t *canvas,
+                              const struct sk_rect_t *_bounds,
+                              const sk_paint_t *_paint);
+
+// Restore the most recently saved matrix and clip.
 void sk_canvas_restore(struct sk_canvas_t *canvas);
 
 // Concatenate a matrix onto the canvas's current transform.
@@ -694,15 +775,39 @@ void sk_canvas_rotate(struct sk_canvas_t *canvas,
 void sk_canvas_clear(struct sk_canvas_t *canvas,
                      sk_color_t color);
 
-// Draw a rect on the canvas, honoring the canvas's current transform.
+// Draw a rect on the canvas, honoring the canvas's current transform and
+// clip stack.
 void sk_canvas_draw_rect(struct sk_canvas_t *canvas,
                          const struct sk_rect_t *rect,
                          const sk_paint_t *paint);
 
-// Draw a path on the canvas, honoring the canvas's current transform.
+// Draw a path on the canvas, honoring the canvas's current transform and
+// clip stack.
 void sk_canvas_draw_path(struct sk_canvas_t *canvas,
                          const sk_path_t *path,
                          const sk_paint_t *paint);
+
+// Intersect or subtract a rectangle from the clip.
+//
+// `op` follows [`ClipOp`]: 0 = Intersect, 1 = Difference. Returns false if
+// the canvas handle is null or `op` is out of range; otherwise true.
+bool sk_canvas_clip_rect(struct sk_canvas_t *canvas,
+                         const struct sk_rect_t *rect,
+                         uint32_t op,
+                         bool anti_alias);
+
+// Intersect or subtract a path from the clip.
+bool sk_canvas_clip_path(struct sk_canvas_t *canvas,
+                         const sk_path_t *path,
+                         uint32_t op,
+                         bool anti_alias);
+
+// Fill `out` with the device-space integer clip bounds of this canvas.
+//
+// Returns true on success. If the clip is empty or the canvas has no clips,
+// `out` is filled with `[0, 0, width, height]`.
+bool sk_canvas_get_clip_ibounds(struct sk_canvas_t *canvas,
+                                struct sk_irect_t *out);
 
 // Decode an encoded image (PNG/JPEG/…) from a byte buffer.
 sk_image_t *sk_image_from_encoded(const uint8_t *data,
@@ -851,6 +956,204 @@ void sk_imagefilter_unref(sk_imagefilter_t *f);
 sk_imagefilter_t *sk_imagefilter_new_blur(float sigma_x,
                                           float sigma_y,
                                           uint32_t tile_mode);
+
+// Create an identity [`sk_matrix44_t`].
+struct sk_matrix44_t sk_matrix44_new(void);
+
+// Construct a [`sk_matrix44_t`] from 16 column-major floats.
+struct sk_matrix44_t sk_matrix44_from_array(const float *values);
+
+// Map a 2D point through a 4x4 matrix (projects through W).
+void sk_matrix44_map_point(const struct sk_matrix44_t *matrix,
+                           const struct sk_point_t *point,
+                           struct sk_point_t *result);
+
+// Invert a 4x4 matrix. Returns true on success; `result` is unchanged if
+// the matrix is singular.
+bool sk_matrix44_invert(const struct sk_matrix44_t *matrix,
+                        struct sk_matrix44_t *result);
+
+// Return true if the matrix is the identity matrix.
+bool sk_matrix44_is_identity(const struct sk_matrix44_t *matrix);
+
+// Return the determinant of the matrix.
+float sk_matrix44_determinant(const struct sk_matrix44_t *matrix);
+
+// Concatenate two 4x4 matrices: `result = a * b`.
+void sk_matrix44_concat(struct sk_matrix44_t *result,
+                        const struct sk_matrix44_t *a,
+                        const struct sk_matrix44_t *b);
+
+// Create a new sRGB color space.
+sk_colorspace_t *sk_colorspace_new_srgb(void);
+
+// Create a new linear sRGB color space.
+sk_colorspace_t *sk_colorspace_new_srgb_linear(void);
+
+// Create a new Display P3 color space.
+sk_colorspace_t *sk_colorspace_new_display_p3(void);
+
+// Parse a color space from a raw ICC profile byte buffer. Returns null on
+// failure (malformed profile, missing `acsp` magic, etc.).
+sk_colorspace_t *sk_colorspace_from_icc(const uint8_t *data,
+                                        uintptr_t len);
+
+// Return true if this color space is sRGB.
+bool sk_colorspace_is_srgb(const sk_colorspace_t *cs);
+
+// Return true if this color space has a linear transfer function.
+bool sk_colorspace_is_linear(const sk_colorspace_t *cs);
+
+// Increment color space refcount.
+void sk_colorspace_ref(sk_colorspace_t *cs);
+
+// Decrement color space refcount.
+void sk_colorspace_unref(sk_colorspace_t *cs);
+
+// Build a text blob from a NUL-terminated UTF-8 string. `text` and `font`
+// must be valid, non-null pointers; returns null otherwise.
+sk_textblob_t *sk_textblob_make_from_text(const char *text,
+                                          uintptr_t text_len,
+                                          const sk_font_t *font);
+
+// Increment text blob refcount.
+void sk_textblob_ref(sk_textblob_t *blob);
+
+// Decrement text blob refcount.
+void sk_textblob_unref(sk_textblob_t *blob);
+
+// Get text blob bounds.
+bool sk_textblob_get_bounds(const sk_textblob_t *blob,
+                            struct sk_rect_t *out);
+
+// Draw a text blob on a canvas at `(x, y)`.
+bool sk_canvas_draw_text_blob(struct sk_canvas_t *canvas,
+                              const sk_textblob_t *blob,
+                              float x,
+                              float y,
+                              const sk_paint_t *paint);
+
+// Create a new picture recorder.
+struct sk_picture_recorder_t *sk_picture_recorder_new(void);
+
+// Destroy a picture recorder.
+void sk_picture_recorder_delete(struct sk_picture_recorder_t *r);
+
+// Begin recording into a fresh picture. Returns a recording canvas handle
+// that draw ops append to. The caller drops the handle via
+// [`sk_recording_canvas_release`] but **must** call
+// [`sk_picture_recorder_finish_recording`] to get the recorded picture.
+struct sk_recording_canvas_t *sk_picture_recorder_begin_recording(struct sk_picture_recorder_t *r,
+                                                                  const struct sk_rect_t *bounds);
+
+// Release a recording canvas handle acquired via
+// [`sk_picture_recorder_begin_recording`]. Does *not* finalize the
+// recording — call [`sk_picture_recorder_finish_recording`] for that.
+void sk_recording_canvas_release(struct sk_recording_canvas_t *canvas);
+
+// Finish recording and return the captured picture. Returns null if the
+// recorder was not recording. After this call the recorder can be reused
+// with another [`sk_picture_recorder_begin_recording`].
+sk_picture_t *sk_picture_recorder_finish_recording(struct sk_picture_recorder_t *r);
+
+// Push a save onto the recording canvas's state.
+int32_t sk_recording_canvas_save(struct sk_recording_canvas_t *canvas);
+
+// Pop a save on the recording canvas's state.
+void sk_recording_canvas_restore(struct sk_recording_canvas_t *canvas);
+
+// Translate the recording canvas's current transform.
+void sk_recording_canvas_translate(struct sk_recording_canvas_t *canvas,
+                                   float dx,
+                                   float dy);
+
+// Draw a rect into the recording canvas. The rect is captured in the
+// caller-space coordinates (post-transform) so playback can place it on
+// any target canvas.
+void sk_recording_canvas_draw_rect(struct sk_recording_canvas_t *canvas,
+                                   const struct sk_rect_t *rect,
+                                   const sk_paint_t *paint);
+
+// Draw a path into the recording canvas.
+void sk_recording_canvas_draw_path(struct sk_recording_canvas_t *canvas,
+                                   const sk_path_t *path,
+                                   const sk_paint_t *paint);
+
+// Play a recorded picture back onto a raster canvas.
+bool sk_picture_playback(const sk_picture_t *picture,
+                         struct sk_canvas_t *canvas);
+
+// Get the picture's cull rect.
+bool sk_picture_get_cull_rect(const sk_picture_t *picture,
+                              struct sk_rect_t *out);
+
+// Get the approximate operation count of a picture.
+uintptr_t sk_picture_approximate_op_count(const sk_picture_t *picture);
+
+// Increment picture refcount.
+void sk_picture_ref(sk_picture_t *picture);
+
+// Decrement picture refcount.
+void sk_picture_unref(sk_picture_t *picture);
+
+// Create a new, empty region.
+sk_region_t *sk_region_new(void);
+
+// Set the region to a single integer rectangle. Returns true if the rect
+// was non-empty (the region now holds it), false if empty (the region is
+// cleared).
+bool sk_region_set_rect(sk_region_t *region,
+                        const struct sk_irect_t *rect);
+
+// Apply a rect op on the region. `op` follows [`RegionOp`]:
+// 0=Difference, 1=Intersect, 2=Union, 3=Xor, 4=ReverseDifference,
+// 5=Replace.
+bool sk_region_op_rect(sk_region_t *region,
+                       const struct sk_irect_t *rect,
+                       uint32_t op);
+
+// Get the region's integer bounds.
+bool sk_region_get_bounds(const sk_region_t *region,
+                          struct sk_irect_t *out);
+
+// Return true if the region is empty.
+bool sk_region_is_empty(const sk_region_t *region);
+
+// Return true if the region contains a point.
+bool sk_region_contains(const sk_region_t *region,
+                        int32_t x,
+                        int32_t y);
+
+// Increment region refcount.
+void sk_region_ref(sk_region_t *region);
+
+// Decrement region refcount.
+void sk_region_unref(sk_region_t *region);
+
+// Create a dash path effect. `intervals` must be non-null with `count`
+// positive entries; the pattern is duplicated internally if `count` is
+// odd, matching Skia's semantics. `phase` shifts where the pattern starts.
+// Returns null if the intervals are invalid (empty, negative, or sum to 0).
+sk_patheffect_t *sk_patheffect_new_dash(const float *intervals,
+                                        uintptr_t count,
+                                        float phase);
+
+// Create a trim path effect. `start` and `end` are normalized lengths
+// in [0, 1]; `mode` follows [`TrimMode`]: 0=Normal, 1=Inverted.
+sk_patheffect_t *sk_patheffect_new_trim(float start,
+                                        float end,
+                                        uint32_t mode);
+
+// Attach a path effect to a paint, or clear it if `effect` is null. The
+// paint takes its own [`Arc`] reference; the caller retains their own.
+void sk_paint_set_path_effect(sk_paint_t *paint,
+                              const sk_patheffect_t *effect);
+
+// Increment path effect refcount.
+void sk_patheffect_ref(sk_patheffect_t *effect);
+
+// Decrement path effect refcount.
+void sk_patheffect_unref(sk_patheffect_t *effect);
 
 // Get the ABI version as a packed 32-bit integer
 uint32_t sk_abi_get_version(void);

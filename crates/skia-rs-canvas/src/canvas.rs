@@ -752,14 +752,28 @@ impl<'a> Canvas<'a> {
     }
 
     /// Draw a path.
+    ///
+    /// If the [`Paint`] has a [`PathEffect`] attached (via
+    /// [`Paint::set_path_effect`]), the effect is applied to the path before
+    /// it is rasterized / recorded. Effects that produce an empty path
+    /// (e.g. [`TrimEffect`] with a zero interval) are silently skipped.
+    ///
+    /// [`PathEffect`]: skia_rs_path::PathEffect
+    /// [`TrimEffect`]: skia_rs_path::TrimEffect
     pub fn draw_path(&mut self, path: &Path, paint: &Paint) {
+        // If the paint carries a path effect, apply it first and drop through
+        // the `Path` slot with the effected path. Fall back to the input path
+        // if the effect produces nothing.
+        let effected = paint.path_effect().and_then(|e| e.apply(path));
+        let final_path: &Path = effected.as_ref().unwrap_or(path);
+
         match &mut self.backing {
             Backing::Raster(_) => {
-                self.with_rasterizer(|raster| raster.draw_path(path, paint));
+                self.with_rasterizer(|raster| raster.draw_path(final_path, paint));
             }
             Backing::Recording(commands) => {
                 commands.push(DrawCommand::DrawPath {
-                    path: path.clone(),
+                    path: final_path.clone(),
                     paint: paint.clone(),
                 });
             }

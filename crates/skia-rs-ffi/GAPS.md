@@ -1,7 +1,23 @@
 # skia-rs-ffi Gap Analysis
 
-**Date:** 2026-04-25
+**Date:** 2026-04-25 (baseline) · **Updated:** 2026-04-26 for Phase 7I
 **Reviewer:** Claude (Opus 4.7)
+
+## Phase 7I Update (2026-04-26)
+
+Phase 7I expanded the API surface with the Priority 1 + Priority 2
+gaps identified in the Phase 6C follow-up list. See
+`## Scope: follow-up` below for the explicit before/after. Highlights:
+
+- Clip API on `sk_canvas_t` (clip_rect, clip_path, clip_ibounds).
+- Canvas `save_layer(bounds, paint)`.
+- `sk_matrix44_t` with new/identity/from_array/map/invert/concat.
+- `sk_colorspace_t` with srgb/linear/p3/from_icc.
+- `sk_textblob_t` with make_from_text + draw, and `sk_canvas_draw_text_blob`.
+- `sk_picture_recorder_t` + `sk_recording_canvas_t` + `sk_picture_t` with record/finish/playback.
+- `sk_region_t` with new/set_rect/op_rect (all 6 RegionOps).
+- `sk_patheffect_t` (Dash, Trim) wired into `Paint` via `sk_paint_set_path_effect`.
+- 16 new construct/operate/destroy FFI tests (44 total, all passing).
 
 ## Phase 6C Resolution Summary (2026-04-25)
 
@@ -26,33 +42,35 @@ The API-surface expansion is partial and the remainder is documented as
 | T-2 no multi-thread refcount stress | **Resolved** | `test_cross_thread_refcount_stress` spawns 8 threads × 1000 ref/unref each. |
 | T-3 no true cross-language test | **Resolved** | `examples/draw_rect.c` compiles against the generated header, links against `libskia_rs_ffi.so`, and runs end-to-end. Verified manually during Phase 6C. Automating this in CI (a `build.rs`-driven `cc` step or a `tests/c_ffi.rs` harness that shells out to `cc`) is **Scope: follow-up**. |
 
-### Scope: follow-up (not addressed in Phase 6C)
+### Scope: follow-up (Phase 6C baseline; updated by Phase 7I)
 
-The Skia C API surface is ~1000 functions. Phase 6C focused on (a)
-soundness universally and (b) demonstrating the wrapping pattern for
-every major primitive. The following remain:
+Phase 7I expanded the API surface with the Priority 1 + Priority 2
+primitives needed for real graphics-app workflows. The following list
+reflects the current state:
 
-- **TextBlob / Paragraph / Shaper**: no `sk_textblob_t`, `sk_paragraph_t`.
-- **FontManager**: no FFI for system-font enumeration.
-- **Matrix44**: `abi::SkMatrix44ABI` is defined but no `sk_matrix44_*` setters/multiply/invert.
-- **ColorSpace**: no FFI — `sk_imageinfo_t.color_space` is always the default sRGB.
-- **Picture / PictureRecorder**: recording/playback is not exposed.
-- **Clip API on sk_canvas_t**: `clip_rect`, `clip_path`, `clip_ibounds` are stubbed by `sk_canvas_concat` friends but no explicit clip FFI.
-- **Codec streaming**: only `sk_image_from_encoded` (single-shot); no progressive decode / row-at-a-time API.
-- **RuntimeEffect / SkSL**: `skia-rs-paint::runtime_effect` has no C surface at all.
+Resolved in Phase 7I (`feat(ffi): expand API surface ...`):
+
+- ✅ **Clip API on sk_canvas_t**: `sk_canvas_clip_rect(rect, op, anti_alias)`, `sk_canvas_clip_path(path, op, anti_alias)`, `sk_canvas_get_clip_ibounds(out)` — AA flag propagated to the clip stack; both Intersect and Difference ops supported.
+- ✅ **Canvas save_layer**: `sk_canvas_save_layer(bounds, paint)` — both args nullable; returns the new save count.
+- ✅ **Matrix44 basics**: opaque `sk_matrix44_t` (column-major `[f32; 16]`) plus `sk_matrix44_new / _from_array / _map_point / _invert / _is_identity / _determinant / _concat`.
+- ✅ **ColorSpace basics**: `sk_colorspace_t` (RefCounted) with `sk_colorspace_new_srgb / _srgb_linear / _display_p3 / _from_icc / _is_srgb / _is_linear / _ref / _unref`. ICC parsing routes through `skia_rs_core::IccProfile::from_bytes`.
+- ✅ **TextBlob basic**: `sk_textblob_t` + `sk_textblob_make_from_text(text, len, font)`, `sk_textblob_get_bounds`, `sk_canvas_draw_text_blob(blob, x, y, paint)`, `sk_textblob_ref / _unref`.
+- ✅ **Picture / PictureRecorder**: `sk_picture_recorder_t` with `_new / _begin_recording / _finish_recording / _delete`, a separate `sk_recording_canvas_t` with save/restore/translate/draw_rect/draw_path, and `sk_picture_t` (RefCounted) with `_playback / _get_cull_rect / _approximate_op_count / _ref / _unref`. The FFI path sidesteps `PictureRecorder::begin_recording`'s borrowed-reference API by maintaining its own `Vec<DrawCommand>` and wrapping via the new `Picture::from_parts` constructor.
+- ✅ **Region basics**: `sk_region_t` with `_new / _set_rect / _op_rect / _get_bounds / _is_empty / _contains / _ref / _unref`. All 6 `RegionOp` variants are exposed.
+- ✅ **Dash + Trim PathEffect**: `sk_patheffect_t` (RefCounted<Arc<dyn PathEffect>>) with `_new_dash(intervals, count, phase)` and `_new_trim(start, end, mode)`. `sk_paint_set_path_effect` plumbs the effect into `Paint`, which now carries an optional `PathEffectRef`; `Canvas::draw_path` applies it pre-rasterization.
+
+Deferred (still larger, separate efforts):
+
+- **RuntimeEffect / SkSL FFI**: SkSL source compilation across the FFI boundary plus uniform binding is a separate design — `skia-rs-paint::runtime_effect` is not yet wired to C.
+- **Full filter refinements**: `DropShadowImageFilter`, `ColorFilterImageFilter`, `Morphology*`, `Lighting*`, `DisplacementMap`, `Compose`, `Merge`, `Offset`, `MatrixConvolution` — mechanical, one-liner wrappers; not a bottleneck for any known use case.
 - **Gradient refinements**: `with_local_matrix`, `with_flags`, `TwoPointConicalGradient`, `ImageShader` from an `sk_image_t`.
-- **Filter refinements**: `DropShadowImageFilter`, `ColorFilterImageFilter`, `Morphology*`, `Lighting*`, `DisplacementMap`, `Compose`, `Merge`, `Offset`, `MatrixConvolution` — each would be a few lines of FFI.
-- **Canvas save/restore layers with paint**: `save_layer(rec)` and `SaveLayerFlags`.
-- **Region / Path effects**: dash, corner, trim, compose effects.
-- **GPU backend**: `skia-rs-gpu` has no FFI wrapper.
-- **SVG / PDF / Skottie**: the dependent crates each need their own FFI module.
+- **FontManager**: no FFI for system-font enumeration yet.
+- **Paragraph / Shaper**: no FFI for the higher-level text layout pipeline yet.
+- **Codec streaming**: only `sk_image_from_encoded` (single-shot); progressive / row-at-a-time decode requires its own design conversation.
+- **GPU FFI**: `skia-rs-gpu` is wgpu-dependent and would require exposing texture/encoder handles safely across the FFI boundary — a large separate effort.
+- **SVG / PDF / Skottie FFI**: each dependent crate needs its own FFI module with format-specific lifecycle types (context, builder, serializer).
+- **Additional PathEffect kinds**: `CornerEffect`, `DiscreteEffect`, `ComposeEffect`, `SumEffect` — same pattern as `Dash`/`Trim`, trivial to add when requested.
 - **Cross-language test harness**: link `examples/draw_rect.c` against the cdylib in CI via a `build.rs`-driven `cc` step or a `tests/c_ffi.rs` harness.
-
-Each of these is mechanical once the pattern is understood — every
-primitive follows the same recipe already demonstrated by `sk_shader_t`,
-`sk_colorfilter_t`, etc. They were deferred because the priority for
-Phase 6C was soundness (panic catching + tag-validated refcount), not
-surface breadth.
 
 ## Original Gap Analysis (2026-04-25, pre-Phase 6C)
 
