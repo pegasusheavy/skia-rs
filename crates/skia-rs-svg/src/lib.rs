@@ -13,11 +13,13 @@
 pub mod css;
 pub mod dom;
 pub mod export;
+pub mod glyph_svg;
 pub mod parser;
 pub mod render;
 
 pub use css::{CssRule, CssSelector, Stylesheet, apply_stylesheet, parse_inline_style};
 pub use dom::*;
 pub use export::{SvgExportOptions, export_svg, export_svg_with_options};
+pub use glyph_svg::{decode_glyph_svg_bytes, glyph_svg_to_dom};
 pub use parser::*;
 pub use render::*;

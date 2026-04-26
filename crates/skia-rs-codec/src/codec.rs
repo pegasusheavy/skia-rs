@@ -237,6 +237,18 @@ impl ImageDecoder for PngDecoder {
             .read_info()
             .map_err(|e| CodecError::DecodingError(e.to_string()))?;
 
+        // Pull the iCCP profile bytes out of the PNG info before calling
+        // next_frame (next_frame borrows the reader mutably). The `png`
+        // crate stores the raw profile bytes in `Info::icc_profile`; we
+        // feed them to `IccProfile::from_bytes` to build a real
+        // ColorSpace, falling back to None if parsing fails.
+        let icc_color_space = png_reader
+            .info()
+            .icc_profile
+            .as_ref()
+            .and_then(|bytes| skia_rs_core::IccProfile::from_bytes(bytes))
+            .map(|profile| profile.color_space().clone());
+
         let mut buf = vec![0; png_reader.output_buffer_size()];
         let info = png_reader
             .next_frame(&mut buf)
@@ -284,12 +296,13 @@ impl ImageDecoder for PngDecoder {
             _ => return Err(CodecError::Unsupported("Unsupported PNG color type".into())),
         };
 
-        let info = crate::ImageInfo::new(
+        let mut info = crate::ImageInfo::new(
             width,
             height,
             skia_rs_core::ColorType::Rgba8888,
             skia_rs_core::AlphaType::Unpremul,
         );
+        info.color_space = icc_color_space;
 
         Image::from_raster_data_owned(info, pixels, width as usize * 4)
             .ok_or_else(|| CodecError::DecodingError("Failed to create image".into()))
@@ -398,6 +411,14 @@ impl ImageDecoder for JpegDecoder {
             .info()
             .ok_or_else(|| CodecError::DecodingError("No image info".into()))?;
 
+        // JPEG ICC profiles arrive via APP2 markers; jpeg-decoder
+        // re-assembles them and exposes a single contiguous byte slice.
+        // Parse into a ColorSpace if present and well-formed.
+        let icc_color_space = decoder
+            .icc_profile()
+            .and_then(|bytes| skia_rs_core::IccProfile::from_bytes(&bytes))
+            .map(|profile| profile.color_space().clone());
+
         let width = info.width as i32;
         let height = info.height as i32;
 
@@ -430,12 +451,13 @@ impl ImageDecoder for JpegDecoder {
             }
         };
 
-        let img_info = crate::ImageInfo::new(
+        let mut img_info = crate::ImageInfo::new(
             width,
             height,
             skia_rs_core::ColorType::Rgba8888,
             skia_rs_core::AlphaType::Opaque,
         );
+        img_info.color_space = icc_color_space;
 
         Image::from_raster_data_owned(img_info, rgba, width as usize * 4)
             .ok_or_else(|| CodecError::DecodingError("Failed to create image".into()))
@@ -555,6 +577,83 @@ impl GifDecoder {
     /// Create a new GIF decoder.
     pub fn new() -> Self {
         Self
+    }
+
+    /// Decode an animated GIF into all of its frames.
+    ///
+    /// The single-frame [`ImageDecoder::decode`] path returns only the
+    /// first frame — convenient for static GIFs but loses every
+    /// subsequent frame of an animation. `decode_animated` walks the
+    /// full frame stream, preserving per-frame delay, disposal, and
+    /// offset.
+    ///
+    /// Each frame's image is its own [`Image`] sized to the frame's
+    /// local width/height (not the canvas). The `x_offset` / `y_offset`
+    /// fields on [`crate::AnimationFrame`] place the frame inside the
+    /// animation canvas; callers performing playback composite those
+    /// frames onto the canvas according to the frame's
+    /// [`crate::DisposalMethod`] and [`crate::BlendMethod`].
+    ///
+    /// GIF delays arrive in 10ms ticks (`Frame::delay`), which this
+    /// converts to [`std::time::Duration`]. A zero delay is preserved
+    /// as `Duration::ZERO` — downstream renderers typically clamp these
+    /// to a minimum of 20ms to avoid CPU-pegging animations, but that
+    /// policy belongs to the renderer, not the codec.
+    #[cfg(feature = "gif")]
+    pub fn decode_animated(&self, data: &[u8]) -> CodecResult<crate::AnimatedImage> {
+        let mut options = gif::DecodeOptions::new();
+        options.set_color_output(gif::ColorOutput::RGBA);
+        let mut decoder = options
+            .read_info(std::io::Cursor::new(data))
+            .map_err(|e| CodecError::DecodingError(e.to_string()))?;
+
+        let mut frames = Vec::new();
+        while let Some(frame) = decoder
+            .read_next_frame()
+            .map_err(|e| CodecError::DecodingError(e.to_string()))?
+        {
+            let width = frame.width as i32;
+            let height = frame.height as i32;
+            let info = crate::ImageInfo::new(
+                width,
+                height,
+                skia_rs_core::ColorType::Rgba8888,
+                skia_rs_core::AlphaType::Unpremul,
+            );
+            let image = Image::from_raster_data(&info, &frame.buffer, width as usize * 4)
+                .ok_or_else(|| {
+                    CodecError::DecodingError("Failed to build frame image".into())
+                })?;
+
+            frames.push(crate::AnimationFrame {
+                image,
+                delay: std::time::Duration::from_millis(frame.delay as u64 * 10),
+                dispose: frame.dispose.into(),
+                // GIF is palette/transparent-index only; it has no
+                // "blend" concept, and every renderer treats frames as
+                // alpha-blended over the canvas.
+                blend: crate::BlendMethod::Over,
+                x_offset: frame.left as i32,
+                y_offset: frame.top as i32,
+            });
+        }
+
+        if frames.is_empty() {
+            return Err(CodecError::DecodingError("No frames in GIF".into()));
+        }
+
+        Ok(crate::AnimatedImage {
+            loop_count: decoder.repeat().into(),
+            frames,
+        })
+    }
+
+    /// Stub for builds without the `gif` feature.
+    #[cfg(not(feature = "gif"))]
+    pub fn decode_animated(&self, _data: &[u8]) -> CodecResult<crate::AnimatedImage> {
+        Err(CodecError::Unsupported(
+            "GIF decoding requires the 'gif' feature".into(),
+        ))
     }
 }
 
@@ -1697,6 +1796,162 @@ fn get_avif_dimensions(_data: &[u8]) -> CodecResult<(i32, i32)> {
 // RAW Codec
 // =============================================================================
 
+/// Bayer color-filter-array pattern layout for a RAW sensor image.
+///
+/// The four variants cover the four phase offsets of the 2x2 Bayer
+/// mosaic. Pattern names read top-left → top-right → bottom-left →
+/// bottom-right. `Rggb` is by far the most common.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BayerPattern {
+    /// Red, Green, Green, Blue (top-left order).
+    Rggb,
+    /// Blue, Green, Green, Red.
+    Bggr,
+    /// Green, Red, Blue, Green.
+    Grbg,
+    /// Green, Blue, Red, Green.
+    Gbrg,
+}
+
+/// Bilinear demosaic a 16-bit Bayer-pattern single-channel sensor image
+/// into an 8-bit RGB buffer.
+///
+/// Each output pixel holds the sensor's directly-sampled channel at its
+/// Bayer position, plus bilinearly-interpolated values for the two
+/// missing channels:
+///
+/// - R/B pixels: green is the 4-neighbor cross average (N/S/E/W); the
+///   other-color channel is the 4-neighbor diagonal average (NW/NE/SW/SE).
+/// - G pixels: the two missing channels come from the two direct
+///   neighbors that carry them — one pair horizontal, one pair vertical
+///   (which axis carries which channel depends on the row parity).
+///
+/// This is a baseline demosaic — far less sophisticated than
+/// Malvar-He-Cutler, VNG, or AHD — but correct for uniform patches, well
+/// behaved at edges of the frame (clamped neighborhood), and produces a
+/// predictable linear-light RGB image. Proprietary RAW file parsing
+/// (CR2, NEF, ARW) is outside the scope of this helper; feed already-
+/// parsed sensor samples in.
+///
+/// The output is 8-bit per channel: the high byte of each 16-bit
+/// intermediate value. Input values are treated as linear (no white
+/// balance or color matrix applied). `width * height` must equal
+/// `raw.len()`.
+///
+/// Returns an empty vector if the input length does not match
+/// `width * height` — this keeps the helper safe to call without
+/// propagating `Result` through every RAW pipeline.
+pub fn demosaic_bayer(
+    raw: &[u16],
+    width: usize,
+    height: usize,
+    pattern: BayerPattern,
+) -> Vec<u8> {
+    if width == 0 || height == 0 || raw.len() != width * height {
+        return Vec::new();
+    }
+
+    /// Pick the channel (R=0, G=1, B=2) at position (x, y) given the
+    /// pattern's 2x2 top-left orientation.
+    #[inline]
+    fn channel_at(pattern: BayerPattern, x: usize, y: usize) -> u8 {
+        let (r, g0, g1, b) = match pattern {
+            BayerPattern::Rggb => (0u8, 1u8, 1u8, 2u8),
+            BayerPattern::Bggr => (2, 1, 1, 0),
+            BayerPattern::Grbg => (1, 0, 2, 1),
+            BayerPattern::Gbrg => (1, 2, 0, 1),
+        };
+        match (x % 2, y % 2) {
+            (0, 0) => r,
+            (1, 0) => g0,
+            (0, 1) => g1,
+            (1, 1) => b,
+            _ => unreachable!(),
+        }
+    }
+
+    #[inline]
+    fn clamp_fetch(raw: &[u16], x: isize, y: isize, w: usize, h: usize) -> u32 {
+        let cx = x.clamp(0, w as isize - 1) as usize;
+        let cy = y.clamp(0, h as isize - 1) as usize;
+        raw[cy * w + cx] as u32
+    }
+
+    let mut out = vec![0u8; width * height * 3];
+
+    for y in 0..height {
+        for x in 0..width {
+            let c = channel_at(pattern, x, y);
+            let v = raw[y * width + x] as u32;
+
+            // Cross = direct N/S/E/W neighbors; diag = NW/NE/SW/SE.
+            let cross = (clamp_fetch(raw, x as isize - 1, y as isize, width, height)
+                + clamp_fetch(raw, x as isize + 1, y as isize, width, height)
+                + clamp_fetch(raw, x as isize, y as isize - 1, width, height)
+                + clamp_fetch(raw, x as isize, y as isize + 1, width, height))
+                / 4;
+            let diag = (clamp_fetch(raw, x as isize - 1, y as isize - 1, width, height)
+                + clamp_fetch(raw, x as isize + 1, y as isize - 1, width, height)
+                + clamp_fetch(raw, x as isize - 1, y as isize + 1, width, height)
+                + clamp_fetch(raw, x as isize + 1, y as isize + 1, width, height))
+                / 4;
+            let horiz = (clamp_fetch(raw, x as isize - 1, y as isize, width, height)
+                + clamp_fetch(raw, x as isize + 1, y as isize, width, height))
+                / 2;
+            let vert = (clamp_fetch(raw, x as isize, y as isize - 1, width, height)
+                + clamp_fetch(raw, x as isize, y as isize + 1, width, height))
+                / 2;
+
+            // Determine the green-axis layout: which of the two G
+            // neighbor directions carries R vs B. The horizontal and
+            // vertical neighbors of a green pixel lie one step in each
+            // axis, which always lands at a pixel of the opposite
+            // Bayer parity — use pattern phase math (x ^ 1, y ^ 1)
+            // directly so this is independent of image bounds (the
+            // clamp-to-edge happens inside horiz/vert via clamp_fetch).
+            let (r, g, b) = if c == 1 {
+                let horiz_ch = channel_at(pattern, x ^ 1, y);
+                let vert_ch = channel_at(pattern, x, y ^ 1);
+                let mut r = 0u32;
+                let mut b = 0u32;
+                if horiz_ch == 0 {
+                    r = horiz;
+                } else if horiz_ch == 2 {
+                    b = horiz;
+                }
+                if vert_ch == 0 {
+                    r = vert;
+                } else if vert_ch == 2 {
+                    b = vert;
+                }
+                (r, v, b)
+            } else if c == 0 {
+                // Red pixel: G = cross, B = diag, R = direct.
+                (v, cross, diag)
+            } else {
+                // Blue pixel: G = cross, R = diag, B = direct.
+                (diag, cross, v)
+            };
+
+            // High byte of 16-bit intermediate; u32 arithmetic saturates
+            // to 65535 in practice because no neighbor can exceed u16.
+            let idx = (y * width + x) * 3;
+            out[idx] = (r.min(0xFFFF) >> 8) as u8;
+            out[idx + 1] = (g.min(0xFFFF) >> 8) as u8;
+            out[idx + 2] = (b.min(0xFFFF) >> 8) as u8;
+        }
+    }
+
+    out
+}
+
+/// Convenience: [`demosaic_bayer`] with the most common [`BayerPattern::Rggb`]
+/// pattern.
+#[inline]
+pub fn demosaic_bayer_rggb(raw: &[u16], width: usize, height: usize) -> Vec<u8> {
+    demosaic_bayer(raw, width, height, BayerPattern::Rggb)
+}
+
 /// Camera RAW decoder.
 ///
 /// Decodes camera RAW formats from various manufacturers including
@@ -1761,12 +2016,36 @@ impl ImageDecoder for RawDecoder {
     }
 }
 
+/// Try to detect one of the four canonical Bayer patterns from the
+/// `rawloader::CFA` 2x2 layout. Returns `None` for non-Bayer CFAs such
+/// as X-Trans or monochrome.
+#[cfg(feature = "raw")]
+fn detect_bayer_pattern(cfa: &rawloader::CFA) -> Option<BayerPattern> {
+    // rawloader::CFA::color_at(row, col) returns 0=R, 1=G, 2=B.
+    let tl = cfa.color_at(0, 0);
+    let tr = cfa.color_at(0, 1);
+    let bl = cfa.color_at(1, 0);
+    let br = cfa.color_at(1, 1);
+    match (tl, tr, bl, br) {
+        (0, 1, 1, 2) => Some(BayerPattern::Rggb),
+        (2, 1, 1, 0) => Some(BayerPattern::Bggr),
+        (1, 0, 2, 1) => Some(BayerPattern::Grbg),
+        (1, 2, 0, 1) => Some(BayerPattern::Gbrg),
+        _ => None,
+    }
+}
+
 /// Demosaic a RAW image to RGBA.
+///
+/// For Bayer-pattern sensors this routes through the generic
+/// [`demosaic_bayer`] helper after black-level subtraction and white-
+/// level normalization to 16-bit range. For non-Bayer CFAs (X-Trans,
+/// etc.) it falls back to the legacy per-channel neighbor-average path
+/// so unusual sensors still decode rather than erroring.
 #[cfg(feature = "raw")]
 fn demosaic_raw(raw: &rawloader::RawImage) -> CodecResult<Vec<u8>> {
     let width = raw.width;
     let height = raw.height;
-    let mut output = vec![0u8; width * height * 4];
 
     // Get the raw data
     let data = match &raw.data {
@@ -1777,6 +2056,40 @@ fn demosaic_raw(raw: &rawloader::RawImage) -> CodecResult<Vec<u8>> {
             ));
         }
     };
+
+    if let Some(pattern) = detect_bayer_pattern(&raw.cfa) {
+        // Fast path: bilinear demosaic via the public helper. Produces
+        // an RGB buffer we expand to RGBA with opaque alpha. Normalize
+        // each sample into the 0..65535 range first so the demosaic
+        // helper sees a consistent scale regardless of the sensor's
+        // native bit depth.
+        let black = raw.blacklevels[0] as f32;
+        let white = raw.whitelevels[0] as f32;
+        let range = if white > black { white - black } else { 65535.0 };
+        let normalized: Vec<u16> = data
+            .iter()
+            .map(|&v| (((v as f32 - black) / range * 65535.0).clamp(0.0, 65535.0)) as u16)
+            .collect();
+        let rgb = demosaic_bayer(&normalized, width, height, pattern);
+        if rgb.len() != width * height * 3 {
+            return Err(CodecError::DecodingError(
+                "Bayer demosaic produced unexpected buffer size".into(),
+            ));
+        }
+        let mut output = vec![0u8; width * height * 4];
+        for i in 0..(width * height) {
+            output[i * 4] = rgb[i * 3];
+            output[i * 4 + 1] = rgb[i * 3 + 1];
+            output[i * 4 + 2] = rgb[i * 3 + 2];
+            output[i * 4 + 3] = 255;
+        }
+        return Ok(output);
+    }
+
+    // Fallback: unknown CFA layout. Sample direct channel + 3x3
+    // neighbor average for the two missing channels — this is the
+    // legacy path that predates the bilinear helper.
+    let mut output = vec![0u8; width * height * 4];
 
     // Simple demosaicing - convert to grayscale for simplicity
     // A full implementation would do proper Bayer demosaicing
@@ -2253,5 +2566,165 @@ mod tests {
         WbmpEncoder::new().encode(&image, &mut buf).unwrap();
         let decoded = WbmpDecoder::new().decode_bytes(&buf).unwrap();
         assert_eq!(decoded.dimensions(), (4, 4));
+    }
+
+    #[test]
+    fn test_demosaic_bayer_uniform_saturated() {
+        // All-white Bayer input → every output pixel should be close to
+        // white in all three channels after bilinear interpolation.
+        let raw = vec![0xFFFFu16; 4 * 4];
+        let rgb = demosaic_bayer_rggb(&raw, 4, 4);
+        assert_eq!(rgb.len(), 4 * 4 * 3);
+        for (i, chunk) in rgb.chunks_exact(3).enumerate() {
+            assert!(chunk[0] > 200, "r too dim at pixel {}: {}", i, chunk[0]);
+            assert!(chunk[1] > 200, "g too dim at pixel {}: {}", i, chunk[1]);
+            assert!(chunk[2] > 200, "b too dim at pixel {}: {}", i, chunk[2]);
+        }
+    }
+
+    #[test]
+    fn test_demosaic_bayer_zero_input() {
+        // All-black Bayer input should produce an all-black RGB buffer.
+        let raw = vec![0u16; 4 * 4];
+        let rgb = demosaic_bayer_rggb(&raw, 4, 4);
+        assert!(rgb.iter().all(|&v| v == 0), "zero input should be black");
+    }
+
+    #[test]
+    fn test_demosaic_bayer_preserves_direct_channel() {
+        // RGGB layout on a 6x6 canvas: (even, even)=R, (odd, even)=G,
+        // (even, odd)=G, (odd, odd)=B. Put 0xFF00 at every R position,
+        // 0 elsewhere. Pick an interior R pixel (2, 2) so clamp-to-edge
+        // artifacts at the border do not pollute the assertion.
+        let w = 6;
+        let h = 6;
+        let mut raw = vec![0u16; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                if x % 2 == 0 && y % 2 == 0 {
+                    raw[y * w + x] = 0xFF00;
+                }
+            }
+        }
+        let rgb = demosaic_bayer_rggb(&raw, w, h);
+
+        // Interior R pixel at (2, 2).
+        let off = (2 * w + 2) * 3;
+        // Direct R sample survives: 0xFF00 >> 8 = 0xFF.
+        assert_eq!(rgb[off], 0xFF);
+        // At an R pixel, G comes from the four N/S/E/W neighbors — all
+        // G positions, which are zero.
+        assert_eq!(rgb[off + 1], 0);
+        // B comes from the four diagonal neighbors — all B positions,
+        // also zero.
+        assert_eq!(rgb[off + 2], 0);
+
+        // An interior G pixel at (3, 2): its direct sample is 0 (G
+        // positions hold 0). Horizontal neighbors (2, 2) and (4, 2) are
+        // R-positions with 0xFF00, vertical neighbors (3, 1) and (3, 3)
+        // are B positions with 0. So R should be ~0xFF and B should be 0.
+        let goff = (2 * w + 3) * 3;
+        assert!(rgb[goff] > 0xF0, "G pixel R should be close to 0xFF");
+        assert_eq!(rgb[goff + 1], 0);
+        assert_eq!(rgb[goff + 2], 0);
+    }
+
+    #[test]
+    fn test_demosaic_bayer_mismatched_length_returns_empty() {
+        // Mismatched size is a pre-condition violation; return empty
+        // rather than panicking.
+        let raw = vec![0u16; 10];
+        let rgb = demosaic_bayer_rggb(&raw, 4, 4);
+        assert!(rgb.is_empty());
+    }
+
+    #[cfg(feature = "gif")]
+    #[test]
+    fn test_gif_decode_animated_returns_multiple_frames() {
+        // Build a minimal 2-frame GIF in memory using the gif encoder.
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            use gif::{Encoder, Frame, Repeat};
+            let palette = [0, 0, 0, 255, 255, 255]; // black, white
+            let mut encoder = Encoder::new(&mut buf, 2, 2, &palette).unwrap();
+            encoder.set_repeat(Repeat::Infinite).unwrap();
+
+            // Frame 0: all-black, 50ms.
+            let mut f0 = Frame::default();
+            f0.width = 2;
+            f0.height = 2;
+            f0.buffer = std::borrow::Cow::Borrowed(&[0u8; 4]);
+            f0.delay = 5; // 5 * 10ms = 50ms
+            encoder.write_frame(&f0).unwrap();
+
+            // Frame 1: all-white, 100ms.
+            let mut f1 = Frame::default();
+            f1.width = 2;
+            f1.height = 2;
+            f1.buffer = std::borrow::Cow::Borrowed(&[1u8; 4]);
+            f1.delay = 10;
+            encoder.write_frame(&f1).unwrap();
+        }
+
+        let animated = GifDecoder::new().decode_animated(&buf).unwrap();
+        assert_eq!(animated.frame_count(), 2);
+        assert_eq!(animated.loop_count, crate::LoopCount::Infinite);
+        assert_eq!(animated.frames[0].delay.as_millis(), 50);
+        assert_eq!(animated.frames[1].delay.as_millis(), 100);
+        assert_eq!(animated.total_duration().as_millis(), 150);
+    }
+
+    #[cfg(feature = "png")]
+    #[test]
+    fn test_png_without_iccp_chunk_has_no_color_space() {
+        // PngEncoder does not emit an iCCP chunk, so a round-tripped
+        // image must have `color_space == None`.
+        let image = test_checkerboard(4, 4);
+        let encoded = PngEncoder::new().encode_bytes(&image).unwrap();
+        let decoded = PngDecoder::new().decode_bytes(&encoded).unwrap();
+        assert!(decoded.color_space().is_none());
+    }
+
+    #[cfg(feature = "png")]
+    #[test]
+    fn test_png_with_iccp_chunk_populates_color_space() {
+        // Build a valid ICC profile (sRGB, 128-byte header with "acsp"
+        // signature) and inject it via the png crate's encoder.
+        let mut icc = vec![0u8; 128];
+        // Signature at bytes 36..40.
+        icc[36..40].copy_from_slice(b"acsp");
+        // Profile class 'mntr' (display) at bytes 12..16.
+        icc[12..16].copy_from_slice(b"mntr");
+        // Color space 'RGB ' at bytes 16..20.
+        icc[16..20].copy_from_slice(b"RGB ");
+        // PCS 'XYZ ' at bytes 20..24.
+        icc[20..24].copy_from_slice(b"XYZ ");
+
+        // Encode a 2x2 PNG with the synthetic iCCP profile. The png
+        // crate's encoder does not expose a setter for the iCCP chunk,
+        // but the underlying `Info` struct carries a public
+        // `icc_profile` field that the encoder writes through. Build an
+        // `Info` with the profile attached and hand it to `with_info`.
+        let mut out: Vec<u8> = Vec::new();
+        {
+            let mut info = png::Info::with_size(2, 2);
+            info.color_type = png::ColorType::Rgba;
+            info.bit_depth = png::BitDepth::Eight;
+            info.icc_profile = Some(std::borrow::Cow::Owned(icc));
+            let encoder = png::Encoder::with_info(&mut out, info).unwrap();
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&[0u8; 16]).unwrap();
+        }
+
+        let decoded = PngDecoder::new().decode_bytes(&out).unwrap();
+        // IccProfile::from_bytes falls back to sRGB when the tag table
+        // is unparseable (our synthetic profile has no tags), so the
+        // ColorSpace itself is present and equals sRGB. The salient
+        // check is that `color_space.is_some()` — i.e. the codec did
+        // read the chunk and route it through the parser.
+        assert!(
+            decoded.color_space().is_some(),
+            "iCCP chunk should populate ImageInfo.color_space"
+        );
     }
 }

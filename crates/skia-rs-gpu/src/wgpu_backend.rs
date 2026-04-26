@@ -29,8 +29,23 @@ pub struct WgpuContext {
 impl WgpuContext {
     /// Create a new wgpu context.
     pub async fn new() -> GpuResult<Self> {
+        Self::new_with_backends(wgpu::Backends::all()).await
+    }
+
+    /// Create a new wgpu context restricted to the given backend bits.
+    ///
+    /// This is the hook the native backend adapters use to route through
+    /// wgpu for a specific API. Pass `wgpu::Backends::GL`, `Backends::VULKAN`,
+    /// or `Backends::METAL` to force a single-backend instance. The adapter
+    /// and device selection logic is otherwise identical to [`Self::new`].
+    ///
+    /// Returns an error if no adapter is available for the requested mask —
+    /// callers should treat `DeviceCreation` as "this backend is not
+    /// available in this environment" rather than a hard failure, and fall
+    /// back to `Self::new` or report the absence to the user.
+    pub async fn new_with_backends(backends: wgpu::Backends) -> GpuResult<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            backends,
             ..Default::default()
         });
 
@@ -41,7 +56,12 @@ impl WgpuContext {
                 force_fallback_adapter: false,
             })
             .await
-            .ok_or_else(|| GpuError::DeviceCreation("No adapter found".into()))?;
+            .ok_or_else(|| {
+                GpuError::DeviceCreation(format!(
+                    "No adapter found for backends {:?}",
+                    backends
+                ))
+            })?;
 
         let adapter_info = adapter.get_info();
 
@@ -101,6 +121,11 @@ impl WgpuContext {
     /// Create a blocking context (for non-async usage).
     pub fn new_blocking() -> GpuResult<Self> {
         pollster::block_on(Self::new())
+    }
+
+    /// Blocking counterpart to [`Self::new_with_backends`].
+    pub fn new_with_backends_blocking(backends: wgpu::Backends) -> GpuResult<Self> {
+        pollster::block_on(Self::new_with_backends(backends))
     }
 
     /// Get the device.
@@ -1361,5 +1386,25 @@ mod tests {
         assert_eq!(cache.len(), 0);
         cache.clear();
         assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn test_new_with_backends_accepts_individual_backends() {
+        // Compile-time assertion that the backend-specific adapters can be
+        // constructed from the right Backends mask. We don't actually
+        // request an adapter (that requires a GPU), but we exercise the
+        // type signature and the InstanceDescriptor translation.
+        //
+        // A regression where `new_with_backends` silently drops the mask
+        // or uses `Backends::all()` internally would not be caught by
+        // type-check alone but would show up here once we try to run on
+        // a GPU-less host — `new_with_backends(Backends::empty())` must
+        // fail with DeviceCreation, not succeed by falling back to all
+        // backends.
+        let result = WgpuContext::new_with_backends_blocking(wgpu::Backends::empty());
+        assert!(
+            result.is_err(),
+            "empty backend mask must not fall back to Backends::all()"
+        );
     }
 }

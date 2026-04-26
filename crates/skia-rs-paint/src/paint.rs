@@ -4,6 +4,7 @@ use crate::blend::BlendMode;
 use crate::filter::{ColorFilterRef, ImageFilterRef, MaskFilterRef};
 use crate::shader::ShaderRef;
 use skia_rs_core::{Color, Color4f, Scalar};
+use skia_rs_path::PathEffectRef;
 
 /// Paint style (fill, stroke, or both).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -57,6 +58,8 @@ pub struct Paint {
     color_filter: Option<ColorFilterRef>,
     /// Image filter for effects like blur, drop shadow, etc.
     image_filter: Option<ImageFilterRef>,
+    /// Path effect (dash, trim, corner, etc.).
+    path_effect: Option<PathEffectRef>,
     /// Blend mode.
     blend_mode: BlendMode,
     /// Style (fill/stroke).
@@ -83,6 +86,7 @@ impl Default for Paint {
             mask_filter: None,
             color_filter: None,
             image_filter: None,
+            path_effect: None,
             blend_mode: BlendMode::SrcOver,
             style: Style::Fill,
             stroke_width: 1.0,
@@ -304,6 +308,25 @@ impl Paint {
     #[inline]
     pub fn has_image_filter(&self) -> bool {
         self.image_filter.is_some()
+    }
+
+    /// Get the path effect.
+    #[inline]
+    pub fn path_effect(&self) -> Option<&PathEffectRef> {
+        self.path_effect.as_ref()
+    }
+
+    /// Set the path effect.
+    #[inline]
+    pub fn set_path_effect(&mut self, effect: Option<PathEffectRef>) -> &mut Self {
+        self.path_effect = effect;
+        self
+    }
+
+    /// Check if the paint has a path effect.
+    #[inline]
+    pub fn has_path_effect(&self) -> bool {
+        self.path_effect.is_some()
     }
 
     /// Check if anti-aliasing is enabled.
@@ -631,6 +654,7 @@ impl Paint {
             mask_filter,
             color_filter,
             image_filter,
+            path_effect: None,
             blend_mode,
             style,
             stroke_width,

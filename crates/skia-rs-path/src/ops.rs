@@ -1,9 +1,15 @@
 //! Path boolean operations (union, intersect, difference, xor).
 //!
-//! This module implements boolean operations on paths using a scanline-based
-//! algorithm inspired by the Bentley-Ottmann algorithm.
+//! This module implements boolean operations on paths by linearizing
+//! each path into a polygon soup and dispatching to the `geo` crate's
+//! sweep-line [`BooleanOps`] implementation, which correctly handles
+//! concave polygons, holes, partial overlaps, and self-intersecting
+//! input.
+//!
+//! [`BooleanOps`]: geo::BooleanOps
 
 use crate::{Path, PathBuilder, PathElement};
+use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon as GeoPolygon};
 use skia_rs_core::{Point, Rect, Scalar};
 
 /// Operation type for path boolean operations.
@@ -30,26 +36,23 @@ pub enum PathOp {
 /// * `op` - The operation to perform
 ///
 /// # Returns
-/// The resulting path, or None if the operation fails
+/// The resulting path, or `None` if the operation fails.
 ///
-/// # Limitations
+/// # Algorithm
 ///
-/// The current polygon-based implementation has known correctness
-/// issues for non-trivial inputs:
+/// Both paths are linearized (Bezier and conic curves flattened to
+/// polylines at a 0.5-unit tolerance), then the requested boolean
+/// operation is performed via the [`geo`] crate's [`BooleanOps`]
+/// sweep-line implementation. The resulting `MultiPolygon` is
+/// converted back to a [`Path`].
 ///
-/// - `PathOp::Intersect` uses Sutherland-Hodgman clipping, which
-///   only produces correct results when both inputs are convex
-///   polygons. Concave inputs (circles, complex shapes) may produce
-///   incorrect intersection results.
+/// Concave polygons, holes, and partial overlaps all produce
+/// correct results. Self-intersecting input is handled by `geo`'s
+/// robust intersection resolution. The previously-documented
+/// limitations around Sutherland-Hodgman clipping and trivial-only
+/// difference/xor no longer apply.
 ///
-/// - `PathOp::Difference`, `PathOp::ReverseDifference`, and
-///   `PathOp::Xor` only handle the trivial cases of full containment
-///   or full disjointness. Partial overlaps return the unmodified
-///   subject path.
-///
-/// A robust implementation requires either a Weiler-Atherton or
-/// sweep-line clipping algorithm. Tracked as GAP-C4 and GAP-C5 in
-/// the foundation audit; planned for a future release.
+/// [`BooleanOps`]: geo::BooleanOps
 pub fn op(path1: &Path, path2: &Path, op: PathOp) -> Option<Path> {
     PathOps::new(path1, path2, op).compute()
 }
@@ -193,26 +196,6 @@ impl Polygon {
         self.points.len() < 3
     }
 
-    fn bounds(&self) -> Rect {
-        if self.points.is_empty() {
-            return Rect::EMPTY;
-        }
-
-        let mut min_x = self.points[0].x;
-        let mut max_x = self.points[0].x;
-        let mut min_y = self.points[0].y;
-        let mut max_y = self.points[0].y;
-
-        for p in &self.points[1..] {
-            min_x = min_x.min(p.x);
-            max_x = max_x.max(p.x);
-            min_y = min_y.min(p.y);
-            max_y = max_y.max(p.y);
-        }
-
-        Rect::new(min_x, min_y, max_x, max_y)
-    }
-
     fn signed_area(&self) -> Scalar {
         if self.points.len() < 3 {
             return 0.0;
@@ -228,6 +211,7 @@ impl Polygon {
         area / 2.0
     }
 
+    #[cfg(test)]
     fn contains_point(&self, p: Point) -> bool {
         if self.points.len() < 3 {
             return false;
@@ -260,6 +244,7 @@ impl Polygon {
     }
 }
 
+#[cfg(test)]
 fn is_left(p0: Point, p1: Point, p2: Point) -> Scalar {
     (p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y)
 }
@@ -390,218 +375,123 @@ fn distance_to_line(p: Point, line_start: Point, line_end: Point) -> Scalar {
     cross.abs() / len_sq.sqrt()
 }
 
-/// Union of two polygon sets.
-fn polygon_union(polys1: &[Polygon], polys2: &[Polygon]) -> Vec<Polygon> {
-    let mut result = Vec::new();
+/// Convert our internal polygon list into a `geo::MultiPolygon`.
+///
+/// Our [`Polygon`] type carries an `is_hole` flag determined from the
+/// signed area after flattening. Shells (non-holes) open a new
+/// [`geo::Polygon`]; subsequent holes are attached to the most-recent
+/// shell until the next shell is seen. This matches how
+/// [`path_to_polygons`] emits polygons — each `Close` pushes one
+/// polygon, with hole-ness derived from winding direction.
+fn skia_polygons_to_geo(polys: &[Polygon]) -> MultiPolygon<f64> {
+    let mut shells: Vec<GeoPolygon<f64>> = Vec::new();
+    let mut pending_shell: Option<Vec<Coord<f64>>> = None;
+    let mut pending_holes: Vec<LineString<f64>> = Vec::new();
 
-    // Simple implementation: add all polygons and merge overlapping ones
-    for poly in polys1 {
-        if !poly.is_empty() {
-            result.push(poly.clone());
-        }
-    }
-
-    for poly in polys2 {
-        if !poly.is_empty() {
-            // Check if this polygon is fully contained in any existing polygon
-            let mut fully_contained = false;
-            for existing in &result {
-                if polygon_contains_polygon(existing, poly) {
-                    fully_contained = true;
-                    break;
-                }
-            }
-
-            if !fully_contained {
-                result.push(poly.clone());
-            }
-        }
-    }
-
-    result
-}
-
-/// Intersection of two polygon sets.
-fn polygon_intersect(polys1: &[Polygon], polys2: &[Polygon]) -> Vec<Polygon> {
-    let mut result = Vec::new();
-
-    for poly1 in polys1 {
-        for poly2 in polys2 {
-            if let Some(intersection) = intersect_convex_polygons(poly1, poly2) {
-                if !intersection.is_empty() {
-                    result.push(intersection);
-                }
-            }
-        }
-    }
-
-    result
-}
-
-/// Difference of two polygon sets (polys1 - polys2).
-fn polygon_difference(polys1: &[Polygon], polys2: &[Polygon]) -> Vec<Polygon> {
-    let mut result = Vec::new();
-
-    for poly1 in polys1 {
-        if poly1.is_empty() {
+    for poly in polys {
+        if poly.is_empty() {
             continue;
         }
+        let coords: Vec<Coord<f64>> = poly
+            .points
+            .iter()
+            .map(|p| Coord {
+                x: p.x as f64,
+                y: p.y as f64,
+            })
+            .collect();
 
-        let mut remaining = vec![poly1.clone()];
-
-        for poly2 in polys2 {
-            if poly2.is_empty() {
-                continue;
+        if poly.is_hole {
+            pending_holes.push(LineString::new(coords));
+        } else {
+            if let Some(shell) = pending_shell.take() {
+                shells.push(GeoPolygon::new(
+                    LineString::new(shell),
+                    std::mem::take(&mut pending_holes),
+                ));
             }
-
-            let mut new_remaining = Vec::new();
-            for rem in remaining {
-                // Check bounds overlap
-                let b1 = rem.bounds();
-                let b2 = poly2.bounds();
-
-                if !bounds_intersect(&b1, &b2) {
-                    new_remaining.push(rem);
-                } else {
-                    // Subtract poly2 from rem
-                    let subtracted = subtract_polygon(&rem, poly2);
-                    new_remaining.extend(subtracted);
-                }
-            }
-            remaining = new_remaining;
+            pending_shell = Some(coords);
         }
-
-        result.extend(remaining);
     }
 
-    result
+    if let Some(shell) = pending_shell {
+        shells.push(GeoPolygon::new(LineString::new(shell), pending_holes));
+    } else if !pending_holes.is_empty() {
+        // Orphan holes without a shell — treat each as a shell with
+        // its natural winding; geo will normalize as needed during
+        // bool ops. This avoids losing geometry when input has no
+        // explicit outer contour.
+        for hole in pending_holes {
+            shells.push(GeoPolygon::new(hole, Vec::new()));
+        }
+    }
+
+    MultiPolygon(shells)
 }
 
-/// XOR of two polygon sets.
+/// Convert a `geo::MultiPolygon` back into our internal polygon list,
+/// emitting each exterior ring as a shell followed by its interior
+/// rings as holes. The caller's [`polygons_to_path`] writes each
+/// polygon as a separate subpath, so the ordering here matters:
+/// shells come first, then the matching holes, and `is_hole` is set
+/// correctly so downstream consumers can distinguish them.
+fn geo_to_skia_polygons(mp: &MultiPolygon<f64>) -> Vec<Polygon> {
+    let mut out = Vec::new();
+    for poly in mp.iter() {
+        let exterior: Vec<Point> = poly
+            .exterior()
+            .coords()
+            .map(|c| Point::new(c.x as f32, c.y as f32))
+            .collect();
+        if exterior.len() >= 3 {
+            out.push(Polygon {
+                points: exterior,
+                is_hole: false,
+            });
+        }
+        for hole in poly.interiors() {
+            let hole_pts: Vec<Point> = hole
+                .coords()
+                .map(|c| Point::new(c.x as f32, c.y as f32))
+                .collect();
+            if hole_pts.len() >= 3 {
+                out.push(Polygon {
+                    points: hole_pts,
+                    is_hole: true,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Union of two polygon sets via geo's sweep-line boolean ops.
+fn polygon_union(polys1: &[Polygon], polys2: &[Polygon]) -> Vec<Polygon> {
+    let a = skia_polygons_to_geo(polys1);
+    let b = skia_polygons_to_geo(polys2);
+    geo_to_skia_polygons(&a.union(&b))
+}
+
+/// Intersection of two polygon sets via geo's sweep-line boolean ops.
+fn polygon_intersect(polys1: &[Polygon], polys2: &[Polygon]) -> Vec<Polygon> {
+    let a = skia_polygons_to_geo(polys1);
+    let b = skia_polygons_to_geo(polys2);
+    geo_to_skia_polygons(&a.intersection(&b))
+}
+
+/// Difference of two polygon sets (polys1 - polys2) via geo's
+/// sweep-line boolean ops.
+fn polygon_difference(polys1: &[Polygon], polys2: &[Polygon]) -> Vec<Polygon> {
+    let a = skia_polygons_to_geo(polys1);
+    let b = skia_polygons_to_geo(polys2);
+    geo_to_skia_polygons(&a.difference(&b))
+}
+
+/// Symmetric difference (XOR) via geo's sweep-line boolean ops.
 fn polygon_xor(polys1: &[Polygon], polys2: &[Polygon]) -> Vec<Polygon> {
-    // XOR = (A - B) ∪ (B - A)
-    let a_minus_b = polygon_difference(polys1, polys2);
-    let b_minus_a = polygon_difference(polys2, polys1);
-
-    let mut result = a_minus_b;
-    result.extend(b_minus_a);
-    result
-}
-
-/// Check if polygon a fully contains polygon b.
-fn polygon_contains_polygon(a: &Polygon, b: &Polygon) -> bool {
-    if b.points.is_empty() {
-        return true;
-    }
-
-    // Check if all points of b are inside a
-    for p in &b.points {
-        if !a.contains_point(*p) {
-            return false;
-        }
-    }
-
-    true
-}
-
-/// Intersect two convex polygons using Sutherland-Hodgman algorithm.
-fn intersect_convex_polygons(subject: &Polygon, clip: &Polygon) -> Option<Polygon> {
-    if subject.is_empty() || clip.is_empty() {
-        return None;
-    }
-
-    let mut output = subject.points.clone();
-
-    let n = clip.points.len();
-    for i in 0..n {
-        if output.is_empty() {
-            break;
-        }
-
-        let j = (i + 1) % n;
-        let edge_start = clip.points[i];
-        let edge_end = clip.points[j];
-
-        let input = output;
-        output = Vec::new();
-
-        for k in 0..input.len() {
-            let current = input[k];
-            let next = input[(k + 1) % input.len()];
-
-            let current_inside = is_left(edge_start, edge_end, current) >= 0.0;
-            let next_inside = is_left(edge_start, edge_end, next) >= 0.0;
-
-            if current_inside {
-                output.push(current);
-
-                if !next_inside {
-                    if let Some(intersection) =
-                        line_intersection(current, next, edge_start, edge_end)
-                    {
-                        output.push(intersection);
-                    }
-                }
-            } else if next_inside {
-                if let Some(intersection) = line_intersection(current, next, edge_start, edge_end) {
-                    output.push(intersection);
-                }
-            }
-        }
-    }
-
-    if output.len() >= 3 {
-        let mut result = Polygon::new();
-        result.points = output;
-        Some(result)
-    } else {
-        None
-    }
-}
-
-/// Subtract one polygon from another.
-fn subtract_polygon(subject: &Polygon, clip: &Polygon) -> Vec<Polygon> {
-    // Simplified implementation: if clip contains subject, return empty
-    // Otherwise, return subject (proper implementation would clip)
-    if polygon_contains_polygon(clip, subject) {
-        return Vec::new();
-    }
-
-    // Check if there's any overlap
-    let bounds1 = subject.bounds();
-    let bounds2 = clip.bounds();
-
-    if !bounds_intersect(&bounds1, &bounds2) {
-        return vec![subject.clone()];
-    }
-
-    // For a proper implementation, we would:
-    // 1. Find all intersection points
-    // 2. Build a planar graph
-    // 3. Walk the graph to find result polygons
-    // For now, return subject if not fully contained
-    vec![subject.clone()]
-}
-
-/// Find intersection point of two line segments.
-fn line_intersection(p1: Point, p2: Point, p3: Point, p4: Point) -> Option<Point> {
-    let d1 = p2 - p1;
-    let d2 = p4 - p3;
-
-    let cross = d1.x * d2.y - d1.y * d2.x;
-
-    if cross.abs() < 1e-10 {
-        return None; // Lines are parallel
-    }
-
-    let d3 = p3 - p1;
-    let t = (d3.x * d2.y - d3.y * d2.x) / cross;
-
-    if t >= 0.0 && t <= 1.0 {
-        Some(p1 + d1 * t)
-    } else {
-        None
-    }
+    let a = skia_polygons_to_geo(polys1);
+    let b = skia_polygons_to_geo(polys2);
+    geo_to_skia_polygons(&a.xor(&b))
 }
 
 /// Convert polygons back to a path.
@@ -720,5 +610,158 @@ mod tests {
 
         assert!(poly.contains_point(Point::new(5.0, 5.0)));
         assert!(!poly.contains_point(Point::new(15.0, 5.0)));
+    }
+
+    /// Walk every shell polygon in `polys` and test whether `probe`
+    /// lies inside any of them (ignoring holes). Used by the
+    /// correctness tests below to check the output of a boolean op.
+    fn polys_contain_probe(polys: &[Polygon], probe: Point) -> bool {
+        polys
+            .iter()
+            .any(|p| !p.is_hole && p.contains_point(probe))
+    }
+
+    /// Build a square subpath from top-left corner + side length.
+    fn rect_path(x: f32, y: f32, side: f32) -> Path {
+        let mut b = PathBuilder::new();
+        b.move_to(x, y);
+        b.line_to(x + side, y);
+        b.line_to(x + side, y + side);
+        b.line_to(x, y + side);
+        b.close();
+        b.build()
+    }
+
+    // GAP-C4 regression: partial-overlap difference must carve out the
+    // intersection, not return the unmodified subject.
+    #[test]
+    fn test_difference_partial_overlap() {
+        let path_a = rect_path(0.0, 0.0, 20.0);
+        let path_b = rect_path(10.0, 10.0, 20.0);
+
+        let result = op(&path_a, &path_b, PathOp::Difference).expect("op returns Some");
+        let polys = path_to_polygons(&result, 0.5);
+
+        assert!(
+            !polys.is_empty(),
+            "A - B of partially overlapping rects must not be empty"
+        );
+        // (5, 5) is in A only — belongs in the result.
+        assert!(
+            polys_contain_probe(&polys, Point::new(5.0, 5.0)),
+            "point in A \\ B (A only) should be in result"
+        );
+        // (15, 15) is in both A and B — must be carved out.
+        assert!(
+            !polys_contain_probe(&polys, Point::new(15.0, 15.0)),
+            "point in A ∩ B should NOT be in A \\ B"
+        );
+        // (25, 25) is in B only — must not appear in A \ B.
+        assert!(
+            !polys_contain_probe(&polys, Point::new(25.0, 25.0)),
+            "point only in B should not be in A \\ B"
+        );
+    }
+
+    // GAP-C5 regression: intersection on a concave subject must not
+    // degrade to the Sutherland-Hodgman answer.
+    #[test]
+    fn test_intersect_concave_polygons() {
+        // L-shape: width 20, height 20, with a 10x10 corner cut out
+        // of the top-right, leaving the horizontal arm y in [0, 10]
+        // and the vertical arm x in [0, 10].
+        let mut l = PathBuilder::new();
+        l.move_to(0.0, 0.0);
+        l.line_to(20.0, 0.0);
+        l.line_to(20.0, 10.0);
+        l.line_to(10.0, 10.0);
+        l.line_to(10.0, 20.0);
+        l.line_to(0.0, 20.0);
+        l.close();
+        let path_l = l.build();
+
+        // Rect 5..25 in both axes — overlaps both arms of the L and
+        // the cut-out corner.
+        let path_r = rect_path(5.0, 5.0, 20.0);
+
+        let result = op(&path_l, &path_r, PathOp::Intersect).expect("op returns Some");
+        let polys = path_to_polygons(&result, 0.5);
+
+        assert!(!polys.is_empty(), "L ∩ rect must not be empty");
+        // (15, 7) is inside the L (horizontal arm, y<10) and inside
+        // the rect (x>5, y>5) — should be in result.
+        assert!(
+            polys_contain_probe(&polys, Point::new(15.0, 7.0)),
+            "point in both L and rect should be in L ∩ rect"
+        );
+        // (7, 15) is inside the L (vertical arm, x<10) and inside
+        // the rect — should be in result.
+        assert!(
+            polys_contain_probe(&polys, Point::new(7.0, 15.0)),
+            "point in vertical arm and rect should be in L ∩ rect"
+        );
+        // (15, 15) is in the cut-out corner of the L (OUTSIDE L)
+        // but inside the rect — must NOT be in result. This is the
+        // case Sutherland-Hodgman would get wrong.
+        assert!(
+            !polys_contain_probe(&polys, Point::new(15.0, 15.0)),
+            "point in L's cut-out corner must not appear in L ∩ rect"
+        );
+    }
+
+    // GAP-C4 regression: partial-overlap xor must produce a ring-
+    // like region around the overlap, not the concatenation of the
+    // two inputs.
+    #[test]
+    fn test_xor_partial_overlap() {
+        let path_a = rect_path(0.0, 0.0, 20.0);
+        let path_b = rect_path(10.0, 10.0, 20.0);
+
+        let result = op(&path_a, &path_b, PathOp::Xor).expect("op returns Some");
+        let polys = path_to_polygons(&result, 0.5);
+
+        assert!(!polys.is_empty(), "A XOR B must not be empty");
+        // (15, 15) is in both — must be excluded.
+        assert!(
+            !polys_contain_probe(&polys, Point::new(15.0, 15.0)),
+            "A ∩ B region must not be in A XOR B"
+        );
+        // (5, 5) is in A only.
+        assert!(
+            polys_contain_probe(&polys, Point::new(5.0, 5.0)),
+            "A-only region must be in A XOR B"
+        );
+        // (25, 25) is in B only.
+        assert!(
+            polys_contain_probe(&polys, Point::new(25.0, 25.0)),
+            "B-only region must be in A XOR B"
+        );
+    }
+
+    // GAP-C4 regression: ReverseDifference must actually subtract.
+    #[test]
+    fn test_reverse_difference_partial_overlap() {
+        let path_a = rect_path(0.0, 0.0, 20.0);
+        let path_b = rect_path(10.0, 10.0, 20.0);
+
+        let result = op(&path_a, &path_b, PathOp::ReverseDifference).expect("op returns Some");
+        let polys = path_to_polygons(&result, 0.5);
+
+        // ReverseDifference is B \ A.
+        // (25, 25) is in B only — must be in result.
+        assert!(
+            polys_contain_probe(&polys, Point::new(25.0, 25.0)),
+            "point in B only should be in B \\ A"
+        );
+        // (15, 15) is in both — must be carved out.
+        assert!(
+            !polys_contain_probe(&polys, Point::new(15.0, 15.0)),
+            "overlap region should not appear in B \\ A"
+        );
+        // (5, 5) is in A only — must be excluded.
+        assert!(
+            !polys_contain_probe(&polys, Point::new(5.0, 5.0)),
+            "point only in A should not be in B \\ A"
+        );
     }
 }

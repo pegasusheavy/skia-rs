@@ -98,17 +98,18 @@ impl Color {
         self.0
     }
 
-    /// Parse a CSS color string (CSS Color Level 3).
+    /// Parse a CSS color string (CSS Color Level 3 & 4).
     ///
     /// Supports:
     /// - Hex: `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`
     /// - Functional: `rgb(r, g, b)`, `rgba(r, g, b, a)`,
     ///   `hsl(h, s%, l%)`, `hsla(h, s%, l%, a)`
     /// - Named: all CSS Color Level 3 names (transparent, red, aliceblue, …)
+    /// - CSS Color Level 4: `lab()`, `lch()`, `oklab()`, `oklch()`, `hwb()`,
+    ///   `color(srgb|srgb-linear|display-p3 ...)`
     ///
-    /// Returns `None` if the string does not match any of the above forms.
-    /// CSS Color Level 4 (lab, lch, oklab, oklch, hwb, color()) is not yet
-    /// supported — those require color-space infrastructure.
+    /// Level 4 colors are converted to sRGB; out-of-gamut values are clamped.
+    /// Returns `None` if the string does not match any supported form.
     pub fn from_css(s: &str) -> Option<Self> {
         let s = s.trim();
 
@@ -127,6 +128,26 @@ impl Color {
         }
         if let Some(inner) = s.strip_prefix("hsl(").and_then(|r| r.strip_suffix(')')) {
             return Self::parse_hsl_inner(inner, false);
+        }
+
+        // CSS Color Level 4
+        if let Some(inner) = s.strip_prefix("lab(").and_then(|r| r.strip_suffix(')')) {
+            return Self::parse_lab(inner);
+        }
+        if let Some(inner) = s.strip_prefix("lch(").and_then(|r| r.strip_suffix(')')) {
+            return Self::parse_lch(inner);
+        }
+        if let Some(inner) = s.strip_prefix("oklab(").and_then(|r| r.strip_suffix(')')) {
+            return Self::parse_oklab(inner);
+        }
+        if let Some(inner) = s.strip_prefix("oklch(").and_then(|r| r.strip_suffix(')')) {
+            return Self::parse_oklch(inner);
+        }
+        if let Some(inner) = s.strip_prefix("hwb(").and_then(|r| r.strip_suffix(')')) {
+            return Self::parse_hwb(inner);
+        }
+        if let Some(inner) = s.strip_prefix("color(").and_then(|r| r.strip_suffix(')')) {
+            return Self::parse_color_function(inner);
         }
 
         Self::named_color(s)
@@ -214,6 +235,275 @@ impl Color {
             to_u8(gf),
             to_u8(bf),
         ))
+    }
+
+    // -------------------------------------------------------------------------
+    // CSS Color Level 4 parsers
+    // -------------------------------------------------------------------------
+
+    /// Split color function components on whitespace/comma, handling slash-separated alpha.
+    fn split_components(s: &str) -> (Vec<&str>, Option<&str>) {
+        if let Some((main, alpha)) = s.split_once('/') {
+            let parts: Vec<&str> = main
+                .split(|c| c == ' ' || c == ',')
+                .filter(|p| !p.is_empty())
+                .collect();
+            (parts, Some(alpha.trim()))
+        } else {
+            let parts: Vec<&str> = s
+                .split(|c| c == ' ' || c == ',')
+                .filter(|p| !p.is_empty())
+                .collect();
+            (parts, None)
+        }
+    }
+
+    /// Parse alpha component (number 0..1 or percentage 0..100%).
+    fn parse_alpha(s: &str) -> Option<u8> {
+        let s = s.trim();
+        if let Some(pct) = s.strip_suffix('%') {
+            let v: f32 = pct.parse().ok()?;
+            Some((v * 2.55).round().clamp(0.0, 255.0) as u8)
+        } else {
+            let v: f32 = s.parse().ok()?;
+            Some((v * 255.0).round().clamp(0.0, 255.0) as u8)
+        }
+    }
+
+    /// Convert linear sRGB component to sRGB u8.
+    fn linear_to_srgb_u8(x: f32) -> u8 {
+        let c = if x <= 0.0 {
+            0.0
+        } else if x >= 1.0 {
+            1.0
+        } else if x <= 0.0031308 {
+            12.92 * x
+        } else {
+            1.055 * x.powf(1.0 / 2.4) - 0.055
+        };
+        (c * 255.0).round() as u8
+    }
+
+    /// Shared plumbing for CSS Color Level 4 functional notations.
+    /// Takes linear RGB components and optional alpha string, converts to
+    /// sRGB u8, and assembles the final Color.
+    fn compose_level4(
+        linear_rgb: (f32, f32, f32),
+        alpha: Option<&str>,
+    ) -> Option<Self> {
+        let alpha_u8 = alpha.and_then(Self::parse_alpha).unwrap_or(255);
+        let r = Self::linear_to_srgb_u8(linear_rgb.0);
+        let g = Self::linear_to_srgb_u8(linear_rgb.1);
+        let b = Self::linear_to_srgb_u8(linear_rgb.2);
+        Some(Self::from_argb(alpha_u8, r, g, b))
+    }
+
+    /// Convert Oklab to linear sRGB.
+    /// Reference: https://bottosson.github.io/posts/oklab/
+    fn oklab_to_linear_srgb(l: f32, a: f32, b: f32) -> (f32, f32, f32) {
+        let l_ = l + 0.3963377774 * a + 0.2158037573 * b;
+        let m_ = l - 0.1055613458 * a - 0.0638541728 * b;
+        let s_ = l - 0.0894841775 * a - 1.2914855480 * b;
+
+        let l_cubed = l_ * l_ * l_;
+        let m_cubed = m_ * m_ * m_;
+        let s_cubed = s_ * s_ * s_;
+
+        let r = 4.0767245293 * l_cubed - 3.3072168827 * m_cubed + 0.2307590544 * s_cubed;
+        let g = -1.2681437731 * l_cubed + 2.6093323231 * m_cubed - 0.3411344290 * s_cubed;
+        let b = -0.0041119885 * l_cubed - 0.7034763098 * m_cubed + 1.7068625689 * s_cubed;
+
+        (r, g, b)
+    }
+
+    /// Convert CIE Lab (D50) to linear sRGB.
+    /// CSS Color Level 4 specifies D50 whitepoint with Bradford chromatic
+    /// adaptation to D65 for sRGB.
+    pub(crate) fn lab_to_linear_srgb(l: f32, a: f32, b: f32) -> (f32, f32, f32) {
+        // Lab → XYZ (D50 whitepoint)
+        let fy = (l + 16.0) / 116.0;
+        let fx = a / 500.0 + fy;
+        let fz = fy - b / 200.0;
+
+        let lab_f_inverse = |t: f32| {
+            let k = (6.0_f32 / 29.0_f32).powi(3);
+            if t.powi(3) > k {
+                t.powi(3)
+            } else {
+                (t - 16.0 / 116.0) * 3.0 * (6.0_f32 / 29.0_f32).powi(2)
+            }
+        };
+
+        // D50 whitepoint
+        let wx = 0.96422;
+        let wy = 1.0;
+        let wz = 0.82521;
+        let x_d50 = wx * lab_f_inverse(fx);
+        let y_d50 = wy * lab_f_inverse(fy);
+        let z_d50 = wz * lab_f_inverse(fz);
+
+        // Bradford-adapt D50 XYZ → D65 XYZ
+        let x_d65 = 0.9555766 * x_d50 + -0.0230393 * y_d50 + 0.0631636 * z_d50;
+        let y_d65 = -0.0282895 * x_d50 + 1.0099416 * y_d50 + 0.0210077 * z_d50;
+        let z_d65 = 0.0122982 * x_d50 + -0.0204830 * y_d50 + 1.3299098 * z_d50;
+
+        // XYZ (D65) → linear sRGB
+        let r = 3.2404542 * x_d65 + -1.5371385 * y_d65 + -0.4985314 * z_d65;
+        let g = -0.9692660 * x_d65 + 1.8760108 * y_d65 + 0.0415560 * z_d65;
+        let b = 0.0556434 * x_d65 + -0.2040259 * y_d65 + 1.0572252 * z_d65;
+
+        (r, g, b)
+    }
+
+    /// Convert cylindrical LCH to Cartesian Lab.
+    fn lch_to_lab(l: f32, c: f32, h_deg: f32) -> (f32, f32, f32) {
+        let h_rad = h_deg.to_radians();
+        (l, c * h_rad.cos(), c * h_rad.sin())
+    }
+
+    fn parse_oklab(s: &str) -> Option<Self> {
+        let (parts, alpha) = Self::split_components(s);
+        if parts.len() != 3 {
+            return None;
+        }
+        let l = Self::parse_oklab_l(parts[0])?;
+        let a: f32 = parts[1].trim().parse().ok()?;
+        let b: f32 = parts[2].trim().parse().ok()?;
+        let rgb = Self::oklab_to_linear_srgb(l, a, b);
+        Self::compose_level4(rgb, alpha)
+    }
+
+    fn parse_oklab_l(s: &str) -> Option<f32> {
+        let s = s.trim();
+        if let Some(pct) = s.strip_suffix('%') {
+            Some(pct.parse::<f32>().ok()? / 100.0)
+        } else {
+            s.parse::<f32>().ok()
+        }
+    }
+
+    fn parse_oklch(s: &str) -> Option<Self> {
+        let (parts, alpha) = Self::split_components(s);
+        if parts.len() != 3 {
+            return None;
+        }
+        let l = Self::parse_oklab_l(parts[0])?;
+        let c: f32 = if let Some(pct) = parts[1].trim().strip_suffix('%') {
+            pct.parse::<f32>().ok()? / 100.0
+        } else {
+            parts[1].trim().parse().ok()?
+        };
+        let h: f32 = parts[2].trim().trim_end_matches("deg").parse().ok()?;
+        let (l, a, b) = Self::lch_to_lab(l, c, h);
+        let rgb = Self::oklab_to_linear_srgb(l, a, b);
+        Self::compose_level4(rgb, alpha)
+    }
+
+    fn parse_lab(s: &str) -> Option<Self> {
+        let (parts, alpha) = Self::split_components(s);
+        if parts.len() != 3 {
+            return None;
+        }
+        let l = Self::parse_lab_l(parts[0])?;
+        let a: f32 = parts[1].trim().parse().ok()?;
+        let b: f32 = parts[2].trim().parse().ok()?;
+        let rgb = Self::lab_to_linear_srgb(l, a, b);
+        Self::compose_level4(rgb, alpha)
+    }
+
+    fn parse_lab_l(s: &str) -> Option<f32> {
+        let s = s.trim();
+        if let Some(pct) = s.strip_suffix('%') {
+            Some(pct.parse::<f32>().ok()?)
+        } else {
+            s.parse::<f32>().ok()
+        }
+    }
+
+    fn parse_lch(s: &str) -> Option<Self> {
+        let (parts, alpha) = Self::split_components(s);
+        if parts.len() != 3 {
+            return None;
+        }
+        let l = Self::parse_lab_l(parts[0])?;
+        let c: f32 = parts[1].trim().parse().ok()?;
+        let h: f32 = parts[2].trim().trim_end_matches("deg").parse().ok()?;
+        let (l, a, b) = Self::lch_to_lab(l, c, h);
+        let rgb = Self::lab_to_linear_srgb(l, a, b);
+        Self::compose_level4(rgb, alpha)
+    }
+
+    fn parse_hwb(s: &str) -> Option<Self> {
+        let (parts, alpha) = Self::split_components(s);
+        if parts.len() != 3 {
+            return None;
+        }
+        let h: f32 = parts[0].trim().trim_end_matches("deg").parse().ok()?;
+        let w: f32 = parts[1].trim().trim_end_matches('%').parse::<f32>().ok()? / 100.0;
+        let b: f32 = parts[2].trim().trim_end_matches('%').parse::<f32>().ok()? / 100.0;
+        let alpha_u8 = alpha.and_then(Self::parse_alpha).unwrap_or(255);
+
+        // If w + b >= 1, return gray
+        let sum = w + b;
+        let (w, b) = if sum >= 1.0 {
+            (w / sum, b / sum)
+        } else {
+            (w, b)
+        };
+
+        // Get pure hue via HSL
+        let (hr, hg, hb) = hsl_to_rgb(h, 1.0, 0.5);
+        let blend = |ch: f32| ch * (1.0 - w - b) + w;
+        let r = blend(hr);
+        let g = blend(hg);
+        let b_ch = blend(hb);
+
+        let to_u8 = |x: f32| (x * 255.0).round().clamp(0.0, 255.0) as u8;
+        Some(Self::from_argb(alpha_u8, to_u8(r), to_u8(g), to_u8(b_ch)))
+    }
+
+    fn parse_color_function(s: &str) -> Option<Self> {
+        let (parts, alpha) = Self::split_components(s);
+        if parts.len() != 4 {
+            return None;
+        }
+        let space = parts[0];
+        let r: f32 = parts[1].trim().parse().ok()?;
+        let g: f32 = parts[2].trim().parse().ok()?;
+        let b: f32 = parts[3].trim().parse().ok()?;
+
+        let rgb = match space {
+            "srgb" => {
+                // sRGB gamma space → linear
+                let to_linear = |x: f32| {
+                    if x <= 0.04045 {
+                        x / 12.92
+                    } else {
+                        ((x + 0.055) / 1.055).powf(2.4)
+                    }
+                };
+                (to_linear(r), to_linear(g), to_linear(b))
+            }
+            "srgb-linear" => (r, g, b),
+            "display-p3" => {
+                // P3 → linear sRGB matrix (approximate)
+                let lr = 1.2249 * r + -0.2247 * g + 0.0000 * b;
+                let lg = -0.0420 * r + 1.0419 * g + 0.0000 * b;
+                let lb = -0.0197 * r + -0.0786 * g + 1.0980 * b;
+                (lr, lg, lb)
+            }
+            "a98-rgb" => {
+                // Adobe RGB → linear sRGB (approximate)
+                let lr = 1.04788 * r + -0.02908 * g + -0.00923 * b;
+                let lg = -0.01726 * r + 0.99835 * g + 0.00754 * b;
+                let lb = 0.00612 * r + -0.03608 * g + 1.03988 * b;
+                (lr, lg, lb)
+            }
+            // rec2020 and prophoto-rgb not supported — no matrix
+            _ => return None,
+        };
+
+        Self::compose_level4(rgb, alpha)
     }
 
     fn named_color(s: &str) -> Option<Self> {
@@ -961,22 +1251,28 @@ impl IccProfile {
 
     /// Parse an ICC profile from a byte buffer.
     ///
-    /// Reads the 128-byte ICC header to extract profile class, color space,
-    /// and PCS information.
+    /// Reads the 128-byte ICC header and the tag table to recover the
+    /// profile's transfer function (from the `rTRC` tag) and gamut
+    /// primaries (from the `rXYZ`/`gXYZ`/`bXYZ` tags). The extracted
+    /// transfer function and gamut are used to populate
+    /// `embedded_color_space`.
     ///
-    /// # Limitations
+    /// Supported transfer-curve tag types:
+    /// - `curv` with count 0 (identity), count 1 (pure gamma via u8.8
+    ///   fixed-point), or tabulated (approximated as sRGB if it spans
+    ///   `[0, 1]`, else gamma 2.2).
+    /// - `para` function types 0, 3, and 4 (pure gamma, 5-parameter, and
+    ///   7-parameter parametric curves respectively). The sRGB form is
+    ///   detected by parameter inspection.
     ///
-    /// **The current implementation does not parse the ICC tag table.**
-    /// All parsed profiles report `embedded_color_space` as sRGB regardless
-    /// of their actual transfer function and gamut. For accurate color
-    /// management with Display P3, Adobe RGB, or other non-sRGB profiles,
-    /// this function will produce incorrect color space metadata.
+    /// Primaries are matched against known named gamuts (sRGB/Rec.709,
+    /// Display P3, Adobe RGB, Rec.2020) with a small tolerance; anything
+    /// else falls back to `ColorGamut::Custom`.
     ///
-    /// Full tag table parsing (rTRC/gTRC/bTRC for transfer functions and
-    /// rXYZ/gXYZ/bXYZ for gamut) is planned for a future release. Track
-    /// progress in the foundation audit (GAP-C1).
-    ///
-    /// Returns `None` if the profile bytes are malformed or too short.
+    /// Returns `None` if the bytes are malformed, too short, or fail the
+    /// `acsp` magic-number check. Profiles whose tag table cannot be
+    /// resolved fall back to sRGB for `embedded_color_space` rather than
+    /// returning `None`.
     pub fn from_bytes(data: &[u8]) -> Option<Self> {
         // ICC profile header is 128 bytes
         if data.len() < 128 {
@@ -1017,15 +1313,32 @@ impl IccProfile {
             _ => IccPcs::Xyz,
         };
 
-        // For now, default to sRGB for all parsed profiles
-        // A full implementation would parse the tag table to get
-        // the actual transfer function and primaries
+        // Parse the tag table and try to rebuild a ColorSpace from the
+        // rTRC + rXYZ/gXYZ/bXYZ tags. The red TRC is used for all three
+        // channels (ColorSpace currently carries a single TransferFunction
+        // and virtually all real-world RGB profiles use identical R/G/B
+        // curves). If any required tag is missing or uses an unsupported
+        // encoding, fall back to sRGB instead of failing the whole parse.
+        let embedded_color_space = icc::parse_tag_table(data)
+            .and_then(|tags| {
+                let rx = icc::read_xyz_tag(&tags, data, b"rXYZ")?;
+                let gx = icc::read_xyz_tag(&tags, data, b"gXYZ")?;
+                let bx = icc::read_xyz_tag(&tags, data, b"bXYZ")?;
+                let rtrc = icc::read_trc_tag(&tags, data, b"rTRC")?;
+                let gamut = icc::classify_gamut(rx, gx, bx);
+                Some(ColorSpace {
+                    transfer_fn: rtrc,
+                    gamut,
+                })
+            })
+            .unwrap_or_else(ColorSpace::srgb);
+
         Some(Self {
             profile_class,
             color_space,
             pcs,
             description: "ICC Profile".to_string(),
-            embedded_color_space: ColorSpace::srgb(),
+            embedded_color_space,
             raw_data: Some(data.to_vec()),
         })
     }
@@ -1091,6 +1404,358 @@ pub enum IccPcs {
     Xyz,
     /// CIE Lab.
     Lab,
+}
+
+// =============================================================================
+// ICC Tag Table Parsing (internal)
+// =============================================================================
+
+/// Private helpers for parsing the ICC v2/v4 tag table referenced by
+/// `IccProfile::from_bytes`. Kept in its own module so the parsing code
+/// cannot accidentally reach into `IccProfile` internals — this module's
+/// only interface with the outer type is returning a `ColorSpace`.
+mod icc {
+    use super::{ColorGamut, TransferFunction};
+
+    /// A single entry from the ICC tag table.
+    #[derive(Debug)]
+    pub(super) struct IccTag {
+        pub signature: [u8; 4],
+        pub offset: u32,
+        pub size: u32,
+    }
+
+    #[inline]
+    fn read_u32_be(bytes: &[u8], off: usize) -> Option<u32> {
+        bytes
+            .get(off..off + 4)?
+            .try_into()
+            .ok()
+            .map(u32::from_be_bytes)
+    }
+
+    #[inline]
+    fn read_u16_be(bytes: &[u8], off: usize) -> Option<u16> {
+        bytes
+            .get(off..off + 2)?
+            .try_into()
+            .ok()
+            .map(u16::from_be_bytes)
+    }
+
+    /// Read a signed 15.16 fixed-point number (s15Fixed16Number) at `off`.
+    #[inline]
+    fn read_s15_16(bytes: &[u8], off: usize) -> Option<f32> {
+        let raw = read_u32_be(bytes, off)? as i32;
+        Some(raw as f32 / 65536.0)
+    }
+
+    /// Parse the tag table at byte 128. Performs bounds and sanity checks
+    /// so a corrupted count or offset cannot cause downstream panics.
+    pub(super) fn parse_tag_table(bytes: &[u8]) -> Option<Vec<IccTag>> {
+        if bytes.len() < 132 {
+            return None;
+        }
+        let count = read_u32_be(bytes, 128)? as usize;
+        // Each tag entry is 12 bytes. Reject pathological counts and
+        // counts that would overflow the buffer.
+        if count > 1024 {
+            return None;
+        }
+        let table_end = 132_usize.checked_add(count.checked_mul(12)?)?;
+        if table_end > bytes.len() {
+            return None;
+        }
+        let mut tags = Vec::with_capacity(count);
+        for i in 0..count {
+            let base = 132 + i * 12;
+            let signature: [u8; 4] = bytes.get(base..base + 4)?.try_into().ok()?;
+            let offset = read_u32_be(bytes, base + 4)?;
+            let size = read_u32_be(bytes, base + 8)?;
+            // The tag's data range must lie within the buffer.
+            let end = (offset as usize).checked_add(size as usize)?;
+            if end > bytes.len() {
+                return None;
+            }
+            tags.push(IccTag {
+                signature,
+                offset,
+                size,
+            });
+        }
+        Some(tags)
+    }
+
+    fn find_tag<'a>(tags: &'a [IccTag], sig: &[u8; 4]) -> Option<&'a IccTag> {
+        tags.iter().find(|t| &t.signature == sig)
+    }
+
+    /// Read an `XYZ ` tag and return its three s15.16 components.
+    pub(super) fn read_xyz_tag(
+        tags: &[IccTag],
+        bytes: &[u8],
+        sig: &[u8; 4],
+    ) -> Option<[f32; 3]> {
+        let tag = find_tag(tags, sig)?;
+        let start = tag.offset as usize;
+        let end = start.checked_add(tag.size as usize)?;
+        let data = bytes.get(start..end)?;
+        // 4 bytes type sig + 4 bytes reserved + 3 × 4 bytes s15Fixed16
+        if data.len() < 20 || &data[0..4] != b"XYZ " {
+            return None;
+        }
+        let x = read_s15_16(data, 8)?;
+        let y = read_s15_16(data, 12)?;
+        let z = read_s15_16(data, 16)?;
+        Some([x, y, z])
+    }
+
+    /// Read a TRC tag (`rTRC`, `gTRC`, or `bTRC`) and decode its transfer
+    /// function. Supports `curv` and `para` type signatures.
+    pub(super) fn read_trc_tag(
+        tags: &[IccTag],
+        bytes: &[u8],
+        sig: &[u8; 4],
+    ) -> Option<TransferFunction> {
+        let tag = find_tag(tags, sig)?;
+        let start = tag.offset as usize;
+        let end = start.checked_add(tag.size as usize)?;
+        let data = bytes.get(start..end)?;
+        if data.len() < 12 {
+            return None;
+        }
+        match &data[0..4] {
+            b"curv" => parse_curv(data),
+            b"para" => parse_para(data),
+            _ => None,
+        }
+    }
+
+    /// Parse a `curv` tag body.
+    ///
+    /// Layout: 4 bytes sig + 4 bytes reserved + 4 bytes count + count × u16.
+    /// - count == 0: identity curve (gamma 1.0) → Linear
+    /// - count == 1: u8.8 fixed-point gamma
+    /// - count >  1: tabulated curve (approximated; see below)
+    fn parse_curv(data: &[u8]) -> Option<TransferFunction> {
+        let count = read_u32_be(data, 8)? as usize;
+        if count == 0 {
+            return Some(TransferFunction::Linear);
+        }
+        if count == 1 {
+            let raw = read_u16_be(data, 12)?;
+            let gamma = raw as f32 / 256.0;
+            return Some(gamma_to_transfer(gamma));
+        }
+        // Tabulated curve. We don't store arbitrary LUTs in
+        // TransferFunction, so approximate: if the curve spans roughly
+        // [0, 1] we treat it as sRGB (the overwhelmingly common case for
+        // tabulated TRCs on display profiles); otherwise fall back to a
+        // gamma 2.2 approximation. Callers needing exact evaluation can
+        // parse the raw bytes from raw_data().
+        if data.len() < 12 + count * 2 {
+            return None;
+        }
+        let first = read_u16_be(data, 12)?;
+        let last = read_u16_be(data, 12 + (count - 1) * 2)?;
+        if first <= 8 && last >= 0xFF00 {
+            Some(TransferFunction::Srgb)
+        } else {
+            Some(gamma_to_transfer(2.2))
+        }
+    }
+
+    /// Parse a `para` tag body.
+    ///
+    /// Layout: 4 bytes sig + 4 bytes reserved + 2 bytes function type +
+    /// 2 bytes reserved + parameters (each an s15Fixed16).
+    ///
+    /// Function types:
+    /// - 0: Y = X^g                             (1 param)
+    /// - 1: Y = (aX+b)^g if X >= -b/a else 0    (3 params)
+    /// - 2: Y = (aX+b)^g + c if X >= -b/a else c (4 params)
+    /// - 3: Y = (aX+b)^g if X >= d else cX       (5 params)
+    /// - 4: Y = (aX+b)^g + e if X >= d else cX + f (7 params; sRGB-shaped)
+    fn parse_para(data: &[u8]) -> Option<TransferFunction> {
+        let function_type = read_u16_be(data, 8)?;
+        let p = 12; // parameters start offset within the tag data
+        match function_type {
+            0 => {
+                if data.len() < p + 4 {
+                    return None;
+                }
+                let g = read_s15_16(data, p)?;
+                Some(gamma_to_transfer(g))
+            }
+            1 => {
+                if data.len() < p + 12 {
+                    return None;
+                }
+                let g = read_s15_16(data, p)?;
+                let a = read_s15_16(data, p + 4)?;
+                let b = read_s15_16(data, p + 8)?;
+                // Expressed as the 7-param form with d = -b/a, c/e/f = 0.
+                let d = if a != 0.0 { -b / a } else { 0.0 };
+                classify_parametric(g, a, b, 0.0, d, 0.0, 0.0)
+            }
+            2 => {
+                if data.len() < p + 16 {
+                    return None;
+                }
+                let g = read_s15_16(data, p)?;
+                let a = read_s15_16(data, p + 4)?;
+                let b = read_s15_16(data, p + 8)?;
+                let c = read_s15_16(data, p + 12)?;
+                let d = if a != 0.0 { -b / a } else { 0.0 };
+                classify_parametric(g, a, b, 0.0, d, c, c)
+            }
+            3 => {
+                if data.len() < p + 20 {
+                    return None;
+                }
+                let g = read_s15_16(data, p)?;
+                let a = read_s15_16(data, p + 4)?;
+                let b = read_s15_16(data, p + 8)?;
+                let c = read_s15_16(data, p + 12)?;
+                let d = read_s15_16(data, p + 16)?;
+                classify_parametric(g, a, b, c, d, 0.0, 0.0)
+            }
+            4 => {
+                if data.len() < p + 28 {
+                    return None;
+                }
+                let g = read_s15_16(data, p)?;
+                let a = read_s15_16(data, p + 4)?;
+                let b = read_s15_16(data, p + 8)?;
+                let c = read_s15_16(data, p + 12)?;
+                let d = read_s15_16(data, p + 16)?;
+                let e = read_s15_16(data, p + 20)?;
+                let f = read_s15_16(data, p + 24)?;
+                classify_parametric(g, a, b, c, d, e, f)
+            }
+            _ => None,
+        }
+    }
+
+    /// Collapse a pure power curve to a named variant where possible.
+    fn gamma_to_transfer(g: f32) -> TransferFunction {
+        if (g - 1.0).abs() < 1e-3 {
+            TransferFunction::Linear
+        } else {
+            // Store as a parametric pure power: Y = X^g (a=1, b=0, rest 0).
+            TransferFunction::Parametric {
+                g,
+                a: 1.0,
+                b: 0.0,
+                c: 0.0,
+                d: 0.0,
+                e: 0.0,
+                f: 0.0,
+            }
+        }
+    }
+
+    /// Identify common named transfer functions from their 7-parameter
+    /// form. Falls back to `TransferFunction::Parametric` for anything we
+    /// don't recognise.
+    fn classify_parametric(
+        g: f32,
+        a: f32,
+        b: f32,
+        c: f32,
+        d: f32,
+        e: f32,
+        f: f32,
+    ) -> Option<TransferFunction> {
+        // sRGB: g=2.4, a=1/1.055, b=0.055/1.055, c=1/12.92, d=0.04045,
+        // e=0, f=0. Tolerances are loose enough to accept the rounded
+        // s15Fixed16 representations that real profiles emit.
+        let near = |x: f32, y: f32| (x - y).abs() < 1e-3;
+        if near(g, 2.4)
+            && near(a, 1.0 / 1.055)
+            && near(b, 0.055 / 1.055)
+            && near(c, 1.0 / 12.92)
+            && near(d, 0.04045)
+            && near(e, 0.0)
+            && near(f, 0.0)
+        {
+            return Some(TransferFunction::Srgb);
+        }
+        // Rec.2020 / Rec.709: g=1/0.45 ≈ 2.222, a=1/1.099, b=0.099/1.099,
+        // c=1/4.5, d=0.081, e=0, f=0.
+        if near(g, 1.0 / 0.45)
+            && near(a, 1.0 / 1.099)
+            && near(b, 0.099 / 1.099)
+            && near(c, 1.0 / 4.5)
+            && near(d, 0.081)
+            && near(e, 0.0)
+            && near(f, 0.0)
+        {
+            return Some(TransferFunction::Rec2020);
+        }
+        Some(TransferFunction::Parametric {
+            g,
+            a,
+            b,
+            c,
+            d,
+            e,
+            f,
+        })
+    }
+
+    /// Map D50-adapted primaries (rXYZ, gXYZ, bXYZ) to a named
+    /// `ColorGamut`. Tolerance is ~0.01 in XYZ units, which is wide
+    /// enough to swallow the precision loss of s15Fixed16 but tight
+    /// enough to discriminate sRGB, P3, Adobe RGB, and Rec.2020.
+    pub(super) fn classify_gamut(r: [f32; 3], g: [f32; 3], b: [f32; 3]) -> ColorGamut {
+        // Reference primaries, D50-adapted (via Bradford), as emitted by
+        // well-known profile generators (lcms2, ArgyllCMS, Apple):
+        let sets: &[(ColorGamut, [[f32; 3]; 3])] = &[
+            (
+                ColorGamut::Srgb,
+                [
+                    [0.4361, 0.2225, 0.0139],
+                    [0.3851, 0.7169, 0.0971],
+                    [0.1431, 0.0606, 0.7141],
+                ],
+            ),
+            (
+                ColorGamut::DisplayP3,
+                [
+                    [0.5151, 0.2412, -0.0010],
+                    [0.2920, 0.6922, 0.0419],
+                    [0.1571, 0.0666, 0.7841],
+                ],
+            ),
+            (
+                ColorGamut::AdobeRgb,
+                [
+                    [0.6097, 0.3111, 0.0195],
+                    [0.2053, 0.6257, 0.0609],
+                    [0.1492, 0.0632, 0.7446],
+                ],
+            ),
+            (
+                ColorGamut::Rec2020,
+                [
+                    [0.6734, 0.2790, -0.0019],
+                    [0.1656, 0.6753, 0.0299],
+                    [0.1251, 0.0457, 0.7969],
+                ],
+            ),
+        ];
+        const TOL: f32 = 0.01;
+        for (gamut, p) in sets {
+            let dr = (r[0] - p[0][0]).abs() + (r[1] - p[0][1]).abs() + (r[2] - p[0][2]).abs();
+            let dg = (g[0] - p[1][0]).abs() + (g[1] - p[1][1]).abs() + (g[2] - p[1][2]).abs();
+            let db = (b[0] - p[2][0]).abs() + (b[1] - p[2][1]).abs() + (b[2] - p[2][2]).abs();
+            if dr < 3.0 * TOL && dg < 3.0 * TOL && db < 3.0 * TOL {
+                return *gamut;
+            }
+        }
+        ColorGamut::Custom
+    }
 }
 
 // =============================================================================
@@ -1337,31 +2002,10 @@ pub fn rgb_to_lab(r: Scalar, g: Scalar, b: Scalar) -> (Scalar, Scalar, Scalar) {
 
 /// Lab to RGB conversion.
 ///
-/// Returns linear (R, G, B) values.
+/// Uses D50 whitepoint with Bradford chromatic adaptation to D65 per CSS Color
+/// Level 4 spec. Returns linear (R, G, B) values in [0, 1].
 pub fn lab_to_rgb(l: Scalar, a: Scalar, b: Scalar) -> (Scalar, Scalar, Scalar) {
-    // D65 reference white
-    let ref_x = 0.95047;
-    let ref_y = 1.00000;
-    let ref_z = 1.08883;
-
-    let fy = (l + 16.0) / 116.0;
-    let fx = a / 500.0 + fy;
-    let fz = fy - b / 200.0;
-
-    let f_inv = |t: Scalar| -> Scalar {
-        let t3 = t * t * t;
-        if t3 > 0.008856 {
-            t3
-        } else {
-            (t - 16.0 / 116.0) / 7.787
-        }
-    };
-
-    let x = ref_x * f_inv(fx);
-    let y = ref_y * f_inv(fy);
-    let z = ref_z * f_inv(fz);
-
-    xyz_to_rgb(x, y, z)
+    Color::lab_to_linear_srgb(l, a, b)
 }
 
 /// Calculate the perceived luminance of an sRGB color.
@@ -1652,5 +2296,239 @@ mod tests {
         // Should be approximately middle gray
         let gray = mixed.red();
         assert!(gray > 100 && gray < 200);
+    }
+
+    #[test]
+    fn test_icc_profile_rejects_short_buffer() {
+        // Anything shorter than the 128-byte header must be rejected.
+        assert!(IccProfile::from_bytes(&[]).is_none());
+        assert!(IccProfile::from_bytes(&[0u8; 64]).is_none());
+        assert!(IccProfile::from_bytes(&[0u8; 127]).is_none());
+    }
+
+    #[test]
+    fn test_icc_profile_rejects_missing_magic() {
+        // 128 zero bytes has no "acsp" signature at offset 36.
+        let bytes = [0u8; 128];
+        assert!(IccProfile::from_bytes(&bytes).is_none());
+    }
+
+    #[test]
+    fn test_icc_profile_parses_srgb_profile_correctly() {
+        // Fixture is Artifex Software's sRGB ICC profile (tabulated curv
+        // tag spanning [0, 0xFFFF]). The tag-table parser should recover
+        // sRGB primaries and classify the curv as TransferFunction::Srgb.
+        let bytes = match std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/srgb.icc"
+        )) {
+            Ok(b) => b,
+            Err(_) => {
+                eprintln!("tests/fixtures/srgb.icc not available; skipping");
+                return;
+            }
+        };
+        let profile = IccProfile::from_bytes(&bytes).expect("should parse sRGB profile");
+        assert_eq!(profile.color_space, IccColorSpace::Rgb);
+        assert_eq!(profile.pcs, IccPcs::Xyz);
+        assert!(
+            profile.color_space().is_srgb(),
+            "parsed sRGB profile should report is_srgb=true; got {:?}",
+            profile.color_space(),
+        );
+    }
+
+    #[test]
+    fn test_icc_profile_parses_display_p3_profile() {
+        // Fixture is Blender's srgb_p3d65_display.icc — P3 primaries
+        // with sRGB-shaped parametric TRC (para type 3). The parser
+        // should report DisplayP3 gamut and a non-sRGB color space.
+        let bytes = match std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/display_p3.icc"
+        )) {
+            Ok(b) => b,
+            Err(_) => {
+                eprintln!("tests/fixtures/display_p3.icc not available; skipping");
+                return;
+            }
+        };
+        let profile = IccProfile::from_bytes(&bytes).expect("should parse P3 profile");
+        assert_eq!(profile.color_space, IccColorSpace::Rgb);
+        assert!(
+            !profile.color_space().is_srgb(),
+            "Display P3 must not report is_srgb; got {:?}",
+            profile.color_space(),
+        );
+        assert_eq!(
+            profile.color_space().gamut,
+            ColorGamut::DisplayP3,
+            "Display P3 primaries must be classified as ColorGamut::DisplayP3",
+        );
+    }
+
+    // CSS Color Level 4 tests
+
+    #[test]
+    fn test_color_from_css_oklab_white() {
+        // oklab(1 0 0) = white
+        let c = Color::from_css("oklab(1 0 0)").unwrap();
+        assert!(c.red() >= 250, "r={}", c.red());
+        assert!(c.green() >= 250, "g={}", c.green());
+        assert!(c.blue() >= 250, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_color_from_css_oklab_black() {
+        // oklab(0 0 0) = black
+        let c = Color::from_css("oklab(0 0 0)").unwrap();
+        assert!(c.red() < 10, "r={}", c.red());
+        assert!(c.green() < 10, "g={}", c.green());
+        assert!(c.blue() < 10, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_color_from_css_oklab_red_is_red_ish() {
+        // oklab(0.628 0.2256 0.1257) ≈ sRGB red
+        let c = Color::from_css("oklab(0.628 0.2256 0.1257)").unwrap();
+        assert!(c.red() > 200, "r={}", c.red());
+        assert!(c.green() < 50, "g={}", c.green());
+        assert!(c.blue() < 50, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_color_from_css_oklch_equivalent_to_oklab() {
+        // oklch(0.5 0.1 0) = oklab(0.5 0.1 0)
+        let c1 = Color::from_css("oklch(0.5 0.1 0)").unwrap();
+        let c2 = Color::from_css("oklab(0.5 0.1 0)").unwrap();
+        assert!((c1.red() as i16 - c2.red() as i16).abs() <= 1);
+        assert!((c1.green() as i16 - c2.green() as i16).abs() <= 1);
+        assert!((c1.blue() as i16 - c2.blue() as i16).abs() <= 1);
+    }
+
+    #[test]
+    fn test_color_from_css_lab_black() {
+        let c = Color::from_css("lab(0 0 0)").unwrap();
+        assert!(c.red() < 10, "r={}", c.red());
+        assert!(c.green() < 10, "g={}", c.green());
+        assert!(c.blue() < 10, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_color_from_css_lab_white() {
+        let c = Color::from_css("lab(100 0 0)").unwrap();
+        assert!(c.red() >= 250, "r={}", c.red());
+        assert!(c.green() >= 250, "g={}", c.green());
+        assert!(c.blue() >= 250, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_lab_to_rgb_uses_d50_whitepoint() {
+        // CIE Lab (100, 0, 0) should produce very-near-white in sRGB
+        // under D50 + Bradford D50→D65 chromatic adaptation to sRGB.
+        let (r, g, b) = lab_to_rgb(100.0, 0.0, 0.0);
+        assert!(r > 0.99, "r = {}", r);
+        assert!(g > 0.99, "g = {}", g);
+        assert!(b > 0.99, "b = {}", b);
+    }
+
+    #[test]
+    fn test_color_from_css_lch_equivalent_to_lab() {
+        // lch(50 50 0) = lab(50 50 0)
+        let c1 = Color::from_css("lch(50 50 0)").unwrap();
+        let c2 = Color::from_css("lab(50 50 0)").unwrap();
+        assert!((c1.red() as i16 - c2.red() as i16).abs() <= 1);
+        assert!((c1.green() as i16 - c2.green() as i16).abs() <= 1);
+        assert!((c1.blue() as i16 - c2.blue() as i16).abs() <= 1);
+    }
+
+    #[test]
+    fn test_color_from_css_hwb_red() {
+        // hwb(0 0% 0%) = pure red
+        let c = Color::from_css("hwb(0 0% 0%)").unwrap();
+        assert!(c.red() >= 250, "r={}", c.red());
+        assert!(c.green() < 10, "g={}", c.green());
+        assert!(c.blue() < 10, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_color_from_css_hwb_white() {
+        // hwb(0 100% 0%) = white
+        let c = Color::from_css("hwb(0 100% 0%)").unwrap();
+        assert!(c.red() >= 250, "r={}", c.red());
+        assert!(c.green() >= 250, "g={}", c.green());
+        assert!(c.blue() >= 250, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_color_from_css_hwb_black() {
+        // hwb(0 0% 100%) = black
+        let c = Color::from_css("hwb(0 0% 100%)").unwrap();
+        assert!(c.red() < 10, "r={}", c.red());
+        assert!(c.green() < 10, "g={}", c.green());
+        assert!(c.blue() < 10, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_color_from_css_color_function_srgb() {
+        // color(srgb 1 0 0) = red
+        let c = Color::from_css("color(srgb 1 0 0)").unwrap();
+        assert!(c.red() >= 250, "r={}", c.red());
+        assert!(c.green() < 10, "g={}", c.green());
+        assert!(c.blue() < 10, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_color_from_css_color_function_srgb_linear() {
+        // color(srgb-linear 1 0 0) = red in linear space
+        let c = Color::from_css("color(srgb-linear 1 0 0)").unwrap();
+        assert!(c.red() >= 250, "r={}", c.red());
+        assert!(c.green() < 10, "g={}", c.green());
+        assert!(c.blue() < 10, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_color_from_css_color_function_display_p3() {
+        // color(display-p3 1 0 0) = P3 red (slightly outside sRGB)
+        let c = Color::from_css("color(display-p3 1 0 0)").unwrap();
+        // Should clamp to sRGB red
+        assert!(c.red() >= 250, "r={}", c.red());
+    }
+
+    #[test]
+    fn test_color_from_css_alpha_slash_syntax() {
+        // oklab(1 0 0 / 0.5) = half-alpha white
+        let c = Color::from_css("oklab(1 0 0 / 0.5)").unwrap();
+        assert!(c.alpha() > 120 && c.alpha() < 135, "a={}", c.alpha());
+    }
+
+    #[test]
+    fn test_color_from_css_alpha_percentage() {
+        // oklab(1 0 0 / 50%) = half-alpha white
+        let c = Color::from_css("oklab(1 0 0 / 50%)").unwrap();
+        assert!(c.alpha() > 120 && c.alpha() < 135, "a={}", c.alpha());
+    }
+
+    #[test]
+    fn test_color_from_css_oklab_percentage_lightness() {
+        // oklab(100% 0 0) = white
+        let c = Color::from_css("oklab(100% 0 0)").unwrap();
+        assert!(c.red() >= 250, "r={}", c.red());
+        assert!(c.green() >= 250, "g={}", c.green());
+        assert!(c.blue() >= 250, "b={}", c.blue());
+    }
+
+    #[test]
+    fn test_color_from_css_level4_comma_syntax() {
+        // Support legacy comma syntax: oklab(1, 0, 0)
+        let c = Color::from_css("oklab(1, 0, 0)").unwrap();
+        assert!(c.red() >= 250, "r={}", c.red());
+    }
+
+    #[test]
+    fn test_color_from_css_unsupported_color_space_returns_none() {
+        // rec2020 and prophoto-rgb not supported
+        assert!(Color::from_css("color(rec2020 1 0 0)").is_none());
+        assert!(Color::from_css("color(prophoto-rgb 1 0 0)").is_none());
     }
 }

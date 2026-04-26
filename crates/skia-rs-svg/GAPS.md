@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-25
 **Reviewer:** Claude (Opus 4.7)
-**Last updated:** 2026-04-25 (P6D closure — all 13 gaps resolved)
+**Last updated:** 2026-04-26 (P7E closure — N-1 CSS Color Level 4 fully resolved)
 
 ## Summary
 
@@ -77,7 +77,7 @@
 **Description:** Supports `#rgb`, `#rrggbb`, `rgb()`, `rgba()`, and ~15 named colors. Missing: 3-digit hex alpha (`#rgba`), 8-digit hex (`#rrggbbaa`), `hsl()`/`hsla()`, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()`, `color()`, and the other ~130 named colors defined in CSS Color Level 4 (aliceblue, cornflowerblue, etc.).
 **Impact:** Many SVG files from modern tools use `hsl()` or named colors outside the 15-color list.
 **Effort:** Small-Medium (mostly mechanical; use a lookup table for the full named-color list).
-**Status:** RESOLVED — `parse_color` now handles 3/4/6/8-digit hex, `rgb()`, `rgba()`, `hsl()`, `hsla()`, and the full CSS Color 3 named-color table (~140 colors including `cornflowerblue`, `rebeccapurple`, `darkslategrey`, etc.). Modern CIE-lab/oklch functions remain DEFERRED — they require a separate color-space integration that skia-rs-core doesn't currently expose; documented as future work rather than shipped half-done. Covered by extended `test_parse_color` assertions.
+**Status:** ✅ FULLY RESOLVED (P7E) — `parse_color` now handles 3/4/6/8-digit hex, `rgb()`, `rgba()`, `hsl()`, `hsla()`, and the full CSS Color 3 named-color table (~140 colors). CSS Color Level 4 modern color syntaxes (`lab()`, `lch()`, `oklab()`, `oklch()`, `hwb()`, `color(srgb|srgb-linear|display-p3|a98-rgb ...)`) are now supported via `Color::from_css` in skia-rs-core (P7E). Values are converted to sRGB; out-of-gamut colors are clamped. SVG's `parse_color` delegates to `Color::from_css`, so all Level 4 syntax is available. Covered by extended `test_parse_color` assertions in SVG and the comprehensive Level 4 test suite in skia-rs-core.
 
 ### N-2: `parse_length` does not handle `rem`/`vw`/`vh`/`ch`/`ex`/negative zero
 **File:** `parser.rs` (lines 343-357)

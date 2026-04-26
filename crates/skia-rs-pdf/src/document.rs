@@ -566,15 +566,21 @@ impl<'a> WriteCtx<'a> {
                 let desc = font.to_font_descriptor(desc_id, Some(file_id));
                 self.write_bytes(writer, desc.as_bytes())?;
 
-                // FontFile2 — the full TrueType bytes, flate-compressed.
+                // FontFile2 — the byte-level-subsetted TrueType bytes,
+                // flate-compressed. We prune glyf/loca to just the glyphs
+                // the document actually uses (plus .notdef + composite
+                // dependencies) while preserving every other table so
+                // character-code → glyph resolution through the font's
+                // cmap continues to work.
                 if let Some(data) = &font.font_data {
+                    let subsetted = subset_font_bytes(font, data);
                     self.offsets.push((file_id, self.offset));
-                    let compressed = flate_compress(data);
+                    let compressed = flate_compress(&subsetted);
                     let hdr = format!(
                         "{} 0 obj\n<< /Length {} /Length1 {} /Filter /FlateDecode >>\nstream\n",
                         file_id,
                         compressed.len(),
-                        data.len()
+                        subsetted.len()
                     );
                     self.write_bytes(writer, hdr.as_bytes())?;
                     self.write_bytes(writer, &compressed)?;
@@ -806,6 +812,19 @@ impl<'a> WriteCtx<'a> {
         dict.push_str(&format!("/ToUnicode {} 0 R\n", to_unicode_id));
         dict.push_str(">>\nendobj\n");
         dict
+    }
+}
+
+/// Run the font's used-glyphs set through the byte-level TrueType
+/// subsetter. Returns the original bytes unchanged when the subsetter
+/// fails (malformed data, unsupported layout), so embedding always
+/// succeeds even with exotic fonts.
+fn subset_font_bytes(font: &PdfFont, data: &[u8]) -> Vec<u8> {
+    let glyphs: std::collections::BTreeSet<u16> =
+        font.used_glyphs.iter().copied().collect();
+    match crate::font::subset::subset_truetype(data, &glyphs) {
+        Ok(bytes) => bytes,
+        Err(_) => data.to_vec(),
     }
 }
 

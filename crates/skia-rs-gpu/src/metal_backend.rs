@@ -2,6 +2,22 @@
 //!
 //! This module provides a direct Metal API backend for Apple platforms,
 //! offering low-level access beyond what wgpu provides.
+//!
+//! # Executor
+//!
+//! The Metal executor ([`MetalContext::new_wgpu_executor`], enabled when the
+//! `wgpu-backend` feature is also on) delegates to wgpu configured with
+//! [`wgpu::Backends::METAL`]. Metal's `MTLCommandBuffer`, `MTLRenderCommandEncoder`,
+//! and argument buffer machinery are driven inside wgpu; our `CommandBuffer`
+//! and `RenderPipelineDescriptor` flow through wgpu's naga pipeline to MSL
+//! and then to native Metal.
+//!
+//! A native metal-rs executor that hand-records `MTLCommandBuffer` sequences
+//! is not provided. Duplicating wgpu's Metal translator would require
+//! re-implementing resource tracking, argument encoding, and sync
+//! primitives — a separate crate-sized effort. For callers who need Metal
+//! bypass, [`MetalContext::device`] still exposes the raw `metal::Device`
+//! and [`MetalContext::command_queue`] the `metal::CommandQueue`.
 
 use crate::{
     GpuAdapterInfo, GpuBackendType, GpuCaps, GpuContext, GpuDeviceType, GpuError, GpuResult,
@@ -760,6 +776,42 @@ impl GpuContext for MetalContext {
     }
 }
 
+/// Build a Metal-backed [`crate::wgpu_backend::WgpuContext`].
+///
+/// Constructs a standalone `wgpu::Instance` restricted to `Backends::METAL`
+/// and requests an adapter + device through it. wgpu creates its own
+/// `MTLDevice` / `MTLCommandQueue` internally — this does *not* share state
+/// with the `metal::Device` inside [`MetalContext`]. Both can coexist; use
+/// the native device for bypass work, use the returned context for the
+/// command-buffer replay path.
+///
+/// Returns `Err(GpuError::DeviceCreation)` on non-Apple platforms or any
+/// environment where wgpu cannot enumerate a Metal device.
+#[cfg(all(feature = "metal", feature = "wgpu-backend"))]
+pub fn new_metal_wgpu_context() -> GpuResult<crate::wgpu_backend::WgpuContext> {
+    crate::wgpu_backend::WgpuContext::new_with_backends_blocking(wgpu::Backends::METAL)
+}
+
+#[cfg(all(feature = "metal", feature = "wgpu-backend"))]
+impl MetalContext {
+    /// Create a [`crate::wgpu_backend::WgpuExecutor`] routed through wgpu's
+    /// Metal backend.
+    ///
+    /// The returned `(WgpuContext, WgpuExecutor)` is independent of this
+    /// `MetalContext`. The existing `metal::Device` / `metal::CommandQueue`
+    /// on `self` remain valid for any caller-driven native work.
+    pub fn new_wgpu_executor(
+        &self,
+    ) -> GpuResult<(
+        crate::wgpu_backend::WgpuContext,
+        crate::wgpu_backend::WgpuExecutor,
+    )> {
+        let ctx = new_metal_wgpu_context()?;
+        let executor = crate::wgpu_backend::WgpuExecutor::new(&ctx);
+        Ok((ctx, executor))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -812,5 +864,25 @@ mod tests {
     fn test_sampler_filter() {
         let filter = MetalSamplerMinMagFilter::Linear;
         assert_eq!(filter, MetalSamplerMinMagFilter::Linear);
+    }
+
+    /// Smoke test for the wgpu-routed Metal executor. On non-Apple hosts
+    /// (which is where CI usually runs) this returns Err cleanly; on
+    /// macOS/iOS with Metal support it produces a real Metal-backed
+    /// executor. Either outcome is a pass — the regression guard is
+    /// against panics or silent fallback to a different backend.
+    #[cfg(feature = "wgpu-backend")]
+    #[test]
+    fn test_metal_wgpu_executor_construction_does_not_panic() {
+        match new_metal_wgpu_context() {
+            Ok(ctx) => {
+                assert_eq!(ctx.backend_type(), GpuBackendType::Metal);
+                let _executor = crate::wgpu_backend::WgpuExecutor::new(&ctx);
+            }
+            Err(GpuError::DeviceCreation(_)) => {
+                // Expected on non-Apple platforms.
+            }
+            Err(other) => panic!("unexpected error kind: {:?}", other),
+        }
     }
 }

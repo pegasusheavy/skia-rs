@@ -8,6 +8,22 @@ is wired and the data is exposed via `glyph_color_layers`/`glyph_svg`, but
 high-fidelity gradient rasterization is delegated to downstream paint
 pipelines). See per-gap `**Status:**` lines below.
 
+**Phase 7F status:** 2026-04-26 — both Phase 6A follow-ups resolved:
+* **P6A-FOLLOWUP-COLR-V1** — `ColorGlyphLayer` now carries typed
+  `GlyphPaint` data (Solid / LinearGradient / RadialGradient /
+  SweepGradient) with full geometric parameters (3-point linear,
+  two-circle radial, center+angles sweep), gradient stops, `extend`
+  mode, an effective affine `transform` (y-flipped into screen space),
+  an optional `clip_glyph`, and a `composite_mode`. The COLR painter
+  walker tracks transform/clip/composite stacks and applies them to
+  every emitted layer. Downstream paint pipelines (`skia-rs-paint`
+  gradient shaders) can rasterise v1 content faithfully from this data.
+* **P6A-FOLLOWUP-SVG-GLYPH** — `skia_rs_svg::glyph_svg_to_dom` added;
+  auto-detects gzip magic and decompresses before parsing, returning
+  an `SvgDom` ready for rendering via the existing `render_svg_to_canvas`
+  pipeline. Lives in `skia-rs-svg` (not `skia-rs-text`) to avoid a
+  dependency cycle (`skia-rs-svg` already depends on `skia-rs-text`).
+
 ## Summary
 
 - Total public functions reviewed: ~140 (`pub fn` across font.rs, font_mgr.rs, paragraph.rs, shaper.rs, text_blob.rs, typeface.rs)
@@ -94,8 +110,8 @@ Resolved in full:
  * `color_palette_count` exposes `CPAL` palette count.
 
 Partial scope (documented in API and tests):
- * COLR v1 gradient paints are still surfaced — the walker records them as layers with `is_gradient = true` and a representative solid color sampled from the first gradient stop. Callers that need true gradient/transform rendering (Noto Color Emoji v2 with gradient fills) should detect the flag and render via the full paint pipeline in `skia-rs-paint`. **Follow-up task:** P6A-FOLLOWUP-COLR-V1 — wire `ColorGlyphLayer`'s gradient/transform data through skia-rs-paint's gradient shaders.
- * SVG-in-OpenType decompression (SVGZ) and rendering is delegated to `skia-rs-svg`. `glyph_svg` exposes the raw bytes so the caller can detect the gzip magic and route accordingly. **Follow-up task:** P6A-FOLLOWUP-SVG-GLYPH — helper in skia-rs-svg to decode an OpenType SVG document and render a specific glyph.
+ * ~~COLR v1 gradient paints are still surfaced — the walker records them as layers with `is_gradient = true` and a representative solid color sampled from the first gradient stop.~~ **RESOLVED in Phase 7F** (2026-04-26) — `ColorGlyphLayer` now carries typed `GlyphPaint` data with full gradient geometry (3-point linear, two-circle radial, center+start/end-angle sweep), `GradientStop` vectors, `GradientExtend` wrap mode, an effective affine `transform` (y-flipped into screen space), optional `clip_glyph` id from `PaintGlyph` subtrees, and `composite_mode` from `PaintComposite` subtrees. The `ColorLayerWalker` maintains transform / clip / composite stacks. Backward-compat accessors `ColorGlyphLayer::color()` and `ColorGlyphLayer::is_gradient()` are retained as convenience methods over `layer.paint`.
+ * ~~SVG-in-OpenType decompression (SVGZ) and rendering is delegated to `skia-rs-svg`.~~ **RESOLVED in Phase 7F** (2026-04-26) — added `skia_rs_svg::glyph_svg_to_dom(raw: &[u8]) -> Option<SvgDom>` and the lower-level `skia_rs_svg::decode_glyph_svg_bytes(raw: &[u8]) -> Option<Vec<u8>>`. Auto-detects the 0x1f 0x8b gzip magic and decompresses via `flate2::read::GzDecoder`, then parses with the existing SVG parser. Plain-text SVG is handled too. Lives in `skia-rs-svg` (not `skia-rs-text`) to avoid a dependency cycle — `skia-rs-svg` already depends on `skia-rs-text` for glyph outline rendering.
 
 Verified by `glyph_is_color_returns_false_for_outline_only_font`, `glyph_image_returns_none_for_non_color_glyph`, `glyph_color_layers_returns_none_for_outline_only_font`, `color_palette_count_is_none_without_cpal`, and `glyph_svg_returns_none_without_svg_table`.
 **Description:** `glyph_is_color` returns `glyph > 0x1000` as a crude guess ("assume high glyph IDs might be emoji"). `glyph_image` synthesizes a solid yellow-ish rectangle with an explicit "placeholder" comment. No actual color font table parsing is performed. `ttf_parser` exposes the `colr` submodule and `tables::cbdt`, `tables::cblc`, `tables::sbix`, `tables::svg` which would feed a real implementation.

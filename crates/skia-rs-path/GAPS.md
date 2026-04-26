@@ -5,13 +5,13 @@
 
 ## Summary
 
-**Phase 3 status: COMPLETE (with documented deferrals)**
+**Phase 3 status: COMPLETE**
 
 - Total public functions reviewed: 106
 - Total gaps found: 14
-- **Critical gaps resolved: 4/6** (GAP-C4, C5 deferred to boolean ops subplan)
-- **Nice-to-have gaps resolved: 6/8** (GAP-N2, N3 deferred - control-polygon approximation works for typical use)
-- **Overall resolution: 10/14, 4 deferred**
+- **Critical gaps resolved: 6/6** (GAP-C4, C5 resolved in P7A via geo crate booleans)
+- **Nice-to-have gaps resolved: 8/8** (GAP-N2, N3 resolved in P7B via adaptive flattening)
+- **Overall resolution: 14/14, all resolved**
 
 ## Files Reviewed
 
@@ -113,48 +113,46 @@ an empty path (Some(builder.build()) with nothing added).
 
 ### GAP-C4: Boolean ops `subtract_polygon()` is incomplete
 
-**Status:** DEFERRED to dedicated boolean ops subplan (limitation documented in public API)
+**Status:** RESOLVED (P7A — geo crate sweep-line booleans replace hand-rolled polygon clipping)
 
-**Location:** `src/ops.rs:530-552`
-**Issue:** The `subtract_polygon()` function only handles the trivial case where the
-clip fully contains the subject (returns empty). For partial overlaps, it returns the
-unmodified subject polygon (line 551: `vec![subject.clone()]`). The comments on lines
-546-550 explicitly acknowledge this limitation: "For a proper implementation, we would:
-1. Find all intersection points 2. Build a planar graph 3. Walk the graph to find
-result polygons / For now, return subject if not fully contained."
+**Location (historical):** `src/ops.rs:530-552`
+**Issue:** The `subtract_polygon()` function only handled the trivial case where the
+clip fully contained the subject (returns empty). For partial overlaps, it returned
+the unmodified subject polygon. The comments explicitly acknowledged the limitation.
 
 **Impact:** `PathOp::Difference`, `PathOp::ReverseDifference`, and `PathOp::Xor` all
-produce incorrect results when shapes partially overlap. Only fully-disjoint or
-fully-contained cases work correctly.
+produced incorrect results when shapes partially overlapped.
 
-**Skia reference:** `skia/src/pathops/SkPathOpsCurve.cpp` and related pathops files
-(~15k lines total; Skia's pathops is one of its most complex subsystems)
-
-**Algorithm required:** Full Weiler-Atherton or Greiner-Hormann polygon clipping,
-or adaptation of Skia's sweep-line approach for robustness with curves.
-
-**Estimated effort:** 2-3 weeks for polygon-based clipping; substantially more for
-a robust implementation handling curves, degeneracies, and self-intersections
-**Priority:** HIGH - Boolean operations are fundamental to vector graphics editing
+**Resolution:** `polygon_difference`, `polygon_union`, `polygon_intersect`, and
+`polygon_xor` now delegate to the [`geo`](https://docs.rs/geo) crate's
+[`BooleanOps`](https://docs.rs/geo/latest/geo/algorithm/bool_ops/trait.BooleanOps.html)
+trait, which implements a robust sweep-line algorithm that correctly handles
+partial overlaps, concave inputs, holes, and self-intersecting polygons. The
+old `subtract_polygon` and `intersect_convex_polygons` helpers have been
+deleted. Regression tests in `ops::tests` exercise the previously-broken cases
+(partial-overlap Difference / Xor / ReverseDifference, concave Intersect).
 
 ---
 
 ### GAP-C5: `intersect_convex_polygons()` only works for convex polygons
 
-**Status:** DEFERRED to dedicated boolean ops subplan (limitation documented in public API)
+**Status:** RESOLVED (P7A — resolved together with GAP-C4 by switching to geo crate)
 
-**Location:** `src/ops.rs:476-528`
-**Issue:** The Sutherland-Hodgman algorithm used here only produces correct results
-when both input polygons are convex. General paths (circles, bezier shapes, any
-concave polygon) will produce incorrect intersection results when linearized into
+**Location (historical):** `src/ops.rs:476-528`
+**Issue:** The Sutherland-Hodgman algorithm only produced correct results when
+both input polygons were convex. General paths (circles, bezier shapes, any
+concave polygon) produced incorrect intersection results when linearized into
 concave polygons.
 
-**Impact:** Any non-trivial `PathOp::Intersect` operation on real-world paths will
-be incorrect.
+**Impact:** Any non-trivial `PathOp::Intersect` operation on real-world paths
+was incorrect.
 
-**Skia reference:** Skia uses a full sweep-line approach in `skia/src/pathops/`
-**Estimated effort:** Included in GAP-C4 (same underlying algorithm limitation)
-**Priority:** HIGH
+**Resolution:** Covered by GAP-C4's fix — `polygon_intersect` now calls
+`geo::BooleanOps::intersection` on `MultiPolygon<f64>` representations of the
+linearized inputs, which handles concave inputs correctly. The
+`intersect_concave_polygons` regression test verifies that a point in an
+L-shape's cut-out corner (inside the clip rectangle but outside the concave
+subject) is correctly excluded from the result.
 
 ---
 
@@ -201,32 +199,41 @@ control points. Control point bounds are an overestimate.
 
 ### GAP-N2: `Path::length()` uses control polygon approximation for curves
 
-**Status:** DEFERRED (control-polygon approximation works for typical use)
+**Status:** ✅ RESOLVED (P7B)
 
-**Location:** `src/path.rs:520-549`
-**Issue:** For Quad/Conic curves, length is approximated as
+**Location:** `src/path.rs:767-825`
+**Issue:** For Quad/Conic curves, length was approximated as
 `distance(start, ctrl) + distance(ctrl, end)` which is the control polygon length --
-always an overestimate. For Cubic, it uses
+always an overestimate. For Cubic, it used
 `distance(start, c1) + distance(c1, c2) + distance(c2, end)`. A more accurate
 approach would use adaptive subdivision or Gauss-Legendre quadrature.
 
-**Estimated effort:** 2-3 days
-**Priority:** LOW - The approximation is serviceable for many use cases
+**Resolution:** Now uses `flatten_quad_adaptive`, `flatten_cubic_adaptive`, and
+`flatten_conic_adaptive` from `flatten.rs` with a tolerance of 0.25 units. Each
+curve is subdivided adaptively until the chord-midpoint deviation is below tolerance,
+then the arc length is computed by summing the line segment lengths. For a
+quarter-circle conic (radius 1, weight sqrt(2)/2), the computed length is within
+0.05 of π/2. For a straight-line cubic (all control points collinear), the computed
+length matches the chord length rather than the 3x-overestimate control polygon length.
 
 ---
 
 ### GAP-N3: `Path::contains()` uses fixed-step curve linearization
 
-**Status:** DEFERRED (fixed-step linearization works for typical use)
+**Status:** ✅ RESOLVED (P7B)
 
-**Location:** `src/path.rs:445-500`
-**Issue:** Conic containment check (lines 461-476) ignores the weight parameter,
-treating conics as quadratic beziers. The approximation uses 8 steps for quads/conics
+**Location:** `src/path.rs:559-643`
+**Issue:** Conic containment check (lines 461-476 in old version) ignored the weight parameter,
+treating conics as quadratic beziers. The approximation used 8 steps for quads/conics
 and 12 for cubics regardless of curve complexity. Adaptive subdivision based on
 curvature would be more accurate.
 
-**Estimated effort:** 1-2 days
-**Priority:** LOW - Fixed-step approximation works for typical use cases
+**Resolution:** Now uses `flatten_quad_adaptive`, `flatten_cubic_adaptive`, and
+`flatten_conic_adaptive` from `flatten.rs` with a tolerance of 0.1 units. Each
+curve is subdivided adaptively, respecting the conic weight parameter, then the
+ray-crossing count is computed over the resulting polyline segments. Test case
+verifies that a point inside a quarter-circle conic (but outside the control
+triangle) is correctly contained, and a point outside the arc is correctly excluded.
 
 ---
 
@@ -394,10 +401,11 @@ correctly. A production-quality implementation would need either:
 5. **Fix round join approximation** (GAP-N7, 1 day) -- Generate arc segments for
    round joins to match the round cap implementation.
 
-6. **Improve boolean ops** (GAP-C4/C5, 2-3 weeks minimum) -- Most architecturally
-   significant gap. Consider whether to build from scratch or integrate an existing
-   polygon clipping library. Evaluate the `geo` crate's boolean ops as a potential
-   dependency to avoid reimplementing Bentley-Ottmann.
+6. ~~**Improve boolean ops** (GAP-C4/C5, 2-3 weeks minimum)~~ -- **Done in P7A.**
+   The `geo` crate's `BooleanOps` trait now backs `polygon_union`,
+   `polygon_intersect`, `polygon_difference`, and `polygon_xor`. Evaluated and
+   adopted the existing library over reimplementing Bentley-Ottmann from
+   scratch.
 
 7. **Add comprehensive tests** (~2 weeks) -- Current 14% test coverage is far below
    what is needed for a geometry library. Prioritize:

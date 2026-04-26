@@ -22,6 +22,7 @@ serde = ["dep:serde", "skia-rs-core/serde"]
 skia-rs-core = { workspace = true }
 smallvec = { workspace = true }
 serde = { workspace = true, optional = true }
+geo = { workspace = true }
 
 [dev-dependencies]
 

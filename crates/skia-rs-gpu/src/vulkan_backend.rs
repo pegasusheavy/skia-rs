@@ -2,6 +2,24 @@
 //!
 //! This module provides a direct Vulkan API backend for cases where
 //! low-level Vulkan access is needed beyond what wgpu provides.
+//!
+//! # Executor
+//!
+//! The Vulkan executor ([`VulkanContext::new_wgpu_executor`], enabled when
+//! the `wgpu-backend` feature is also on) delegates to wgpu configured with
+//! [`wgpu::Backends::VULKAN`]. Vulkan's upfront render-pass / framebuffer
+//! binding, descriptor pools, and pipeline barriers are handled inside wgpu;
+//! our `CommandBuffer` / `RenderPipelineDescriptor` abstractions translate
+//! through wgpu's naga pipeline to SPIR-V and then to native Vulkan.
+//!
+//! A native-ash executor that hand-records `vkCmdDraw` /
+//! `vkCmdPipelineBarrier` / `vkCmdBeginRenderPass` is not provided. That
+//! would duplicate wgpu's internal command translator (~thousands of lines
+//! for barriers, descriptor sync, swapchain transitions) and is out of scope
+//! for skia-rs-gpu's rendering needs. Callers who need direct ash control
+//! can still use [`VulkanContext::device`] and the other raw accessors to
+//! drive ash themselves — the wgpu routing is the default executor path,
+//! not the only one.
 
 #[cfg(feature = "vulkan")]
 use ash::vk;
@@ -859,6 +877,44 @@ impl GpuContext for VulkanContext {
     }
 }
 
+/// Build a Vulkan-backed [`crate::wgpu_backend::WgpuContext`].
+///
+/// Constructs a standalone `wgpu::Instance` restricted to `Backends::VULKAN`
+/// and requests an adapter + device through it. wgpu creates its own
+/// `VkInstance` / `VkDevice` internally — this does *not* share state with
+/// the `ash::Instance` inside [`VulkanContext`]. The two Vulkan worlds live
+/// side-by-side; use ash for driver-direct work, use the returned context
+/// for the command-buffer / pipeline-descriptor replay path.
+///
+/// Returns `Err(GpuError::DeviceCreation)` on systems without a usable
+/// Vulkan loader (missing ICD, no physical device, etc.).
+#[cfg(all(feature = "vulkan", feature = "wgpu-backend"))]
+pub fn new_vulkan_wgpu_context() -> GpuResult<crate::wgpu_backend::WgpuContext> {
+    crate::wgpu_backend::WgpuContext::new_with_backends_blocking(wgpu::Backends::VULKAN)
+}
+
+#[cfg(all(feature = "vulkan", feature = "wgpu-backend"))]
+impl VulkanContext {
+    /// Create a [`crate::wgpu_backend::WgpuExecutor`] routed through wgpu's
+    /// Vulkan backend.
+    ///
+    /// The returned `(WgpuContext, WgpuExecutor)` pair is independent of
+    /// this `VulkanContext` — the caller gets a fresh wgpu-managed Vulkan
+    /// device that can consume `CommandBuffer` and `RenderPipelineDescriptor`.
+    /// The existing ash handles on `self` remain valid for any caller-driven
+    /// native work.
+    pub fn new_wgpu_executor(
+        &self,
+    ) -> GpuResult<(
+        crate::wgpu_backend::WgpuContext,
+        crate::wgpu_backend::WgpuExecutor,
+    )> {
+        let ctx = new_vulkan_wgpu_context()?;
+        let executor = crate::wgpu_backend::WgpuExecutor::new(&ctx);
+        Ok((ctx, executor))
+    }
+}
+
 #[cfg(feature = "vulkan")]
 impl Drop for VulkanContext {
     fn drop(&mut self) {
@@ -949,5 +1005,24 @@ mod tests {
         let features = VulkanFormatFeatures::default();
         assert!(!features.sampled);
         assert!(!features.storage);
+    }
+
+    /// Smoke test for the wgpu-routed Vulkan executor. Returns Err rather
+    /// than panicking on systems without a Vulkan ICD; the test verifies
+    /// that the adapter path reaches a Vulkan wgpu backend when a driver
+    /// is present and fails cleanly when it isn't.
+    #[cfg(feature = "wgpu-backend")]
+    #[test]
+    fn test_vulkan_wgpu_executor_construction_does_not_panic() {
+        match new_vulkan_wgpu_context() {
+            Ok(ctx) => {
+                assert_eq!(ctx.backend_type(), GpuBackendType::Vulkan);
+                let _executor = crate::wgpu_backend::WgpuExecutor::new(&ctx);
+            }
+            Err(GpuError::DeviceCreation(_)) => {
+                // Expected on headless CI or non-Vulkan hosts.
+            }
+            Err(other) => panic!("unexpected error kind: {:?}", other),
+        }
     }
 }

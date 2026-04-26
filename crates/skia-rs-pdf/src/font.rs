@@ -6,13 +6,18 @@
 //!   `post` / `hmtx` / `cmap` tables via `ttf-parser`
 //! - Accurate per-glyph widths pulled from the font's `hmtx` table
 //! - Character usage tracking for ToUnicode CMap generation
-//! - Full-font embedding with a subset-prefix tag on the BaseFont name so
-//!   PDF readers (and PDF/A validators) accept the font as a valid subset.
-//!   Pruning the `glyf`/`loca`/`cmap` tables for a true byte-level subset is
-//!   not implemented — the full font bytes are written as FontFile2.
+//! - Byte-level `glyf`/`loca` subsetting: the emitted FontFile2 stream
+//!   contains only the glyph outlines actually referenced by drawn text
+//!   (plus their composite-glyph dependencies and `.notdef`), while
+//!   `cmap`/`hmtx`/`hhea`/`OS/2`/`post`/`name`/`head`/`maxp` are preserved
+//!   unchanged so character-code-based access via WinAnsiEncoding keeps
+//!   working. A six-letter subset prefix is prepended to the BaseFont name
+//!   per PDF convention.
 
 use skia_rs_core::Scalar;
 use std::collections::{BTreeMap, HashMap};
+
+pub(crate) mod subset;
 
 /// Font type for PDF embedding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,7 +177,12 @@ impl PdfFont {
     /// Parses the font tables to populate accurate metrics and per-glyph
     /// widths, and assigns a deterministic subset tag based on the font
     /// data so the BaseFont name matches PDF conventions for embedded
-    /// subsets.
+    /// subsets. The embedded FontFile2 stream is produced at emit time by
+    /// the `subset` module: it prunes the `glyf`/`loca` tables to contain
+    /// only the used glyphs (plus composite dependencies and `.notdef`)
+    /// while preserving every other table — callers do not need to do
+    /// anything special; draws via [`PdfCanvas::draw_text`](crate::PdfCanvas::draw_text)
+    /// record usage automatically.
     pub fn truetype(name: &str, data: Vec<u8>) -> Self {
         let metrics = parse_truetype_metrics(&data);
         let subset_tag = subset_tag_for(&data, name);

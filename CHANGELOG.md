@@ -5,6 +5,104 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.6] - 2026-04-26
+
+Phase 7 complete: resolved every remaining deferral across the
+workspace's 10 crates. The substantial items from earlier phases
+(boolean ops, ICC profile parsing, TTF subsetting, CSS Color Level
+4, COLR v1, RAW demosaic, multi-backend GPU executors, expanded
+FFI surface) all landed with real implementations and tests.
+
+### Added (skia-rs-path — 14/14 now resolved)
+- Correct polygon boolean ops via the geo crate's sweep-line
+  (Difference/Intersect/Xor/Union) — handles concave shapes, holes,
+  partial overlaps correctly (GAP-C4, GAP-C5)
+- Path::length uses adaptive curve flattening instead of control-
+  polygon approximation (GAP-N2)
+- Path::contains honors conic weights and uses adaptive flattening
+  (GAP-N3)
+
+### Added (skia-rs-core — 12/12 now resolved)
+- IccProfile::from_bytes parses rXYZ/gXYZ/bXYZ + rTRC tag table to
+  build a real ColorSpace; falls back to sRGB for unsupported tags.
+  Display P3 and Adobe RGB profiles now round-trip correctly (GAP-C1)
+- CSS Color Level 4: lab(), lch(), oklab(), oklch(), hwb(), and
+  color(space) with srgb/srgb-linear/display-p3 support. Out-of-
+  gamut values clamped. Slash-separator alpha per spec.
+
+### Added (skia-rs-pdf)
+- Byte-level TrueType subsetting (pure-Rust glyf/loca pruning).
+  Measured 14-32% size reduction on Roboto and Noto Serif drawing
+  "Hello, World!". Composite glyph dependency resolution, checksum
+  preservation, /Length1 invariant. (GAP-C3 follow-up)
+
+### Added (skia-rs-text — 14/14 now resolved, no follow-ups)
+- COLR v1 typed paint data on ColorGlyphLayer: GlyphPaint::Solid /
+  LinearGradient / RadialGradient / SweepGradient with per-layer
+  transform, clip, and composite mode. Canvas integration deferred
+  to consumers.
+- skia_rs_svg::glyph_svg_to_dom: decompress+parse SVG-in-OpenType
+  bytes (gzip magic auto-detection)
+
+### Added (skia-rs-codec — 13/13 now resolved)
+- demosaic_bayer_rggb: bilinear Bayer demosaic for 16-bit raw data
+- AnimatedImage / AnimationFrame / LoopCount / DisposalMethod /
+  BlendMethod types; GifCodec::decode_animated walks multi-frame
+  GIF streams with per-frame delays
+- PNG and JPEG decoders populate ImageInfo.color_space from iCCP /
+  APP2-ICC chunks via IccProfile::from_bytes
+
+### Added (skia-rs-gpu — 14/14 now resolved)
+- OpenGlContext / VulkanContext / MetalContext gain new_wgpu_executor
+  that delegates to wgpu configured with the specific Backends
+  mask. CommandBuffer + RenderPipelineDescriptor flow through the
+  same abstraction across all four backends.
+
+### Added (skia-rs-ffi)
+- Expanded API surface 126 → 181 functions. New primitives:
+  sk_canvas_clip_rect/path, sk_canvas_save_layer,
+  sk_canvas_draw_text_blob, sk_matrix44_t, sk_colorspace_t,
+  sk_textblob_t, sk_picture_recorder_t, sk_picture_t,
+  sk_region_t, sk_patheffect_t (Dash + Trim)
+- Regenerated include/skia_rs.h via cbindgen
+
+### Changed (skia-rs-paint)
+- Paint gains path_effect field and getters/setters
+- Canvas::draw_path applies Paint::path_effect before rasterization
+  (required for dashed strokes to work end-to-end in FFI)
+
+### Fixed
+- ShaderError gained impl std::error::Error so it integrates with
+  the workspace error convention
+- sk_path_iter_next guards bounds before indexing — malformed paths
+  return SK_PATH_VERB_DONE instead of panicking (still caught by
+  catch_panic but now explicitly handled)
+
+### Cumulative workspace status (after v0.2.6)
+- skia-rs-core: 12/12 ✅
+- skia-rs-path: 14/14 ✅
+- skia-rs-paint: 31/31 ✅
+- skia-rs-canvas: 22/22 ✅
+- skia-rs-text: 14/14 ✅
+- skia-rs-codec: 13/13 ✅
+- skia-rs-ffi: 12/12 (Priority 1+2 of scope-follow-up resolved;
+  RuntimeEffect + GPU + SVG/PDF/Skottie FFI + CI C-link harness
+  remain as separate efforts)
+- skia-rs-svg: 13/13 ✅
+- skia-rs-pdf: 14/14 ✅
+- skia-rs-gpu: 14/14 ✅
+
+### Test count
+- skia-rs-core: 79 → 90
+- skia-rs-path: 50 → 57
+- skia-rs-text: 23 + 34 → 33 + 34
+- skia-rs-codec: 47 → 56
+- skia-rs-svg: 39 → 46
+- skia-rs-pdf: 62 → 71
+- skia-rs-gpu: 104 → 128 (with all features)
+- skia-rs-ffi: 28 → 44
+- Workspace total: ~735 → 802+, 0 failures
+
 ## [0.2.5] - 2026-04-25
 
 Phase 6 complete: audited and completed the remaining six crates

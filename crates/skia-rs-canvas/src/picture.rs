@@ -29,6 +29,15 @@ impl Picture {
         }
     }
 
+    /// Create a new picture from a caller-supplied command stream.
+    ///
+    /// Used by callers (notably the FFI layer) that compose their own
+    /// recording pipeline rather than going through [`PictureRecorder`].
+    /// The returned picture can be [`Self::playback`]-ed like any other.
+    pub fn from_parts(commands: Vec<DrawCommand>, cull_rect: Rect) -> Self {
+        Self::new(commands, cull_rect)
+    }
+
     /// Get the cull rect (bounding box).
     #[inline]
     pub fn cull_rect(&self) -> Rect {

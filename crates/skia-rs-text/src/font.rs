@@ -1,7 +1,7 @@
 //! Font configuration for text rendering.
 
 use crate::typeface::{Typeface, TypefaceRef};
-use skia_rs_core::Scalar;
+use skia_rs_core::{Matrix, Point, Scalar};
 use std::sync::Arc;
 
 /// Text baseline position.
@@ -797,21 +797,33 @@ impl Font {
         Some(face.color_palettes()?.get())
     }
 
-    /// Decompose a `COLR` (v0) color glyph into its layer list.
+    /// Decompose a `COLR` (v0 or v1) color glyph into its layer list.
     ///
-    /// Each returned `ColorGlyphLayer` pairs a regular glyph id with the
-    /// RGBA color it should be filled in. Callers render a color glyph
-    /// by drawing each layer's outline in order with its associated
-    /// color — the standard COLR v0 composition model.
+    /// Each returned [`ColorGlyphLayer`] pairs a regular glyph id with the
+    /// paint used to fill it. Callers render a color glyph by drawing
+    /// each layer's outline in order with its associated paint —
+    /// honouring the layer's affine [`ColorGlyphLayer::transform`] and
+    /// optional clip glyph where present.
     ///
-    /// For COLR v1 (paint graphs with gradients, transforms, and
-    /// compositing) this method collects a flattened layer list by
-    /// walking the paint tree and recording solid-fill sub-paths; it
-    /// will not reproduce gradients, transforms, or blending. v1
-    /// gradient fidelity is tracked as a follow-up (the ttf-parser
-    /// Painter API is wired end-to-end but the paint enum carries types
-    /// we cannot emit into `GlyphImage`). For simple v0 emoji fonts
-    /// (Noto Color Emoji, Segoe UI Emoji) this is sufficient.
+    /// - For **COLR v0** fonts (flat layered glyphs filled from a
+    ///   palette — Noto Color Emoji v1, Segoe UI Emoji) every layer
+    ///   carries [`GlyphPaint::Solid`] with the palette colour, an
+    ///   identity transform, and no clip.
+    /// - For **COLR v1** fonts (Noto Color Emoji v2, COLRv1 reference
+    ///   fonts) the paint graph is walked and each "outline + paint"
+    ///   pair becomes a layer:
+    ///   * solid fills → [`GlyphPaint::Solid`]
+    ///   * linear gradients (three-point form) → [`GlyphPaint::LinearGradient`]
+    ///   * radial gradients (two-circle form) → [`GlyphPaint::RadialGradient`]
+    ///   * sweep gradients → [`GlyphPaint::SweepGradient`]
+    ///   The combined affine transform active at the paint node is
+    ///   folded into [`ColorGlyphLayer::transform`] so the caller
+    ///   applies a single transform per layer. Clip paths (from
+    ///   `PaintClip` nodes) and composite modes are tracked on the
+    ///   layer; only the subset of [`CompositeMode`] actually emitted
+    ///   by real fonts (SourceOver is overwhelmingly the common case)
+    ///   is preserved, others are reported verbatim for callers that
+    ///   want to implement the full Porter-Duff set.
     ///
     /// `palette` selects which `CPAL` palette to use; pass 0 for the
     /// default palette. `foreground_color` is used for layers that
@@ -837,19 +849,20 @@ impl Font {
             return None;
         }
 
-        // Paint walker that records (glyph_id, color) pairs every time a
-        // "fill with solid color" paint is issued after an outline_glyph.
-        // COLR v0 always matches this pattern; COLR v1 solid-fill layers
-        // do too. Gradient/transformed paints are recorded as layers
-        // with the gradient's "representative" color to avoid silently
-        // dropping them — callers can detect non-solid layers by
-        // checking `ColorGlyphLayer::is_gradient`.
+        // Walk the COLR paint graph and convert every (outline, paint)
+        // pair into a `ColorGlyphLayer` carrying a typed `GlyphPaint`.
+        // The walker maintains clip and transform stacks so each layer
+        // records the effective transform at the paint node and any
+        // active clip shape.
         let fg = ttf_rgba_from_argb(foreground_color);
         let mut walker = ColorLayerWalker {
             layers: Vec::new(),
             current_glyph: None,
             palette,
             foreground: fg,
+            transform_stack: vec![Matrix::IDENTITY],
+            clip_stack: Vec::new(),
+            layer_stack: Vec::new(),
         };
 
         face.paint_color_glyph(gid, palette, fg, &mut walker)?;
@@ -1243,29 +1256,304 @@ pub enum GlyphImageFormat {
     PremulBgra32,
 }
 
-/// A single layer of a COLR color glyph.
+/// Gradient wrap mode (how a gradient extends past its defined range).
 ///
-/// COLR v0 decomposes an emoji glyph into a stack of regular outline
-/// glyphs each filled with a solid palette color. The caller renders a
-/// color glyph by drawing every layer's `glyph_path` in order with its
-/// `color`, which produces the final emoji.
-///
-/// For COLR v1 solid-fill paints, the same structure applies. Gradient
-/// and transformed paints are reported as layers with `is_gradient =
-/// true` and a fallback solid color sampled from the gradient's first
-/// stop — callers that care about high-fidelity v1 rendering should
-/// check this flag and treat such layers as placeholders rather than
-/// final.
+/// Mirrors `ttf_parser::colr::GradientExtend` so callers of the
+/// skia-rs-text public API don't need a direct ttf-parser dependency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GradientExtend {
+    /// Clamp to the edge colors (default).
+    Pad,
+    /// Repeat the gradient pattern.
+    Repeat,
+    /// Reflect the gradient pattern.
+    Reflect,
+}
+
+impl From<ttf_parser::colr::GradientExtend> for GradientExtend {
+    fn from(v: ttf_parser::colr::GradientExtend) -> Self {
+        match v {
+            ttf_parser::colr::GradientExtend::Pad => Self::Pad,
+            ttf_parser::colr::GradientExtend::Repeat => Self::Repeat,
+            ttf_parser::colr::GradientExtend::Reflect => Self::Reflect,
+        }
+    }
+}
+
+/// A single colour stop on a gradient.
+///
+/// `offset` is a parametric position in `[0, 1]` along the gradient's
+/// line / radial axis / sweep arc. `color` is a `0xAARRGGBB` u32
+/// matching the convention used elsewhere in the crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GradientStop {
+    /// Stop position in `[0, 1]` along the gradient axis.
+    pub offset: u32,
+    /// ARGB color (0xAARRGGBB). Encoded as u32 so `GradientStop` can
+    /// stay `Copy`; use [`GradientStop::offset_f32`] to read the offset
+    /// as a float.
+    pub color: u32,
+}
+
+impl GradientStop {
+    /// Create a stop from a float offset and ARGB color.
+    #[inline]
+    pub fn new(offset: f32, color: u32) -> Self {
+        Self {
+            offset: offset.to_bits(),
+            color,
+        }
+    }
+
+    /// Return the offset as a float in `[0, 1]`.
+    #[inline]
+    pub fn offset_f32(&self) -> f32 {
+        f32::from_bits(self.offset)
+    }
+}
+
+/// The paint (fill) for a single `COLR` layer.
+///
+/// For COLR v0 and simple v1 solid-fill paints this is [`GlyphPaint::Solid`].
+/// For COLR v1 gradient paints the three forms — linear, radial, sweep —
+/// are preserved with their full geometric definition, so downstream
+/// paint pipelines (e.g. `skia-rs-paint`'s gradient shaders) can
+/// rasterise them faithfully. Stops are returned in the order stored
+/// in the font; callers that need sorted stops should sort by
+/// [`GradientStop::offset_f32`] before sampling.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GlyphPaint {
+    /// A solid `0xAARRGGBB` color.
+    Solid(u32),
+    /// A three-point linear gradient.
+    ///
+    /// Following the COLR v1 spec, the line is defined by three points
+    /// `(p0, p1, p2)` where `p0..p1` is the gradient direction and
+    /// `p0..p2` is the "rotation" axis — callers that only need the
+    /// common two-point linear gradient can ignore `p2` and derive the
+    /// perpendicular direction from `p1 - p0`.
+    LinearGradient {
+        /// Start point.
+        p0: Point,
+        /// End point.
+        p1: Point,
+        /// Rotation/skew reference point.
+        p2: Point,
+        /// Colour stops along `p0..p1`.
+        stops: Vec<GradientStop>,
+        /// Wrap mode for samples outside `[0, 1]`.
+        extend: GradientExtend,
+    },
+    /// A two-circle radial gradient.
+    RadialGradient {
+        /// Centre of the start circle.
+        c0: Point,
+        /// Radius of the start circle.
+        r0: f32,
+        /// Centre of the end circle.
+        c1: Point,
+        /// Radius of the end circle.
+        r1: f32,
+        /// Colour stops.
+        stops: Vec<GradientStop>,
+        /// Wrap mode.
+        extend: GradientExtend,
+    },
+    /// A sweep gradient.
+    SweepGradient {
+        /// Centre of the sweep.
+        center: Point,
+        /// Start angle in radians.
+        start_angle: f32,
+        /// End angle in radians.
+        end_angle: f32,
+        /// Colour stops.
+        stops: Vec<GradientStop>,
+        /// Wrap mode.
+        extend: GradientExtend,
+    },
+}
+
+impl GlyphPaint {
+    /// Return a representative ARGB color for the paint.
+    ///
+    /// For a solid paint this is the fill color. For a gradient paint
+    /// this is the first stop's colour, which matches the "sample the
+    /// gradient at t=0" approximation used as a fallback when the
+    /// caller can't rasterise a real gradient. Returns `0xFF_00_00_00`
+    /// (opaque black) if the gradient has no stops.
+    pub fn representative_color(&self) -> u32 {
+        match self {
+            Self::Solid(c) => *c,
+            Self::LinearGradient { stops, .. }
+            | Self::RadialGradient { stops, .. }
+            | Self::SweepGradient { stops, .. } => {
+                stops.first().map(|s| s.color).unwrap_or(0xFF_00_00_00)
+            }
+        }
+    }
+
+    /// Returns `true` if this paint is a gradient (i.e. not
+    /// [`GlyphPaint::Solid`]).
+    #[inline]
+    pub fn is_gradient(&self) -> bool {
+        !matches!(self, Self::Solid(_))
+    }
+}
+
+/// Composite mode for a COLR v1 layer.
+///
+/// Mirrors `ttf_parser::colr::CompositeMode` — the full Porter-Duff +
+/// blend-mode set so callers can implement the COLR v1 composite node
+/// without leaking a ttf-parser type. `SrcOver` is overwhelmingly the
+/// common case in real fonts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompositeMode {
+    /// `Clear` composite.
+    Clear,
+    /// `Source` composite.
+    Source,
+    /// `Destination` composite.
+    Destination,
+    /// `SourceOver` (aka `SrcOver`) composite — the default.
+    SourceOver,
+    /// `DestinationOver` composite.
+    DestinationOver,
+    /// `SourceIn` composite.
+    SourceIn,
+    /// `DestinationIn` composite.
+    DestinationIn,
+    /// `SourceOut` composite.
+    SourceOut,
+    /// `DestinationOut` composite.
+    DestinationOut,
+    /// `SourceAtop` composite.
+    SourceAtop,
+    /// `DestinationAtop` composite.
+    DestinationAtop,
+    /// `Xor` composite.
+    Xor,
+    /// `Plus` composite.
+    Plus,
+    /// `Screen` blend.
+    Screen,
+    /// `Overlay` blend.
+    Overlay,
+    /// `Darken` blend.
+    Darken,
+    /// `Lighten` blend.
+    Lighten,
+    /// `ColorDodge` blend.
+    ColorDodge,
+    /// `ColorBurn` blend.
+    ColorBurn,
+    /// `HardLight` blend.
+    HardLight,
+    /// `SoftLight` blend.
+    SoftLight,
+    /// `Difference` blend.
+    Difference,
+    /// `Exclusion` blend.
+    Exclusion,
+    /// `Multiply` blend.
+    Multiply,
+    /// `Hue` blend.
+    Hue,
+    /// `Saturation` blend.
+    Saturation,
+    /// `Color` blend.
+    Color,
+    /// `Luminosity` blend.
+    Luminosity,
+}
+
+impl From<ttf_parser::colr::CompositeMode> for CompositeMode {
+    fn from(m: ttf_parser::colr::CompositeMode) -> Self {
+        use ttf_parser::colr::CompositeMode as M;
+        match m {
+            M::Clear => Self::Clear,
+            M::Source => Self::Source,
+            M::Destination => Self::Destination,
+            M::SourceOver => Self::SourceOver,
+            M::DestinationOver => Self::DestinationOver,
+            M::SourceIn => Self::SourceIn,
+            M::DestinationIn => Self::DestinationIn,
+            M::SourceOut => Self::SourceOut,
+            M::DestinationOut => Self::DestinationOut,
+            M::SourceAtop => Self::SourceAtop,
+            M::DestinationAtop => Self::DestinationAtop,
+            M::Xor => Self::Xor,
+            M::Plus => Self::Plus,
+            M::Screen => Self::Screen,
+            M::Overlay => Self::Overlay,
+            M::Darken => Self::Darken,
+            M::Lighten => Self::Lighten,
+            M::ColorDodge => Self::ColorDodge,
+            M::ColorBurn => Self::ColorBurn,
+            M::HardLight => Self::HardLight,
+            M::SoftLight => Self::SoftLight,
+            M::Difference => Self::Difference,
+            M::Exclusion => Self::Exclusion,
+            M::Multiply => Self::Multiply,
+            M::Hue => Self::Hue,
+            M::Saturation => Self::Saturation,
+            M::Color => Self::Color,
+            M::Luminosity => Self::Luminosity,
+        }
+    }
+}
+
+/// A single layer of a `COLR` color glyph.
+///
+/// Produced by [`Font::glyph_color_layers`]. A color glyph is composed
+/// by drawing each layer in order: resolve `glyph`'s outline via
+/// [`Font::glyph_path`], transform it by `transform`, intersect with
+/// `clip_glyph` if present, then fill with `paint` using
+/// `composite_mode`.
+///
+/// COLR v0 always emits solid layers with identity transform and no
+/// clip. COLR v1 can emit any combination of the above.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ColorGlyphLayer {
     /// Glyph id of the layer's outline.
     pub glyph: u16,
-    /// ARGB color (0xAARRGGBB) to fill the outline with.
-    pub color: u32,
-    /// `true` if the originating COLR paint was a gradient or otherwise
-    /// non-solid; the `color` field contains a representative solid
-    /// color in that case.
-    pub is_gradient: bool,
+    /// The paint (fill) for this layer.
+    pub paint: GlyphPaint,
+    /// Affine transform active at the paint node. Identity for COLR v0
+    /// and for v1 paints outside a `PaintTransform` subtree. The
+    /// transform is in the same y-down screen space as [`Font::glyph_path`]
+    /// outputs — a concat of the COLR-graph transforms with the Y-flip
+    /// already applied.
+    pub transform: Matrix,
+    /// Optional clip glyph id. When set, the layer's outline should be
+    /// clipped by this glyph's outline before filling — this is the
+    /// COLR v1 `PaintGlyph` (outline-as-clip) primitive.
+    pub clip_glyph: Option<u16>,
+    /// Composite mode active at the paint node. Defaults to
+    /// [`CompositeMode::SourceOver`] for COLR v0 and most v1 paints;
+    /// set only when the paint is inside a `PaintComposite` subtree.
+    pub composite_mode: CompositeMode,
+}
+
+impl ColorGlyphLayer {
+    /// Convenience accessor for the layer's "representative" ARGB color.
+    ///
+    /// For solid fills this is the fill color; for gradient fills this
+    /// is the first stop's color — useful as a fallback when the
+    /// caller can't rasterise the full gradient.
+    #[inline]
+    pub fn color(&self) -> u32 {
+        self.paint.representative_color()
+    }
+
+    /// Returns `true` if the layer's paint is a gradient.
+    ///
+    /// Preserved for source compatibility with the Phase 6A API — new
+    /// code should match on [`Self::paint`] directly.
+    #[inline]
+    pub fn is_gradient(&self) -> bool {
+        self.paint.is_gradient()
+    }
 }
 
 /// Convert a `0xAARRGGBB` u32 to ttf_parser's `RgbaColor`.
@@ -1285,17 +1573,125 @@ fn argb_from_ttf_rgba(c: ttf_parser::RgbaColor) -> u32 {
         | (c.blue as u32)
 }
 
-/// Painter implementation that collects COLR layers as
-/// `(glyph_id, color)` pairs. Outlines are recorded on `outline_glyph`
-/// and materialised as a layer every time a `paint` call fills them.
-/// Clips, transforms, and composite modes are ignored — for gradients
-/// we sample the first stop as a representative color and mark the
-/// layer with `is_gradient = true`.
+/// Convert a ttf-parser affine (`a b c d e f` column vectors in y-up
+/// font space) to a `skia_rs_core::Matrix` in y-down screen space.
+///
+/// ttf-parser's transform acts on y-up coordinates with:
+///   x' = a*x + c*y + e
+///   y' = b*x + d*y + f
+/// Composing with the font's Y-flip (which `glyph_path` already applies)
+/// means a COLR transform stays consistent as long as we keep a / d / e
+/// straight and negate the Y components (b, c, f) when mapping into
+/// screen space — this matches the y-flip applied inside
+/// `GlyphOutlineBuilder`.
+fn matrix_from_ttf_transform(t: ttf_parser::Transform) -> Matrix {
+    // Row-major 3x3:
+    //   | scale_x  skew_x   trans_x |   | a  c   e |
+    //   | skew_y   scale_y  trans_y | = | b  d   f |   (in font y-up)
+    //   |    0       0        1    |   | 0  0   1 |
+    //
+    // In y-down screen space the y component is negated. The resulting
+    // transform Y = FlipY · T · FlipY^-1, which for an affine with no
+    // perspective is:
+    //   a_s =  a,   c_s = -c,   e_s =  e
+    //   b_s = -b,   d_s =  d,   f_s = -f
+    Matrix {
+        values: [t.a, -t.c, t.e, -t.b, t.d, -t.f, 0.0, 0.0, 1.0],
+    }
+}
+
+/// Painter implementation that walks the COLR paint graph and collects
+/// typed `ColorGlyphLayer`s.
+///
+/// Outlines are buffered in `current_glyph` on `outline_glyph` and
+/// materialised as a layer on the next `paint` call. Transform and
+/// clip stacks track the active context so each emitted layer captures
+/// its effective transform and (optional) clip glyph.
 struct ColorLayerWalker {
     layers: Vec<ColorGlyphLayer>,
+    /// The glyph id most recently seen via `outline_glyph`. Consumed
+    /// by the next `paint` / `push_clip` call.
     current_glyph: Option<u16>,
     palette: u16,
     foreground: ttf_parser::RgbaColor,
+    /// Stack of accumulated transforms. Top element is the currently
+    /// active transform; `push_transform` composes onto it.
+    transform_stack: Vec<Matrix>,
+    /// Stack of active clip glyph ids. Top element, if any, is applied
+    /// to the next painted layer.
+    clip_stack: Vec<u16>,
+    /// Stack of composite modes pushed via `push_layer`. Top element
+    /// applies to the next painted layer.
+    layer_stack: Vec<CompositeMode>,
+}
+
+impl ColorLayerWalker {
+    #[inline]
+    fn current_transform(&self) -> Matrix {
+        *self.transform_stack.last().unwrap_or(&Matrix::IDENTITY)
+    }
+
+    #[inline]
+    fn current_clip(&self) -> Option<u16> {
+        self.clip_stack.last().copied()
+    }
+
+    #[inline]
+    fn current_composite(&self) -> CompositeMode {
+        self.layer_stack
+            .last()
+            .copied()
+            .unwrap_or(CompositeMode::SourceOver)
+    }
+
+    /// Convert a `ttf_parser::colr::Paint` into our typed `GlyphPaint`.
+    fn convert_paint(&self, paint: ttf_parser::colr::Paint<'_>) -> GlyphPaint {
+        let palette = self.palette;
+        match paint {
+            ttf_parser::colr::Paint::Solid(color) => {
+                GlyphPaint::Solid(argb_from_ttf_rgba(color))
+            }
+            ttf_parser::colr::Paint::LinearGradient(g) => GlyphPaint::LinearGradient {
+                // Font space is y-up; our glyph paths live in y-down
+                // screen space. Negate y to land in the same coordinate
+                // system as the outline emitted by `glyph_path` so
+                // callers don't have to apply an extra flip.
+                p0: Point::new(g.x0, -g.y0),
+                p1: Point::new(g.x1, -g.y1),
+                p2: Point::new(g.x2, -g.y2),
+                stops: collect_stops(g.stops(palette, &[])),
+                extend: g.extend.into(),
+            },
+            ttf_parser::colr::Paint::RadialGradient(g) => GlyphPaint::RadialGradient {
+                c0: Point::new(g.x0, -g.y0),
+                r0: g.r0,
+                c1: Point::new(g.x1, -g.y1),
+                r1: g.r1,
+                stops: collect_stops(g.stops(palette, &[])),
+                extend: g.extend.into(),
+            },
+            ttf_parser::colr::Paint::SweepGradient(g) => {
+                // COLR sweep angles are in degrees (counter-clockwise
+                // from the positive X axis in font y-up space). Flip
+                // the angle sign for y-down and convert to radians so
+                // downstream paint code can feed it straight into a
+                // `SweepGradient` shader.
+                let to_rad = core::f32::consts::PI / 180.0;
+                GlyphPaint::SweepGradient {
+                    center: Point::new(g.center_x, -g.center_y),
+                    start_angle: -g.start_angle * to_rad,
+                    end_angle: -g.end_angle * to_rad,
+                    stops: collect_stops(g.stops(palette, &[])),
+                    extend: g.extend.into(),
+                }
+            }
+        }
+    }
+}
+
+fn collect_stops(iter: ttf_parser::colr::GradientStopsIter<'_, '_>) -> Vec<GradientStop> {
+    iter.map(|s| GradientStop::new(s.stop_offset, argb_from_ttf_rgba(s.color)))
+        .collect()
 }
 
 impl<'a> ttf_parser::colr::Painter<'a> for ColorLayerWalker {
@@ -1310,68 +1706,87 @@ impl<'a> ttf_parser::colr::Painter<'a> for ColorLayerWalker {
             return;
         };
 
-        let palette = self.palette;
-        let fallback = self.foreground;
+        let transform = self.current_transform();
+        let clip_glyph = self.current_clip();
+        let composite_mode = self.current_composite();
+        let paint = self.convert_paint(paint);
 
-        match paint {
-            ttf_parser::colr::Paint::Solid(color) => {
-                self.layers.push(ColorGlyphLayer {
-                    glyph,
-                    color: argb_from_ttf_rgba(color),
-                    is_gradient: false,
-                });
+        // If the paint is a gradient with no stops (malformed font or
+        // ttf-parser truncation), fall back to a solid foreground fill
+        // so the layer still renders as *something* rather than being
+        // silently dropped.
+        let paint = if paint.is_gradient() {
+            match &paint {
+                GlyphPaint::LinearGradient { stops, .. }
+                | GlyphPaint::RadialGradient { stops, .. }
+                | GlyphPaint::SweepGradient { stops, .. }
+                    if stops.is_empty() =>
+                {
+                    GlyphPaint::Solid(argb_from_ttf_rgba(self.foreground))
+                }
+                _ => paint,
             }
-            ttf_parser::colr::Paint::LinearGradient(g) => {
-                let rep = g
-                    .stops(palette, &[])
-                    .next()
-                    .map(|s| s.color)
-                    .unwrap_or(fallback);
-                self.layers.push(ColorGlyphLayer {
-                    glyph,
-                    color: argb_from_ttf_rgba(rep),
-                    is_gradient: true,
-                });
-            }
-            ttf_parser::colr::Paint::RadialGradient(g) => {
-                let rep = g
-                    .stops(palette, &[])
-                    .next()
-                    .map(|s| s.color)
-                    .unwrap_or(fallback);
-                self.layers.push(ColorGlyphLayer {
-                    glyph,
-                    color: argb_from_ttf_rgba(rep),
-                    is_gradient: true,
-                });
-            }
-            ttf_parser::colr::Paint::SweepGradient(g) => {
-                let rep = g
-                    .stops(palette, &[])
-                    .next()
-                    .map(|s| s.color)
-                    .unwrap_or(fallback);
-                self.layers.push(ColorGlyphLayer {
-                    glyph,
-                    color: argb_from_ttf_rgba(rep),
-                    is_gradient: true,
-                });
-            }
-        }
+        } else {
+            paint
+        };
+
+        self.layers.push(ColorGlyphLayer {
+            glyph,
+            paint,
+            transform,
+            clip_glyph,
+            composite_mode,
+        });
     }
 
     fn push_clip(&mut self) {
-        // Consume the current outline so it is not mistakenly paired
-        // with a later paint call.
-        self.current_glyph = None;
+        // The current outline becomes the clip shape for subsequent
+        // layers until `pop_clip`. Consume it so the next paint call
+        // doesn't accidentally pair with it.
+        if let Some(g) = self.current_glyph.take() {
+            self.clip_stack.push(g);
+        } else {
+            // `push_clip` without a preceding `outline_glyph` would be
+            // a malformed font; push a sentinel so `pop_clip` stays
+            // balanced.
+            self.clip_stack.push(0);
+        }
     }
 
-    fn push_clip_box(&mut self, _clipbox: ttf_parser::colr::ClipBox) {}
-    fn pop_clip(&mut self) {}
-    fn push_layer(&mut self, _mode: ttf_parser::colr::CompositeMode) {}
-    fn pop_layer(&mut self) {}
-    fn push_transform(&mut self, _transform: ttf_parser::Transform) {}
-    fn pop_transform(&mut self) {}
+    fn push_clip_box(&mut self, _clipbox: ttf_parser::colr::ClipBox) {
+        // Rectangular clip from the COLR `ClipList`. We surface it as
+        // "no glyph-shaped clip" since the bounds are just a bounding
+        // box already covered by the outline itself; callers that need
+        // the exact box can pull it via their own COLR parse. Push a
+        // sentinel 0 to keep pop_clip balanced.
+        self.clip_stack.push(0);
+    }
+
+    fn pop_clip(&mut self) {
+        self.clip_stack.pop();
+    }
+
+    fn push_layer(&mut self, mode: ttf_parser::colr::CompositeMode) {
+        self.layer_stack.push(mode.into());
+    }
+
+    fn pop_layer(&mut self) {
+        self.layer_stack.pop();
+    }
+
+    fn push_transform(&mut self, transform: ttf_parser::Transform) {
+        let local = matrix_from_ttf_transform(transform);
+        let combined = self.current_transform().concat(&local);
+        self.transform_stack.push(combined);
+    }
+
+    fn pop_transform(&mut self) {
+        // Keep at least one identity on the stack so
+        // `current_transform` never underflows on a malformed font.
+        if self.transform_stack.len() > 1 {
+            self.transform_stack.pop();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1404,5 +1819,147 @@ mod tests {
         let metrics = font.metrics();
         assert!(metrics.ascent < 0.0); // Above baseline
         assert!(metrics.descent > 0.0); // Below baseline
+    }
+
+    // =========================================================================
+    // COLR v1 paint data (P7F)
+    // =========================================================================
+
+    #[test]
+    fn gradient_stop_roundtrips_offset_through_bits() {
+        let stop = GradientStop::new(0.42, 0xFF_80_40_20);
+        // The offset must round-trip losslessly — we store as bit pattern.
+        assert_eq!(stop.offset_f32(), 0.42);
+        assert_eq!(stop.color, 0xFF_80_40_20);
+    }
+
+    #[test]
+    fn glyph_paint_representative_color_for_solid() {
+        let paint = GlyphPaint::Solid(0xFF_12_34_56);
+        assert_eq!(paint.representative_color(), 0xFF_12_34_56);
+        assert!(!paint.is_gradient());
+    }
+
+    #[test]
+    fn glyph_paint_representative_color_for_linear_gradient() {
+        let paint = GlyphPaint::LinearGradient {
+            p0: Point::new(0.0, 0.0),
+            p1: Point::new(10.0, 0.0),
+            p2: Point::new(0.0, 10.0),
+            stops: vec![
+                GradientStop::new(0.0, 0xFF_ff_00_00),
+                GradientStop::new(1.0, 0xFF_00_ff_00),
+            ],
+            extend: GradientExtend::Pad,
+        };
+        // Representative color = first stop color (t=0 sample).
+        assert_eq!(paint.representative_color(), 0xFF_ff_00_00);
+        assert!(paint.is_gradient());
+    }
+
+    #[test]
+    fn glyph_paint_representative_color_for_empty_gradient() {
+        let paint = GlyphPaint::LinearGradient {
+            p0: Point::new(0.0, 0.0),
+            p1: Point::new(10.0, 0.0),
+            p2: Point::new(0.0, 10.0),
+            stops: vec![],
+            extend: GradientExtend::Pad,
+        };
+        // Falls back to opaque black so callers always have a valid
+        // color rather than panicking on an empty stop list.
+        assert_eq!(paint.representative_color(), 0xFF_00_00_00);
+    }
+
+    #[test]
+    fn color_glyph_layer_color_and_is_gradient_delegate_to_paint() {
+        let layer = ColorGlyphLayer {
+            glyph: 42,
+            paint: GlyphPaint::Solid(0xFF_AB_CD_EF),
+            transform: Matrix::IDENTITY,
+            clip_glyph: None,
+            composite_mode: CompositeMode::SourceOver,
+        };
+        assert_eq!(layer.color(), 0xFF_AB_CD_EF);
+        assert!(!layer.is_gradient());
+
+        let grad_layer = ColorGlyphLayer {
+            glyph: 43,
+            paint: GlyphPaint::RadialGradient {
+                c0: Point::new(0.0, 0.0),
+                r0: 0.0,
+                c1: Point::new(0.0, 0.0),
+                r1: 10.0,
+                stops: vec![GradientStop::new(0.0, 0xFF_12_34_56)],
+                extend: GradientExtend::Repeat,
+            },
+            transform: Matrix::translate(5.0, 10.0),
+            clip_glyph: Some(99),
+            composite_mode: CompositeMode::Multiply,
+        };
+        assert_eq!(grad_layer.color(), 0xFF_12_34_56);
+        assert!(grad_layer.is_gradient());
+        assert_eq!(grad_layer.clip_glyph, Some(99));
+        assert_eq!(grad_layer.composite_mode, CompositeMode::Multiply);
+    }
+
+    #[test]
+    fn gradient_extend_maps_every_ttf_variant() {
+        // Every variant of `ttf_parser::colr::GradientExtend` must have a
+        // corresponding `GradientExtend` to prevent silent data loss.
+        assert_eq!(
+            GradientExtend::from(ttf_parser::colr::GradientExtend::Pad),
+            GradientExtend::Pad
+        );
+        assert_eq!(
+            GradientExtend::from(ttf_parser::colr::GradientExtend::Repeat),
+            GradientExtend::Repeat
+        );
+        assert_eq!(
+            GradientExtend::from(ttf_parser::colr::GradientExtend::Reflect),
+            GradientExtend::Reflect
+        );
+    }
+
+    #[test]
+    fn composite_mode_maps_every_ttf_variant() {
+        // Spot-check a representative subset; the full 28-variant match
+        // is machine-checked by `From::from` exhaustiveness.
+        use ttf_parser::colr::CompositeMode as M;
+        assert_eq!(CompositeMode::from(M::Clear), CompositeMode::Clear);
+        assert_eq!(CompositeMode::from(M::SourceOver), CompositeMode::SourceOver);
+        assert_eq!(CompositeMode::from(M::Multiply), CompositeMode::Multiply);
+        assert_eq!(CompositeMode::from(M::Luminosity), CompositeMode::Luminosity);
+    }
+
+    #[test]
+    fn matrix_from_ttf_transform_identity_is_identity() {
+        let m = matrix_from_ttf_transform(ttf_parser::Transform::default());
+        assert!(m.is_identity(), "{:?}", m);
+    }
+
+    #[test]
+    fn matrix_from_ttf_transform_flips_y_into_screen_space() {
+        // ttf_parser Transform for pure scale(1, 1) translate(10, 20)
+        // in font y-up space must become translate(10, -20) in screen
+        // y-down space.
+        let t = ttf_parser::Transform::new(1.0, 0.0, 0.0, 1.0, 10.0, 20.0);
+        let m = matrix_from_ttf_transform(t);
+        assert_eq!(m.values[Matrix::TRANS_X], 10.0);
+        assert_eq!(m.values[Matrix::TRANS_Y], -20.0);
+        assert_eq!(m.values[Matrix::SCALE_X], 1.0);
+        assert_eq!(m.values[Matrix::SCALE_Y], 1.0);
+    }
+
+    #[test]
+    fn matrix_from_ttf_transform_negates_skew_y() {
+        // A font-space skew of (b=0.5, c=0) becomes a negated b in
+        // screen space so the skew is consistent with the outline's
+        // y-flip.
+        let t = ttf_parser::Transform::new(1.0, 0.5, 0.0, 1.0, 0.0, 0.0);
+        let m = matrix_from_ttf_transform(t);
+        // Row-major: skew_y = values[3] corresponds to the original
+        // b coefficient, which is negated going into screen space.
+        assert_eq!(m.values[Matrix::SKEW_Y], -0.5);
     }
 }
