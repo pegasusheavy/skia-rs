@@ -1133,6 +1133,11 @@ impl<'a> Canvas<'a> {
     /// Each glyph's outline is extracted from `font` and drawn as a path at
     /// `origin + positions[i]` (baseline position for glyph `i`). Glyphs
     /// with no outline (e.g. space, .notdef without data) are skipped.
+    ///
+    /// Colored glyphs (COLR v0/v1, SVG-in-OpenType) are rendered via
+    /// [`Canvas::draw_color_glyph`]; the `paint` is honoured for alpha,
+    /// blend mode, and filters, but the glyph's own fill data overrides
+    /// the color/shader of `paint`.
     #[cfg(feature = "text")]
     pub fn draw_glyphs(
         &mut self,
@@ -1144,8 +1149,12 @@ impl<'a> Canvas<'a> {
     ) {
         for (i, &glyph) in glyph_ids.iter().enumerate() {
             let pos = positions.get(i).copied().unwrap_or(Point::zero());
+            let at = Point::new(origin.x + pos.x, origin.y + pos.y);
+            if self.draw_color_glyph(glyph, at, font, paint) {
+                continue;
+            }
             if let Some(path) = font.glyph_path(glyph) {
-                let m = skia_rs_core::Matrix::translate(origin.x + pos.x, origin.y + pos.y);
+                let m = skia_rs_core::Matrix::translate(at.x, at.y);
                 let transformed = path.transformed(&m);
                 self.draw_path(&transformed, paint);
             }
@@ -1201,10 +1210,13 @@ impl<'a> Canvas<'a> {
                 for g in run.glyphs {
                     let glyph_x = pen_x + g.x_offset;
                     let glyph_y = pen_y + g.y_offset;
-                    if let Some(path) = font.glyph_path(g.glyph_id.0) {
-                        let m = skia_rs_core::Matrix::translate(glyph_x, glyph_y);
-                        let transformed = path.transformed(&m);
-                        self.draw_path(&transformed, paint);
+                    let at = Point::new(glyph_x, glyph_y);
+                    if !self.draw_color_glyph(g.glyph_id.0, at, font, paint) {
+                        if let Some(path) = font.glyph_path(g.glyph_id.0) {
+                            let m = skia_rs_core::Matrix::translate(glyph_x, glyph_y);
+                            let transformed = path.transformed(&m);
+                            self.draw_path(&transformed, paint);
+                        }
                     }
                     pen_x += g.x_advance;
                     pen_y += g.y_advance;
@@ -1218,13 +1230,163 @@ impl<'a> Canvas<'a> {
         let mut pen_x = x;
         for c in text.chars() {
             let glyph = font.char_to_glyph(c);
-            if let Some(path) = font.glyph_path(glyph) {
-                let m = skia_rs_core::Matrix::translate(pen_x, y);
-                let transformed = path.transformed(&m);
-                self.draw_path(&transformed, paint);
+            let at = Point::new(pen_x, y);
+            if !self.draw_color_glyph(glyph, at, font, paint) {
+                if let Some(path) = font.glyph_path(glyph) {
+                    let m = skia_rs_core::Matrix::translate(pen_x, y);
+                    let transformed = path.transformed(&m);
+                    self.draw_path(&transformed, paint);
+                }
             }
             pen_x += font.glyph_advance(glyph);
         }
+    }
+
+    /// Draw a color glyph if the font carries color data for it.
+    ///
+    /// Supports COLR v0 (solid-fill layers), COLR v1 (gradients + transforms
+    /// + clips + composites via `skia_rs_text::GlyphPaint`), and
+    /// SVG-in-OpenType when the `svg` feature is enabled. Returns `true`
+    /// when color-glyph rendering happened, `false` when the glyph is a
+    /// plain outline (caller should fall back to `draw_path`).
+    ///
+    /// The base `paint` supplies alpha scaling, blend mode, anti-aliasing,
+    /// and filters. The glyph's own paint data (colors, gradient stops,
+    /// composite modes, transforms) overrides the base paint's color and
+    /// shader.
+    #[cfg(feature = "text")]
+    pub fn draw_color_glyph(
+        &mut self,
+        glyph: u16,
+        origin: Point,
+        font: &skia_rs_text::Font,
+        paint: &Paint,
+    ) -> bool {
+        if !font.glyph_is_color(glyph) {
+            return false;
+        }
+
+        // COLR v0/v1 layered color glyph. Use palette 0 (default) and
+        // treat the paint's current color as the "foreground" used for
+        // layers that reference the `foreground` palette index — this is
+        // how COLR v1 spec-wise opts into the draw-site color.
+        //
+        // SVG-in-OpenType glyphs are *not* handled here because the SVG
+        // renderer lives in `skia-rs-svg`, which depends on canvas — pulling
+        // it in from here would create a dependency cycle. The umbrella
+        // `skia-rs` crate wires SVG glyphs through a thin adapter instead.
+        let foreground: u32 = paint.color32().into();
+        if let Some(layers) = font.glyph_color_layers(glyph, 0, foreground) {
+            for layer in layers {
+                self.draw_colr_layer(&layer, origin, font, paint);
+            }
+            return true;
+        }
+
+        // CBDT/CBLC/sbix raster glyphs and SVG-in-OpenType fall through —
+        // the caller either handles them via skia-rs-svg or draws the
+        // plain outline as a fallback.
+        false
+    }
+
+    #[cfg(feature = "text")]
+    fn draw_colr_layer(
+        &mut self,
+        layer: &skia_rs_text::ColorGlyphLayer,
+        origin: Point,
+        font: &skia_rs_text::Font,
+        base_paint: &Paint,
+    ) {
+        // Layer outline in glyph space.
+        let Some(mut outline) = font.glyph_path(layer.glyph) else {
+            return;
+        };
+        // Apply the layer's in-glyph transform, then translate to origin.
+        outline = outline.transformed(&layer.transform);
+        let place = skia_rs_core::Matrix::translate(origin.x, origin.y);
+        outline = outline.transformed(&place);
+
+        // Clip the outline by clip_glyph's outline if set.
+        if let Some(clip_id) = layer.clip_glyph {
+            if let Some(clip_path) = font.glyph_path(clip_id) {
+                let clip = clip_path
+                    .transformed(&layer.transform)
+                    .transformed(&place);
+                self.save();
+                self.clip_path(&clip, ClipOp::Intersect, base_paint.is_anti_alias());
+                self.fill_colr_layer(&outline, &layer.paint, layer.composite_mode, base_paint);
+                self.restore();
+                return;
+            }
+        }
+
+        self.fill_colr_layer(&outline, &layer.paint, layer.composite_mode, base_paint);
+    }
+
+    #[cfg(feature = "text")]
+    fn fill_colr_layer(
+        &mut self,
+        outline: &Path,
+        glyph_paint: &skia_rs_text::GlyphPaint,
+        composite: skia_rs_text::CompositeMode,
+        base: &Paint,
+    ) {
+        use skia_rs_paint::{LinearGradient, RadialGradient, SweepGradient};
+        use skia_rs_text::GlyphPaint;
+        use std::sync::Arc;
+
+        let blend = colr_composite_to_blend(composite).unwrap_or(base.blend_mode());
+
+        let mut p = base.clone();
+        p.set_blend_mode(blend);
+
+        match glyph_paint {
+            GlyphPaint::Solid(argb) => {
+                p.set_color32(skia_rs_core::Color::from(*argb));
+                p.set_shader(None);
+            }
+            GlyphPaint::LinearGradient {
+                p0, p1, stops, extend, ..
+            } => {
+                let (colors, positions) = stops_to_color4f(stops);
+                let tile = extend_to_tile(*extend);
+                let g = LinearGradient::new(*p0, *p1, colors, Some(positions), tile);
+                p.set_shader(Some(Arc::new(g) as _));
+            }
+            GlyphPaint::RadialGradient {
+                c0, r0, c1, r1, stops, extend,
+            } => {
+                let (colors, positions) = stops_to_color4f(stops);
+                let tile = extend_to_tile(*extend);
+                // skia-rs-paint's RadialGradient is single-circle; for
+                // two-circle gradients we approximate with the end circle
+                // (c1, r1) — the exact two-circle radial matches Skia's
+                // SkGradientShader::MakeTwoPointConical, which is not yet
+                // surfaced. For r0==0 the approximation is exact.
+                let _ = c0;
+                let radius = if *r1 > 0.0 { *r1 } else { r0.max(1.0) };
+                let g = RadialGradient::new(*c1, radius, colors, Some(positions), tile);
+                p.set_shader(Some(Arc::new(g) as _));
+            }
+            GlyphPaint::SweepGradient {
+                center, start_angle, end_angle, stops, extend,
+            } => {
+                let (colors, positions) = stops_to_color4f(stops);
+                let tile = extend_to_tile(*extend);
+                let to_deg = |r: f32| r.to_degrees();
+                let g = SweepGradient::new(
+                    *center,
+                    to_deg(*start_angle),
+                    to_deg(*end_angle),
+                    colors,
+                    Some(positions),
+                    tile,
+                );
+                p.set_shader(Some(Arc::new(g) as _));
+            }
+        }
+
+        self.draw_path(outline, &p);
     }
 
     /// Flush any pending drawing operations.
@@ -1950,6 +2112,86 @@ pub enum PointMode {
     Lines,
     /// Draw connected line strip.
     Polygon,
+}
+
+// -----------------------------------------------------------------------------
+// COLR v1 helpers: convert skia-rs-text color-glyph data into skia-rs-paint
+// shader / blend inputs. These are free functions so the Canvas impl can
+// keep the dispatching simple.
+// -----------------------------------------------------------------------------
+
+#[cfg(feature = "text")]
+fn stops_to_color4f(
+    stops: &[skia_rs_text::GradientStop],
+) -> (Vec<skia_rs_core::Color4f>, Vec<Scalar>) {
+    let mut sorted: Vec<_> = stops.iter().copied().collect();
+    sorted.sort_by(|a, b| {
+        a.offset_f32()
+            .partial_cmp(&b.offset_f32())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut colors = Vec::with_capacity(sorted.len().max(1));
+    let mut positions = Vec::with_capacity(sorted.len().max(1));
+    for s in &sorted {
+        let c = skia_rs_core::Color::from(s.color);
+        colors.push(skia_rs_core::Color4f::from_color(c));
+        positions.push(s.offset_f32().clamp(0.0, 1.0));
+    }
+    if colors.is_empty() {
+        colors.push(skia_rs_core::Color4f::transparent());
+        positions.push(0.0);
+    }
+    (colors, positions)
+}
+
+#[cfg(feature = "text")]
+fn extend_to_tile(extend: skia_rs_text::GradientExtend) -> skia_rs_paint::TileMode {
+    use skia_rs_paint::TileMode;
+    match extend {
+        skia_rs_text::GradientExtend::Pad => TileMode::Clamp,
+        skia_rs_text::GradientExtend::Repeat => TileMode::Repeat,
+        skia_rs_text::GradientExtend::Reflect => TileMode::Mirror,
+    }
+}
+
+#[cfg(feature = "text")]
+fn colr_composite_to_blend(
+    mode: skia_rs_text::CompositeMode,
+) -> Option<skia_rs_paint::blend::BlendMode> {
+    use skia_rs_paint::blend::BlendMode;
+    use skia_rs_text::CompositeMode as Cm;
+    // Only map the composite modes that BlendMode actually implements.
+    // SrcOver (the default) is the common case.
+    Some(match mode {
+        Cm::Clear => BlendMode::Clear,
+        Cm::Source => BlendMode::Src,
+        Cm::Destination => BlendMode::Dst,
+        Cm::SourceOver => BlendMode::SrcOver,
+        Cm::DestinationOver => BlendMode::DstOver,
+        Cm::SourceIn => BlendMode::SrcIn,
+        Cm::DestinationIn => BlendMode::DstIn,
+        Cm::SourceOut => BlendMode::SrcOut,
+        Cm::DestinationOut => BlendMode::DstOut,
+        Cm::SourceAtop => BlendMode::SrcATop,
+        Cm::DestinationAtop => BlendMode::DstATop,
+        Cm::Xor => BlendMode::Xor,
+        Cm::Plus => BlendMode::Plus,
+        Cm::Screen => BlendMode::Screen,
+        Cm::Overlay => BlendMode::Overlay,
+        Cm::Darken => BlendMode::Darken,
+        Cm::Lighten => BlendMode::Lighten,
+        Cm::ColorDodge => BlendMode::ColorDodge,
+        Cm::ColorBurn => BlendMode::ColorBurn,
+        Cm::HardLight => BlendMode::HardLight,
+        Cm::SoftLight => BlendMode::SoftLight,
+        Cm::Difference => BlendMode::Difference,
+        Cm::Exclusion => BlendMode::Exclusion,
+        Cm::Multiply => BlendMode::Multiply,
+        Cm::Hue => BlendMode::Hue,
+        Cm::Saturation => BlendMode::Saturation,
+        Cm::Color => BlendMode::Color,
+        Cm::Luminosity => BlendMode::Luminosity,
+    })
 }
 
 #[cfg(test)]

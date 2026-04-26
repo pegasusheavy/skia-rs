@@ -16,13 +16,22 @@ pipelines). See per-gap `**Status:**` lines below.
   mode, an effective affine `transform` (y-flipped into screen space),
   an optional `clip_glyph`, and a `composite_mode`. The COLR painter
   walker tracks transform/clip/composite stacks and applies them to
-  every emitted layer. Downstream paint pipelines (`skia-rs-paint`
-  gradient shaders) can rasterise v1 content faithfully from this data.
+  every emitted layer. `skia-rs-canvas` wires the data through
+  `Canvas::draw_color_glyph`, converting `GlyphPaint` into
+  `skia-rs-paint`'s `LinearGradient` / `RadialGradient` / `SweepGradient`
+  shaders (with `GradientExtend` → `TileMode` mapping) and routing the
+  layer's `composite_mode` through `BlendMode`. `draw_glyphs` and
+  `draw_string` now call `draw_color_glyph` first and fall back to the
+  outline path only when the glyph has no color data.
 * **P6A-FOLLOWUP-SVG-GLYPH** — `skia_rs_svg::glyph_svg_to_dom` added;
   auto-detects gzip magic and decompresses before parsing, returning
   an `SvgDom` ready for rendering via the existing `render_svg_to_canvas`
-  pipeline. Lives in `skia-rs-svg` (not `skia-rs-text`) to avoid a
-  dependency cycle (`skia-rs-svg` already depends on `skia-rs-text`).
+  pipeline. A higher-level `skia_rs_svg::draw_glyph_svg(canvas, font,
+  glyph, origin)` convenience ties the font-table lookup, decode, and
+  render-to-canvas pipeline together. Lives in `skia-rs-svg` (not
+  `skia-rs-text`, and not invoked directly from `skia-rs-canvas`) to
+  avoid a dependency cycle — `skia-rs-svg` depends on `skia-rs-canvas`
+  and `skia-rs-text`.
 
 ## Summary
 
