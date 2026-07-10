@@ -150,6 +150,11 @@ pub enum DrawCommand {
         /// The blend mode.
         blend_mode: BlendMode,
     },
+    /// Fill the device clip with a full paint (`SkCanvas::drawPaint`).
+    DrawPaint {
+        /// The paint to fill with.
+        paint: Paint,
+    },
     /// Draw a point.
     DrawPoint {
         /// The point to draw.
@@ -298,6 +303,9 @@ impl DrawCommand {
             }
             DrawCommand::DrawColor { color, blend_mode } => {
                 canvas.draw_color(*color, *blend_mode);
+            }
+            DrawCommand::DrawPaint { paint } => {
+                canvas.draw_paint(paint);
             }
             DrawCommand::DrawPoint { point, paint } => {
                 canvas.draw_point(*point, paint);

@@ -307,6 +307,10 @@ pub struct Rasterizer<'a> {
     /// Whether to use the advanced clip stack.
     use_advanced_clip: bool,
     matrix: Matrix,
+    /// Device origin of the buffer: buffer pixel (x, y) sits at device pixel
+    /// (x + origin.0, y + origin.1). Non-zero for `save_layer` buffers whose
+    /// clip stack remains in device coordinates.
+    origin: (i32, i32),
 }
 
 impl<'a> Rasterizer<'a> {
@@ -320,7 +324,19 @@ impl<'a> Rasterizer<'a> {
             clip_stack,
             use_advanced_clip: false,
             matrix: Matrix::IDENTITY,
+            origin: (0, 0),
         }
+    }
+
+    /// Set the buffer's device origin (see the `origin` field). The clip
+    /// stack stays in device coordinates; all clip queries add this offset.
+    pub fn set_origin(&mut self, x: i32, y: i32) {
+        self.origin = (x, y);
+    }
+
+    /// The buffer's device origin.
+    pub fn origin(&self) -> (i32, i32) {
+        self.origin
     }
 
     /// Set the current transformation matrix.
@@ -387,35 +403,47 @@ impl<'a> Rasterizer<'a> {
         }
     }
 
-    /// Check if a point passes the current clip.
+    /// Check if a point (buffer coordinates) passes the current clip.
     #[inline]
     fn clip_contains(&self, x: i32, y: i32) -> bool {
+        let (dx, dy) = (x + self.origin.0, y + self.origin.1);
         if self.use_advanced_clip {
-            self.clip_stack.contains(x, y)
+            self.clip_stack.contains(dx, dy)
         } else {
-            self.clip.contains(Point::new(x as Scalar, y as Scalar))
+            self.clip.contains(Point::new(dx as Scalar, dy as Scalar))
         }
     }
 
-    /// Get the clip coverage at a point (0-255).
+    /// Get the clip coverage at a point in buffer coordinates (0-255).
     /// Returns 255 for simple clips if the point is inside.
     #[inline]
     fn get_clip_coverage(&self, x: i32, y: i32) -> u8 {
+        let (dx, dy) = (x + self.origin.0, y + self.origin.1);
         if self.use_advanced_clip {
-            self.clip_stack.get_coverage(x, y)
-        } else if self.clip.contains(Point::new(x as Scalar, y as Scalar)) {
+            self.clip_stack.get_coverage(dx, dy)
+        } else if self.clip.contains(Point::new(dx as Scalar, dy as Scalar)) {
             255
         } else {
             0
         }
     }
 
-    /// Get the current clip bounds.
+    /// Get the current clip bounds in buffer coordinates.
     pub fn clip_bounds(&self) -> Rect {
-        if self.use_advanced_clip {
+        let b = if self.use_advanced_clip {
             self.clip_stack.bounds()
         } else {
             self.clip
+        };
+        if self.origin == (0, 0) {
+            b
+        } else {
+            Rect::new(
+                b.left - self.origin.0 as Scalar,
+                b.top - self.origin.1 as Scalar,
+                b.right - self.origin.0 as Scalar,
+                b.bottom - self.origin.1 as Scalar,
+            )
         }
     }
 
@@ -425,10 +453,16 @@ impl<'a> Rasterizer<'a> {
     }
 
     /// Build the pixel source for `paint`: a premultiplied solid color, or
-    /// the paint's shader with the inverse CTM for local-space sampling.
+    /// the paint's shader with the inverse of (CTM x shader local matrix)
+    /// for local-space sampling (`Shader::sample` expects coordinates in the
+    /// shader's own space; the caller applies the local matrix).
     fn make_source<'p>(&self, paint: &'p Paint) -> PixelSource<'p> {
         if let Some(shader) = paint.shader() {
-            let inv = self.matrix.invert().unwrap_or(Matrix::IDENTITY);
+            let total = match shader.local_matrix() {
+                Some(local) => self.matrix.concat(local),
+                None => self.matrix,
+            };
+            let inv = total.invert().unwrap_or(Matrix::IDENTITY);
             let alpha = (paint.alpha().clamp(0.0, 1.0) * 255.0).round() as u8;
             PixelSource::Shader {
                 shader: shader.as_ref(),
@@ -771,6 +805,23 @@ impl<'a> Rasterizer<'a> {
         let y0 = transformed.top.round() as i32;
         let x1 = transformed.right.round() as i32;
         let y1 = transformed.bottom.round() as i32;
+
+        let blend_mode = paint.blend_mode();
+        let source = self.make_source(paint);
+        for y in y0..y1 {
+            self.blit_span(x0, x1, y, &source, blend_mode);
+        }
+    }
+
+    /// Fill a **device-space** rectangle with `paint`, bypassing the CTM for
+    /// geometry while still sampling any shader through the CTM (local
+    /// space). Used by `clear`/`drawColor`/`drawPaint`, which fill the device
+    /// clip regardless of the matrix (`SkDraw::drawPaint`).
+    pub fn fill_device_rect(&mut self, rect: &Rect, paint: &Paint) {
+        let x0 = (rect.left.round() as i32) - self.origin.0;
+        let y0 = (rect.top.round() as i32) - self.origin.1;
+        let x1 = (rect.right.round() as i32) - self.origin.0;
+        let y1 = (rect.bottom.round() as i32) - self.origin.1;
 
         let blend_mode = paint.blend_mode();
         let source = self.make_source(paint);

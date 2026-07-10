@@ -71,6 +71,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which no longer keeps edges past their `y_max` and now applies the clip.
 - `InverseWinding`/`InverseEvenOdd` fill the complement of the path within
   the clip (both AA and non-AA).
+- `Canvas::clear` only clears within the device clip (`drawColor(color,
+  kSrc)` semantics); `draw_color` fills the device clip regardless of the
+  CTM; new `Canvas::draw_paint` fills the clip with the full paint (shader
+  sampled through the CTM).
+- `Canvas::clip_rect` under a rotated/skewed CTM clips to the mapped quad
+  (as a path), not the quad's bounding box.
+- `save_layer` bounds are a content hint in **local** space: mapped through
+  the CTM, intersected with the clip, and rounded to a device-space layer
+  with one shared origin convention for drawing and compositing.
+- `composite_layer` composites through the current clip (per-pixel
+  coverage) and applies the layer paint's color filter in addition to its
+  alpha and blend mode.
+- `draw_image_rect` applies paint alpha exactly once (was applied twice)
+  and goes through the clipped, matrix-aware pipeline (per-pixel inverse
+  mapping), so rotation and path/AA/difference clips work.
+- `draw_vertices` applies the clip per pixel, uses one coverage rule (pixel
+  centers) for both flat and interpolated triangles, applies paint alpha to
+  vertex colors, and premultiplies before blending.
+- `RSXform::to_matrix` places tx/ty in the translation slots applied last
+  (`SkMatrix::setRSXform` layout).
+- `draw_round_rect` clamps oversized radii uniformly like
+  `SkRRect::setRectXY` and uses conic (circular-arc) corner geometry.
+- `draw_arc` with |sweep| >= 360 draws the full oval; arcs use curve
+  segments from the path crate instead of 10-degree polylines.
+- `draw_points` in `Points` mode draws stroke-width-sized squares
+  (butt/square cap) or circles (round cap) per `SkDraw::drawPoints`.
 
 ## [0.2.6] - 2026-04-26
 
