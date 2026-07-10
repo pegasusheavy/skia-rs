@@ -250,10 +250,27 @@ impl LazyImage {
                     let row_bytes = info.min_row_bytes();
                     let size = info.compute_byte_size(row_bytes);
                     let mut pixels = vec![0u8; size];
-                    let result =
-                        self.inner
-                            .generator
-                            .get_pixels(info, &mut pixels, row_bytes);
+
+                    // If the generator panics we must not leave the state at
+                    // `Generating` — parking_lot mutexes do not poison, so
+                    // condvar waiters would block forever. Catch the unwind,
+                    // publish `Failed` + notify, then resume the panic.
+                    let result = match std::panic::catch_unwind(
+                        std::panic::AssertUnwindSafe(|| {
+                            self.inner
+                                .generator
+                                .get_pixels(info, &mut pixels, row_bytes)
+                        }),
+                    ) {
+                        Ok(result) => result,
+                        Err(payload) => {
+                            let mut guard = self.inner.gen_state.lock();
+                            guard.state = LazyImageState::Failed;
+                            drop(guard);
+                            self.inner.cv.notify_all();
+                            std::panic::resume_unwind(payload);
+                        }
+                    };
 
                     let mut guard = self.inner.gen_state.lock();
                     let ret = match result {
@@ -297,31 +314,24 @@ impl LazyImage {
     ///
     /// [`ensure_pixels_generated`]: LazyImage::ensure_pixels_generated
     ///
-    /// # Borrowing
+    /// # Locking
     ///
-    /// The returned slice borrows the cached pixels held inside this
-    /// `LazyImage`. It stays valid until the pixels are discarded
-    /// ([`discard_pixels`]) or regenerated, mirroring the borrowed-pointer
-    /// semantics of Skia's `SkImage::peekPixels`. Do not call
-    /// `discard_pixels` while a peeked slice is still in use.
+    /// The returned [`PeekedPixels`] guard holds the image's internal lock
+    /// for as long as it is alive, so the pixels cannot be discarded or
+    /// regenerated out from under the borrow — not even through another
+    /// clone of this `LazyImage` on another thread (such a call blocks
+    /// until the guard drops). Consequently, do **not** call
+    /// [`discard_pixels`], [`ensure_pixels_generated`], or any other
+    /// `LazyImage` method from the same thread while holding the guard;
+    /// that would self-deadlock. Copy what you need and drop the guard.
     ///
     /// [`discard_pixels`]: LazyImage::discard_pixels
-    pub fn peek_pixels(&self) -> Option<&[u8]> {
+    pub fn peek_pixels(&self) -> Option<PeekedPixels<'_>> {
         let guard = self.inner.gen_state.lock();
-        if guard.state != LazyImageState::Generated {
+        if guard.state != LazyImageState::Generated || guard.cached.is_none() {
             return None;
         }
-        let cached = guard.cached.as_ref()?;
-        // SAFETY: The pixel buffer lives inside `self.inner` (an `Arc`), so
-        // it outlives the returned reference as long as `self` is borrowed.
-        // The bytes are never mutated in place once generated — the only way
-        // to free them is `discard_pixels`, which the borrow contract above
-        // forbids while a peeked slice is alive. We therefore extend the
-        // slice's lifetime from the mutex guard to `&self`.
-        let slice: &[u8] =
-            unsafe { std::slice::from_raw_parts(cached.pixels.as_ptr(), cached.pixels.len()) };
-        drop(guard);
-        Some(slice)
+        Some(PeekedPixels { guard })
     }
 
     /// Read pixels into a provided buffer.
@@ -398,6 +408,35 @@ impl LazyImage {
     pub fn from_image(image: Image) -> Self {
         let generator = RasterImageGenerator::new(image);
         Self::from_generator(Box::new(generator))
+    }
+}
+
+/// A borrowed view of a [`LazyImage`]'s generated pixels.
+///
+/// Returned by [`LazyImage::peek_pixels`]. Dereferences to `&[u8]`. The
+/// guard holds the image's internal lock, which is what makes the borrow
+/// sound: `discard_pixels` (from this or any clone, on any thread) cannot
+/// free the buffer while a `PeekedPixels` is alive — it blocks until the
+/// guard is dropped. Do not call other `LazyImage` methods on the same
+/// thread while holding the guard (self-deadlock).
+pub struct PeekedPixels<'a> {
+    guard: parking_lot::MutexGuard<'a, GenState>,
+}
+
+impl PeekedPixels<'_> {
+    /// The row stride, in bytes, of the pixel buffer.
+    pub fn row_bytes(&self) -> usize {
+        // Invariant: peek_pixels only constructs this guard when `cached`
+        // is Some, and the lock is held, so it cannot become None.
+        self.guard.cached.as_ref().expect("cached pixels").row_bytes
+    }
+}
+
+impl std::ops::Deref for PeekedPixels<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.guard.cached.as_ref().expect("cached pixels").pixels
     }
 }
 
@@ -625,6 +664,74 @@ mod tests {
         lazy.ensure_pixels_generated().unwrap();
         let px = lazy.peek_pixels().expect("pixels available after generation");
         assert_eq!(&px[0..4], &[9, 8, 7, 255]);
+    }
+
+    /// The `PeekedPixels` guard holds the internal lock, so a concurrent
+    /// `discard_pixels` through a *clone* blocks until the guard drops —
+    /// the peeked bytes can never dangle.
+    #[test]
+    fn test_peek_pixels_guard_blocks_concurrent_discard() {
+        use std::thread;
+
+        let generator = SolidColorGenerator::new(2, 2, [5, 6, 7, 255]);
+        let lazy = LazyImage::from_generator(Box::new(generator));
+        lazy.ensure_pixels_generated().unwrap();
+
+        let px = lazy.peek_pixels().expect("generated");
+        let clone = lazy.clone();
+        let discarder = thread::spawn(move || {
+            // Must block until the guard below is dropped.
+            clone.discard_pixels();
+        });
+
+        // Give the discarder ample time to run; the buffer must still be
+        // intact because the guard holds the lock.
+        thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(&px[0..4], &[5, 6, 7, 255], "pixels valid while guard held");
+        drop(px);
+
+        discarder.join().unwrap();
+        assert!(!lazy.is_generated(), "discard proceeded after guard drop");
+    }
+
+    /// A generator that panics during decode.
+    struct PanickingGenerator {
+        info: ImageInfo,
+    }
+
+    impl ImageGenerator for PanickingGenerator {
+        fn info(&self) -> &ImageInfo {
+            &self.info
+        }
+        fn on_get_pixels(&self, _pixels: &mut [u8], _row_bytes: usize) -> GeneratorResult<()> {
+            panic!("generator blew up");
+        }
+    }
+
+    /// If the generator panics mid-decode, the state must flip to `Failed`
+    /// and condvar waiters must be woken — never left blocking forever on a
+    /// state stuck at `Generating` (parking_lot does not poison).
+    #[test]
+    fn test_generator_panic_fails_waiters_instead_of_hanging() {
+        use std::thread;
+
+        let generator = PanickingGenerator {
+            info: ImageInfo::new(2, 2, ColorType::Rgba8888, AlphaType::Premul),
+        };
+        let lazy = Arc::new(LazyImage::from_generator(Box::new(generator)));
+
+        // First caller panics (the unwind guard re-raises the panic after
+        // publishing Failed).
+        let l1 = Arc::clone(&lazy);
+        let panicker = thread::spawn(move || {
+            let _ = l1.ensure_pixels_generated();
+        });
+        assert!(panicker.join().is_err(), "generator panic propagates");
+
+        // Late caller must observe Failed and get an Err — not hang.
+        assert_eq!(lazy.state(), LazyImageState::Failed);
+        assert!(lazy.ensure_pixels_generated().is_err());
+        assert!(lazy.peek_pixels().is_none());
     }
 
     /// `read_pixels` must report failure (no partial copy) when the

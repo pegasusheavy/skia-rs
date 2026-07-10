@@ -1464,6 +1464,32 @@ fn decode_ico_bmp(data: &[u8]) -> CodecResult<Image> {
 
     let pixel_offset = header_size;
     let pixel_data = &data[pixel_offset..];
+
+    // Before allocating the (width * height * 4) output buffer, verify the
+    // file actually contains the color bitmap it claims: a tiny file with a
+    // header claiming huge in-range dimensions must be rejected here, not
+    // handed to the allocator.
+    let src_row_size = match bits_per_pixel {
+        32 => width
+            .checked_mul(4)
+            .ok_or_else(|| CodecError::InvalidData("ICO BMP row too large".into()))?,
+        24 => (width * 3 + 3) & !3,
+        _ => {
+            return Err(CodecError::Unsupported(format!(
+                "ICO {} bits per pixel not supported",
+                bits_per_pixel
+            )));
+        }
+    };
+    let required = src_row_size
+        .checked_mul(height)
+        .ok_or_else(|| CodecError::InvalidData("ICO BMP pixel array too large".into()))?;
+    if pixel_data.len() < required {
+        return Err(CodecError::InvalidData(
+            "ICO BMP pixel data truncated".into(),
+        ));
+    }
+
     let mut rgba = vec![0u8; width * height * 4];
 
     match bits_per_pixel {
@@ -3233,6 +3259,24 @@ mod tests {
         // reserved=0, type=1, count=1, then only 4 of the 16 entry bytes.
         let data = vec![0, 0, 1, 0, 1, 0, 16, 16, 0, 0];
         assert!(decode_ico(&data).is_err());
+    }
+
+    /// An ICO-embedded BMP whose header claims huge (per-dimension in-range)
+    /// dimensions but supplies no pixel data must error *before* allocating
+    /// the output buffer — width*height*4 for 16M x 8M would be ~0.5 PB.
+    #[test]
+    fn test_ico_bmp_absurd_dims_rejected_before_alloc() {
+        // BITMAPINFOHEADER (40 bytes), no pixel data.
+        let mut bmp = vec![0u8; 40];
+        bmp[0..4].copy_from_slice(&40u32.to_le_bytes()); // header size
+        bmp[4..8].copy_from_slice(&((1i32 << 24) - 2).to_le_bytes()); // width
+        // Stored height counts color+mask, so this decodes to height/2.
+        bmp[8..12].copy_from_slice(&((1i32 << 24) - 2).to_le_bytes()); // height
+        bmp[14..16].copy_from_slice(&32u16.to_le_bytes()); // bpp
+        assert!(
+            decode_ico_bmp(&bmp).is_err(),
+            "absurd ICO BMP dims with no data must error, not allocate"
+        );
     }
 
     /// An ICO entry whose image offset/size point past the buffer must
