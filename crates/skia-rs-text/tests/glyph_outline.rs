@@ -204,8 +204,9 @@ fn get_widths_delegates_to_hmtx_advances() {
     // Gap N-3: `get_widths` must return the same per-glyph advances as
     // `glyph_advance`, not a uniform `size * 0.5` per character.
     let font = demo_font(100.0);
-    // demo.ttf maps only 'A' to a real glyph; other characters are .notdef
-    // (gid=0) whose advance is 0.
+    // demo.ttf maps only 'A' to a real glyph; other characters fall back to
+    // .notdef (gid=0). Skia treats .notdef like any glyph: it has a real
+    // hmtx advance (demo.ttf: 600 units → 60px at size=100), NOT zero.
     let widths = font.get_widths("AB");
     assert_eq!(widths.len(), 2);
     assert!(
@@ -213,11 +214,14 @@ fn get_widths_delegates_to_hmtx_advances() {
         "expected real advance for 'A', got {}",
         widths[0]
     );
+    // .notdef carries its real hmtx advance.
     assert!(
-        widths[1].abs() < 0.001,
-        "expected 0 advance for missing 'B', got {}",
+        (widths[1] - 60.0).abs() < 1.0,
+        "expected .notdef hmtx advance ≈ 60, got {}",
         widths[1]
     );
+    // And it must match glyph_advance(0) directly.
+    assert!((widths[1] - font.glyph_advance(0)).abs() < 0.001);
 }
 
 #[test]
@@ -247,8 +251,12 @@ fn glyph_bounds_returns_real_outline_box() {
     // Same constraints as get_bounds but for a single glyph id.
     assert!(bbox.top < 0.0);
     assert!(bbox.width() > 0.0);
-    // Missing glyph yields empty rect.
-    assert_eq!(font.glyph_bounds(0), skia_rs_core::Rect::EMPTY);
+    // .notdef (gid 0) is a real glyph with a tofu-box outline in demo.ttf,
+    // so its bounds are non-empty (bbox 100,0,600,700 → top negative).
+    let notdef = font.glyph_bounds(0);
+    assert!(!notdef.is_empty(), "notdef must have a real tofu box");
+    assert!(notdef.top < 0.0, "notdef box rises above baseline");
+    assert!(notdef.width() > 0.0);
 }
 
 // =============================================================================
@@ -676,4 +684,217 @@ fn text_blob_bounds_bracket_real_glyph_positions() {
     assert!(b.width() >= 120.0);
     assert!(b.height() > 0.0);
     assert!(b.top < 0.0, "top includes ascent above baseline");
+}
+
+// =============================================================================
+// Task 5: conformance-audit findings
+// =============================================================================
+
+#[test]
+fn metrics_x_and_cap_height_are_positive() {
+    // FreeType port convention: x_height / cap_height are stored positive
+    // (`os2->sxHeight/upem*scale`; fallbacks `-ascent*k`). demo.ttf has no
+    // OS/2 table, so both come from the (positive) ascent fallback.
+    let m = demo_font(100.0).metrics();
+    assert!(m.x_height > 0.0, "x_height must be positive, got {}", m.x_height);
+    assert!(
+        m.cap_height > 0.0,
+        "cap_height must be positive, got {}",
+        m.cap_height
+    );
+    // cap_height sits above x_height for this fallback (0.875 vs 0.625).
+    assert!(m.cap_height > m.x_height);
+}
+
+#[test]
+fn metrics_top_bottom_come_from_font_bbox() {
+    // top = -bbox.yMax/upem*scale, bottom = -bbox.yMin/upem*scale.
+    // demo.ttf global bbox = (6, 0, 600, 700); at size=1000, scale=1.
+    let m = demo_font(1000.0).metrics();
+    assert!(
+        (m.top - -700.0).abs() < 0.5,
+        "top should be -bbox.yMax = -700, got {}",
+        m.top
+    );
+    assert!(
+        m.bottom.abs() < 0.5,
+        "bottom should be -bbox.yMin = 0, got {}",
+        m.bottom
+    );
+    // top/bottom are the ink bbox, independent of the hhea ascent/descent
+    // (here the hhea ascender 1024 exceeds the bbox yMax 700). The key
+    // point is they are bbox-derived, not `ascent * 1.125`.
+    assert!((m.top - m.ascent * 1.125).abs() > 1.0, "top must not be ascent*1.125");
+}
+
+#[test]
+fn metrics_avg_and_max_char_width_from_bbox() {
+    // No OS/2 xAvgCharWidth in demo.ttf ⇒ avg falls back to bbox width.
+    // max_char_width = (xmax - xmin)/upem*scale = (600-6) = 594 at size 1000.
+    let m = demo_font(1000.0).metrics();
+    assert!(
+        (m.max_char_width - 594.0).abs() < 0.5,
+        "max_char_width should be bbox width 594, got {}",
+        m.max_char_width
+    );
+    assert!(
+        (m.avg_char_width - 594.0).abs() < 0.5,
+        "avg_char_width should fall back to bbox width, got {}",
+        m.avg_char_width
+    );
+}
+
+#[test]
+fn notdef_glyph_has_real_advance_bounds_and_outline() {
+    // Glyph 0 (.notdef) is a real glyph: demo.ttf gives it advance 600
+    // (→60px at size 100), a tofu-box outline, and non-empty bounds.
+    let font = demo_font(100.0);
+    assert!(
+        (font.glyph_advance(0) - 60.0).abs() < 1.0,
+        "notdef advance ≈ 60, got {}",
+        font.glyph_advance(0)
+    );
+    assert!(
+        font.glyph_path(0).is_some(),
+        "notdef must yield its tofu-box outline"
+    );
+    assert!(!font.glyph_bounds(0).is_empty());
+}
+
+#[test]
+fn glyph_path_applies_scale_x() {
+    // scale_x=2 must double the outline's horizontal extent while leaving
+    // vertical extent unchanged (consistent with glyph_advance).
+    let base = demo_font(100.0);
+    let mut wide = demo_font(100.0);
+    wide.set_scale_x(2.0);
+
+    let bb = base.glyph_path(1).unwrap().bounds();
+    let wb = wide.glyph_path(1).unwrap().bounds();
+
+    let wratio = wb.width() / bb.width();
+    assert!(
+        (wratio - 2.0).abs() < 0.02,
+        "scale_x=2 should double width, ratio {wratio}"
+    );
+    // Height unchanged.
+    assert!((wb.height() - bb.height()).abs() < 0.5);
+    // And glyph_advance scales the same way.
+    assert!((wide.glyph_advance(1) - 2.0 * base.glyph_advance(1)).abs() < 0.01);
+}
+
+#[test]
+fn glyph_path_applies_skew_x() {
+    // skew_x shears x by skew*y. A point above the baseline (negative
+    // screen-y) shifts left for positive skew_x, so the sheared outline's
+    // top edge moves relative to the unsheared one.
+    let base = demo_font(100.0);
+    let mut skewed = demo_font(100.0);
+    skewed.set_skew_x(0.5);
+
+    let bb = base.glyph_path(1).unwrap().bounds();
+    let sb = skewed.glyph_path(1).unwrap().bounds();
+
+    // Shearing changes horizontal extent (top of glyph shifts vs bottom),
+    // so the sheared bbox is wider than the upright one.
+    assert!(
+        sb.width() > bb.width() + 1.0,
+        "skew must widen the bbox: {} vs {}",
+        sb.width(),
+        bb.width()
+    );
+    // Vertical extent is preserved (skew_x shears x only).
+    assert!((sb.height() - bb.height()).abs() < 0.5);
+}
+
+#[test]
+fn shaper_x_positions_scale_with_scale_x() {
+    // SkShaper_harfbuzz multiplies x advances by getScaleX().
+    let base = demo_font(100.0);
+    let mut wide = demo_font(100.0);
+    wide.set_scale_x(2.0);
+    let shaper = Shaper::new();
+
+    let a = shaper.shape_auto("A", &base).unwrap();
+    let b = shaper.shape_auto("A", &wide).unwrap();
+    let ax = a[0].glyphs[0].x_advance;
+    let bx = b[0].glyphs[0].x_advance;
+    assert!(
+        (bx - 2.0 * ax).abs() < 0.5,
+        "scale_x=2 should double shaped x advance: {bx} vs {ax}"
+    );
+}
+
+#[test]
+fn text_blob_from_text_width_agrees_with_measure_text() {
+    // from_text must position glyphs by real per-glyph advances so the
+    // blob width matches Font::measure_text (not size*0.5 per glyph).
+    use skia_rs_core::Point;
+    use skia_rs_text::TextBlob;
+    let font = demo_font(100.0);
+    let blob = TextBlob::from_text("AAA", &font, Point::new(0.0, 0.0));
+    let measured = font.measure_text("AAA");
+    // Blob width = last origin + last advance = 3 * advance = measured.
+    let w = blob.bounds().right;
+    assert!(
+        (w - measured).abs() < 1.0,
+        "blob width {w} must agree with measure_text {measured}"
+    );
+    // And it must NOT be the old size*0.5 estimate (3 * 50 = 150).
+    assert!((w - 150.0).abs() > 5.0, "width must not be the size*0.5 guess");
+}
+
+#[test]
+fn text_blob_unique_id_is_monotonic_and_distinct() {
+    use skia_rs_core::Point;
+    use skia_rs_text::TextBlob;
+    let font = demo_font(20.0);
+    let a = TextBlob::from_text("A", &font, Point::zero());
+    let b = TextBlob::from_text("A", &font, Point::zero());
+    assert_ne!(a.unique_id(), b.unique_id(), "ids must be distinct");
+    assert!(b.unique_id() > a.unique_id(), "ids must be monotonic");
+}
+
+#[test]
+fn paragraph_push_style_is_a_real_stack() {
+    // push_style/pop must maintain a stack: after pop, the previously
+    // pushed style is restored — not TextStyle::default().
+    let outer = demo_text_style(80.0);
+    let inner = demo_text_style(40.0);
+
+    let mut builder = ParagraphBuilder::new(ParagraphStyle::default());
+    builder.push_style(&outer);
+    builder.add_text("A"); // outer (80)
+    builder.push_style(&inner);
+    builder.add_text("A"); // inner (40)
+    builder.pop();
+    builder.add_text("A"); // back to outer (80), NOT default (12)
+
+    let mut paragraph = builder.build();
+    paragraph.layout(10_000.0);
+    let blob = paragraph.to_text_blob().expect("blob");
+    let sizes: Vec<f32> = blob.runs().iter().map(|r| r.font.size()).collect();
+    // Three runs at 80, 40, 80 — the third proves pop restored `outer`.
+    assert_eq!(sizes, vec![80.0, 40.0, 80.0], "pop must restore previous style");
+}
+
+#[test]
+fn paragraph_empty_line_uses_paragraph_style_height() {
+    // An empty line (bare newline) must take its height from the
+    // paragraph's own font, not Font::default() (size 12).
+    let mut builder = ParagraphBuilder::new(ParagraphStyle::default());
+    builder.push_style(&demo_text_style(100.0));
+    // Leading newline produces an empty first line.
+    builder.add_text("\nA");
+    let mut paragraph = builder.build();
+    paragraph.layout(10_000.0);
+
+    let first = &paragraph.lines()[0];
+    let empty_height = first.bounds.height();
+    // demo.ttf at size 100 has line height ~142; Font::default() (size 12)
+    // would give ~12. The empty line must be in the size-100 regime.
+    assert!(
+        empty_height > 100.0,
+        "empty line height {empty_height} must reflect the size-100 style"
+    );
 }

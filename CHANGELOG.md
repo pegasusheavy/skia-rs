@@ -97,6 +97,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   segments from the path crate instead of 10-degree polylines.
 - `draw_points` in `Points` mode draws stroke-width-sized squares
   (butt/square cap) or circles (round cap) per `SkDraw::drawPoints`.
+- COLR v1 sweep-gradient angles from `skia-rs-text` are now degrees (no
+  extra negation); the color-glyph renderer feeds them straight into
+  `SkShaders::SweepGradient` instead of converting from radians.
+
+### Changed (skia-rs-text — conformance audit)
+- COLR **v1** color glyphs now render: the paint-graph walker emits a layer
+  per painted fill using the active clip glyph, instead of dropping every v1
+  layer (`paint` no longer requires a preceding `outline_glyph`). ClipList
+  boxes are tracked distinctly (exposed as `ColorGlyphLayer::clip_box`) and
+  no longer pushed as a sentinel gid 0.
+- COLR v1 sweep angles are converted as degrees (`raw * 180`) with no extra
+  sign flip. `GlyphPaint::SweepGradient::start_angle`/`end_angle` are now
+  documented and delivered in **degrees**, not radians.
+- `TextBlob::from_text` / `TextBlobBuilder::add_text` position glyphs by real
+  per-glyph `hmtx` advances; blob width now agrees with `Font::measure_text`
+  (was a uniform `size * 0.5` per glyph).
+- `TextBlob::unique_id()` returns a monotonic `u32` from a process-wide
+  counter (was a pointer-address `usize`).
+- `GlyphRun::bounds` uses the font's conservative bbox-based `top`/`bottom`
+  extents instead of ascent/descent.
+- Font metrics now match the FreeType port: `x_height`/`cap_height` are
+  **positive**; `top`/`bottom` come from the font bounding box; `avg_char_width`
+  from OS/2 `xAvgCharWidth` (fallback bbox width) and `max_char_width` from the
+  bbox width; `underline_position` folds in the half-thickness (distance to the
+  top of the stroke); negative line gap is clamped to 0.
+- Glyph 0 (`.notdef`) is treated like any glyph: it uses its real `hmtx`
+  advance, bounding box, and tofu-box outline (previously advance 0, empty
+  bounds, no outline).
+- `Font::glyph_path` applies `scale_x` and `skew_x` (Skia's
+  `MakeTextMatrix`), consistent with `glyph_advance`.
+- Shaper output negates HarfBuzz `y_advance`/`y_offset` (y-up → Skia y-down)
+  and multiplies shaped x positions by `Font::scale_x`.
+- `GlyphImage::top` is converted to y-down (negated bitmap-top bearing).
+- `ParagraphBuilder::push_style`/`pop` maintain a real style stack; `pop`
+  restores the previously pushed style rather than the default. Empty lines
+  take their height from the paragraph's own style, not `Font::default()`.
 
 ## [0.2.6] - 2026-04-26
 
