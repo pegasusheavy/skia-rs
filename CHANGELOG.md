@@ -488,6 +488,40 @@ The first public release of skia-rs, a pure Rust implementation of the Skia 2D g
 
 ## [Unreleased]
 
+### Changed (skia-rs-core — conformance audit, Task 1)
+- `Rect::is_empty` now reports empty for any NaN coordinate (matching
+  `SkRect::isEmpty`), so NaN rects no longer survive `union`/`join`.
+- `Rect::contains_rect` returns false when either rectangle is empty.
+- `Rect::round`/`round_out`/`round_in` and `Size::to_isize_round` use Skia's
+  rounding (half toward +∞) with saturating float→int casts; NaN and
+  out-of-range values now saturate instead of becoming 0.
+- `IRect::from_xywh` uses saturating addition for the right/bottom edges.
+- `Matrix::invert` and `Matrix44::invert` use Skia's determinant thresholds
+  (double precision; reject only near-zero/zero determinants and non-finite
+  inverses); small-scale matrices such as `scale(0.005)` now invert.
+- `Matrix44::pre_translate`/`post_translate`/`pre_scale`/`post_scale` had their
+  pre/post semantics corrected to match `SkM44` (`preX` = `self * X`).
+- `RRect::from_rect_xy`/`from_oval` sort inverted rects instead of panicking,
+  scale oversized radii by a single aspect-preserving factor, and square all
+  corners when either radius is ≤ 0.
+- RGB565→RGBA8888 conversion replicates low bits, so full-scale channels map to
+  255 (e.g. 565 white is now `#FFFFFF`, previously `#F8FCF8`).
+- RGBA8888→Gray8 uses BT.709 luma coefficients (previously BT.601).
+- Premultiplication (`premultiply_color`, `premultiply_in_place`) rounds via
+  `SkMulDiv255Round` instead of truncating.
+- Per-format alpha (un)premultiplication for `Argb4444`, `Rgba1010102`,
+  `Bgra1010102`, and `R16G16B16A16Unorm` (previously corrupted by a generic
+  4-byte-RGBA path); alpha-only formats are left unchanged.
+- `ColorType::n32` returns `Rgba8888` on all platforms except Windows (`Bgra8888`),
+  matching Skia's build-config selection rather than target endianness.
+- `ColorType::has_alpha` returns false for the alpha-less `R16G16Unorm` and
+  `R16G16Float` formats.
+- `Region` canonicalizes to scanline order after `intersect` and `difference`
+  (not just `union`), so equality, `is_rect`, `rect_count`, and iteration order
+  match `SkRegion`.
+- `ImageInfo::new` accepts zero dimensions as a legal empty info (still rejects
+  negatives).
+
 ### Planned for v0.2.0
 - Complete wgpu GPU backend
 - Vulkan backend
