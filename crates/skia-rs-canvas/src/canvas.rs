@@ -382,9 +382,11 @@ impl<'a> Canvas<'a> {
                     // over-style blends; skip to avoid pointless work.
                     continue;
                 }
-                // Scale source alpha by the layer paint alpha.
-                let scaled_a = ((sa_raw as f32) * layer_alpha).round().clamp(0.0, 255.0) as u8;
-                let src = Color::from_argb(scaled_a, sr, sg, sb);
+                // Layer pixels are PREMULTIPLIED. Scaling the source by the
+                // layer paint's alpha therefore attenuates all four channels,
+                // keeping the source premultiplied for `blend_pixel`.
+                let scale = |v: u8| (v as f32 * layer_alpha).round().clamp(0.0, 255.0) as u8;
+                let src = Color::from_argb(scale(sa_raw), scale(sr), scale(sg), scale(sb));
                 target.blend_pixel(dx, dy, src, blend_mode);
             }
         }

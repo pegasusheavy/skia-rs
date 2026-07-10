@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed (skia-rs-canvas — conformance audit)
+- The raster pixel pipeline now stores **premultiplied** pixels end to end
+  (`SkSurface_Raster` with `AlphaType::Premul`). Paint colors are
+  premultiplied once at the paint→device boundary; blends operate on
+  premultiplied values; `clear` premultiplies its color. Translucent draws
+  now store premultiplied bytes (e.g. 50% red stores `r == a`, not
+  `r == 255`), a visible byte-level change from the previous straight-alpha
+  storage.
+- `blend_colors` delegates every non-trivial blend mode to
+  `skia-rs-paint`'s `BlendMode::apply` on premultiplied values — the full
+  separable/non-separable set (Multiply, Overlay, Darken, …, Luminosity) is
+  now correct instead of silently falling back to SrcOver.
+- Byte-domain color math uses Skia's rounded `SkMulDiv255Round` everywhere,
+  including the AVX2 chunk **and** its scalar remainder, and the
+  premultiply/unpremultiply span helpers.
+- The SIMD SrcOver span blitters (scalar, AVX2, NEON) now blend
+  premultiplied source and agree bit-for-bit with `blend_colors`.
+- Fixed an out-of-bounds read/write and double-blending bug in the AArch64
+  NEON span blitter (`fill_span_blend_neon`): it now processes 8 px per
+  iteration with matched `vld4_u8`/`vst4_u8` (32 B) plus a scalar tail.
+- `Surface::new_raster` rejects color types the RGBA buffer cannot represent
+  (only RGBA-order 8888 is supported) instead of silently mislabeling them.
+  Image snapshots carry the surface's true color/alpha type and deliver
+  unpremultiplied bytes when the surface's alpha type is `Unpremul`.
+
 ## [0.2.6] - 2026-04-26
 
 Phase 7 complete: resolved every remaining deferral across the

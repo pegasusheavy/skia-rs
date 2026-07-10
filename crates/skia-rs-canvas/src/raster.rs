@@ -23,8 +23,11 @@
 //! - **Region-based clip**: Complex clips composed of multiple rectangles
 //! - **Anti-aliased clip**: Smooth clip edges using coverage masks
 
-use skia_rs_core::{Color, IRect, Matrix, Point, Rect, Region, Scalar};
+use skia_rs_core::premultiply_color;
+use skia_rs_core::{Color, Color4f, IRect, Matrix, Point, Rect, Region, Scalar};
 use skia_rs_paint::{BlendMode, Paint, Style};
+
+use crate::simd::mul_div_255_round;
 use skia_rs_path::{FillType, Path, PathElement};
 
 use crate::clip::{ClipMask, ClipStack, ClipState};
@@ -56,12 +59,16 @@ impl PixelBuffer {
     }
 
     /// Clear the buffer with a color.
+    ///
+    /// `SkCanvas::clear` is `drawColor(color, SkBlendMode::kSrc)`; the buffer
+    /// stores premultiplied pixels, so the color is premultiplied first.
     #[inline]
     pub fn clear(&mut self, color: Color) {
-        let r = color.red();
-        let g = color.green();
-        let b = color.blue();
-        let a = color.alpha();
+        let pm = premultiply_color(color);
+        let r = pm.red();
+        let g = pm.green();
+        let b = pm.blue();
+        let a = pm.alpha();
 
         // Optimize for common case of fully transparent or opaque clear
         if a == 0 && r == 0 && g == 0 && b == 0 {
@@ -104,7 +111,10 @@ impl PixelBuffer {
         self.pixels[offset + 3] = color.alpha();
     }
 
-    /// Blend a pixel at (x, y) using the given blend mode.
+    /// Blend a **premultiplied** pixel at (x, y) using the given blend mode.
+    ///
+    /// `src` must already be premultiplied; the buffer stores premultiplied
+    /// pixels, and [`blend_colors`] operates on premultiplied inputs.
     #[inline]
     pub fn blend_pixel(&mut self, x: i32, y: i32, src: Color, blend_mode: BlendMode) {
         if x < 0 || x >= self.width || y < 0 || y >= self.height {
@@ -149,10 +159,9 @@ impl PixelBuffer {
             return;
         }
 
-        // Apply coverage to source alpha
-        let adjusted_alpha = (src.alpha() as f32 * coverage.min(1.0)) as u8;
-        let src_with_coverage =
-            Color::from_argb(adjusted_alpha, src.red(), src.green(), src.blue());
+        // `src` is premultiplied: coverage attenuates all four channels.
+        let cov = (coverage.min(1.0) * 255.0).round() as u8;
+        let src_with_coverage = apply_coverage(src, cov);
 
         let dst = self.get_pixel(x, y).unwrap_or(Color::from_argb(0, 0, 0, 0));
         let blended = blend_colors(src_with_coverage, dst, blend_mode);
@@ -160,132 +169,54 @@ impl PixelBuffer {
     }
 }
 
-/// Blend two colors using a blend mode.
+/// Blend two **premultiplied** colors using a blend mode, returning a
+/// premultiplied result.
+///
+/// This is the single blend implementation for the raster pipeline. The
+/// hot Porter-Duff cases (`SrcOver`, `Src`, `Dst`, `Clear`) use the exact
+/// integer `SkMulDiv255Round` form so they agree bit-for-bit with the SIMD
+/// span blitters. Every other mode delegates to `skia-rs-paint`'s
+/// [`BlendMode::apply`], which implements the full Porter-Duff / separable /
+/// non-separable set on premultiplied [`Color4f`] values (Task 3). There is
+/// no second blend implementation here.
 fn blend_colors(src: Color, dst: Color, mode: BlendMode) -> Color {
-    let sa = src.alpha() as f32 / 255.0;
-    let sr = src.red() as f32 / 255.0;
-    let sg = src.green() as f32 / 255.0;
-    let sb = src.blue() as f32 / 255.0;
-
-    let da = dst.alpha() as f32 / 255.0;
-    let dr = dst.red() as f32 / 255.0;
-    let dg = dst.green() as f32 / 255.0;
-    let db = dst.blue() as f32 / 255.0;
-
-    let (ra, rr, rg, rb) = match mode {
-        BlendMode::Clear => (0.0, 0.0, 0.0, 0.0),
-        BlendMode::Src => (sa, sr, sg, sb),
-        BlendMode::Dst => (da, dr, dg, db),
-        BlendMode::SrcOver => {
-            let a = sa + da * (1.0 - sa);
-            if a > 0.0 {
-                let r = (sr * sa + dr * da * (1.0 - sa)) / a;
-                let g = (sg * sa + dg * da * (1.0 - sa)) / a;
-                let b = (sb * sa + db * da * (1.0 - sa)) / a;
-                (a, r, g, b)
-            } else {
-                (0.0, 0.0, 0.0, 0.0)
-            }
-        }
-        BlendMode::DstOver => {
-            let a = da + sa * (1.0 - da);
-            if a > 0.0 {
-                let r = (dr * da + sr * sa * (1.0 - da)) / a;
-                let g = (dg * da + sg * sa * (1.0 - da)) / a;
-                let b = (db * da + sb * sa * (1.0 - da)) / a;
-                (a, r, g, b)
-            } else {
-                (0.0, 0.0, 0.0, 0.0)
-            }
-        }
-        BlendMode::SrcIn => {
-            let a = sa * da;
-            (a, sr, sg, sb)
-        }
-        BlendMode::DstIn => {
-            let a = da * sa;
-            (a, dr, dg, db)
-        }
-        BlendMode::SrcOut => {
-            let a = sa * (1.0 - da);
-            (a, sr, sg, sb)
-        }
-        BlendMode::DstOut => {
-            let a = da * (1.0 - sa);
-            (a, dr, dg, db)
-        }
-        BlendMode::SrcATop => {
-            let a = da;
-            let r = sr * da + dr * (1.0 - sa);
-            let g = sg * da + dg * (1.0 - sa);
-            let b = sb * da + db * (1.0 - sa);
-            (a, r, g, b)
-        }
-        BlendMode::DstATop => {
-            let a = sa;
-            let r = dr * sa + sr * (1.0 - da);
-            let g = dg * sa + sg * (1.0 - da);
-            let b = db * sa + sb * (1.0 - da);
-            (a, r, g, b)
-        }
-        BlendMode::Xor => {
-            let a = sa + da - 2.0 * sa * da;
-            let r = sr * (1.0 - da) + dr * (1.0 - sa);
-            let g = sg * (1.0 - da) + dg * (1.0 - sa);
-            let b = sb * (1.0 - da) + db * (1.0 - sa);
-            (a, r, g, b)
-        }
-        BlendMode::Plus => {
-            let a = (sa + da).min(1.0);
-            let r = (sr + dr).min(1.0);
-            let g = (sg + dg).min(1.0);
-            let b = (sb + db).min(1.0);
-            (a, r, g, b)
-        }
-        BlendMode::Multiply => {
-            let a = sa + da - sa * da;
-            let r = sr * dr;
-            let g = sg * dg;
-            let b = sb * db;
-            (a, r, g, b)
-        }
-        BlendMode::Screen => {
-            let a = sa + da - sa * da;
-            let r = sr + dr - sr * dr;
-            let g = sg + dg - sg * dg;
-            let b = sb + db - sb * db;
-            (a, r, g, b)
-        }
+    match mode {
+        BlendMode::SrcOver => crate::simd::src_over_premul(src, dst),
+        BlendMode::Src => src,
+        BlendMode::Dst => dst,
+        BlendMode::Clear => Color::TRANSPARENT,
         _ => {
-            // Default to SrcOver for unimplemented modes
-            let a = sa + da * (1.0 - sa);
-            if a > 0.0 {
-                let r = (sr * sa + dr * da * (1.0 - sa)) / a;
-                let g = (sg * sa + dg * da * (1.0 - sa)) / a;
-                let b = (sb * sa + db * da * (1.0 - sa)) / a;
-                (a, r, g, b)
-            } else {
-                (0.0, 0.0, 0.0, 0.0)
-            }
+            // Bytes are premultiplied; Color4f::from_color yields premul
+            // components in [0, 1], exactly what BlendMode::apply expects.
+            let s = Color4f::from_color(src);
+            let d = Color4f::from_color(dst);
+            mode.apply(s, d).to_color()
         }
-    };
-
-    Color::from_argb(
-        (ra * 255.0).clamp(0.0, 255.0) as u8,
-        (rr * 255.0).clamp(0.0, 255.0) as u8,
-        (rg * 255.0).clamp(0.0, 255.0) as u8,
-        (rb * 255.0).clamp(0.0, 255.0) as u8,
-    )
+    }
 }
 
-/// Apply coverage to a color by scaling the alpha.
+/// Test-only re-export of [`blend_colors`] so the SIMD differential tests can
+/// assert bit-exact agreement with the per-pixel blend path.
+#[cfg(test)]
+pub(crate) fn blend_colors_for_test(src: Color, dst: Color, mode: BlendMode) -> Color {
+    blend_colors(src, dst, mode)
+}
+
+/// Scale a **premultiplied** color by an 8-bit coverage value.
+///
+/// For premultiplied storage, coverage attenuates all four channels
+/// (RGB and A), not just alpha. Uses rounded `SkMulDiv255Round`.
 #[inline]
 fn apply_coverage(color: Color, coverage: u8) -> Color {
+    if coverage == 255 {
+        return color;
+    }
+    let c = coverage as u32;
     Color::from_argb(
-        ((color.alpha() as u32 * coverage as u32) / 255) as u8,
-        color.red(),
-        color.green(),
-        color.blue(),
+        mul_div_255_round(color.alpha() as u32, c),
+        mul_div_255_round(color.red() as u32, c),
+        mul_div_255_round(color.green() as u32, c),
+        mul_div_255_round(color.blue() as u32, c),
     )
 }
 
@@ -437,17 +368,12 @@ impl<'a> Rasterizer<'a> {
 
         let coverage = self.get_clip_coverage(x, y);
         if coverage > 0 {
-            let color = paint.color32();
+            let color = premultiply_color(paint.color32());
             if coverage == 255 {
                 self.buffer.blend_pixel(x, y, color, paint.blend_mode());
             } else {
-                // Apply clip coverage to pixel alpha
-                let adjusted_color = Color::from_argb(
-                    ((color.alpha() as u32 * coverage as u32) / 255) as u8,
-                    color.red(),
-                    color.green(),
-                    color.blue(),
-                );
+                // Apply clip coverage to the premultiplied color (all channels).
+                let adjusted_color = apply_coverage(color, coverage);
                 self.buffer
                     .blend_pixel(x, y, adjusted_color, paint.blend_mode());
             }
@@ -479,7 +405,7 @@ impl<'a> Rasterizer<'a> {
         let sy = if y0 < y1 { 1 } else { -1 };
         let mut err = dx + dy;
 
-        let color = paint.color32();
+        let color = premultiply_color(paint.color32());
         let blend_mode = paint.blend_mode();
 
         loop {
@@ -519,7 +445,7 @@ impl<'a> Rasterizer<'a> {
         let mut x1 = t1.x;
         let mut y1 = t1.y;
 
-        let color = paint.color32();
+        let color = premultiply_color(paint.color32());
         let blend_mode = paint.blend_mode();
 
         let steep = (y1 - y0).abs() > (x1 - x0).abs();
@@ -674,7 +600,9 @@ impl<'a> Rasterizer<'a> {
 
         // Check if we have a shader
         if let Some(shader) = paint.shader() {
-            // Shader-based fill - sample each pixel
+            // Shader-based fill - sample each pixel. `Shader::sample` returns a
+            // PREMULTIPLIED Color4f (Task 3 contract), which is exactly what the
+            // premultiplied pixel pipeline / `blend_pixel` expect.
             for y in y0..y1 {
                 for x in x0..x1 {
                     // Sample shader at pixel center
@@ -685,7 +613,7 @@ impl<'a> Rasterizer<'a> {
             }
         } else {
             // Solid color fill (fast path)
-            let color = paint.color32();
+            let color = premultiply_color(paint.color32());
             for y in y0..y1 {
                 self.draw_hline(x0, x1 - 1, y, color, blend_mode);
             }
@@ -724,7 +652,7 @@ impl<'a> Rasterizer<'a> {
         let cy = tc.y.round() as i32;
         let r = (radius * self.matrix.scale_x().abs()).round() as i32;
 
-        let color = paint.color32();
+        let color = premultiply_color(paint.color32());
         let blend_mode = paint.blend_mode();
 
         let mut x = 0;
@@ -755,7 +683,7 @@ impl<'a> Rasterizer<'a> {
         let cy = tc.y.round() as i32;
         let r = (radius * self.matrix.scale_x().abs()).round() as i32;
 
-        let color = paint.color32();
+        let color = premultiply_color(paint.color32());
         let blend_mode = paint.blend_mode();
 
         let mut x = 0;
@@ -806,7 +734,7 @@ impl<'a> Rasterizer<'a> {
         let cy = tc.y;
         let r = radius * self.matrix.scale_x().abs();
 
-        let color = paint.color32();
+        let color = premultiply_color(paint.color32());
         let blend_mode = paint.blend_mode();
 
         // Calculate bounding box
@@ -1037,7 +965,7 @@ impl<'a> Rasterizer<'a> {
     /// - Incremental x-intercept updates between scanlines
     fn fill_path(&mut self, path: &Path, paint: &Paint) {
         let fill_type = path.fill_type();
-        let color = paint.color32();
+        let color = premultiply_color(paint.color32());
         let blend_mode = paint.blend_mode();
 
         // Collect edges from path
@@ -1101,7 +1029,7 @@ impl<'a> Rasterizer<'a> {
     /// Uses supersampling for improved edge quality.
     pub fn fill_path_aa(&mut self, path: &Path, paint: &Paint) {
         let fill_type = path.fill_type();
-        let color = paint.color32();
+        let color = premultiply_color(paint.color32());
         let blend_mode = paint.blend_mode();
 
         // Collect edges from path
@@ -1636,13 +1564,72 @@ mod tests {
 
     #[test]
     fn test_blend_src_over() {
-        let src = Color::from_argb(128, 255, 0, 0);
+        // blend_colors operates on PREMULTIPLIED inputs and returns premul.
+        // Premul half-red over premul opaque blue.
+        let src = premultiply_color(Color::from_argb(128, 255, 0, 0));
         let dst = Color::from_argb(255, 0, 0, 255);
         let result = blend_colors(src, dst, BlendMode::SrcOver);
 
-        // Semi-transparent red over blue should give purple-ish
+        // Semi-transparent red over blue: result stays opaque, red present,
+        // blue attenuated by (1 - 0.5).
+        assert_eq!(result.alpha(), 255);
         assert!(result.red() > 100);
         assert!(result.blue() > 100);
+    }
+
+    #[test]
+    fn test_premul_storage_translucent_fill() {
+        // A translucent SrcOver fill over a transparent buffer must store
+        // PREMULTIPLIED bytes (SkSurface_Raster with AlphaType::Premul).
+        // Old straight-alpha storage kept red==255; premul stores red==alpha.
+        let mut buffer = PixelBuffer::new(4, 4);
+        // transparent background (all zero, premul transparent)
+        let mut rasterizer = Rasterizer::new(&mut buffer);
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_argb(128, 255, 0, 0));
+        paint.set_style(Style::Fill);
+        rasterizer.fill_rect(&Rect::from_xywh(0.0, 0.0, 4.0, 4.0), &paint);
+
+        let offset = (1 * buffer.stride) + 1 * 4;
+        let r = buffer.pixels[offset];
+        let a = buffer.pixels[offset + 3];
+        assert_eq!(a, 128, "alpha stored");
+        // Premultiplied red == mul_div_255_round(255,128) == 128, NOT 255.
+        assert_eq!(r, 128, "red must be premultiplied");
+    }
+
+    #[test]
+    fn test_blend_colors_delegates_all_modes() {
+        // blend_colors must delegate non-Porter-Duff modes to paint's
+        // BlendMode::apply on premultiplied values (no silent SrcOver fallback).
+        let src = premultiply_color(Color::from_argb(200, 100, 150, 50));
+        let dst = premultiply_color(Color::from_argb(180, 60, 90, 200));
+        for mode in [
+            BlendMode::Multiply,
+            BlendMode::Overlay,
+            BlendMode::Darken,
+            BlendMode::Lighten,
+            BlendMode::Difference,
+            BlendMode::Exclusion,
+            BlendMode::Hue,
+            BlendMode::Luminosity,
+        ] {
+            let s = skia_rs_core::Color4f::from_color(src);
+            let d = skia_rs_core::Color4f::from_color(dst);
+            let expected = mode.apply(s, d).to_color();
+            let got = blend_colors(src, dst, mode);
+            assert_eq!(got, expected, "mode {:?} must match paint apply", mode);
+        }
+    }
+
+    #[test]
+    fn test_porter_duff_src_atop_premul() {
+        // SrcATop on premul: out = src*da + dst*(1-sa).
+        let src = premultiply_color(Color::from_argb(128, 255, 0, 0));
+        let dst = premultiply_color(Color::from_argb(255, 0, 0, 255));
+        let got = blend_colors(src, dst, BlendMode::SrcATop);
+        // alpha == dst alpha for SrcATop
+        assert_eq!(got.alpha(), 255);
     }
 
     // ============ Active Edge Table Tests ============
