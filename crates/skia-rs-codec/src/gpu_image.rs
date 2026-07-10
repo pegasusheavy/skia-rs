@@ -525,16 +525,24 @@ impl GpuImage {
             let width = self.width() as usize;
             let height = self.height() as usize;
             let src_row_bytes = self.inner.row_bytes;
+            let copy_len = width * bytes_per_pixel;
+
+            // Validate the destination can hold every row before copying, so
+            // a too-small buffer reports failure instead of a partially
+            // filled result.
+            if height > 0 {
+                let last_dst = (height - 1) * dst_row_bytes + copy_len;
+                let last_src = (height - 1) * src_row_bytes + copy_len;
+                if last_dst > dst.len() || last_src > cached.len() {
+                    return false;
+                }
+            }
 
             for y in 0..height {
                 let src_offset = y * src_row_bytes;
                 let dst_offset = y * dst_row_bytes;
-                let copy_len = width * bytes_per_pixel;
-
-                if dst_offset + copy_len <= dst.len() && src_offset + copy_len <= cached.len() {
-                    dst[dst_offset..dst_offset + copy_len]
-                        .copy_from_slice(&cached[src_offset..src_offset + copy_len]);
-                }
+                dst[dst_offset..dst_offset + copy_len]
+                    .copy_from_slice(&cached[src_offset..src_offset + copy_len]);
             }
             return true;
         }
@@ -648,6 +656,19 @@ mod tests {
         let mut dst = vec![0u8; 10 * 10 * 4];
         assert!(image.read_pixels(&mut dst, 10 * 4));
         assert_eq!(dst[0], 128);
+    }
+
+    #[test]
+    fn test_gpu_image_read_pixels_rejects_small_destination() {
+        let info = ImageInfo::new(10, 10, ColorType::Rgba8888, AlphaType::Premul);
+        let pixels = vec![128u8; 10 * 10 * 4];
+        let image = GpuImage::from_raster_data(&info, &pixels, 10 * 4).unwrap();
+
+        // Destination one byte short of the full image: must fail cleanly
+        // without a partial copy.
+        let mut dst = vec![0u8; 10 * 10 * 4 - 1];
+        assert!(!image.read_pixels(&mut dst, 10 * 4));
+        assert!(dst.iter().all(|&b| b == 0), "no partial copy on failure");
     }
 
     #[test]
