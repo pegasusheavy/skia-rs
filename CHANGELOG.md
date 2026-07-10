@@ -134,6 +134,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restores the previously pushed style rather than the default. Empty lines
   take their height from the paragraph's own style, not `Font::default()`.
 
+### Changed (skia-rs-codec — conformance audit)
+- PNG decode enables `EXPAND | STRIP_16`: paletted PNG-8, sub-8-bit
+  grayscale, and `tRNS` chunks now decode correctly (to RGB(A)/8-bit gray),
+  and 16-bit-per-channel PNGs strip to 8-bit instead of failing.
+- Image encoders (PNG, JPEG, WebP, BMP) unpremultiply premultiplied input
+  before writing, since every format stores straight alpha. Canvas-backed
+  images (now `AlphaType::Premul`) round-trip correctly; a 50%-red pixel
+  stored as `r == a == 128` encodes as unpremultiplied `(255,0,0,128)`.
+- Standalone 32-bit `BI_RGB` BMPs are treated as **opaque** (`kBGRX`): the
+  4th byte is padding and ignored. The alpha byte is only honored for
+  BMP-in-ICO (matching `SkBmpCodec`).
+- BMP `BI_BITFIELDS` (compression 3) now reads and applies the R/G/B/A
+  channel masks (16- and 32-bpp); 16-bpp BMPs decode (default X1R5G5B5).
+- GIF single-frame decode returns the **logical-screen** canvas size and
+  composites the first frame at its left/top offset over a transparent
+  background (was the bare, possibly-smaller first frame). `AnimatedImage`
+  gains `canvas_width`/`canvas_height` (and `canvas_dimensions()`).
+- Malformed ICO/BMP inputs now error instead of panicking or over-allocating:
+  directory-entry offsets and embedded-image bounds are checked, header size
+  and dimensions are validated (non-positive/absurd sizes rejected before
+  allocation, `i32::MIN` height handled), and truncated pixel arrays are
+  reported as incomplete.
+- `Image::unique_id` and the default `ImageGenerator::unique_id` (plus
+  `SolidColorGenerator`) draw from a monotonic atomic counter instead of a
+  pointer address, so freed-then-reused memory cannot alias two images.
+- `Image::make_scaled_with` filters in premultiplied space (premultiply →
+  filter → unpremultiply) so color no longer bleeds out of transparent
+  texels; nearest-neighbor sampling uses pixel centers
+  (`floor((dst + 0.5)·scale)`).
+- `LazyImage` concurrent generation blocks waiters on a condvar until the
+  generating thread publishes its result (no "generation in progress"
+  error); `peek_pixels` returns the cached pixmap when pixels are already
+  generated (no decode side effect) and `None` otherwise.
+- `LazyImage::read_pixels` and `GpuImage::read_pixels` return `false` without
+  a partial copy when the destination cannot hold the whole image.
+- WBMP format sniffing accepts multibyte width/height integers (dimensions
+  larger than 127 pixels).
+- JPEG dimension scanning handles all SOF markers (C0–C3, C5–C7, C9–CB,
+  CD–CF) and skips standalone RST/SOI/EOI markers that carry no length
+  payload.
+- `DisposalMethod::Background` is documented as clear-to-**transparent**
+  (never the GIF background color), matching `SkGifCodec`.
+
 ## [0.2.6] - 2026-04-26
 
 Phase 7 complete: resolved every remaining deferral across the
