@@ -560,6 +560,13 @@ The first public release of skia-rs, a pure Rust implementation of the Skia 2D g
 - `simplify` always runs the boolean-ops machinery so self-intersections and
   overlaps resolve (no Union-with-empty short-circuit).
 
+### Changed (skia-rs-paint — conformance audit, Task 3)
+- Blend modes Overlay/HardLight/SoftLight add the Porter-Duff edge terms
+  `s·(1−da) + d·(1−sa)` outside the branch; SoftLight's dark-dst polynomial is
+  the upstream `16m³ − 12m² + 3m` form; ColorDodge/ColorBurn general branches
+  use the upstream `da` normalization (`BLEND_MODE(...)` in
+  `SkRasterPipeline_opts.h`).
+
 ### Planned for v0.2.0
 - Complete wgpu GPU backend
 - Vulkan backend
