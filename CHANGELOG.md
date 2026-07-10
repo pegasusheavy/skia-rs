@@ -566,6 +566,10 @@ The first public release of skia-rs, a pure Rust implementation of the Skia 2D g
   the upstream `16m³ − 12m² + 3m` form; ColorDodge/ColorBurn general branches
   use the upstream `da` normalization (`BLEND_MODE(...)` in
   `SkRasterPipeline_opts.h`).
+- `Paint::default()` now matches `SkPaint`: `stroke_width` is `0.0` (hairline,
+  was `1.0`) and `anti_alias` is `false` (was `true`).
+- `Paint::color32()` and `Paint::serialize()` round float color components to
+  the nearest byte (0.5 → 128) instead of truncating.
 
 ### Planned for v0.2.0
 - Complete wgpu GPU backend
