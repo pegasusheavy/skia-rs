@@ -42,6 +42,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`setMatrix(initialCTM * recorded)`) instead of replacing it.
 - `Canvas::draw_picture` (and `DrawCommand::DrawPicture` playback) honor the
   optional paint via an implicit `save_layer`.
+- Non-AA `clip_path` scan-converts the actual path into a region
+  (`SkRegion::setPath` semantics) instead of clipping to the path bounds.
+- AA `ClipOp::Difference` on a rect subtracts only the rect: the existing
+  clip is retained and coverage inside the rect is zeroed (previously the
+  clip was first intersected with the rect, destroying everything outside).
+- `clip_path_with_op` Difference rasterizes the actual path coverage and
+  subtracts it from the existing clip in every clip-state combination
+  (Rect/Region/Mask/RegionAndMask, AA and non-AA); no silent no-ops.
+- Non-AA clip rects round to nearest (Skia `rect.round()`), not round-out,
+  and clip containment tests sample pixel centers.
 
 ## [0.2.6] - 2026-04-26
 

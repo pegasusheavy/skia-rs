@@ -2290,18 +2290,24 @@ mod tests {
         // Clip to the triangle path
         c.clip_path(&triangle, ClipOp::Intersect, false);
 
-        // The clip bounds should match the triangle's bounds
+        // The clip bounds should closely match the triangle's bounds. Scan
+        // conversion samples pixel centers, so each edge may be up to ~1.5px
+        // inside the analytic bounds (the apex row has a sub-pixel span).
         let clip_bounds = c.clip_bounds();
         let path_bounds = triangle.bounds();
-        assert!((clip_bounds.left - path_bounds.left).abs() < 1.0);
-        assert!((clip_bounds.top - path_bounds.top).abs() < 1.0);
-        assert!((clip_bounds.right - path_bounds.right).abs() < 1.0);
-        assert!((clip_bounds.bottom - path_bounds.bottom).abs() < 1.0);
+        assert!((clip_bounds.left - path_bounds.left).abs() <= 1.5);
+        assert!((clip_bounds.top - path_bounds.top).abs() <= 1.5);
+        assert!((clip_bounds.right - path_bounds.right).abs() <= 1.5);
+        assert!((clip_bounds.bottom - path_bounds.bottom).abs() <= 1.5);
 
-        // Points inside the triangle bounds but outside the triangle itself
-        // would be rejected by a proper path clip (though we can't easily test
-        // pixel coverage without a raster backing, we've verified the path is
-        // stored in ClipStack rather than collapsed to a rect).
+        // The clip must hold the actual path geometry: points inside the
+        // triangle's bounds but outside the triangle are rejected.
+        assert!(!c.quick_reject(&Rect::from_xywh(45.0, 50.0, 2.0, 2.0)));
+        // quick_reject only tests bounds, so probe the clip stack directly.
+        assert!(
+            !c.clip_stack.contains(81, 13),
+            "corner inside bounds but outside triangle must be clipped"
+        );
     }
 
     #[test]

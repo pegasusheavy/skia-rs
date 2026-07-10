@@ -1107,6 +1107,61 @@ impl<'a> Rasterizer<'a> {
     }
 }
 
+/// Scan-convert a device-space `path` into a [`Region`], clipped to
+/// `clip_bounds`.
+///
+/// Mirrors `SkRegion::setPath`: each scanline is sampled at the pixel center,
+/// span x-intersections round to nearest, and inverse fill types produce the
+/// complement of the path within `clip_bounds`. Used by the clip stack so
+/// non-AA path clips scan-convert the actual path rather than its bounds.
+pub(crate) fn path_to_region(path: &Path, clip_bounds: &IRect) -> Region {
+    use skia_rs_core::RegionOp;
+
+    let fill_type = path.fill_type();
+    let inverse = matches!(
+        fill_type,
+        FillType::InverseWinding | FillType::InverseEvenOdd
+    );
+
+    let mut region = Region::new();
+    let edges = collect_edges(path, &Matrix::IDENTITY);
+    if !edges.is_empty() {
+        let mut get = GlobalEdgeTable::new(edges);
+        if let Some(y_start) = get.y_min() {
+            let y_end = get.y_max();
+            let y_min = y_start.floor() as i32;
+            let y_max = y_end.ceil() as i32;
+
+            let mut aet = ActiveEdgeTable::new();
+            for y in y_min..y_max {
+                let scanline = y as f32 + 0.5;
+                aet.add_edges(get.get_new_edges_at(scanline), scanline);
+                aet.remove_inactive(scanline);
+
+                if !aet.is_empty() && y >= clip_bounds.top && y < clip_bounds.bottom {
+                    aet.sort_by_x();
+                    for (x0, x1) in aet.get_spans(fill_type) {
+                        let xs = (x0.round() as i32).max(clip_bounds.left);
+                        let xe = (x1.round() as i32).min(clip_bounds.right);
+                        if xs < xe {
+                            region.op_rect(IRect::new(xs, y, xe, y + 1), RegionOp::Union);
+                        }
+                    }
+                }
+
+                aet.step_all();
+            }
+        }
+    }
+
+    if inverse {
+        let mut complement = Region::from_rect(*clip_bounds);
+        complement.op_region(&region, RegionOp::Difference);
+        return complement;
+    }
+    region
+}
+
 /// An edge for scanline rasterization with winding direction.
 ///
 /// Edges are oriented from y_min to y_max, and the winding direction
