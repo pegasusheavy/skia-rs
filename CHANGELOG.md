@@ -522,6 +522,44 @@ The first public release of skia-rs, a pure Rust implementation of the Skia 2D g
 - `ImageInfo::new` accepts zero dimensions as a legal empty info (still rejects
   negatives).
 
+### Changed (skia-rs-path — conformance audit, Task 2)
+- `Path::contains` accumulates signed winding (`SkPathPriv::Contains`): the
+  Winding rule tests `w != 0`, EvenOdd tests parity, inverse fill types are
+  XORed and short-circuit outside the (now inclusive) bounds, and every contour
+  is implicitly closed for hit-testing.
+- `Path::reverse` produces valid verb streams (`SkPathPriv::ReverseAddPath`) —
+  no trailing `Move`, no spurious/doubled `Close`; one `Close` per closed contour.
+- `Path::direction` uses the dominant-contour extreme-point cross test
+  (`ComputeFirstDirection`); `add_rect`'s CW geometry now reports CW in y-down
+  device space (previously reported CCW).
+- `Path::is_rect` recognizes the crate's own `add_rect` output (Move + 3 Lines +
+  Close) and rejects non-rectangular H/V staircases (`IsRectContour`).
+- `Path::convexity` is per-contour and verb-aware (`ComputeConvexity`): any
+  second contour is Concave; sign-change tests replace the fixed 0.001 threshold.
+- `Path::bounds` returns empty bounds for any non-finite coordinate.
+- `stroke_to_fill` strokes the closing segment of closed contours with a join at
+  every vertex and emits the inner offset ring reversed, so a stroked rect filled
+  with the Winding rule renders as a frame with an empty middle (was a filled
+  slab); curves are flattened with error-driven subdivision and the correct conic
+  form; zero-length contours emit a Round/Square cap dot.
+- `PathBuilder`: after `close()`, a line/curve injects `moveTo(last_move)`;
+  `current_point()` returns the subpath start after `close()`; repeated `close()`
+  is a no-op; consecutive `move_to` overwrite the pending Move; `add_oval` uses
+  four √2/2 conics; `add_arc` derives direction from the sweep sign and only
+  takes the oval shortcut when the start angle is a multiple of 90°; SVG `arc_to`
+  applies the x-axis-rotation to emitted geometry; zero-sweep arcs no longer
+  produce NaN control points.
+- SVG parser: smooth `S`/`T` reflection is gated on the previous command kind
+  (`S` after C/S, `T` after Q/T); numeric data directly after `Z` is a parse
+  error; the current point returns to the subpath start after `Z`.
+- `PathMeasure::get_point_at`/`get_tangent_at` pin the distance into `[0, length]`
+  (returning `None` only for NaN/empty); `get_segment` pins start/stop.
+- `DashEffect` dashes the closing segment of a closed contour continuously.
+- `CornerEffect` rounds the joint between the last and first segments of a closed
+  contour (`SkCornerPathEffect`).
+- `simplify` always runs the boolean-ops machinery so self-intersections and
+  overlaps resolve (no Union-with-empty short-circuit).
+
 ### Planned for v0.2.0
 - Complete wgpu GPU backend
 - Vulkan backend
