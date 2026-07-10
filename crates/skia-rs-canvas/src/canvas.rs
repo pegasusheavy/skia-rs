@@ -1527,11 +1527,12 @@ impl<'a> Canvas<'a> {
             } => {
                 let (colors, positions) = stops_to_color4f(stops);
                 let tile = extend_to_tile(*extend);
-                let to_deg = |r: f32| r.to_degrees();
+                // `start_angle`/`end_angle` are already in degrees (matching
+                // SkShaders::SweepGradient), so pass them straight through.
                 let g = SweepGradient::new(
                     *center,
-                    to_deg(*start_angle),
-                    to_deg(*end_angle),
+                    *start_angle,
+                    *end_angle,
                     colors,
                     Some(positions),
                     tile,

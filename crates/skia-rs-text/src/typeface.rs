@@ -104,6 +104,7 @@ struct ParsedTypeface {
     underline_thickness: Option<i16>,
     strikeout_position: Option<i16>,
     strikeout_thickness: Option<i16>,
+    avg_char_width: Option<i16>,
 }
 
 /// Raw font metrics extracted from OpenType/TrueType tables.
@@ -140,6 +141,9 @@ pub struct RawFontMetrics {
     pub strikeout_position: Option<i16>,
     /// Strikeout stroke thickness (font units). From the OS/2 table.
     pub strikeout_thickness: Option<i16>,
+    /// Average character advance width (font units), from OS/2
+    /// `xAvgCharWidth`. `None` when the font has no OS/2 table.
+    pub avg_char_width: Option<i16>,
 }
 
 /// Font style combining weight, width, and slant.
@@ -364,6 +368,14 @@ impl Typeface {
                     underline_thickness,
                     strikeout_position,
                     strikeout_thickness,
+                    // OS/2 `xAvgCharWidth` is a signed i16 at byte offset 2
+                    // (immediately after the u16 table version). ttf-parser
+                    // does not surface it, so read it from the raw table.
+                    avg_char_width: face
+                        .raw_face()
+                        .table(ttf_parser::Tag::from_bytes(b"OS/2"))
+                        .filter(|t| t.len() >= 4)
+                        .map(|t| i16::from_be_bytes([t[2], t[3]])),
                 })
             })
             .as_ref()
@@ -424,6 +436,7 @@ impl Typeface {
             underline_thickness: p.underline_thickness,
             strikeout_position: p.strikeout_position,
             strikeout_thickness: p.strikeout_thickness,
+            avg_char_width: p.avg_char_width,
         })
     }
 }
