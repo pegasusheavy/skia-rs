@@ -6,6 +6,73 @@ use crate::Scalar;
 use bytemuck::{Pod, Zeroable};
 
 // =============================================================================
+// Float -> int conversion helpers (match Skia's saturating casts)
+// =============================================================================
+
+/// Largest s32 value that round-trips exactly through f32 (Skia's
+/// `SK_MaxS32FitsInFloat`).
+const SK_MAX_S32_FITS_IN_FLOAT: Scalar = 2_147_483_520.0;
+/// Smallest (most negative) s32 value that round-trips exactly through f32.
+const SK_MIN_S32_FITS_IN_FLOAT: Scalar = -2_147_483_520.0;
+
+/// Saturating float→int cast matching Skia's `sk_float_saturate2int`.
+///
+/// Out-of-range values clamp to the representable s32 bounds and NaN maps to
+/// the maximum, never to zero.
+#[inline]
+fn sk_float_saturate2int(x: Scalar) -> i32 {
+    // NaN fails the `<` test, so it clamps to the max (matching Skia).
+    let x = if x < SK_MAX_S32_FITS_IN_FLOAT {
+        x
+    } else {
+        SK_MAX_S32_FITS_IN_FLOAT
+    };
+    let x = if x > SK_MIN_S32_FITS_IN_FLOAT {
+        x
+    } else {
+        SK_MIN_S32_FITS_IN_FLOAT
+    };
+    x as i32
+}
+
+/// `sk_float_round2int`: round half toward +∞ (`floor(x + 0.5)`), then saturate.
+#[inline]
+fn sk_float_round2int(x: Scalar) -> i32 {
+    sk_float_saturate2int((x + 0.5).floor())
+}
+
+/// `sk_float_floor2int`: floor then saturate.
+#[inline]
+fn sk_float_floor2int(x: Scalar) -> i32 {
+    sk_float_saturate2int(x.floor())
+}
+
+/// `sk_float_ceil2int`: ceil then saturate.
+#[inline]
+fn sk_float_ceil2int(x: Scalar) -> i32 {
+    sk_float_saturate2int(x.ceil())
+}
+
+/// IEEE float divide that yields ±∞/NaN on divide-by-zero instead of trapping,
+/// matching Skia's `sk_ieee_float_divide`.
+#[inline]
+fn ieee_float_divide(numer: Scalar, denom: Scalar) -> Scalar {
+    numer / denom
+}
+
+/// Returns a copy of `rect` with left ≤ right and top ≤ bottom, matching Skia's
+/// `SkRect::makeSorted`.
+#[inline]
+fn sorted_rect(rect: Rect) -> Rect {
+    Rect {
+        left: rect.left.min(rect.right),
+        top: rect.top.min(rect.bottom),
+        right: rect.left.max(rect.right),
+        bottom: rect.top.max(rect.bottom),
+    }
+}
+
+// =============================================================================
 // Point Types
 // =============================================================================
 
@@ -418,11 +485,13 @@ impl Size {
     }
 
     /// Converts to integer size by rounding.
+    ///
+    /// Uses Skia's `SkScalarRoundToInt` (round half toward +∞, saturating).
     #[inline]
     pub fn to_isize_round(&self) -> ISize {
         ISize {
-            width: self.width.round() as i32,
-            height: self.height.round() as i32,
+            width: sk_float_round2int(self.width),
+            height: sk_float_round2int(self.height),
         }
     }
 }
@@ -470,13 +539,16 @@ impl IRect {
     }
 
     /// Creates a rectangle from origin and size.
+    ///
+    /// Right/bottom edges are computed with saturating addition, matching
+    /// Skia's `SkIRect::MakeXYWH` (`Sk32_sat_add`).
     #[inline]
     pub const fn from_xywh(x: i32, y: i32, width: i32, height: i32) -> Self {
         Self {
             left: x,
             top: y,
-            right: x + width,
-            bottom: y + height,
+            right: x.saturating_add(width),
+            bottom: y.saturating_add(height),
         }
     }
 
@@ -712,9 +784,12 @@ impl Rect {
     }
 
     /// Returns true if the rectangle has zero or negative area.
+    ///
+    /// Written as the negation of a non-empty rect (matching Skia's
+    /// `SkRect::isEmpty`) so any NaN coordinate reports empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.left >= self.right || self.top >= self.bottom
+        !(self.left < self.right && self.top < self.bottom)
     }
 
     /// Returns true if all coordinates are finite.
@@ -739,9 +814,14 @@ impl Rect {
     }
 
     /// Returns true if this rectangle contains the other rectangle.
+    ///
+    /// Returns false if either rectangle is empty, matching Skia's
+    /// `SkRect::contains(const SkRect&)`.
     #[inline]
     pub fn contains_rect(&self, other: &Self) -> bool {
-        self.left <= other.left
+        !other.is_empty()
+            && !self.is_empty()
+            && self.left <= other.left
             && self.top <= other.top
             && self.right >= other.right
             && self.bottom >= other.bottom
@@ -822,35 +902,42 @@ impl Rect {
     }
 
     /// Rounds to the smallest enclosing integer rectangle.
+    ///
+    /// Uses Skia's saturating float→int casts (`SkRect::roundOut`).
     #[inline]
     pub fn round_out(&self) -> IRect {
         IRect {
-            left: self.left.floor() as i32,
-            top: self.top.floor() as i32,
-            right: self.right.ceil() as i32,
-            bottom: self.bottom.ceil() as i32,
+            left: sk_float_floor2int(self.left),
+            top: sk_float_floor2int(self.top),
+            right: sk_float_ceil2int(self.right),
+            bottom: sk_float_ceil2int(self.bottom),
         }
     }
 
     /// Rounds to the largest enclosed integer rectangle.
+    ///
+    /// Uses Skia's saturating float→int casts (`SkRect::roundIn`).
     #[inline]
     pub fn round_in(&self) -> IRect {
         IRect {
-            left: self.left.ceil() as i32,
-            top: self.top.ceil() as i32,
-            right: self.right.floor() as i32,
-            bottom: self.bottom.floor() as i32,
+            left: sk_float_ceil2int(self.left),
+            top: sk_float_ceil2int(self.top),
+            right: sk_float_floor2int(self.right),
+            bottom: sk_float_floor2int(self.bottom),
         }
     }
 
     /// Rounds to nearest integer rectangle.
+    ///
+    /// Uses Skia's `sk_float_round2int` (round half toward +∞, saturating), so
+    /// NaN and out-of-range coordinates saturate rather than becoming zero.
     #[inline]
     pub fn round(&self) -> IRect {
         IRect {
-            left: self.left.round() as i32,
-            top: self.top.round() as i32,
-            right: self.right.round() as i32,
-            bottom: self.bottom.round() as i32,
+            left: sk_float_round2int(self.left),
+            top: sk_float_round2int(self.top),
+            right: sk_float_round2int(self.right),
+            bottom: sk_float_round2int(self.bottom),
         }
     }
 }
@@ -898,17 +985,46 @@ pub enum Corner {
 }
 
 impl RRect {
-    /// Creates a rounded rectangle with the same radius for all corners.
+    /// Creates a rounded rectangle with the same x/y radius for all corners.
     ///
-    /// Radii are clamped to `[0, width/2]` for x and `[0, height/2]` for y,
-    /// matching Skia's `SkRRect::setRectXY` behavior. Negative radii are clamped
-    /// to zero, and radii exceeding half the rect dimension are reduced to fit.
-    #[inline]
-    pub fn from_rect_xy(rect: Rect, x_rad: Scalar, y_rad: Scalar) -> Self {
-        let half_w = rect.width() * 0.5;
-        let half_h = rect.height() * 0.5;
-        let x_rad = x_rad.clamp(0.0, half_w);
-        let y_rad = y_rad.clamp(0.0, half_h);
+    /// Matches Skia's `SkRRect::setRectXY`:
+    /// - the rect is sorted and, if empty or non-finite, yields a square-corner
+    ///   (or empty) rect rather than panicking;
+    /// - oversized radii are scaled by the single factor
+    ///   `min(w / (2·xRad), h / (2·yRad))`, preserving aspect ratio;
+    /// - if **either** radius is ≤ 0, both become zero (square corners).
+    pub fn from_rect_xy(rect: Rect, mut x_rad: Scalar, mut y_rad: Scalar) -> Self {
+        // initializeRect: reject non-finite, sort, empty-handle.
+        if !rect.is_finite() {
+            return Self::default();
+        }
+        let rect = sorted_rect(rect);
+        if rect.is_empty() {
+            return Self::from_rect(rect);
+        }
+
+        // Devolve into a simple rect if the radii aren't finite.
+        if !(x_rad.is_finite() && y_rad.is_finite()) {
+            x_rad = 0.0;
+            y_rad = 0.0;
+        }
+
+        // Proportionally scale down radii that don't fit, preserving aspect.
+        let w = rect.width();
+        let h = rect.height();
+        if w < x_rad + x_rad || h < y_rad + y_rad {
+            // At most one divide is by zero, and neither numerator is zero.
+            let scale = ieee_float_divide(w, x_rad + x_rad)
+                .min(ieee_float_divide(h, y_rad + y_rad));
+            x_rad *= scale;
+            y_rad *= scale;
+        }
+
+        // If either radius collapsed to zero (or below), all corners are square.
+        if x_rad <= 0.0 || y_rad <= 0.0 {
+            return Self::from_rect(rect);
+        }
+
         let radius = Point::new(x_rad, y_rad);
         Self {
             rect,
@@ -932,8 +1048,16 @@ impl RRect {
     }
 
     /// Creates an oval inscribed in the rectangle.
+    ///
+    /// Matches Skia's `SkRRect::setOval`: the rect is sorted first, and the
+    /// radii are half of the sorted dimensions (so inverted rects don't
+    /// misbehave).
     #[inline]
     pub fn from_oval(rect: Rect) -> Self {
+        if !rect.is_finite() {
+            return Self::default();
+        }
+        let rect = sorted_rect(rect);
         let x_rad = rect.width() * 0.5;
         let y_rad = rect.height() * 0.5;
         Self::from_rect_xy(rect, x_rad, y_rad)
@@ -1228,22 +1352,31 @@ impl Matrix {
 
     /// Computes the inverse matrix, or None if singular.
     ///
-    /// Uses a singularity threshold appropriate for f32 precision. Matrices with
-    /// determinants below `Scalar::EPSILON * 256` are rejected to avoid producing
-    /// numerically meaningless inverses due to limited floating-point precision.
+    /// Matches Skia's `sk_inv_determinant` (`src/core/SkMatrix.cpp`): the
+    /// determinant is computed in double precision and only rejected when it
+    /// falls at or below `SK_ScalarNearlyZero` **cubed** (`(1/4096)³ ≈
+    /// 1.45e-11`), since the determinant scales with the cube of the matrix
+    /// members. The computed inverse is additionally rejected if any element is
+    /// non-finite (`SkMatrix::invert` checks `inv.isFinite()`).
     pub fn invert(&self) -> Option<Self> {
-        let det = self.determinant();
-        // Skia uses 1/4096 ≈ 2.44e-4. We use a tighter bound that's
-        // still well above f32 epsilon (~1.19e-7).
-        const SINGULARITY_THRESHOLD: Scalar = Scalar::EPSILON * 256.0;
-        if det.abs() < SINGULARITY_THRESHOLD {
+        let m = &self.values;
+
+        // Compute the determinant in f64 to match Skia's precision.
+        let det = (m[0] as f64) * ((m[4] as f64) * (m[8] as f64) - (m[5] as f64) * (m[7] as f64))
+            - (m[1] as f64) * ((m[3] as f64) * (m[8] as f64) - (m[5] as f64) * (m[6] as f64))
+            + (m[2] as f64) * ((m[3] as f64) * (m[7] as f64) - (m[4] as f64) * (m[6] as f64));
+
+        // SK_ScalarNearlyZero == 1/4096; the tolerance is that value cubed.
+        const NEARLY_ZERO: f64 = 1.0 / 4096.0;
+        const THRESHOLD: f64 = NEARLY_ZERO * NEARLY_ZERO * NEARLY_ZERO;
+        // Skia compares the f32-narrowed determinant against the tolerance.
+        if (det as f32).abs() as f64 <= THRESHOLD {
             return None;
         }
 
-        let m = &self.values;
-        let inv_det = 1.0 / det;
+        let inv_det = (1.0 / det) as Scalar;
 
-        Some(Self {
+        let inv = Self {
             values: [
                 (m[4] * m[8] - m[5] * m[7]) * inv_det,
                 (m[2] * m[7] - m[1] * m[8]) * inv_det,
@@ -1255,7 +1388,14 @@ impl Matrix {
                 (m[1] * m[6] - m[0] * m[7]) * inv_det,
                 (m[0] * m[4] - m[1] * m[3]) * inv_det,
             ],
-        })
+        };
+
+        // Reject a non-finite inverse, matching SkMatrix::invert's isFinite check.
+        if inv.values.iter().all(|v| v.is_finite()) {
+            Some(inv)
+        } else {
+            None
+        }
     }
 }
 
@@ -1389,21 +1529,32 @@ mod tests {
     }
 
     #[test]
-    fn test_matrix_invert_uses_appropriate_epsilon_for_f32() {
-        // Determinant ~1e-6 (above old 1e-10 but below f32 epsilon * 256 (~3e-5))
-        // This matrix should be considered singular for f32 precision, rejecting
-        // garbage inverses, but the old 1e-10 threshold would incorrectly pass it
-        let too_small = Matrix {
+    fn test_matrix_invert_uses_skia_threshold() {
+        // Skia rejects only when |det| <= (1/4096)^3 ≈ 1.45e-11. A det of 1e-6
+        // is far above that, so this matrix must invert (the old f32 threshold
+        // of EPSILON*256 wrongly rejected it).
+        let small = Matrix {
             values: [
                 1e-3, 0.0, 0.0,
-                0.0, 1e-3, 0.0,  // det = 1e-6, above 1e-10 but below f32 safe threshold
+                0.0, 1e-3, 0.0,  // det = 1e-6
                 0.0, 0.0, 1.0,
             ],
         };
-        assert!(too_small.invert().is_none(),
-                "Matrix with det 1e-6 should be singular for f32");
+        let inv = small.invert().expect("det 1e-6 is above Skia's threshold");
+        assert!((inv.values[0] - 1000.0).abs() < 1.0);
 
-        // Well above f32 epsilon * 256 - should invert successfully
+        // A determinant below the cubed nearly-zero constant is singular.
+        let singular = Matrix {
+            values: [
+                1e-5, 0.0, 0.0,
+                0.0, 1e-7, 0.0,  // det = 1e-12 < 1.45e-11
+                0.0, 0.0, 1.0,
+            ],
+        };
+        assert!(singular.invert().is_none(),
+                "det 1e-12 is below Skia's (1/4096)^3 threshold");
+
+        // Well above threshold - should invert successfully.
         let invertible = Matrix {
             values: [
                 0.1, 0.0, 0.0,
@@ -1413,5 +1564,119 @@ mod tests {
         };
         assert!(invertible.invert().is_some(),
                 "Matrix with determinant 0.01 should be invertible");
+    }
+
+    // --- Conformance regression tests (Task 1) ---
+
+    #[test]
+    fn test_rect_is_empty_nan() {
+        // A rect with a NaN coordinate must report empty (Skia SkRect::isEmpty).
+        let nan_rect = Rect::new(0.0, 0.0, Scalar::NAN, 10.0);
+        assert!(nan_rect.is_empty(), "NaN rect must be empty");
+        // ...and must not survive a union with a real rect.
+        let real = Rect::new(1.0, 1.0, 5.0, 5.0);
+        assert_eq!(nan_rect.union(&real), real);
+        assert_eq!(real.union(&nan_rect), real);
+        // Ordinary non-empty and empty rects still behave.
+        assert!(!Rect::new(0.0, 0.0, 2.0, 2.0).is_empty());
+        assert!(Rect::new(2.0, 0.0, 2.0, 2.0).is_empty());
+    }
+
+    #[test]
+    fn test_rect_contains_rect_empty() {
+        let outer = Rect::new(0.0, 0.0, 10.0, 10.0);
+        // An empty inner rect is never contained.
+        let empty_inner = Rect::new(5.0, 5.0, 5.0, 5.0);
+        assert!(!outer.contains_rect(&empty_inner));
+        // An empty outer rect contains nothing.
+        let empty_outer = Rect::new(5.0, 5.0, 5.0, 5.0);
+        assert!(!empty_outer.contains_rect(&Rect::new(5.0, 5.0, 6.0, 6.0)));
+        // Genuine containment still works.
+        assert!(outer.contains_rect(&Rect::new(1.0, 1.0, 9.0, 9.0)));
+    }
+
+    #[test]
+    fn test_matrix_invert_small_scale() {
+        // scale(0.005, 0.005) has determinant 2.5e-5, far above (1/4096)^3.
+        let m = Matrix::scale(0.005, 0.005);
+        let inv = m.invert().expect("small-scale matrix must invert");
+        // Inverse of a 0.005 scale is a 200x scale.
+        assert!((inv.values[0] - 200.0).abs() < 1e-2);
+        assert!((inv.values[4] - 200.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn test_matrix_invert_singular() {
+        // A truly singular matrix (zero scale) must not invert.
+        let m = Matrix::scale(0.0, 0.0);
+        assert!(m.invert().is_none());
+    }
+
+    #[test]
+    fn test_rect_round_saturates_nan_and_range() {
+        // NaN saturates to the max s32-in-float rather than becoming 0.
+        let r = Rect::new(Scalar::NAN, 0.5, 2.5, 3.5);
+        let ir = r.round();
+        assert_eq!(ir.left, 2_147_483_520);
+        // 0.5 rounds toward +inf -> 1; 2.5 -> 3; 3.5 -> 4.
+        assert_eq!(ir.top, 1);
+        assert_eq!(ir.right, 3);
+        assert_eq!(ir.bottom, 4);
+        // Out-of-range positive saturates.
+        let big = Rect::new(0.0, 0.0, 1e30, 1e30);
+        assert_eq!(big.round().right, 2_147_483_520);
+    }
+
+    #[test]
+    fn test_size_to_isize_round_saturates() {
+        assert_eq!(Size::new(2.5, 3.5).to_isize_round(), ISize::new(3, 4));
+        assert_eq!(Size::new(Scalar::NAN, 1.0).to_isize_round().width, 2_147_483_520);
+    }
+
+    #[test]
+    fn test_irect_from_xywh_saturates() {
+        // x + width overflows i32; must saturate, not wrap/panic.
+        let r = IRect::from_xywh(i32::MAX - 1, 0, 100, 10);
+        assert_eq!(r.right, i32::MAX);
+        assert_eq!(r.bottom, 10);
+    }
+
+    #[test]
+    fn test_rrect_from_rect_xy_inverted_rect() {
+        // Inverted rect must be sorted instead of panicking on clamp(max<min).
+        let inverted = Rect::new(10.0, 10.0, 0.0, 0.0);
+        let rr = RRect::from_rect_xy(inverted, 2.0, 2.0);
+        assert_eq!(*rr.rect(), Rect::new(0.0, 0.0, 10.0, 10.0));
+        assert_eq!(rr.radius(Corner::TopLeft), Point::new(2.0, 2.0));
+    }
+
+    #[test]
+    fn test_rrect_from_rect_xy_oversized_radii_preserve_aspect() {
+        // rect 40 wide, 20 tall; radii 30x30 don't fit. Scale factor =
+        // min(40/60, 20/60) = 1/3, so both radii scale to 10, preserving aspect.
+        let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+        let rr = RRect::from_rect_xy(rect, 30.0, 30.0);
+        let r = rr.radius(Corner::TopLeft);
+        assert!((r.x - 10.0).abs() < 1e-4, "x radius {} != 10", r.x);
+        assert!((r.y - 10.0).abs() < 1e-4, "y radius {} != 10", r.y);
+    }
+
+    #[test]
+    fn test_rrect_from_oval_sorts_inverted_rect() {
+        // An inverted oval rect must sort and still produce a proper oval,
+        // not a square-cornered rect.
+        let inverted = Rect::new(20.0, 10.0, 0.0, 0.0);
+        let rr = RRect::from_oval(inverted);
+        assert_eq!(*rr.rect(), Rect::new(0.0, 0.0, 20.0, 10.0));
+        assert_eq!(rr.radius(Corner::TopLeft), Point::new(10.0, 5.0));
+        assert!(rr.is_oval());
+    }
+
+    #[test]
+    fn test_rrect_from_rect_xy_zero_radius_makes_square() {
+        // If either radius <= 0, both corners become square.
+        let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+        let rr = RRect::from_rect_xy(rect, 5.0, 0.0);
+        assert!(rr.is_rect(), "one zero radius must yield square corners");
     }
 }
