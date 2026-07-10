@@ -241,18 +241,27 @@ impl RuntimeEffect {
         crate::sksl_validate::validate_program(&program)
             .map_err(|e| RuntimeEffectError::ValidationFailed(e.to_string()))?;
 
-        // Extract uniforms
+        // Extract uniforms. Child declarations (`uniform shader/colorFilter/
+        // blender`) are children, not data uniforms — they are excluded from
+        // uniforms() and do not occupy uniform bytes.
+        //
+        // Uniforms pack tightly with 4-byte granularity, matching
+        // SkRuntimeEffectPriv::VarAsUniform (`uni.offset = *offset;
+        // *offset += uni.sizeInBytes();`) — no 16-byte std140-style
+        // alignment. Every uniform size is already a multiple of 4.
         let mut uniforms = Vec::new();
         let mut offset = 0;
 
         for uniform in &program.uniforms {
+            if matches!(
+                uniform.ty,
+                SkslType::Shader | SkslType::ColorFilter | SkslType::Blender
+            ) {
+                continue;
+            }
             let ty = UniformType::from(&uniform.ty);
             let count = uniform.array_size.unwrap_or(1);
             let size = ty.size_bytes() * count;
-
-            // Align offset
-            let alignment = ty.size_bytes().min(16);
-            offset = (offset + alignment - 1) / alignment * alignment;
 
             uniforms.push(Uniform {
                 name: uniform.name.clone(),
@@ -1737,6 +1746,58 @@ mod tests {
         assert_eq!(effect.uniforms().len(), 2);
         assert!(effect.find_uniform("time").is_some());
         assert!(effect.find_uniform("resolution").is_some());
+    }
+
+    #[test]
+    fn test_uniforms_pack_tightly_no_16_byte_alignment() {
+        // SkRuntimeEffect.cpp packs uniforms back to back:
+        //   uni.offset = *offset; *offset += uni.sizeInBytes();
+        // A float followed by a vec4 sits at offsets 0 and 4 (not 16),
+        // total size 20.
+        let src = r#"
+            uniform float a;
+            uniform vec4 b;
+            vec4 main(vec2 coord) { return b * a; }
+        "#;
+        let effect = RuntimeEffect::make_for_shader(src).unwrap();
+        let a = effect.find_uniform("a").unwrap();
+        let b = effect.find_uniform("b").unwrap();
+        assert_eq!(a.offset, 0);
+        assert_eq!(b.offset, 4, "vec4 must pack tightly after float");
+        assert_eq!(effect.uniform_size(), 20);
+    }
+
+    #[test]
+    fn test_uniform_mat3_packs_tightly() {
+        // mat3 is 36 bytes; a following float sits at offset 40 (4 + 36).
+        let src = r#"
+            uniform float a;
+            uniform mat3 m;
+            uniform float c;
+            vec4 main(vec2 coord) { return vec4(a + c); }
+        "#;
+        let effect = RuntimeEffect::make_for_shader(src).unwrap();
+        assert_eq!(effect.find_uniform("m").unwrap().offset, 4);
+        assert_eq!(effect.find_uniform("c").unwrap().offset, 40);
+        assert_eq!(effect.uniform_size(), 44);
+    }
+
+    #[test]
+    fn test_child_shaders_are_not_uniforms() {
+        // `uniform shader s;` declares a child, not a data uniform: it must
+        // not appear in uniforms() nor contribute to uniform_size().
+        let src = r#"
+            uniform shader child;
+            uniform float x;
+            vec4 main(vec2 coord) { return vec4(x); }
+        "#;
+        let effect = RuntimeEffect::make_for_shader(src).unwrap();
+        assert_eq!(effect.uniforms().len(), 1, "only x is a data uniform");
+        assert!(effect.find_uniform("child").is_none());
+        assert_eq!(effect.find_uniform("x").unwrap().offset, 0);
+        assert_eq!(effect.uniform_size(), 4);
+        assert_eq!(effect.children().len(), 1);
+        assert_eq!(effect.children()[0].name, "child");
     }
 
     #[test]

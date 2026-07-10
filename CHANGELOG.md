@@ -597,6 +597,10 @@ The first public release of skia-rs, a pure Rust implementation of the Skia 2D g
   re-premultiplies with the original alpha.
 - `TileImageFilter` fills only `dst_rect`, leaving the rest of the buffer
   untouched.
+- Runtime effect uniforms pack tightly (offset += size, 4-byte granularity,
+  no 16-byte alignment) per `SkRuntimeEffect.cpp`; child declarations
+  (`uniform shader s;`) are children only — excluded from `uniforms()` and
+  `uniform_size()`.
 
 ### Planned for v0.2.0
 - Complete wgpu GPU backend
