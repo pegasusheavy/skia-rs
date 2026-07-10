@@ -417,6 +417,34 @@ impl<'a> Validator<'a> {
 
             Expr::Call { name, args } => self.validate_call(name, args),
 
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                // `child.eval(coord)` on a child shader/colorFilter/blender.
+                if method == "eval" {
+                    if let Expr::Var(name) = receiver.as_ref() {
+                        if let Some(ty) = self.uniforms.get(name).cloned() {
+                            if matches!(
+                                ty,
+                                SkslType::Shader | SkslType::ColorFilter | SkslType::Blender
+                            ) {
+                                for a in args {
+                                    self.validate_expr(a)?;
+                                }
+                                return Ok(SkslType::Half4);
+                            }
+                        }
+                    }
+                }
+                Err(ValidationError::InvalidOperator {
+                    op: format!(".{method}()"),
+                    lhs: "non-child receiver".into(),
+                    rhs: String::new(),
+                })
+            }
+
             Expr::Constructor { ty, args } => {
                 for a in args {
                     self.validate_expr(a)?;

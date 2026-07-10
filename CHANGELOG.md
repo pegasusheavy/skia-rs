@@ -601,6 +601,13 @@ The first public release of skia-rs, a pure Rust implementation of the Skia 2D g
   no 16-byte alignment) per `SkRuntimeEffect.cpp`; child declarations
   (`uniform shader s;`) are children only — excluded from `uniforms()` and
   `uniform_size()`.
+- SkSL: method-style calls parse on any postfix expression and
+  `child.eval(coord)` samples the bound child shader in the interpreter;
+  multi-component swizzle assignment (`c.rgb *= 0.5`) works; matrix±matrix,
+  matrix·scalar, scalar·matrix, vector·matrix and matrix/scalar arithmetic
+  are implemented (previously collapsed to 0); float division/modulo by zero
+  follow IEEE (±inf/NaN); `&`, `|`, `^`, `<<`, `>>` are wired into the GLSL
+  precedence chain and `half(x)` parses as a constructor.
 
 ### Planned for v0.2.0
 - Complete wgpu GPU backend

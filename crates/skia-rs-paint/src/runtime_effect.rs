@@ -608,6 +608,22 @@ impl RuntimeEffect {
                 let args_str: Vec<String> = args.iter().map(|a| self.expr_to_glsl(a)).collect();
                 format!("{}({})", name, args_str.join(", "))
             }
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                // Child eval: emitted as a helper-call naming convention
+                // (`<child>_eval(...)`); GPU backends bind child shaders as
+                // functions/samplers under this name.
+                let args_str: Vec<String> = args.iter().map(|a| self.expr_to_glsl(a)).collect();
+                format!(
+                    "{}_{}({})",
+                    self.expr_to_glsl(receiver),
+                    method,
+                    args_str.join(", ")
+                )
+            }
             Expr::Constructor { ty, args } => {
                 let args_str: Vec<String> = args.iter().map(|a| self.expr_to_glsl(a)).collect();
                 format!("{}({})", ty.glsl_name(), args_str.join(", "))
@@ -995,6 +1011,20 @@ impl RuntimeEffect {
                 let args_str: Vec<String> = args.iter().map(|a| self.expr_to_wgsl(a)).collect();
                 format!("{}({})", name, args_str.join(", "))
             }
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                // Child eval helper-call naming convention (see GLSL emitter).
+                let args_str: Vec<String> = args.iter().map(|a| self.expr_to_wgsl(a)).collect();
+                format!(
+                    "{}_{}({})",
+                    self.expr_to_wgsl(receiver),
+                    method,
+                    args_str.join(", ")
+                )
+            }
             Expr::Constructor { ty, args } => {
                 let args_str: Vec<String> = args.iter().map(|a| self.expr_to_wgsl(a)).collect();
                 format!("{}({})", ty.wgsl_name(), args_str.join(", "))
@@ -1253,6 +1283,20 @@ impl RuntimeEffect {
             Expr::Call { name, args } => {
                 let args_str: Vec<String> = args.iter().map(|a| self.expr_to_msl(a)).collect();
                 format!("{}({})", name, args_str.join(", "))
+            }
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                // Child eval helper-call naming convention (see GLSL emitter).
+                let args_str: Vec<String> = args.iter().map(|a| self.expr_to_msl(a)).collect();
+                format!(
+                    "{}_{}({})",
+                    self.expr_to_msl(receiver),
+                    method,
+                    args_str.join(", ")
+                )
             }
             Expr::Constructor { ty, args } => {
                 let args_str: Vec<String> = args.iter().map(|a| self.expr_to_msl(a)).collect();
@@ -1798,6 +1842,61 @@ mod tests {
         assert_eq!(effect.uniform_size(), 4);
         assert_eq!(effect.children().len(), 1);
         assert_eq!(effect.children()[0].name, "child");
+    }
+
+    #[test]
+    fn test_child_shader_eval_samples_child() {
+        // Method-style `child.eval(coord)` must parse and sample the bound
+        // child shader in the software interpreter.
+        let src = r#"
+            uniform shader child;
+            half4 main(float2 coord) {
+                half4 c = child.eval(coord);
+                return c * 0.5;
+            }
+        "#;
+        let effect = Arc::new(RuntimeEffect::make_for_shader(src).unwrap());
+        let uniforms = UniformData::from_effect(&effect);
+        let child: Arc<dyn Shader> = Arc::new(crate::shader::ColorShader::new(Color4f::new(
+            1.0, 0.5, 0.0, 1.0,
+        )));
+        let shader = effect.make_shader(&uniforms, &[child]).unwrap();
+        let c = shader.sample(3.0, 4.0);
+        assert!((c.r - 0.5).abs() < 1e-4, "child red halved, got {}", c.r);
+        assert!((c.g - 0.25).abs() < 1e-4, "child green halved, got {}", c.g);
+        assert!((c.a - 0.5).abs() < 1e-4, "child alpha halved, got {}", c.a);
+    }
+
+    #[test]
+    fn test_child_shader_eval_uses_coords() {
+        // The child must be sampled at the coordinates passed to eval().
+        let src = r#"
+            uniform shader child;
+            half4 main(float2 coord) {
+                return child.eval(coord * 2.0);
+            }
+        "#;
+        let effect = Arc::new(RuntimeEffect::make_for_shader(src).unwrap());
+        let uniforms = UniformData::from_effect(&effect);
+        // Opaque linear gradient black -> white over x in [0, 10].
+        let child: Arc<dyn Shader> = Arc::new(crate::shader::LinearGradient::new(
+            skia_rs_core::Point::new(0.0, 0.0),
+            skia_rs_core::Point::new(10.0, 0.0),
+            vec![
+                Color4f::new(0.0, 0.0, 0.0, 1.0),
+                Color4f::new(1.0, 1.0, 1.0, 1.0),
+            ],
+            None,
+            crate::shader::TileMode::Clamp,
+        ));
+        let shader = effect.make_shader(&uniforms, &[child]).unwrap();
+        // sample at x=2.5 -> child sampled at x=5 -> t=0.5.
+        let c = shader.sample(2.5, 0.0);
+        assert!(
+            (c.r - 0.5).abs() < 1e-3,
+            "child sampled at doubled coord, got {}",
+            c.r
+        );
     }
 
     #[test]
