@@ -110,7 +110,22 @@ fn apply_tile_mode(t: Scalar, mode: TileMode) -> Scalar {
     }
 }
 
+/// Premultiply a straight-alpha color.
+#[inline]
+fn premultiply(c: Color4f) -> Color4f {
+    Color4f::new(c.r * c.a, c.g * c.a, c.b * c.a, c.a)
+}
+
 /// Interpolate a gradient color at position t.
+///
+/// Positions are handled like `SkGradientBaseShader`: each explicit stop is
+/// pinned monotonic into `[prev, 1]` (`SkTPin`), a first stop greater than 0
+/// implies an extra stop at t=0 carrying the first color
+/// (`fFirstStopIsImplicit`), and a last stop below 1 implies an extra stop at
+/// t=1 carrying the last color (`fLastStopIsImplicit`).
+///
+/// Interpolation happens in the color space of `colors` as given — callers
+/// choose premultiplied or straight stops.
 #[inline]
 fn interpolate_gradient_color(
     colors: &[Color4f],
@@ -129,20 +144,34 @@ fn interpolate_gradient_color(
         return Color4f::transparent();
     }
 
-    // If no explicit positions, use uniform distribution
-    if let Some(pos) = positions {
-        // Find the segment containing t
-        for i in 0..pos.len() - 1 {
-            if t >= pos[i] && t <= pos[i + 1] {
-                let segment_t = if pos[i + 1] > pos[i] {
-                    (t - pos[i]) / (pos[i + 1] - pos[i])
+    if let Some(pos) = positions.filter(|p| p.len() == colors.len()) {
+        // Pin positions monotonic into [0, 1] (SkTPin semantics).
+        let mut pinned: Vec<Scalar> = Vec::with_capacity(pos.len());
+        let mut prev: Scalar = 0.0;
+        for &p in pos {
+            let cur = if p.is_nan() { prev } else { p.clamp(prev, 1.0) };
+            pinned.push(cur);
+            prev = cur;
+        }
+
+        // Implicit stop at t=0: everything below the first explicit stop
+        // takes the first color.
+        if t <= pinned[0] {
+            return colors[0];
+        }
+        // Find the segment containing t.
+        for i in 0..pinned.len() - 1 {
+            if t <= pinned[i + 1] {
+                let segment_t = if pinned[i + 1] > pinned[i] {
+                    (t - pinned[i]) / (pinned[i + 1] - pinned[i])
                 } else {
                     0.0
                 };
                 return colors[i].lerp(&colors[i + 1], segment_t);
             }
         }
-        // Edge case: return last color
+        // Implicit stop at t=1: everything past the last explicit stop
+        // takes the last color.
         return colors[colors.len() - 1];
     }
 
@@ -159,6 +188,12 @@ fn interpolate_gradient_color(
 }
 
 /// Interpolate a gradient color at position t, honoring flags.
+///
+/// Returns a **premultiplied** color, per the `Shader::sample` contract.
+/// With `INTERPOLATE_PREMUL` the stops are premultiplied before
+/// interpolation (Skia's `kInterpolateColorsInPremul`); otherwise stops are
+/// interpolated in straight (unpremultiplied) space — Skia's default — and
+/// the result is premultiplied on output.
 #[inline]
 fn interpolate_gradient_color_with_flags(
     colors: &[Color4f],
@@ -167,31 +202,18 @@ fn interpolate_gradient_color_with_flags(
     flags: GradientFlags,
 ) -> Color4f {
     if flags.contains(GradientFlags::INTERPOLATE_PREMUL) {
-        // Convert to premul, interpolate, convert back
         if colors.is_empty() {
             return Color4f::transparent();
         }
         if colors.len() == 1 {
-            return colors[0];
+            return premultiply(colors[0]);
         }
 
-        let premul: Vec<Color4f> = colors
-            .iter()
-            .map(|c| Color4f::new(c.r * c.a, c.g * c.a, c.b * c.a, c.a))
-            .collect();
-        let result = interpolate_gradient_color(&premul, positions, t);
-        if result.a > 1e-6 {
-            Color4f::new(
-                result.r / result.a,
-                result.g / result.a,
-                result.b / result.a,
-                result.a,
-            )
-        } else {
-            Color4f::new(0.0, 0.0, 0.0, 0.0)
-        }
+        let premul: Vec<Color4f> = colors.iter().map(|c| premultiply(*c)).collect();
+        // Already premultiplied — return as-is.
+        interpolate_gradient_color(&premul, positions, t)
     } else {
-        interpolate_gradient_color(colors, positions, t)
+        premultiply(interpolate_gradient_color(colors, positions, t))
     }
 }
 
@@ -275,8 +297,10 @@ fn read_pixel_rgba8(
             Color4f::new(r, g, b, 1.0)
         }
         ColorType::Alpha8 => {
+            // Alpha-only sources decode as black with alpha (0,0,0,a);
+            // upstream colorizes by the paint color at draw time.
             let a = pixels[offset] as f32 / 255.0;
-            Color4f::new(a, a, a, a) // premultiplied white
+            Color4f::new(0.0, 0.0, 0.0, a)
         }
         ColorType::Gray8 => {
             let g = pixels[offset] as f32 / 255.0;
@@ -328,7 +352,15 @@ pub trait Shader: Send + Sync + std::fmt::Debug {
     /// Sample the shader at a given point.
     ///
     /// The point is in the shader's local coordinate space (after applying
-    /// any local matrix). Returns the color at that point.
+    /// any local matrix).
+    ///
+    /// **Contract: the returned color is premultiplied.** This matches
+    /// Skia's raster pipeline, where shader stages emit premultiplied
+    /// colors that feed directly into blend stages
+    /// (`skia/src/opts/SkRasterPipeline_opts.h`). All shaders in this crate
+    /// (solid colors, gradients, images, blends, runtime effects) follow
+    /// this convention, and `BlendMode::apply` expects premultiplied
+    /// inputs. Consumers that need straight alpha must unpremultiply.
     fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
         // Default implementation returns transparent
         let _ = (x, y);
@@ -408,7 +440,8 @@ impl Shader for ColorShader {
     }
 
     fn sample(&self, _x: Scalar, _y: Scalar) -> Color4f {
-        self.color
+        // sample() returns premultiplied color; the stored color is straight.
+        premultiply(self.color)
     }
 
     fn serialize(&self) -> Option<Vec<u8>> {
@@ -520,11 +553,12 @@ impl Shader for LinearGradient {
 
         if len_sq < 1e-10 {
             // Degenerate gradient (start == end)
-            return self
-                .colors
-                .first()
-                .cloned()
-                .unwrap_or(Color4f::transparent());
+            return premultiply(
+                self.colors
+                    .first()
+                    .cloned()
+                    .unwrap_or(Color4f::transparent()),
+            );
         }
 
         // Project point onto gradient line
@@ -662,11 +696,12 @@ impl Shader for RadialGradient {
 
     fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
         if self.radius <= 0.0 {
-            return self
-                .colors
-                .first()
-                .cloned()
-                .unwrap_or(Color4f::transparent());
+            return premultiply(
+                self.colors
+                    .first()
+                    .cloned()
+                    .unwrap_or(Color4f::transparent()),
+            );
         }
 
         // Calculate distance from center
@@ -1025,18 +1060,21 @@ impl Shader for TwoPointConicalGradient {
             } else {
                 let sqrt_disc = disc.sqrt();
                 // Two roots represent two circles the point could lie on.
-                // We want the circle closest to the start (smallest valid t).
+                // Skia's well-behaved (non-swapped) case takes the +sqrt,
+                // i.e. the LARGER t; the smaller root is only used when the
+                // larger one yields a negative interpolated radius (the
+                // swapped/negative-focal case).
                 let t0 = (-b + sqrt_disc) / (2.0 * a);
                 let t1 = (-b - sqrt_disc) / (2.0 * a);
-                // Prefer the root whose interpolated radius is non-negative
+                let t_larger = t0.max(t1);
+                let t_smaller = t0.min(t1);
                 let r_at = |t: Scalar| self.start_radius + t * dr;
-                let t0_valid = r_at(t0) >= 0.0;
-                let t1_valid = r_at(t1) >= 0.0;
-                match (t0_valid, t1_valid) {
-                    (true, true) => Some(t0.min(t1)),
-                    (true, false) => Some(t0),
-                    (false, true) => Some(t1),
-                    (false, false) => None,
+                if r_at(t_larger) >= 0.0 {
+                    Some(t_larger)
+                } else if r_at(t_smaller) >= 0.0 {
+                    Some(t_smaller)
+                } else {
+                    None
                 }
             }
         };
@@ -1046,9 +1084,15 @@ impl Shader for TwoPointConicalGradient {
             None => return Color4f::transparent(),
         };
 
-        // Apply tile mode to t, then interpolate colors.
+        // Apply tile mode to t, then interpolate colors (honoring flags,
+        // e.g. INTERPOLATE_PREMUL, like the other gradient kinds).
         let t_tiled = apply_tile_mode(t, self.tile_mode);
-        interpolate_gradient_color(&self.colors, self.positions.as_deref(), t_tiled)
+        interpolate_gradient_color_with_flags(
+            &self.colors,
+            self.positions.as_deref(),
+            t_tiled,
+            self.flags,
+        )
     }
 
     fn serialize(&self) -> Option<Vec<u8>> {
@@ -1255,19 +1299,62 @@ impl Shader for ImageShader {
             return Color4f::new(0.0, 0.0, 0.0, 0.0);
         }
 
-        // Apply tile mode to map arbitrary (x, y) into [0, width) x [0, height).
-        let sx = apply_image_tile(x, width as Scalar, self.tile_mode_x);
-        let sy = apply_image_tile(y, height as Scalar, self.tile_mode_y);
+        match self.sampling.filter {
+            FilterMode::Nearest => {
+                // Apply tile mode to map (x, y) into [0, width) x [0, height).
+                let sx = apply_image_tile(x, width as Scalar, self.tile_mode_x);
+                let sy = apply_image_tile(y, height as Scalar, self.tile_mode_y);
 
-        if !sx.is_finite() || !sy.is_finite() || sx < 0.0 || sy < 0.0 {
-            return Color4f::new(0.0, 0.0, 0.0, 0.0);
+                if !sx.is_finite() || !sy.is_finite() || sx < 0.0 || sy < 0.0 {
+                    return Color4f::new(0.0, 0.0, 0.0, 0.0);
+                }
+
+                // Nearest-neighbor sampling: round down to integer pixel.
+                let ix = (sx as i32).clamp(0, width - 1);
+                let iy = (sy as i32).clamp(0, height - 1);
+
+                read_pixel_rgba8(pixels, info, ix, iy)
+            }
+            FilterMode::Linear => {
+                // Bilinear filtering: texel centers sit at integer + 0.5, so
+                // shift by 0.5 and blend the four surrounding texels. Each
+                // neighbor coordinate is mapped through the tile mode; Decal
+                // neighbors outside the image contribute transparent.
+                let fx = x - 0.5;
+                let fy = y - 0.5;
+                let x0 = fx.floor();
+                let y0 = fy.floor();
+                let wx = fx - x0;
+                let wy = fy - y0;
+
+                let texel = |tx: Scalar, ty: Scalar| -> Color4f {
+                    let sx = apply_image_tile(tx, width as Scalar, self.tile_mode_x);
+                    let sy = apply_image_tile(ty, height as Scalar, self.tile_mode_y);
+                    if !sx.is_finite() || !sy.is_finite() || sx < 0.0 || sy < 0.0 {
+                        return Color4f::new(0.0, 0.0, 0.0, 0.0);
+                    }
+                    let ix = (sx as i32).clamp(0, width - 1);
+                    let iy = (sy as i32).clamp(0, height - 1);
+                    read_pixel_rgba8(pixels, info, ix, iy)
+                };
+
+                let c00 = texel(x0, y0);
+                let c10 = texel(x0 + 1.0, y0);
+                let c01 = texel(x0, y0 + 1.0);
+                let c11 = texel(x0 + 1.0, y0 + 1.0);
+
+                let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+                let bilerp = |c00: f32, c10: f32, c01: f32, c11: f32| {
+                    lerp(lerp(c00, c10, wx), lerp(c01, c11, wx), wy)
+                };
+                Color4f::new(
+                    bilerp(c00.r, c10.r, c01.r, c11.r),
+                    bilerp(c00.g, c10.g, c01.g, c11.g),
+                    bilerp(c00.b, c10.b, c01.b, c11.b),
+                    bilerp(c00.a, c10.a, c01.a, c11.a),
+                )
+            }
         }
-
-        // Nearest-neighbor sampling: round down to integer pixel.
-        let ix = (sx as i32).clamp(0, width - 1);
-        let iy = (sy as i32).clamp(0, height - 1);
-
-        read_pixel_rgba8(pixels, info, ix, iy)
     }
 
     fn is_opaque(&self) -> bool {
@@ -2928,10 +3015,16 @@ mod tests {
             TileMode::Clamp,
         );
 
-        // A point on the inner circle (at start_center + start_radius in x direction)
-        // should be red (t=0).
+        // The point (10, 0) lies on two interpolated circles: t=0 (the inner
+        // circle) and t=0.25 (center (25,0), radius 15). Per the gradient
+        // spec (and Skia), the LARGEST t with r(t) >= 0 wins, so the color is
+        // lerp(red, blue, 0.25).
         let c_inner = gradient.sample(10.0, 0.0);
-        assert!(c_inner.r > 0.9, "inner circle point should be red, got r={}", c_inner.r);
+        assert!(
+            (c_inner.r - 0.75).abs() < 1e-3,
+            "point on both cones takes the larger t (0.25), got r={}",
+            c_inner.r
+        );
 
         // A point on the outer circle (at end_center + end_radius in x direction)
         // should be blue (t=1).
@@ -3155,18 +3248,242 @@ mod tests {
         )
         .with_flags(GradientFlags::INTERPOLATE_PREMUL);
 
-        // Sample at midpoint (t=0.5)
+        // Sample at midpoint (t=0.5). sample() returns premultiplied color.
         let c_normal = grad_normal.sample(5.0, 0.0);
         let c_premul = grad_premul.sample(5.0, 0.0);
 
-        // Without premul, RGB lerps directly: (1.0 + 0.0)/2 = 0.5
-        // With premul, RGB*alpha lerps: (1.0*1.0 + 0.0*0.0)/2 = 0.5, then unpremul
-        // The difference should be visible
+        // Without the flag, interpolation happens in unpremul space:
+        // straight (0.5, 0, 0, 0.5), premultiplied on output -> r = 0.25.
         assert!(
-            c_normal.r > 0.4 && c_normal.r < 0.6,
-            "normal interpolation at midpoint"
+            (c_normal.r - 0.25).abs() < 1e-4,
+            "unpremul interpolation midpoint premul r, got {}",
+            c_normal.r
         );
-        // With premul, the color at midpoint should be darker (more transparent)
-        assert!(c_premul.a < 1.0, "premul should affect alpha");
+        assert!((c_normal.a - 0.5).abs() < 1e-4);
+
+        // With the flag, stops are premultiplied before interpolation:
+        // lerp((1,0,0,1), (0,0,0,0)) = (0.5, 0, 0, 0.5), already premul.
+        assert!(
+            (c_premul.r - 0.5).abs() < 1e-4,
+            "premul interpolation midpoint r, got {}",
+            c_premul.r
+        );
+        assert!((c_premul.a - 0.5).abs() < 1e-4);
+    }
+
+    // --- Conformance regression tests (Task 3) ---
+
+    #[test]
+    fn test_gradient_t_below_first_stop_returns_first_color() {
+        // SkGradientBaseShader: pos[0] > 0 means an implicit stop at t=0
+        // carrying the first color (fFirstStopIsImplicit).
+        let colors = vec![
+            Color4f::new(1.0, 0.0, 0.0, 1.0),
+            Color4f::new(0.0, 0.0, 1.0, 1.0),
+        ];
+        let grad = LinearGradient::new(
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 0.0),
+            colors,
+            Some(vec![0.5, 1.0]),
+            TileMode::Clamp,
+        );
+        let c = grad.sample(25.0, 0.0); // t = 0.25 < first stop 0.5
+        assert!(
+            (c.r - 1.0).abs() < 1e-4 && c.b.abs() < 1e-4,
+            "t below first explicit stop must return the first color, got {:?}",
+            c
+        );
+    }
+
+    #[test]
+    fn test_gradient_positions_pinned_monotonic() {
+        // Non-monotonic positions are pinned per SkTPin(pos[i], prev, 1):
+        // [0.0, 0.8, 0.5] becomes [0.0, 0.8, 0.8].
+        let colors = vec![
+            Color4f::new(1.0, 0.0, 0.0, 1.0),
+            Color4f::new(0.0, 1.0, 0.0, 1.0),
+            Color4f::new(0.0, 0.0, 1.0, 1.0),
+        ];
+        let grad = LinearGradient::new(
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 0.0),
+            colors,
+            Some(vec![0.0, 0.8, 0.5]),
+            TileMode::Clamp,
+        );
+        // t = 0.9 is past the pinned last stop (0.8) -> last color.
+        let c = grad.sample(90.0, 0.0);
+        assert!(
+            (c.b - 1.0).abs() < 1e-4,
+            "t past pinned last stop must return last color, got {:?}",
+            c
+        );
+        // t = 0.4 lies mid-segment [0.0, 0.8] -> lerp(red, green, 0.5).
+        let c = grad.sample(40.0, 0.0);
+        assert!(
+            (c.r - 0.5).abs() < 1e-4 && (c.g - 0.5).abs() < 1e-4,
+            "pinned positions should keep first segment intact, got {:?}",
+            c
+        );
+    }
+
+    #[test]
+    fn test_gradient_position_above_one_pinned() {
+        // Position 2.0 pins to 1.0.
+        let colors = vec![
+            Color4f::new(1.0, 0.0, 0.0, 1.0),
+            Color4f::new(0.0, 0.0, 1.0, 1.0),
+        ];
+        let grad = LinearGradient::new(
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 0.0),
+            colors,
+            Some(vec![0.0, 2.0]),
+            TileMode::Clamp,
+        );
+        let c = grad.sample(50.0, 0.0); // t = 0.5 -> halfway
+        assert!(
+            (c.r - 0.5).abs() < 1e-4 && (c.b - 0.5).abs() < 1e-4,
+            "position above 1 must be pinned to 1, got {:?}",
+            c
+        );
+    }
+
+    #[test]
+    fn test_two_point_conical_picks_larger_root() {
+        // C0 = (0,0) r0 = 0.1, C1 = (1,0) r1 = 0.2, P = (0.5, 0).
+        // Quadratic roots: t = 2/3 and t = 4/11; both have r(t) >= 0.
+        // Upstream well-behaved case takes the larger t (== +sqrt root).
+        let grad = TwoPointConicalGradient::new(
+            Point::new(0.0, 0.0),
+            0.1,
+            Point::new(1.0, 0.0),
+            0.2,
+            vec![
+                Color4f::new(0.0, 0.0, 0.0, 1.0),
+                Color4f::new(1.0, 1.0, 1.0, 1.0),
+            ],
+            None,
+            TileMode::Clamp,
+        );
+        let c = grad.sample(0.5, 0.0);
+        assert!(
+            (c.r - 2.0 / 3.0).abs() < 1e-3,
+            "conical must pick the larger valid root (t = 2/3), got r = {}",
+            c.r
+        );
+    }
+
+    #[test]
+    fn test_two_point_conical_honors_premul_flag() {
+        let grad = TwoPointConicalGradient::new(
+            Point::new(0.0, 0.0),
+            0.0,
+            Point::new(10.0, 0.0),
+            10.0,
+            vec![
+                Color4f::new(1.0, 0.0, 0.0, 1.0),
+                Color4f::new(0.0, 0.0, 1.0, 0.0),
+            ],
+            None,
+            TileMode::Clamp,
+        )
+        .with_flags(GradientFlags::INTERPOLATE_PREMUL);
+        // Point (5, 0) -> t = 0.25 (focal gradient: |5 - 10t| = 10t).
+        // Premul stops: (1,0,0,1) and (0,0,0,0); lerp at 0.25 gives
+        // (0.75, 0, 0, 0.75). Blue must not leak in premul interpolation
+        // (without the flag the straight-space lerp would leak b = 0.1875).
+        let c = grad.sample(5.0, 0.0);
+        assert!(
+            (c.r - 0.75).abs() < 1e-3 && c.b.abs() < 1e-3 && (c.a - 0.75).abs() < 1e-3,
+            "conical must interpolate premultiplied stops with the flag, got {:?}",
+            c
+        );
+    }
+
+    #[test]
+    fn test_color_shader_sample_is_premultiplied() {
+        let shader = ColorShader::new(Color4f::new(1.0, 0.5, 0.0, 0.5));
+        let c = shader.sample(0.0, 0.0);
+        assert!((c.r - 0.5).abs() < 1e-5, "premul r, got {}", c.r);
+        assert!((c.g - 0.25).abs() < 1e-5, "premul g, got {}", c.g);
+        assert!((c.a - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_blend_shader_children_are_premul_for_blend() {
+        // src: red at 50% alpha; dst: opaque green. SrcOver on premul values:
+        // r = 0.5, g = 1*(1-0.5) = 0.5, a = 1.
+        let src: ShaderRef = Arc::new(ColorShader::new(Color4f::new(1.0, 0.0, 0.0, 0.5)));
+        let dst: ShaderRef = Arc::new(ColorShader::new(Color4f::new(0.0, 1.0, 0.0, 1.0)));
+        let blend = BlendShader::new(crate::BlendMode::SrcOver, dst, src);
+        let c = blend.sample(0.0, 0.0);
+        assert!((c.r - 0.5).abs() < 1e-4, "premul srcover r, got {}", c.r);
+        assert!((c.g - 0.5).abs() < 1e-4, "premul srcover g, got {}", c.g);
+        assert!((c.a - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_compose_shader_children_are_premul_for_blend() {
+        let outer: ShaderRef = Arc::new(ColorShader::new(Color4f::new(1.0, 0.0, 0.0, 0.5)));
+        let inner: ShaderRef = Arc::new(ColorShader::new(Color4f::new(0.0, 1.0, 0.0, 1.0)));
+        let compose = ComposeShader::new(outer, inner, crate::BlendMode::SrcOver);
+        let c = compose.sample(0.0, 0.0);
+        assert!((c.r - 0.5).abs() < 1e-4, "premul srcover r, got {}", c.r);
+        assert!((c.g - 0.5).abs() < 1e-4, "premul srcover g, got {}", c.g);
+    }
+
+    #[test]
+    fn test_alpha8_samples_as_black_with_alpha() {
+        // Alpha-only sources decode as (0,0,0,a) — black, not white.
+        use skia_rs_core::color::{AlphaType, ColorType};
+        use skia_rs_core::pixel::ImageInfo;
+
+        let info = ImageInfo::new(1, 1, ColorType::Alpha8, AlphaType::Premul).unwrap();
+        let pixels = Arc::new(vec![128u8]);
+        let shader = ImageShader::with_pixels(
+            pixels,
+            info,
+            TileMode::Clamp,
+            TileMode::Clamp,
+            SamplingOptions::NEAREST,
+        );
+        let c = shader.sample(0.5, 0.5);
+        assert!(c.r.abs() < 1e-4, "alpha8 r must be 0, got {}", c.r);
+        assert!(c.g.abs() < 1e-4, "alpha8 g must be 0, got {}", c.g);
+        assert!(c.b.abs() < 1e-4, "alpha8 b must be 0, got {}", c.b);
+        assert!((c.a - 128.0 / 255.0).abs() < 1e-4, "alpha8 a, got {}", c.a);
+    }
+
+    #[test]
+    fn test_image_shader_bilinear_filtering() {
+        use skia_rs_core::color::{AlphaType, ColorType};
+        use skia_rs_core::pixel::ImageInfo;
+
+        // 2x1 image: black texel then white texel.
+        let info = ImageInfo::new(2, 1, ColorType::Rgba8888, AlphaType::Premul).unwrap();
+        let pixels = Arc::new(vec![
+            0u8, 0, 0, 255, // black
+            255, 255, 255, 255, // white
+        ]);
+        let shader = ImageShader::with_pixels(
+            pixels,
+            info,
+            TileMode::Clamp,
+            TileMode::Clamp,
+            SamplingOptions::LINEAR,
+        );
+        // x = 1.0 is exactly between the two texel centers (0.5 and 1.5):
+        // bilinear result is 50% gray.
+        let c = shader.sample(1.0, 0.5);
+        assert!(
+            (c.r - 0.5).abs() < 2.0 / 255.0,
+            "bilinear midpoint should be 0.5 gray, got {}",
+            c.r
+        );
+        // At a texel center filtering must return the texel itself.
+        let c0 = shader.sample(0.5, 0.5);
+        assert!(c0.r < 1e-3, "texel center must be exact, got {}", c0.r);
     }
 }

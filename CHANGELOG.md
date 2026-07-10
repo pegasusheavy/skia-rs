@@ -570,6 +570,20 @@ The first public release of skia-rs, a pure Rust implementation of the Skia 2D g
   was `1.0`) and `anti_alias` is `false` (was `true`).
 - `Paint::color32()` and `Paint::serialize()` round float color components to
   the nearest byte (0.5 → 128) instead of truncating.
+- **`Shader::sample` now returns premultiplied colors** (Skia raster-pipeline
+  convention), uniformly across ColorShader, gradients, image shaders, blend/
+  compose shaders and runtime effects; `BlendMode::apply` receives premul
+  inputs from BlendShader/ComposeShader as it requires.
+- Gradient stop positions are pinned monotonic into [0, 1] (`SkTPin`) and a
+  first stop above 0 acts as an implicit stop at t=0 carrying the first color
+  (`SkGradientBaseShader::fFirstStopIsImplicit`); t below the first explicit
+  stop no longer returns the last color.
+- Two-point conical gradients pick the larger quadratic root when both
+  interpolated radii are valid (upstream well-behaved case), and now honor
+  `GradientFlags::INTERPOLATE_PREMUL`.
+- `Alpha8` image sampling decodes as black-with-alpha `(0,0,0,a)`, not white.
+- `ImageShader::sample` honors `SamplingOptions`: `FilterMode::Linear` does
+  bilinear filtering (was always nearest-neighbor).
 
 ### Planned for v0.2.0
 - Complete wgpu GPU backend

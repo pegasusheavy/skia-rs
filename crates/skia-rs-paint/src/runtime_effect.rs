@@ -1673,6 +1673,10 @@ impl Shader for RuntimeShader {
         // Software fallback: run the SkSL interpreter on the parsed program.
         // Runtime shaders follow the convention `half4 main(float2 coord)`,
         // so we dispatch `main` with a Vec2 coordinate and read back a Vec4.
+        //
+        // Per the Shader::sample contract the returned color is treated as
+        // premultiplied: SkSL shader output feeds the raster pipeline
+        // directly, whose colors are premul (matching upstream semantics).
         let mut interp = self.effect.build_interp(&self.uniforms, &self.children);
         let coord = SkslValue::Vec2([x, y]);
         let result = interp.run_function("main", vec![coord]);
