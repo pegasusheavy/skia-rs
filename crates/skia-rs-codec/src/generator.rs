@@ -78,6 +78,14 @@ pub enum GeneratorError {
 /// }
 /// ```
 ///
+/// Allocate the next process-wide unique generator ID from a monotonic
+/// atomic counter. Never returns 0, and never reuses a value, so IDs cannot
+/// collide the way recycled pointer addresses can.
+pub fn next_generator_id() -> u32 {
+    static ID_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Corresponds to Skia's `SkImageGenerator`.
 pub trait ImageGenerator: Send + Sync {
     /// Get the image info describing the output.
@@ -97,10 +105,15 @@ pub trait ImageGenerator: Send + Sync {
 
     /// Get the unique ID for this generator.
     ///
-    /// Two generators with the same ID will produce identical images.
+    /// Two generators with the same ID will produce identical images. IDs
+    /// are drawn from a process-wide monotonic counter (see
+    /// [`next_generator_id`]), never from a pointer address — a freed
+    /// generator's address can be reused, which would alias two logically
+    /// distinct generators. Implementors that must return a *stable* ID
+    /// across calls should store one at construction; this default hands out
+    /// a fresh ID per call, so override it when stability matters.
     fn unique_id(&self) -> u32 {
-        // Default implementation uses address-based ID (data pointer only)
-        (self as *const Self as *const () as usize) as u32
+        next_generator_id()
     }
 
     /// Get a reference to the original encoded data, if available.
@@ -266,6 +279,7 @@ pub fn convert_pixels(
 pub struct SolidColorGenerator {
     info: ImageInfo,
     color: [u8; 4],
+    unique_id: u32,
 }
 
 impl SolidColorGenerator {
@@ -274,6 +288,7 @@ impl SolidColorGenerator {
         Self {
             info: ImageInfo::new(width, height, ColorType::Rgba8888, AlphaType::Premul),
             color,
+            unique_id: next_generator_id(),
         }
     }
 }
@@ -281,6 +296,10 @@ impl SolidColorGenerator {
 impl ImageGenerator for SolidColorGenerator {
     fn info(&self) -> &ImageInfo {
         &self.info
+    }
+
+    fn unique_id(&self) -> u32 {
+        self.unique_id
     }
 
     fn on_get_pixels(&self, pixels: &mut [u8], row_bytes: usize) -> GeneratorResult<()> {
@@ -331,13 +350,10 @@ impl EncodedImageGenerator {
     pub fn from_shared(data: Arc<[u8]>) -> Option<Self> {
         let decoded = crate::decode_image(&data).ok()?;
 
-        static ID_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
-        let unique_id = ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
         Some(Self {
             info: decoded.info().clone(),
             encoded_data: data,
-            unique_id,
+            unique_id: next_generator_id(),
             decoded,
         })
     }

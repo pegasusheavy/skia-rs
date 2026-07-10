@@ -141,6 +141,17 @@ struct ImageData {
     info: ImageInfo,
     pixels: Vec<u8>,
     row_bytes: usize,
+    unique_id: u64,
+}
+
+/// Allocate the next process-wide unique image ID.
+///
+/// Skia's `SkImage::uniqueID()` is a stable value drawn from a monotonic
+/// counter, never a pointer address: pointer reuse after free would collide
+/// two logically distinct images, breaking caches keyed on the ID.
+fn next_image_id() -> u64 {
+    static ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl std::fmt::Debug for Image {
@@ -173,6 +184,7 @@ impl Image {
                 info: info.clone(),
                 pixels: pixels[..expected_size].to_vec(),
                 row_bytes,
+                unique_id: next_image_id(),
             }),
         })
     }
@@ -197,6 +209,7 @@ impl Image {
                 info,
                 pixels,
                 row_bytes,
+                unique_id: next_image_id(),
             }),
         })
     }
@@ -291,9 +304,14 @@ impl Image {
     }
 
     /// Get the unique ID for this image.
+    ///
+    /// The ID comes from a process-wide monotonic counter assigned at
+    /// construction (mirroring `SkImage::uniqueID()`), so distinct images
+    /// always compare unequal even if a later allocation reuses a freed
+    /// image's memory. Cloning an `Image` shares the same ID.
     #[inline]
     pub fn unique_id(&self) -> usize {
-        Arc::as_ptr(&self.inner) as usize
+        self.inner.unique_id as usize
     }
 
     /// Read pixels from the image into a buffer.
@@ -495,21 +513,49 @@ impl Image {
         let src_h = self.height() as usize;
         let src_row_bytes = self.inner.row_bytes;
 
+        // Filtered resampling (Linear / cubic / Lanczos) blends neighboring
+        // pixels, which is only correct in *premultiplied* space — otherwise
+        // color bleeds out of fully transparent texels. If the source is
+        // unpremultiplied RGBA/BGRA, premultiply a working copy, filter it,
+        // then unpremultiply the result. Opaque and already-premultiplied
+        // sources filter in place. Nearest-neighbor copies whole pixels and
+        // needs no premultiplication.
+        let filters = !matches!(sampling, SamplingOptions::Nearest);
+        let needs_premul = filters
+            && bytes_per_pixel == 4
+            && self.alpha_type() == AlphaType::Unpremul
+            && matches!(self.color_type(), ColorType::Rgba8888 | ColorType::Bgra8888);
+        let premul_storage;
+        let src_pixels: &[u8] = if needs_premul {
+            let mut v = self.inner.pixels.clone();
+            skia_rs_core::premultiply_in_place(&mut v);
+            premul_storage = v;
+            &premul_storage
+        } else {
+            &self.inner.pixels
+        };
+
         match sampling {
             SamplingOptions::Nearest => {
+                // Sample pixel centers: src = floor((dst + 0.5) * scale).
+                // This aligns sample points with Skia's nearest-neighbor
+                // mapping so a 1:1 scale reproduces the source exactly and
+                // up/downscaling stays centered.
                 let x_scale = self.width() as f32 / width as f32;
                 let y_scale = self.height() as f32 / height as f32;
 
                 for dst_y in 0..height as usize {
-                    let src_y = ((dst_y as f32 * y_scale) as usize).min(src_h - 1);
+                    let src_y =
+                        (((dst_y as f32 + 0.5) * y_scale).floor() as usize).min(src_h - 1);
                     for dst_x in 0..width as usize {
-                        let src_x = ((dst_x as f32 * x_scale) as usize).min(src_w - 1);
+                        let src_x =
+                            (((dst_x as f32 + 0.5) * x_scale).floor() as usize).min(src_w - 1);
 
                         let src_offset = src_y * src_row_bytes + src_x * bytes_per_pixel;
                         let dst_offset = dst_y * new_row_bytes + dst_x * bytes_per_pixel;
 
                         new_pixels[dst_offset..dst_offset + bytes_per_pixel].copy_from_slice(
-                            &self.inner.pixels[src_offset..src_offset + bytes_per_pixel],
+                            &src_pixels[src_offset..src_offset + bytes_per_pixel],
                         );
                     }
                 }
@@ -542,10 +588,10 @@ impl Image {
                         let dst_offset = dst_y * new_row_bytes + dst_x * bytes_per_pixel;
 
                         for i in 0..bytes_per_pixel {
-                            let c00 = self.inner.pixels[p00 + i] as f32;
-                            let c01 = self.inner.pixels[p01 + i] as f32;
-                            let c10 = self.inner.pixels[p10 + i] as f32;
-                            let c11 = self.inner.pixels[p11 + i] as f32;
+                            let c00 = src_pixels[p00 + i] as f32;
+                            let c01 = src_pixels[p01 + i] as f32;
+                            let c10 = src_pixels[p10 + i] as f32;
+                            let c11 = src_pixels[p11 + i] as f32;
 
                             let top = c00 * (1.0 - tx) + c01 * tx;
                             let bot = c10 * (1.0 - tx) + c11 * tx;
@@ -560,7 +606,7 @@ impl Image {
             | SamplingOptions::CatmullRom
             | SamplingOptions::Lanczos3 => {
                 resample_separable(
-                    &self.inner.pixels,
+                    src_pixels,
                     src_w,
                     src_h,
                     src_row_bytes,
@@ -572,6 +618,12 @@ impl Image {
                     sampling,
                 );
             }
+        }
+
+        // Undo the premultiplication applied above so the result keeps the
+        // source's unpremultiplied alpha type.
+        if needs_premul {
+            skia_rs_core::unpremultiply_in_place(&mut new_pixels);
         }
 
         Self::from_raster_data_owned(new_info, new_pixels, new_row_bytes)
@@ -1076,5 +1128,66 @@ mod tests {
         assert!(!image.read_pixels(&dst_info, &mut dst, 16, -1, 0));
         // Subset exceeds image width.
         assert!(!image.read_pixels(&dst_info, &mut dst, 16, 1, 0));
+    }
+
+    /// Unique IDs come from a monotonic counter, not a pointer: two distinct
+    /// images always differ, and a clone shares the source's ID.
+    #[test]
+    fn test_unique_id_is_monotonic_not_pointer() {
+        let a = Image::from_color(2, 2, 0xFF_FF0000).unwrap();
+        let b = Image::from_color(2, 2, 0xFF_FF0000).unwrap();
+        assert_ne!(a.unique_id(), b.unique_id(), "distinct images differ");
+        assert_eq!(a.clone().unique_id(), a.unique_id(), "clone shares ID");
+
+        // Drop an image and allocate another; a pointer-based ID could
+        // recycle the freed address and collide. A monotonic counter cannot.
+        let id_a = a.unique_id();
+        drop(a);
+        let c = Image::from_color(2, 2, 0xFF_FF0000).unwrap();
+        assert_ne!(c.unique_id(), id_a);
+    }
+
+    /// Nearest-neighbor sampling uses pixel centers
+    /// (`floor((dst + 0.5) * scale)`). Downscaling a 4x1 source
+    /// [10,20,30,40] to 2x1 must pick the *center* source pixels: column 0
+    /// maps to `floor(0.5 * 2) = 1` (value 20) and column 1 to
+    /// `floor(1.5 * 2) = 3` (value 40). The old top-left mapping
+    /// (`floor(dst * scale)`) would instead pick indices 0 and 2 (10 and 30).
+    #[test]
+    fn test_nearest_samples_pixel_centers() {
+        let info = ImageInfo::new(4, 1, ColorType::Rgba8888, AlphaType::Opaque);
+        let pixels = vec![
+            10, 10, 10, 255, //
+            20, 20, 20, 255, //
+            30, 30, 30, 255, //
+            40, 40, 40, 255,
+        ];
+        let src = Image::from_raster_data_owned(info, pixels, 16).unwrap();
+        let scaled = src.make_scaled_with(2, 1, SamplingOptions::Nearest).unwrap();
+        let px = scaled.peek_pixels().unwrap();
+        assert_eq!(px[0], 20, "col 0 -> src index 1");
+        assert_eq!(px[4], 40, "col 1 -> src index 3");
+    }
+
+    /// Filtered scaling must operate in premultiplied space: a fully
+    /// transparent texel's (arbitrary) color must not bleed into an adjacent
+    /// opaque texel. Source: [opaque red | transparent green(garbage)].
+    /// Bilinear downscale-to-average must keep the surviving color pure red,
+    /// not a red/green mix.
+    #[test]
+    fn test_linear_filters_in_premul_space() {
+        let info = ImageInfo::new(2, 1, ColorType::Rgba8888, AlphaType::Unpremul);
+        // Left: opaque red. Right: transparent but with green stored in RGB
+        // (as could occur from an unpremultiplied source).
+        let pixels = vec![255, 0, 0, 255, 0, 255, 0, 0];
+        let src = Image::from_raster_data_owned(info, pixels, 8).unwrap();
+        // Downscale to 1x1: the single output blends both texels. In premul
+        // space the transparent texel contributes no color, so the result is
+        // red at half alpha; unpremultiplied that is pure red.
+        let scaled = src.make_scaled_with(1, 1, SamplingOptions::Linear).unwrap();
+        let px = scaled.peek_pixels().unwrap();
+        assert_eq!(px[1], 0, "no green bleed from transparent texel");
+        assert_eq!(px[2], 0, "blue stays zero");
+        assert!(px[0] > 200, "red survives, got {}", px[0]);
     }
 }
