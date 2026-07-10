@@ -371,24 +371,32 @@ impl Matrix44 {
         Self { values: result }
     }
 
-    /// Pre-concatenates this matrix with a translation.
+    /// Pre-concatenates this matrix with a translation (`self * T`).
+    ///
+    /// Matches `SkM44::preTranslate`: the translation is applied in the local
+    /// (source) coordinate space, updating the last column.
     pub fn pre_translate(&self, x: Scalar, y: Scalar, z: Scalar) -> Self {
-        Self::translate(x, y, z).concat(self)
-    }
-
-    /// Post-concatenates this matrix with a translation.
-    pub fn post_translate(&self, x: Scalar, y: Scalar, z: Scalar) -> Self {
         self.concat(&Self::translate(x, y, z))
     }
 
-    /// Pre-concatenates this matrix with a scale.
-    pub fn pre_scale(&self, sx: Scalar, sy: Scalar, sz: Scalar) -> Self {
-        Self::scale(sx, sy, sz).concat(self)
+    /// Post-concatenates this matrix with a translation (`T * self`).
+    ///
+    /// Matches `SkM44::postTranslate`: the translation is applied in the
+    /// destination coordinate space.
+    pub fn post_translate(&self, x: Scalar, y: Scalar, z: Scalar) -> Self {
+        Self::translate(x, y, z).concat(self)
     }
 
-    /// Post-concatenates this matrix with a scale.
-    pub fn post_scale(&self, sx: Scalar, sy: Scalar, sz: Scalar) -> Self {
+    /// Pre-concatenates this matrix with a scale (`self * S`).
+    ///
+    /// Matches `SkM44::preScale`.
+    pub fn pre_scale(&self, sx: Scalar, sy: Scalar, sz: Scalar) -> Self {
         self.concat(&Self::scale(sx, sy, sz))
+    }
+
+    /// Post-concatenates this matrix with a scale (`S * self`).
+    pub fn post_scale(&self, sx: Scalar, sy: Scalar, sz: Scalar) -> Self {
+        Self::scale(sx, sy, sz).concat(self)
     }
 
     /// Transforms a 3D point by this matrix.
@@ -452,52 +460,90 @@ impl Matrix44 {
     }
 
     /// Computes the inverse of this matrix, or None if singular.
+    ///
+    /// Matches Skia's `SkInvert4x4Matrix` (`src/core/SkMatrixInvert.cpp`): the
+    /// determinant and all cofactors are computed in double precision, and the
+    /// matrix is reported singular only when the determinant is exactly zero or
+    /// when the computed inverse contains a non-finite element (e.g. `1/det`
+    /// overflowing on a denormalized determinant).
     pub fn invert(&self) -> Option<Self> {
-        let det = self.determinant();
-        // Skia uses 1/4096 ≈ 2.44e-4. We use a tighter bound that's
-        // still well above f32 epsilon (~1.19e-7).
-        const SINGULARITY_THRESHOLD: Scalar = Scalar::EPSILON * 256.0;
-        if det.abs() < SINGULARITY_THRESHOLD {
+        let m = &self.values;
+        // Column-major storage matches SkM44's fMat layout directly.
+        let a00 = m[0] as f64;
+        let a01 = m[1] as f64;
+        let a02 = m[2] as f64;
+        let a03 = m[3] as f64;
+        let a10 = m[4] as f64;
+        let a11 = m[5] as f64;
+        let a12 = m[6] as f64;
+        let a13 = m[7] as f64;
+        let a20 = m[8] as f64;
+        let a21 = m[9] as f64;
+        let a22 = m[10] as f64;
+        let a23 = m[11] as f64;
+        let a30 = m[12] as f64;
+        let a31 = m[13] as f64;
+        let a32 = m[14] as f64;
+        let a33 = m[15] as f64;
+
+        let mut b00 = a00 * a11 - a01 * a10;
+        let mut b01 = a00 * a12 - a02 * a10;
+        let mut b02 = a00 * a13 - a03 * a10;
+        let mut b03 = a01 * a12 - a02 * a11;
+        let mut b04 = a01 * a13 - a03 * a11;
+        let mut b05 = a02 * a13 - a03 * a12;
+        let mut b06 = a20 * a31 - a21 * a30;
+        let mut b07 = a20 * a32 - a22 * a30;
+        let mut b08 = a20 * a33 - a23 * a30;
+        let mut b09 = a21 * a32 - a22 * a31;
+        let mut b10 = a21 * a33 - a23 * a31;
+        let mut b11 = a22 * a33 - a23 * a32;
+
+        let determinant =
+            b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+        if determinant == 0.0 {
             return None;
         }
 
-        let m = &self.values;
-        let inv_det = 1.0 / det;
+        let invdet = 1.0 / determinant;
+        b00 *= invdet;
+        b01 *= invdet;
+        b02 *= invdet;
+        b03 *= invdet;
+        b04 *= invdet;
+        b05 *= invdet;
+        b06 *= invdet;
+        b07 *= invdet;
+        b08 *= invdet;
+        b09 *= invdet;
+        b10 *= invdet;
+        b11 *= invdet;
 
-        let s0 = m[0] * m[5] - m[4] * m[1];
-        let s1 = m[0] * m[9] - m[8] * m[1];
-        let s2 = m[0] * m[13] - m[12] * m[1];
-        let s3 = m[4] * m[9] - m[8] * m[5];
-        let s4 = m[4] * m[13] - m[12] * m[5];
-        let s5 = m[8] * m[13] - m[12] * m[9];
+        let out = [
+            (a11 * b11 - a12 * b10 + a13 * b09) as Scalar,
+            (a02 * b10 - a01 * b11 - a03 * b09) as Scalar,
+            (a31 * b05 - a32 * b04 + a33 * b03) as Scalar,
+            (a22 * b04 - a21 * b05 - a23 * b03) as Scalar,
+            (a12 * b08 - a10 * b11 - a13 * b07) as Scalar,
+            (a00 * b11 - a02 * b08 + a03 * b07) as Scalar,
+            (a32 * b02 - a30 * b05 - a33 * b01) as Scalar,
+            (a20 * b05 - a22 * b02 + a23 * b01) as Scalar,
+            (a10 * b10 - a11 * b08 + a13 * b06) as Scalar,
+            (a01 * b08 - a00 * b10 - a03 * b06) as Scalar,
+            (a30 * b04 - a31 * b02 + a33 * b00) as Scalar,
+            (a21 * b02 - a20 * b04 - a23 * b00) as Scalar,
+            (a11 * b07 - a10 * b09 - a12 * b06) as Scalar,
+            (a00 * b09 - a01 * b07 + a02 * b06) as Scalar,
+            (a31 * b01 - a30 * b03 - a32 * b00) as Scalar,
+            (a20 * b03 - a21 * b01 + a22 * b00) as Scalar,
+        ];
 
-        let c5 = m[10] * m[15] - m[14] * m[11];
-        let c4 = m[6] * m[15] - m[14] * m[7];
-        let c3 = m[6] * m[11] - m[10] * m[7];
-        let c2 = m[2] * m[15] - m[14] * m[3];
-        let c1 = m[2] * m[11] - m[10] * m[3];
-        let c0 = m[2] * m[7] - m[6] * m[3];
-
-        Some(Self {
-            values: [
-                (m[5] * c5 - m[9] * c4 + m[13] * c3) * inv_det,
-                (-m[1] * c5 + m[9] * c2 - m[13] * c1) * inv_det,
-                (m[1] * c4 - m[5] * c2 + m[13] * c0) * inv_det,
-                (-m[1] * c3 + m[5] * c1 - m[9] * c0) * inv_det,
-                (-m[4] * c5 + m[8] * c4 - m[12] * c3) * inv_det,
-                (m[0] * c5 - m[8] * c2 + m[12] * c1) * inv_det,
-                (-m[0] * c4 + m[4] * c2 - m[12] * c0) * inv_det,
-                (m[0] * c3 - m[4] * c1 + m[8] * c0) * inv_det,
-                (m[7] * s5 - m[11] * s4 + m[15] * s3) * inv_det,
-                (-m[3] * s5 + m[11] * s2 - m[15] * s1) * inv_det,
-                (m[3] * s4 - m[7] * s2 + m[15] * s0) * inv_det,
-                (-m[3] * s3 + m[7] * s1 - m[11] * s0) * inv_det,
-                (-m[6] * s5 + m[10] * s4 - m[14] * s3) * inv_det,
-                (m[2] * s5 - m[10] * s2 + m[14] * s1) * inv_det,
-                (-m[2] * s4 + m[6] * s2 - m[14] * s0) * inv_det,
-                (m[2] * s3 - m[6] * s1 + m[10] * s0) * inv_det,
-            ],
-        })
+        // Reject a non-finite inverse (overflow on denormalized determinant).
+        if out.iter().all(|v| v.is_finite()) {
+            Some(Self { values: out })
+        } else {
+            None
+        }
     }
 
     /// Returns the transpose of this matrix.
@@ -688,5 +734,56 @@ mod tests {
     fn test_matrix44_perspective_normal_returns_some() {
         let m = Matrix44::perspective_checked(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 100.0);
         assert!(m.is_some());
+    }
+
+    // --- Conformance regression tests (Task 1) ---
+
+    #[test]
+    fn test_pre_translate_is_self_times_t() {
+        // preTranslate applies the translation in local space: self * T.
+        // Starting from a 2x scale, translating (1,0,0) should move the point
+        // by 2 in device space (the scale acts on the translation).
+        let scale = Matrix44::scale(2.0, 2.0, 2.0);
+        let pre = scale.pre_translate(1.0, 0.0, 0.0);
+        assert_eq!(pre, scale.concat(&Matrix44::translate(1.0, 0.0, 0.0)));
+        // Last column encodes the transformed translation: 2 * 1 = 2.
+        assert_eq!(pre.get(0, 3), 2.0);
+    }
+
+    #[test]
+    fn test_post_translate_is_t_times_self() {
+        // postTranslate applies the translation in device space: T * self.
+        let scale = Matrix44::scale(2.0, 2.0, 2.0);
+        let post = scale.post_translate(1.0, 0.0, 0.0);
+        assert_eq!(post, Matrix44::translate(1.0, 0.0, 0.0).concat(&scale));
+        // Device-space translation is not scaled: stays 1.
+        assert_eq!(post.get(0, 3), 1.0);
+    }
+
+    #[test]
+    fn test_pre_post_scale_semantics() {
+        let t = Matrix44::translate(10.0, 0.0, 0.0);
+        // preScale: self * S. Scaling then applying t's translation leaves the
+        // translation column untouched (S doesn't move the origin).
+        assert_eq!(t.pre_scale(2.0, 2.0, 2.0), t.concat(&Matrix44::scale(2.0, 2.0, 2.0)));
+        // postScale: S * self. The translation column gets scaled by 2.
+        let post = t.post_scale(2.0, 2.0, 2.0);
+        assert_eq!(post, Matrix44::scale(2.0, 2.0, 2.0).concat(&t));
+        assert_eq!(post.get(0, 3), 20.0);
+    }
+
+    #[test]
+    fn test_invert_small_scale() {
+        // A tiny uniform scale (det = 1e-9) is invertible in Skia; the old
+        // absolute f32 threshold wrongly rejected it.
+        let m = Matrix44::scale(1e-3, 1e-3, 1e-3);
+        let inv = m.invert().expect("small-scale 4x4 must invert");
+        assert!((inv.values[0] - 1000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_invert_singular_returns_none() {
+        let m = Matrix44::scale(1.0, 1.0, 0.0);
+        assert!(m.invert().is_none(), "zero-scale axis is singular");
     }
 }
