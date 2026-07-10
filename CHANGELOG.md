@@ -52,6 +52,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Rect/Region/Mask/RegionAndMask, AA and non-AA); no silent no-ops.
 - Non-AA clip rects round to nearest (Skia `rect.round()`), not round-out,
   and clip containment tests sample pixel centers.
+- `fill_rect` under a non-axis-aligned CTM scan-converts the mapped quad as
+  a path; only the axis-aligned case uses `map_rect` (previously the quad's
+  bounding box was filled).
+- Stroke geometry honors `stroke_width`: positive widths build the stroke
+  outline via `skia-rs-path`'s `stroke_to_fill` (cap/join/miter from the
+  paint) and fill it; width 0 remains a hairline. `StrokeAndFill` fills the
+  union of fill and stroke geometry exactly once (no double blend of the
+  overlap with translucent paint).
+- Circles map through the full CTM: rotation/skew/non-uniform scale convert
+  to a conic path and go through the path pipeline (ellipse under
+  non-uniform scale); `fill_circle` emits each row exactly once (no double
+  blending with translucent paint).
+- `fill_path` honors `paint.shader()`; shaders are sampled in **local**
+  space (device point through the inverse CTM) and go through the clipped
+  blitter. The shader branch of `fill_rect` respects the clip.
+- `paint.is_anti_alias()` routes fills through the AA scanline filler,
+  which no longer keeps edges past their `y_max` and now applies the clip.
+- `InverseWinding`/`InverseEvenOdd` fill the complement of the path within
+  the clip (both AA and non-AA).
 
 ## [0.2.6] - 2026-04-26
 

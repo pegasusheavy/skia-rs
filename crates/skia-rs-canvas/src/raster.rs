@@ -26,6 +26,7 @@
 use skia_rs_core::premultiply_color;
 use skia_rs_core::{Color, Color4f, IRect, Matrix, Point, Rect, Region, Scalar};
 use skia_rs_paint::{BlendMode, Paint, Style};
+use skia_rs_path::PathBuilder;
 
 use crate::simd::mul_div_255_round;
 use skia_rs_path::{FillType, Path, PathElement};
@@ -220,6 +221,82 @@ fn apply_coverage(color: Color, coverage: u8) -> Color {
     )
 }
 
+/// Per-fill pixel source: a premultiplied solid color, or a shader sampled
+/// in **local** (pre-CTM) space.
+enum PixelSource<'p> {
+    /// Premultiplied solid paint color.
+    Solid(Color),
+    /// Shader with the device→local inverse CTM and the paint's alpha
+    /// (0-255) to modulate the shader output.
+    Shader {
+        shader: &'p dyn skia_rs_paint::Shader,
+        inv: Matrix,
+        alpha: u8,
+    },
+}
+
+/// Sample the source at device pixel (x, y). Returns a PREMULTIPLIED color.
+///
+/// Shaders are sampled at the pixel center mapped through the inverse CTM
+/// (local space, per `SkShaderBase::appendRootStages` applying the inverse
+/// total matrix); `Shader::sample` returns premul (Task 3 contract) which is
+/// then modulated by the paint alpha.
+fn source_color_at(source: &PixelSource<'_>, x: i32, y: i32) -> Color {
+    match source {
+        PixelSource::Solid(c) => *c,
+        PixelSource::Shader { shader, inv, alpha } => {
+            let local = inv.map_point(Point::new(x as Scalar + 0.5, y as Scalar + 0.5));
+            let c = shader.sample(local.x, local.y).to_color();
+            apply_coverage(c, *alpha)
+        }
+    }
+}
+
+/// Compute the fill spans of `edges` at scanline `y` (typically a pixel
+/// center). Returns sorted, disjoint `(x0, x1)` pairs.
+fn spans_at_scanline(edges: &[Edge], y: f32, fill_type: FillType) -> Vec<(f32, f32)> {
+    let mut xs: Vec<(f32, i32)> = edges
+        .iter()
+        .filter(|e| y >= e.y_min && y < e.y_max)
+        .map(|e| (e.x_at(y), e.winding))
+        .collect();
+    if xs.is_empty() {
+        return Vec::new();
+    }
+    xs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut spans = Vec::new();
+    match fill_type {
+        FillType::Winding | FillType::InverseWinding => {
+            let mut winding = 0i32;
+            let mut span_start = 0.0f32;
+            for &(x, w) in &xs {
+                let was_inside = winding != 0;
+                winding += w;
+                let is_inside = winding != 0;
+                if !was_inside && is_inside {
+                    span_start = x;
+                } else if was_inside && !is_inside {
+                    spans.push((span_start, x));
+                }
+            }
+        }
+        FillType::EvenOdd | FillType::InverseEvenOdd => {
+            let mut inside = false;
+            let mut span_start = 0.0f32;
+            for &(x, _) in &xs {
+                inside = !inside;
+                if inside {
+                    span_start = x;
+                } else {
+                    spans.push((span_start, x));
+                }
+            }
+        }
+    }
+    spans
+}
+
 /// Rasterizer for drawing to a pixel buffer.
 pub struct Rasterizer<'a> {
     buffer: &'a mut PixelBuffer,
@@ -345,6 +422,88 @@ impl<'a> Rasterizer<'a> {
     /// Check if the current clip is anti-aliased.
     pub fn is_clip_anti_aliased(&self) -> bool {
         self.use_advanced_clip && self.clip_stack.is_anti_aliased()
+    }
+
+    /// Build the pixel source for `paint`: a premultiplied solid color, or
+    /// the paint's shader with the inverse CTM for local-space sampling.
+    fn make_source<'p>(&self, paint: &'p Paint) -> PixelSource<'p> {
+        if let Some(shader) = paint.shader() {
+            let inv = self.matrix.invert().unwrap_or(Matrix::IDENTITY);
+            let alpha = (paint.alpha().clamp(0.0, 1.0) * 255.0).round() as u8;
+            PixelSource::Shader {
+                shader: shader.as_ref(),
+                inv,
+                alpha,
+            }
+        } else {
+            PixelSource::Solid(premultiply_color(paint.color32()))
+        }
+    }
+
+    /// Integer pixel bounds of the current clip, clamped to the buffer:
+    /// `(x0, y0, x1, y1)` half-open.
+    fn clip_pixel_bounds(&self) -> (i32, i32, i32, i32) {
+        let clip = self.clip_bounds();
+        (
+            (clip.left.floor() as i32).max(0),
+            (clip.top.floor() as i32).max(0),
+            (clip.right.ceil() as i32).min(self.buffer.width),
+            (clip.bottom.ceil() as i32).min(self.buffer.height),
+        )
+    }
+
+    /// Blend one pixel with geometry `coverage` (0-255), combining it with
+    /// the clip coverage. The source is sampled per pixel (shader) or solid.
+    fn blit_pixel_cov(
+        &mut self,
+        x: i32,
+        y: i32,
+        coverage: u8,
+        source: &PixelSource<'_>,
+        blend_mode: BlendMode,
+    ) {
+        if coverage == 0 {
+            return;
+        }
+        let clip_cov = self.get_clip_coverage(x, y);
+        if clip_cov == 0 {
+            return;
+        }
+        let combined = if clip_cov == 255 {
+            coverage
+        } else {
+            mul_div_255_round(coverage as u32, clip_cov as u32)
+        };
+        let c = apply_coverage(source_color_at(source, x, y), combined);
+        self.buffer.blend_pixel(x, y, c, blend_mode);
+    }
+
+    /// Blend a full-coverage horizontal span `[x0, x1)` at row `y` through
+    /// the clip. Solid sources take the SIMD-accelerated hline path; shader
+    /// sources sample per pixel in local space.
+    fn blit_span(
+        &mut self,
+        x0: i32,
+        x1: i32,
+        y: i32,
+        source: &PixelSource<'_>,
+        blend_mode: BlendMode,
+    ) {
+        if x0 >= x1 {
+            return;
+        }
+        match source {
+            PixelSource::Solid(c) => self.draw_hline(x0, x1 - 1, y, *c, blend_mode),
+            PixelSource::Shader { .. } => {
+                let (cx0, cy0, cx1, cy1) = self.clip_pixel_bounds();
+                if y < cy0 || y >= cy1 {
+                    return;
+                }
+                for x in x0.max(cx0)..x1.min(cx1) {
+                    self.blit_pixel_cov(x, y, 255, source, blend_mode);
+                }
+            }
+        }
     }
 
     /// Reset the clip to device bounds.
@@ -587,8 +746,25 @@ impl<'a> Rasterizer<'a> {
         }
     }
 
+    /// Returns true when the CTM maps axis-aligned rects to axis-aligned
+    /// rects without rotation/skew (`map_rect` is then exact).
+    fn matrix_is_axis_aligned(&self) -> bool {
+        self.matrix.skew_x() == 0.0 && self.matrix.skew_y() == 0.0
+    }
+
     /// Draw a filled rectangle.
+    ///
+    /// Under a non-axis-aligned CTM the rect is converted to a path and
+    /// scan-converted as the mapped quad; only the axis-aligned case may use
+    /// `map_rect` (which would otherwise fill the quad's bounding box).
     pub fn fill_rect(&mut self, rect: &Rect, paint: &Paint) {
+        if !self.matrix_is_axis_aligned() || paint.is_anti_alias() {
+            let mut b = PathBuilder::new();
+            b.add_rect(rect);
+            self.fill_path(&b.build(), paint);
+            return;
+        }
+
         let transformed = self.matrix.map_rect(rect);
 
         let x0 = transformed.left.round() as i32;
@@ -597,31 +773,24 @@ impl<'a> Rasterizer<'a> {
         let y1 = transformed.bottom.round() as i32;
 
         let blend_mode = paint.blend_mode();
-
-        // Check if we have a shader
-        if let Some(shader) = paint.shader() {
-            // Shader-based fill - sample each pixel. `Shader::sample` returns a
-            // PREMULTIPLIED Color4f (Task 3 contract), which is exactly what the
-            // premultiplied pixel pipeline / `blend_pixel` expect.
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    // Sample shader at pixel center
-                    let color4f = shader.sample(x as Scalar + 0.5, y as Scalar + 0.5);
-                    let color = color4f.to_color();
-                    self.buffer.blend_pixel(x, y, color, blend_mode);
-                }
-            }
-        } else {
-            // Solid color fill (fast path)
-            let color = premultiply_color(paint.color32());
-            for y in y0..y1 {
-                self.draw_hline(x0, x1 - 1, y, color, blend_mode);
-            }
+        let source = self.make_source(paint);
+        for y in y0..y1 {
+            self.blit_span(x0, x1, y, &source, blend_mode);
         }
     }
 
-    /// Draw a stroked rectangle.
+    /// Draw a stroked rectangle, honoring the paint's stroke width.
+    ///
+    /// Width 0 is a hairline (single-pixel outline); positive widths build
+    /// the stroke outline via `skia-rs-path`'s `stroke_to_fill` and fill it.
     pub fn stroke_rect(&mut self, rect: &Rect, paint: &Paint) {
+        if paint.stroke_width() > 0.0 {
+            let mut b = PathBuilder::new();
+            b.add_rect(rect);
+            self.stroke_path(&b.build(), paint);
+            return;
+        }
+
         let tl = Point::new(rect.left, rect.top);
         let tr = Point::new(rect.right, rect.top);
         let bl = Point::new(rect.left, rect.bottom);
@@ -639,40 +808,42 @@ impl<'a> Rasterizer<'a> {
             Style::Fill => self.fill_rect(rect, paint),
             Style::Stroke => self.stroke_rect(rect, paint),
             Style::StrokeAndFill => {
-                self.fill_rect(rect, paint);
-                self.stroke_rect(rect, paint);
+                let mut b = PathBuilder::new();
+                b.add_rect(rect);
+                self.stroke_and_fill_path(&b.build(), paint);
             }
         }
     }
 
-    /// Draw a filled circle using midpoint circle algorithm.
+    /// Draw a filled circle with disjoint per-row spans.
+    ///
+    /// Each row is emitted exactly once (analytic half-width per scanline),
+    /// so translucent paints are blended exactly once per pixel — the old
+    /// midpoint-octant loop emitted overlapping rows.
+    ///
+    /// Assumes a translate + uniform-scale CTM; [`draw_circle`] routes any
+    /// other matrix through the path pipeline.
     pub fn fill_circle(&mut self, center: Point, radius: Scalar, paint: &Paint) {
         let tc = self.matrix.map_point(center);
-        let cx = tc.x.round() as i32;
-        let cy = tc.y.round() as i32;
-        let r = (radius * self.matrix.scale_x().abs()).round() as i32;
+        let r = radius * self.matrix.scale_x().abs();
+        if r <= 0.0 {
+            return;
+        }
 
-        let color = premultiply_color(paint.color32());
+        let source = self.make_source(paint);
         let blend_mode = paint.blend_mode();
 
-        let mut x = 0;
-        let mut y = r;
-        let mut d = 1 - r;
-
-        while x <= y {
-            // Draw horizontal lines for each octant
-            self.draw_hline(cx - x, cx + x, cy + y, color, blend_mode);
-            self.draw_hline(cx - x, cx + x, cy - y, color, blend_mode);
-            self.draw_hline(cx - y, cx + y, cy + x, color, blend_mode);
-            self.draw_hline(cx - y, cx + y, cy - x, color, blend_mode);
-
-            x += 1;
-            if d < 0 {
-                d += 2 * x + 1;
-            } else {
-                y -= 1;
-                d += 2 * (x - y) + 1;
+        let y0 = (tc.y - r).floor() as i32;
+        let y1 = (tc.y + r).ceil() as i32;
+        for y in y0..y1 {
+            let dy = y as f32 + 0.5 - tc.y;
+            if dy.abs() > r {
+                continue;
             }
+            let half = (r * r - dy * dy).sqrt();
+            let x0 = (tc.x - half).round() as i32;
+            let x1 = (tc.x + half).round() as i32;
+            self.blit_span(x0, x1, y, &source, blend_mode);
         }
     }
 
@@ -712,17 +883,35 @@ impl<'a> Rasterizer<'a> {
     }
 
     /// Draw a circle (filled or stroked based on paint style).
+    ///
+    /// The analytic circle fast paths are only valid for a translate +
+    /// uniform-scale CTM. Any other matrix (rotation, skew, non-uniform
+    /// scale) converts the circle to a conic path and maps it through the
+    /// full CTM via the path pipeline (an ellipse under non-uniform scale).
     pub fn draw_circle(&mut self, center: Point, radius: Scalar, paint: &Paint) {
+        let m = &self.matrix;
+        let uniform = m.skew_x() == 0.0
+            && m.skew_y() == 0.0
+            && (m.scale_x().abs() - m.scale_y().abs()).abs() <= 1e-6;
+        let needs_path = !uniform
+            || (paint.style() != Style::Fill && paint.stroke_width() > 0.0)
+            || paint.style() == Style::StrokeAndFill;
+        if needs_path {
+            let mut b = PathBuilder::new();
+            b.add_circle(center.x, center.y, radius);
+            self.draw_path(&b.build(), paint);
+            return;
+        }
+
         if paint.is_anti_alias() {
             self.draw_circle_aa(center, radius, paint);
         } else {
             match paint.style() {
                 Style::Fill => self.fill_circle(center, radius, paint),
+                // Hairline stroke (width 0).
                 Style::Stroke => self.stroke_circle(center, radius, paint),
-                Style::StrokeAndFill => {
-                    self.fill_circle(center, radius, paint);
-                    self.stroke_circle(center, radius, paint);
-                }
+                // StrokeAndFill is routed through the path pipeline above.
+                Style::StrokeAndFill => unreachable!(),
             }
         }
     }
@@ -820,7 +1009,7 @@ impl<'a> Rasterizer<'a> {
         }
     }
 
-    /// Draw an oval (approximated with ellipse).
+    /// Draw an oval (conic-based geometry via the path crate).
     pub fn draw_oval(&mut self, rect: &Rect, paint: &Paint) {
         let center = Point::new(
             (rect.left + rect.right) / 2.0,
@@ -833,9 +1022,10 @@ impl<'a> Rasterizer<'a> {
             // Close to circle, use circle drawing
             self.draw_circle(center, rx, paint);
         } else {
-            // Draw as path with bezier approximation
-            let path = ellipse_to_path(center, rx, ry);
-            self.draw_path(&path, paint);
+            // Conic-based oval geometry (Task 2's conic-aware add_oval).
+            let mut b = PathBuilder::new();
+            b.add_oval(rect);
+            self.draw_path(&b.build(), paint);
         }
     }
 
@@ -844,15 +1034,50 @@ impl<'a> Rasterizer<'a> {
         match paint.style() {
             Style::Fill => self.fill_path(path, paint),
             Style::Stroke => self.stroke_path(path, paint),
-            Style::StrokeAndFill => {
+            Style::StrokeAndFill => self.stroke_and_fill_path(path, paint),
+        }
+    }
+
+    /// Stroke a path, honoring the paint's stroke width.
+    ///
+    /// Positive widths build the stroke outline in local space via
+    /// `skia-rs-path`'s `stroke_to_fill` (Task 2) and fill it through the
+    /// normal (matrix-aware, clipped, AA-aware) fill pipeline. Width 0
+    /// remains a hairline.
+    fn stroke_path(&mut self, path: &Path, paint: &Paint) {
+        if paint.stroke_width() > 0.0 {
+            if let Some(outline) = stroke_outline(path, paint) {
+                self.fill_path(&outline, paint);
+            }
+            return;
+        }
+        self.stroke_path_hairline(path, paint);
+    }
+
+    /// StrokeAndFill: fill the union of the fill geometry and the stroke
+    /// outline exactly once, so translucent paints don't double-blend the
+    /// overlap (`SkStrokeRec::kStrokeAndFill_Style`).
+    fn stroke_and_fill_path(&mut self, path: &Path, paint: &Paint) {
+        if paint.stroke_width() <= 0.0 {
+            // Hairline StrokeAndFill degenerates to a plain fill.
+            self.fill_path(path, paint);
+            return;
+        }
+        let combined = stroke_outline(path, paint)
+            .and_then(|outline| skia_rs_path::op(path, &outline, skia_rs_path::PathOp::Union));
+        match combined {
+            Some(c) => self.fill_path(&c, paint),
+            // Union unavailable (open/degenerate contours): fill then stroke.
+            None => {
                 self.fill_path(path, paint);
                 self.stroke_path(path, paint);
             }
         }
     }
 
-    /// Stroke a path.
-    fn stroke_path(&mut self, path: &Path, paint: &Paint) {
+    /// Stroke a path as a hairline (width 0) by walking its flattened
+    /// segments with the line rasterizer.
+    fn stroke_path_hairline(&mut self, path: &Path, paint: &Paint) {
         let mut current = Point::zero();
         let mut contour_start = Point::zero();
 
@@ -955,156 +1180,187 @@ impl<'a> Rasterizer<'a> {
         }
     }
 
-    /// Fill a path using the optimized Active Edge Table algorithm.
-    ///
-    /// This implementation uses:
-    /// - Global Edge Table (GET) for efficient edge activation
-    /// - Active Edge Table (AET) for tracking current edges
-    /// - Full winding number calculation for non-zero fill rule
-    /// - Even-odd fill rule support
-    /// - Incremental x-intercept updates between scanlines
+    /// Fill a path, routing anti-aliased paints through [`fill_path_aa`]
+    /// (`paint.isAntiAlias()` selects the AA blitter in `SkDraw::drawPath`).
     fn fill_path(&mut self, path: &Path, paint: &Paint) {
-        let fill_type = path.fill_type();
-        let color = premultiply_color(paint.color32());
-        let blend_mode = paint.blend_mode();
-
-        // Collect edges from path
-        let edges = collect_edges(path, &self.matrix);
-        if edges.is_empty() {
-            return;
-        }
-
-        // Create Global Edge Table (edges sorted by y_min)
-        let mut get = GlobalEdgeTable::new(edges);
-
-        // Get scanline range
-        let Some(y_start) = get.y_min() else {
-            return;
-        };
-        let y_end = get.y_max();
-
-        let y_min = y_start.floor() as i32;
-        let y_max = y_end.ceil() as i32;
-
-        // Create Active Edge Table
-        let mut aet = ActiveEdgeTable::new();
-
-        // Process each scanline
-        for y in y_min..y_max {
-            let scanline = y as f32 + 0.5;
-
-            // Add new edges that become active at this scanline
-            aet.add_edges(get.get_new_edges_at(scanline), scanline);
-
-            // Remove edges that are no longer active
-            aet.remove_inactive(scanline);
-
-            // Skip if no active edges
-            if aet.is_empty() {
-                continue;
-            }
-
-            // Sort active edges by x-intercept (insertion sort - efficient for nearly-sorted)
-            aet.sort_by_x();
-
-            // Get spans to fill based on fill rule
-            let spans = aet.get_spans(fill_type);
-
-            // Fill spans
-            for (x0, x1) in spans {
-                let x_start = x0.round() as i32;
-                let x_end = x1.round() as i32;
-                if x_start < x_end {
-                    self.draw_hline(x_start, x_end - 1, y, color, blend_mode);
-                }
-            }
-
-            // Update x-intercepts for next scanline
-            aet.step_all();
+        if paint.is_anti_alias() {
+            self.fill_path_aa(path, paint);
+        } else {
+            self.fill_path_bw(path, paint);
         }
     }
 
-    /// Fill a path using anti-aliased rendering.
+    /// Fill a path without anti-aliasing.
     ///
-    /// Uses supersampling for improved edge quality.
-    pub fn fill_path_aa(&mut self, path: &Path, paint: &Paint) {
+    /// Scanline algorithm sampling pixel centers; supports all four fill
+    /// types (the inverse types fill the complement of the path within the
+    /// clip), shaders (sampled in local space), and the full clip stack.
+    fn fill_path_bw(&mut self, path: &Path, paint: &Paint) {
         let fill_type = path.fill_type();
-        let color = premultiply_color(paint.color32());
+        let inverse = matches!(
+            fill_type,
+            FillType::InverseWinding | FillType::InverseEvenOdd
+        );
+        let source = self.make_source(paint);
         let blend_mode = paint.blend_mode();
 
-        // Collect edges from path
         let edges = collect_edges(path, &self.matrix);
-        if edges.is_empty() {
+        if edges.is_empty() && !inverse {
             return;
         }
 
-        // Create Global Edge Table for initial scanline range
-        let get = GlobalEdgeTable::new(edges);
+        let (clip_x0, clip_y0, clip_x1, clip_y1) = self.clip_pixel_bounds();
 
-        let Some(y_start) = get.y_min() else {
-            return;
+        // Row range: inverse fills cover the whole clip; regular fills only
+        // the path's vertical extent (clamped to the clip).
+        let (y_min, y_max) = if inverse {
+            (clip_y0, clip_y1)
+        } else {
+            let ymin = edges.iter().map(|e| e.y_min).fold(f32::INFINITY, f32::min);
+            let ymax = edges
+                .iter()
+                .map(|e| e.y_max)
+                .fold(f32::NEG_INFINITY, f32::max);
+            (
+                (ymin.floor() as i32).max(clip_y0),
+                (ymax.ceil() as i32).min(clip_y1),
+            )
         };
-        let y_end = get.y_max();
 
-        let y_min = y_start.floor() as i32;
-        let y_max = y_end.ceil() as i32;
-
-        // 4x vertical supersampling
-        const SAMPLES: usize = 4;
-        let sample_offsets = [0.125f32, 0.375, 0.625, 0.875];
-
-        // Process each pixel row
         for y in y_min..y_max {
-            // Accumulate coverage for each pixel
-            let mut coverage_map: std::collections::HashMap<i32, f32> =
-                std::collections::HashMap::new();
+            let scanline = y as f32 + 0.5;
+            let spans = spans_at_scanline(&edges, scanline, fill_type);
+            let mut int_spans: Vec<(i32, i32)> = spans
+                .iter()
+                .map(|&(a, b)| (a.round() as i32, b.round() as i32))
+                .filter(|&(a, b)| a < b)
+                .collect();
 
-            // Sample at multiple y positions within the pixel
-            for &offset in &sample_offsets {
-                let scanline = y as f32 + offset;
-
-                // Re-create AET for each sample (simpler than tracking multiple)
-                let mut sample_aet = ActiveEdgeTable::new();
-                let edges = collect_edges(path, &self.matrix);
-                let mut sample_get = GlobalEdgeTable::new(edges);
-
-                sample_aet.add_edges(sample_get.get_new_edges_at(scanline), scanline);
-
-                if sample_aet.is_empty() {
-                    continue;
+            if inverse {
+                // Complement of the spans within the clip's x range.
+                let mut comp = Vec::new();
+                let mut cursor = clip_x0;
+                for &(a, b) in &int_spans {
+                    let a = a.clamp(clip_x0, clip_x1);
+                    let b = b.clamp(clip_x0, clip_x1);
+                    if a > cursor {
+                        comp.push((cursor, a));
+                    }
+                    cursor = cursor.max(b);
                 }
+                if cursor < clip_x1 {
+                    comp.push((cursor, clip_x1));
+                }
+                int_spans = comp;
+            }
 
-                sample_aet.sort_by_x();
-                let spans = sample_aet.get_spans(fill_type);
+            for (x0, x1) in int_spans {
+                self.blit_span(x0, x1, y, &source, blend_mode);
+            }
+        }
+    }
 
-                // Accumulate coverage
-                for (x0, x1) in spans {
-                    let x_start = x0.floor() as i32;
-                    let x_end = x1.ceil() as i32;
+    /// Fill a path with anti-aliasing (4x vertical supersampling with
+    /// analytic horizontal coverage).
+    ///
+    /// Edges past their `y_max` contribute nothing (spans are recomputed per
+    /// sample scanline), the clip is applied per pixel, shaders sample in
+    /// local space, and inverse fill types fill the complement within the
+    /// clip.
+    pub fn fill_path_aa(&mut self, path: &Path, paint: &Paint) {
+        let fill_type = path.fill_type();
+        let inverse = matches!(
+            fill_type,
+            FillType::InverseWinding | FillType::InverseEvenOdd
+        );
+        let source = self.make_source(paint);
+        let blend_mode = paint.blend_mode();
 
-                    for x in x_start..x_end {
-                        // Calculate pixel coverage for this sample
-                        let pixel_left = x as f32;
-                        let pixel_right = (x + 1) as f32;
+        let edges = collect_edges(path, &self.matrix);
+        if edges.is_empty() && !inverse {
+            return;
+        }
 
-                        let overlap_left = pixel_left.max(x0);
-                        let overlap_right = pixel_right.min(x1);
-                        let overlap = (overlap_right - overlap_left).max(0.0);
+        let (clip_x0, clip_y0, clip_x1, clip_y1) = self.clip_pixel_bounds();
+        if clip_x0 >= clip_x1 || clip_y0 >= clip_y1 {
+            return;
+        }
 
-                        *coverage_map.entry(x).or_insert(0.0) += overlap / SAMPLES as f32;
+        let (y_min, y_max) = if inverse {
+            (clip_y0, clip_y1)
+        } else {
+            let ymin = edges.iter().map(|e| e.y_min).fold(f32::INFINITY, f32::min);
+            let ymax = edges
+                .iter()
+                .map(|e| e.y_max)
+                .fold(f32::NEG_INFINITY, f32::max);
+            (
+                (ymin.floor() as i32).max(clip_y0),
+                (ymax.ceil() as i32).min(clip_y1),
+            )
+        };
+
+        const SAMPLE_OFFSETS: [f32; 4] = [0.125, 0.375, 0.625, 0.875];
+        let row_width = (clip_x1 - clip_x0) as usize;
+        let mut coverage = vec![0.0f32; row_width];
+
+        for y in y_min..y_max {
+            coverage.fill(0.0);
+
+            for &offset in &SAMPLE_OFFSETS {
+                let scanline = y as f32 + offset;
+                for (x0, x1) in spans_at_scanline(&edges, scanline, fill_type) {
+                    let x0 = x0.max(clip_x0 as f32);
+                    let x1 = x1.min(clip_x1 as f32);
+                    if x0 >= x1 {
+                        continue;
+                    }
+                    let px_start = (x0.floor() as i32).max(clip_x0);
+                    let px_end = (x1.ceil() as i32).min(clip_x1);
+                    for x in px_start..px_end {
+                        let l = (x as f32).max(x0);
+                        let r = ((x + 1) as f32).min(x1);
+                        coverage[(x - clip_x0) as usize] += (r - l).max(0.0) * 0.25;
                     }
                 }
             }
 
-            // Render pixels with accumulated coverage
-            for (x, coverage) in coverage_map {
-                if coverage > 0.0 {
-                    self.buffer
-                        .blend_pixel_aa(x, y, color, coverage.min(1.0), blend_mode);
+            for (i, &cov) in coverage.iter().enumerate() {
+                let mut cov = cov.min(1.0);
+                if inverse {
+                    cov = 1.0 - cov;
+                }
+                if cov > 0.0 {
+                    let x = clip_x0 + i as i32;
+                    let cov8 = (cov * 255.0).round().clamp(0.0, 255.0) as u8;
+                    self.blit_pixel_cov(x, y, cov8, &source, blend_mode);
                 }
             }
         }
     }
+}
+
+/// Build the stroke outline for `path` from the paint's stroke parameters
+/// (width, cap, join, miter limit), delegating to `skia-rs-path`'s
+/// `stroke_to_fill`.
+fn stroke_outline(path: &Path, paint: &Paint) -> Option<Path> {
+    use skia_rs_path::{StrokeCap, StrokeJoin, StrokeParams};
+
+    let cap = match paint.stroke_cap() {
+        skia_rs_paint::StrokeCap::Butt => StrokeCap::Butt,
+        skia_rs_paint::StrokeCap::Round => StrokeCap::Round,
+        skia_rs_paint::StrokeCap::Square => StrokeCap::Square,
+    };
+    let join = match paint.stroke_join() {
+        skia_rs_paint::StrokeJoin::Miter => StrokeJoin::Miter,
+        skia_rs_paint::StrokeJoin::Round => StrokeJoin::Round,
+        skia_rs_paint::StrokeJoin::Bevel => StrokeJoin::Bevel,
+    };
+    let params = StrokeParams::new(paint.stroke_width())
+        .with_cap(cap)
+        .with_join(join)
+        .with_miter_limit(paint.stroke_miter());
+    skia_rs_path::stroke_to_fill(path, &params)
 }
 
 /// Scan-convert a device-space `path` into a [`Region`], clipped to
@@ -1509,63 +1765,6 @@ fn collect_edges(path: &Path, matrix: &Matrix) -> Vec<Edge> {
     edges
 }
 
-/// Create an ellipse path using cubic bezier approximation.
-fn ellipse_to_path(center: Point, rx: Scalar, ry: Scalar) -> Path {
-    use skia_rs_path::PathBuilder;
-
-    // Magic number for cubic approximation of quarter circle
-    const KAPPA: Scalar = 0.5522847498;
-
-    let kx = rx * KAPPA;
-    let ky = ry * KAPPA;
-
-    let mut builder = PathBuilder::new();
-    builder.move_to(center.x + rx, center.y);
-
-    // Top right quadrant
-    builder.cubic_to(
-        center.x + rx,
-        center.y - ky,
-        center.x + kx,
-        center.y - ry,
-        center.x,
-        center.y - ry,
-    );
-
-    // Top left quadrant
-    builder.cubic_to(
-        center.x - kx,
-        center.y - ry,
-        center.x - rx,
-        center.y - ky,
-        center.x - rx,
-        center.y,
-    );
-
-    // Bottom left quadrant
-    builder.cubic_to(
-        center.x - rx,
-        center.y + ky,
-        center.x - kx,
-        center.y + ry,
-        center.x,
-        center.y + ry,
-    );
-
-    // Bottom right quadrant
-    builder.cubic_to(
-        center.x + kx,
-        center.y + ry,
-        center.x + rx,
-        center.y + ky,
-        center.x + rx,
-        center.y,
-    );
-
-    builder.close();
-    builder.build()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1863,6 +2062,261 @@ mod tests {
         // With even-odd rule, center of star might not be filled
         // With non-zero (default), it should be filled
         assert_eq!(pixel.green(), 255, "Star center should be filled");
+    }
+
+    // ============ Conformance-audit regression tests (Task 4) ============
+
+    #[test]
+    fn test_fill_rect_rotated_ctm_scan_converts_quad() {
+        // Under a rotated CTM, fill_rect must fill the mapped QUAD, not the
+        // axis-aligned bounding box of the quad.
+        let mut buffer = PixelBuffer::new(100, 100);
+        let mut r = Rasterizer::new(&mut buffer);
+        // Rotate 45 degrees about (50, 50).
+        let rot = Matrix::translate(50.0, 50.0)
+            .concat(&Matrix::rotate(std::f32::consts::FRAC_PI_4))
+            .concat(&Matrix::translate(-50.0, -50.0));
+        r.set_matrix(&rot);
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_argb(255, 255, 0, 0));
+        r.fill_rect(&Rect::from_xywh(20.0, 20.0, 60.0, 60.0), &paint);
+
+        // Center is inside the rotated quad.
+        assert_eq!(buffer.get_pixel(50, 50).unwrap().red(), 255);
+        // The AABB corner (25, 25) is OUTSIDE the rotated quad (the quad is a
+        // diamond centered at 50,50 with vertices ~(50, 7.5)...).
+        assert_eq!(
+            buffer.get_pixel(25, 25).unwrap().alpha(),
+            0,
+            "AABB corner outside the rotated quad must not be filled"
+        );
+        // A diamond vertex region is inside.
+        assert_eq!(buffer.get_pixel(50, 15).unwrap().red(), 255);
+    }
+
+    #[test]
+    fn test_stroke_rect_honors_stroke_width() {
+        // Stroke width 10 centered on the rect edge: a band [15, 25] around
+        // the x=20 edge must be filled; the rect center must not be.
+        let mut buffer = PixelBuffer::new(100, 100);
+        let mut r = Rasterizer::new(&mut buffer);
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_argb(255, 0, 0, 255));
+        paint.set_style(Style::Stroke);
+        paint.set_stroke_width(10.0);
+        r.draw_rect(&Rect::from_xywh(20.0, 20.0, 60.0, 60.0), &paint);
+
+        // 3px inside the stroke band on the left edge.
+        assert_eq!(buffer.get_pixel(17, 50).unwrap().blue(), 255);
+        assert_eq!(buffer.get_pixel(23, 50).unwrap().blue(), 255);
+        // Center: untouched.
+        assert_eq!(buffer.get_pixel(50, 50).unwrap().alpha(), 0);
+        // Far outside: untouched.
+        assert_eq!(buffer.get_pixel(5, 50).unwrap().alpha(), 0);
+    }
+
+    #[test]
+    fn test_fill_path_honors_shader_in_local_space_with_clip() {
+        use skia_rs_paint::shader::{TileMode, shaders};
+        use skia_rs_path::PathBuilder;
+
+        // Horizontal gradient black -> white over local x in [0, 10].
+        // CTM translates by (50, 0): device x=50 is local x=0 (black end),
+        // device x=59 is local x=9 (near-white). Sampling in DEVICE space
+        // would read far off the gradient end instead.
+        let shader = shaders::linear_gradient(
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            vec![
+                skia_rs_core::Color4f::new(0.0, 0.0, 0.0, 1.0),
+                skia_rs_core::Color4f::new(1.0, 1.0, 1.0, 1.0),
+            ],
+            None,
+            TileMode::Clamp,
+        );
+
+        let mut buffer = PixelBuffer::new(100, 100);
+        let mut r = Rasterizer::new(&mut buffer);
+        r.set_matrix(&Matrix::translate(50.0, 0.0));
+        // Clip: only y in [0, 5).
+        r.clip_rect_aa(&Rect::from_xywh(0.0, 0.0, 100.0, 5.0), false);
+
+        let mut paint = Paint::new();
+        paint.set_shader(Some(shader));
+        let mut b = PathBuilder::new();
+        b.add_rect(&Rect::from_xywh(0.0, 0.0, 10.0, 10.0));
+        let path = b.build();
+        r.draw_path(&path, &paint);
+
+        // Local x=0.5 at device x=50 -> near-black.
+        let dark = buffer.get_pixel(50, 2).unwrap();
+        assert!(dark.red() < 40, "local-space start should be dark: {:?}", dark);
+        // Local x=9.5 at device x=59 -> near-white.
+        let bright = buffer.get_pixel(59, 2).unwrap();
+        assert!(
+            bright.red() > 215,
+            "local-space end should be bright: {:?}",
+            bright
+        );
+        // The clip must be respected by the shader fill.
+        assert_eq!(
+            buffer.get_pixel(55, 8).unwrap().alpha(),
+            0,
+            "shader fill must respect the clip"
+        );
+    }
+
+    #[test]
+    fn test_fill_path_aa_routed_and_respects_clip_and_y_max() {
+        use skia_rs_path::PathBuilder;
+
+        // An AA paint must produce partial-coverage edge pixels, must not
+        // paint below the path's bottom (edges past y_max), and must respect
+        // the clip.
+        let mut buffer = PixelBuffer::new(60, 60);
+        let mut r = Rasterizer::new(&mut buffer);
+        r.clip_rect_aa(&Rect::from_xywh(0.0, 0.0, 60.0, 40.0), false);
+
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_argb(255, 255, 0, 0));
+        paint.set_anti_alias(true);
+        // Triangle with a diagonal edge.
+        let mut b = PathBuilder::new();
+        b.move_to(10.0, 10.0).line_to(50.0, 10.0).line_to(10.0, 50.0).close();
+        let path = b.build();
+        r.draw_path(&path, &paint);
+
+        // Interior: fully covered.
+        assert_eq!(buffer.get_pixel(15, 15).unwrap().red(), 255);
+        // Diagonal edge pixel: partial coverage (alpha strictly between).
+        let edge = buffer.get_pixel(30, 29).unwrap();
+        assert!(
+            edge.alpha() > 0 && edge.alpha() < 255,
+            "diagonal edge should be anti-aliased, got alpha {}",
+            edge.alpha()
+        );
+        // Below the clip (y >= 40): nothing, even though the path reaches y=50.
+        for y in 41..50 {
+            assert_eq!(
+                buffer.get_pixel(11, y).unwrap().alpha(),
+                0,
+                "AA fill must respect the clip at y={}",
+                y
+            );
+        }
+        // Beyond the path bottom (y >= 50): nothing (no stale edges).
+        assert_eq!(buffer.get_pixel(11, 52).unwrap().alpha(), 0);
+    }
+
+    #[test]
+    fn test_inverse_fill_types_fill_complement_within_clip() {
+        use skia_rs_path::PathBuilder;
+
+        let mut buffer = PixelBuffer::new(40, 40);
+        let mut r = Rasterizer::new(&mut buffer);
+        r.clip_rect_aa(&Rect::from_xywh(0.0, 0.0, 30.0, 30.0), false);
+
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_argb(255, 0, 255, 0));
+        let mut b = PathBuilder::new();
+        b.add_rect(&Rect::from_xywh(10.0, 10.0, 10.0, 10.0));
+        let mut path = b.build();
+        path.set_fill_type(FillType::InverseWinding);
+        r.draw_path(&path, &paint);
+
+        // Inside the rect: NOT filled (complement).
+        assert_eq!(buffer.get_pixel(15, 15).unwrap().alpha(), 0);
+        // Outside the rect but inside the clip: filled.
+        assert_eq!(buffer.get_pixel(5, 5).unwrap().green(), 255);
+        assert_eq!(buffer.get_pixel(25, 25).unwrap().green(), 255);
+        // Outside the clip: not filled.
+        assert_eq!(buffer.get_pixel(35, 35).unwrap().alpha(), 0);
+    }
+
+    #[test]
+    fn test_fill_circle_translucent_no_double_blend() {
+        // Every pixel covered by a translucent circle fill must be blended
+        // exactly once: uniform value across the interior.
+        let mut buffer = PixelBuffer::new(60, 60);
+        let mut r = Rasterizer::new(&mut buffer);
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_argb(128, 255, 0, 0));
+        r.fill_circle(Point::new(30.0, 30.0), 20.0, &paint);
+
+        // Premul 50% red over transparent = (128, 0, 0, 128) everywhere inside.
+        let center = buffer.get_pixel(30, 30).unwrap();
+        assert_eq!(center.alpha(), 128);
+        assert_eq!(center.red(), 128);
+        // Sample many interior pixels: all identical (no double-blended rows).
+        for y in 15..45 {
+            for x in 15..45 {
+                let dx = x as f32 - 30.0;
+                let dy = y as f32 - 30.0;
+                if (dx * dx + dy * dy).sqrt() < 18.0 {
+                    let p = buffer.get_pixel(x, y).unwrap();
+                    assert_eq!(
+                        (p.red(), p.alpha()),
+                        (128, 128),
+                        "double-blended pixel at ({}, {})",
+                        x,
+                        y
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_circle_under_nonuniform_scale_becomes_ellipse() {
+        // scale(1, 2): a circle of radius 10 at (30, 15) maps to an ellipse
+        // with vertical semi-axis 20 centered at (30, 30).
+        let mut buffer = PixelBuffer::new(60, 60);
+        let mut r = Rasterizer::new(&mut buffer);
+        r.set_matrix(&Matrix::scale(1.0, 2.0));
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_argb(255, 255, 0, 0));
+        r.draw_circle(Point::new(30.0, 15.0), 10.0, &paint);
+
+        // Vertical extremes of the ellipse (y = 30 +/- ~19) are covered.
+        assert_eq!(buffer.get_pixel(30, 12).unwrap().red(), 255);
+        assert_eq!(buffer.get_pixel(30, 48).unwrap().red(), 255);
+        // A circle of radius 10 (or 20) would NOT cover (39, 30)+(30,12)
+        // simultaneously; check horizontal extent stays ~10.
+        assert_eq!(buffer.get_pixel(38, 30).unwrap().red(), 255);
+        assert_eq!(
+            buffer.get_pixel(45, 30).unwrap().alpha(),
+            0,
+            "horizontal semi-axis must stay ~10"
+        );
+    }
+
+    #[test]
+    fn test_stroke_and_fill_translucent_no_double_blend() {
+        // StrokeAndFill must not double-blend the region where fill and
+        // stroke overlap: one uniform value across fill+stroke geometry.
+        let mut buffer = PixelBuffer::new(60, 60);
+        let mut r = Rasterizer::new(&mut buffer);
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_argb(128, 0, 0, 255));
+        paint.set_style(Style::StrokeAndFill);
+        paint.set_stroke_width(6.0);
+        r.draw_rect(&Rect::from_xywh(20.0, 20.0, 20.0, 20.0), &paint);
+
+        // Points: rect interior, on the rect edge (overlap zone), and inside
+        // the outset band. All must be single-blended: (0,0,128,128) premul.
+        for &(x, y) in &[(30, 30), (20, 30), (18, 30), (30, 20), (30, 42)] {
+            let p = buffer.get_pixel(x, y).unwrap();
+            assert_eq!(
+                (p.blue(), p.alpha()),
+                (128, 128),
+                "double blend at ({}, {}): {:?}",
+                x,
+                y,
+                p
+            );
+        }
+        // Outside the outset band: untouched.
+        assert_eq!(buffer.get_pixel(10, 30).unwrap().alpha(), 0);
     }
 
     #[test]
