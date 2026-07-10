@@ -3,8 +3,12 @@
 //! This module provides utility functions for path manipulation,
 //! including stroke-to-fill conversion.
 
+use crate::flatten::{flatten_conic_adaptive, flatten_cubic_adaptive, flatten_quad_adaptive};
 use crate::{Path, PathBuilder, PathElement};
 use skia_rs_core::{Point, Scalar};
+
+/// Tolerance for flattening curves to polylines before stroking.
+const STROKE_FLATTEN_TOLERANCE: Scalar = 0.25;
 
 /// Stroke cap style for stroke-to-fill conversion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -121,29 +125,42 @@ pub fn stroke_to_fill(path: &Path, params: &StrokeParams) -> Option<Path> {
                 current_contour.push(p);
             }
             PathElement::Quad(ctrl, end) => {
-                // Flatten quadratic to lines
+                // Flatten quadratic to lines with error-driven subdivision.
                 if let Some(&start) = current_contour.last() {
-                    flatten_quad(&mut current_contour, start, ctrl, end, 4);
+                    flatten_quad_adaptive(
+                        &mut current_contour,
+                        start,
+                        ctrl,
+                        end,
+                        STROKE_FLATTEN_TOLERANCE,
+                    );
                 }
             }
             PathElement::Cubic(ctrl1, ctrl2, end) => {
-                // Flatten cubic to lines
+                // Flatten cubic to lines with error-driven subdivision.
                 if let Some(&start) = current_contour.last() {
-                    flatten_cubic(&mut current_contour, start, ctrl1, ctrl2, end, 8);
+                    flatten_cubic_adaptive(
+                        &mut current_contour,
+                        start,
+                        ctrl1,
+                        ctrl2,
+                        end,
+                        STROKE_FLATTEN_TOLERANCE,
+                    );
                 }
             }
             PathElement::Conic(ctrl, end, weight) => {
-                // Flatten conic to lines (approximate as quad)
+                // Flatten conic via its exact rational form (not a broken
+                // single-quad approximation), with error-driven subdivision.
                 if let Some(&start) = current_contour.last() {
-                    let mid_ctrl = Point::new(
-                        start.x * (1.0 - weight) / 2.0
-                            + ctrl.x * weight
-                            + end.x * (1.0 - weight) / 2.0,
-                        start.y * (1.0 - weight) / 2.0
-                            + ctrl.y * weight
-                            + end.y * (1.0 - weight) / 2.0,
+                    flatten_conic_adaptive(
+                        &mut current_contour,
+                        start,
+                        ctrl,
+                        end,
+                        weight,
+                        STROKE_FLATTEN_TOLERANCE,
                     );
-                    flatten_quad(&mut current_contour, start, mid_ctrl, end, 4);
                 }
             }
             PathElement::Close => {
@@ -158,14 +175,120 @@ pub fn stroke_to_fill(path: &Path, params: &StrokeParams) -> Option<Path> {
 
     // Process each contour using its own closed state
     for (contour, is_closed) in &contours {
-        if contour.len() < 2 {
-            continue;
-        }
-
         stroke_contour(&mut builder, contour, *is_closed, half_width, params);
     }
 
     Some(builder.build())
+}
+
+/// Unit normal (left of travel direction) of the segment `a -> b`.
+#[inline]
+fn seg_normal(a: Point, b: Point) -> Point {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len > 0.0 {
+        Point::new(-dy / len, dx / len)
+    } else {
+        Point::new(0.0, 1.0)
+    }
+}
+
+/// Append the offset points for the join at `vertex` between incoming normal
+/// `n1` and outgoing normal `n2` to the `left` (+normal) and `right` (-normal)
+/// offset rings.
+fn add_join(
+    left: &mut Vec<Point>,
+    right: &mut Vec<Point>,
+    vertex: Point,
+    n1: Point,
+    n2: Point,
+    half_width: Scalar,
+    params: &StrokeParams,
+) {
+    let avg = Point::new(n1.x + n2.x, n1.y + n2.y);
+    let avg_len = avg.length();
+
+    if avg_len <= 0.001 {
+        // Nearly opposite normals (180-degree turn): use the incoming normal.
+        left.push(Point::new(vertex.x + n1.x * half_width, vertex.y + n1.y * half_width));
+        right.push(Point::new(vertex.x - n1.x * half_width, vertex.y - n1.y * half_width));
+        return;
+    }
+
+    let scale = half_width / avg_len;
+    let offset = Point::new(avg.x * scale, avg.y * scale);
+
+    match params.join {
+        StrokeJoin::Miter => {
+            let miter_len = 1.0 / (avg_len / 2.0);
+            if miter_len <= params.miter_limit {
+                left.push(Point::new(
+                    vertex.x + offset.x * miter_len,
+                    vertex.y + offset.y * miter_len,
+                ));
+                right.push(Point::new(
+                    vertex.x - offset.x * miter_len,
+                    vertex.y - offset.y * miter_len,
+                ));
+            } else {
+                // Fall back to bevel.
+                left.push(Point::new(vertex.x + n1.x * half_width, vertex.y + n1.y * half_width));
+                left.push(Point::new(vertex.x + n2.x * half_width, vertex.y + n2.y * half_width));
+                right.push(Point::new(vertex.x - n1.x * half_width, vertex.y - n1.y * half_width));
+                right.push(Point::new(vertex.x - n2.x * half_width, vertex.y - n2.y * half_width));
+            }
+        }
+        StrokeJoin::Bevel => {
+            left.push(Point::new(vertex.x + n1.x * half_width, vertex.y + n1.y * half_width));
+            left.push(Point::new(vertex.x + n2.x * half_width, vertex.y + n2.y * half_width));
+            right.push(Point::new(vertex.x - n1.x * half_width, vertex.y - n1.y * half_width));
+            right.push(Point::new(vertex.x - n2.x * half_width, vertex.y - n2.y * half_width));
+        }
+        StrokeJoin::Round => {
+            let start_angle = (n1.y * half_width).atan2(n1.x * half_width);
+            let end_angle = (n2.y * half_width).atan2(n2.x * half_width);
+            let mut delta = end_angle - start_angle;
+            if delta > std::f32::consts::PI {
+                delta -= std::f32::consts::TAU;
+            } else if delta < -std::f32::consts::PI {
+                delta += std::f32::consts::TAU;
+            }
+            let n_segs = ((delta.abs() / std::f32::consts::FRAC_PI_4).ceil() as usize).max(4);
+            for k in 0..=n_segs {
+                let t = k as Scalar / n_segs as Scalar;
+                let a = start_angle + delta * t;
+                left.push(Point::new(
+                    vertex.x + a.cos() * half_width,
+                    vertex.y + a.sin() * half_width,
+                ));
+                right.push(Point::new(
+                    vertex.x - a.cos() * half_width,
+                    vertex.y - a.sin() * half_width,
+                ));
+            }
+        }
+    }
+}
+
+/// Emit an offset ring as a closed contour, optionally reversed.
+fn emit_ring(builder: &mut PathBuilder, ring: &[Point], reversed: bool) {
+    if ring.is_empty() {
+        return;
+    }
+    if reversed {
+        let last = ring.len() - 1;
+        builder.move_to(ring[last].x, ring[last].y);
+        for p in ring[..last].iter().rev() {
+            builder.line_to(p.x, p.y);
+        }
+    } else {
+        builder.move_to(ring[0].x, ring[0].y);
+        for p in &ring[1..] {
+            builder.line_to(p.x, p.y);
+        }
+    }
+    builder.close();
 }
 
 fn stroke_contour(
@@ -175,212 +298,125 @@ fn stroke_contour(
     half_width: Scalar,
     params: &StrokeParams,
 ) {
-    if points.len() < 2 {
-        return;
-    }
-
-    let n = points.len();
-
-    // Compute normals for each segment
-    let mut normals: Vec<Point> = Vec::with_capacity(n - 1);
-    for i in 0..n - 1 {
-        let dx = points[i + 1].x - points[i].x;
-        let dy = points[i + 1].y - points[i].y;
-        let len = (dx * dx + dy * dy).sqrt();
-        if len > 0.0 {
-            normals.push(Point::new(-dy / len, dx / len));
-        } else {
-            normals.push(Point::new(0.0, 1.0));
+    // Drop consecutive duplicate points so segments are well-defined.
+    let mut pts: Vec<Point> = Vec::with_capacity(points.len());
+    for &p in points {
+        if pts.last().map_or(true, |q: &Point| *q != p) {
+            pts.push(p);
         }
     }
-
-    if normals.is_empty() {
-        return;
+    // For closed contours, a trailing point equal to the start is redundant.
+    if is_closed && pts.len() >= 2 && pts.first() == pts.last() {
+        pts.pop();
     }
 
-    // Build left side (offset by +half_width)
-    let mut left_side: Vec<Point> = Vec::with_capacity(n);
-    // Build right side (offset by -half_width)
-    let mut right_side: Vec<Point> = Vec::with_capacity(n);
-
-    // First point
-    let first_normal = normals[0];
-    left_side.push(Point::new(
-        points[0].x + first_normal.x * half_width,
-        points[0].y + first_normal.y * half_width,
-    ));
-    right_side.push(Point::new(
-        points[0].x - first_normal.x * half_width,
-        points[0].y - first_normal.y * half_width,
-    ));
-
-    // Interior points with join handling
-    for i in 1..n - 1 {
-        let n1 = normals[i - 1];
-        let n2 = normals[i];
-
-        // Average normal for the join
-        let avg = Point::new(n1.x + n2.x, n1.y + n2.y);
-        let avg_len = avg.length();
-
-        if avg_len > 0.001 {
-            let scale = half_width / avg_len;
-            let offset = Point::new(avg.x * scale, avg.y * scale);
-
-            match params.join {
-                StrokeJoin::Miter => {
-                    // Compute miter length
-                    let miter_len = 1.0 / (avg_len / 2.0);
-                    if miter_len <= params.miter_limit {
-                        left_side.push(Point::new(
-                            points[i].x + offset.x * miter_len,
-                            points[i].y + offset.y * miter_len,
-                        ));
-                        right_side.push(Point::new(
-                            points[i].x - offset.x * miter_len,
-                            points[i].y - offset.y * miter_len,
-                        ));
-                    } else {
-                        // Fallback to bevel
-                        left_side.push(Point::new(
-                            points[i].x + n1.x * half_width,
-                            points[i].y + n1.y * half_width,
-                        ));
-                        left_side.push(Point::new(
-                            points[i].x + n2.x * half_width,
-                            points[i].y + n2.y * half_width,
-                        ));
-                        right_side.push(Point::new(
-                            points[i].x - n1.x * half_width,
-                            points[i].y - n1.y * half_width,
-                        ));
-                        right_side.push(Point::new(
-                            points[i].x - n2.x * half_width,
-                            points[i].y - n2.y * half_width,
-                        ));
-                    }
-                }
-                StrokeJoin::Bevel => {
-                    left_side.push(Point::new(
-                        points[i].x + n1.x * half_width,
-                        points[i].y + n1.y * half_width,
-                    ));
-                    left_side.push(Point::new(
-                        points[i].x + n2.x * half_width,
-                        points[i].y + n2.y * half_width,
-                    ));
-                    right_side.push(Point::new(
-                        points[i].x - n1.x * half_width,
-                        points[i].y - n1.y * half_width,
-                    ));
-                    right_side.push(Point::new(
-                        points[i].x - n2.x * half_width,
-                        points[i].y - n2.y * half_width,
-                    ));
-                }
-                StrokeJoin::Round => {
-                    // Generate arc segments for the outer side of the join.
-                    // Both the left and right sides sweep from their incoming
-                    // normal offset to their outgoing normal offset around the
-                    // join vertex, using line subdivision scaled to the angular
-                    // sweep (minimum 4 segments).
-                    let left_start_angle =
-                        (n1.y * half_width).atan2(n1.x * half_width);
-                    let left_end_angle =
-                        (n2.y * half_width).atan2(n2.x * half_width);
-                    let mut left_delta = left_end_angle - left_start_angle;
-                    if left_delta > std::f32::consts::PI {
-                        left_delta -= std::f32::consts::TAU;
-                    } else if left_delta < -std::f32::consts::PI {
-                        left_delta += std::f32::consts::TAU;
-                    }
-                    let n_segs = ((left_delta.abs()
-                        / std::f32::consts::FRAC_PI_4)
-                        .ceil() as usize)
-                        .max(4);
-                    for k in 0..=n_segs {
-                        let t = k as Scalar / n_segs as Scalar;
-                        let a = left_start_angle + left_delta * t;
-                        left_side.push(Point::new(
-                            points[i].x + a.cos() * half_width,
-                            points[i].y + a.sin() * half_width,
-                        ));
-                        right_side.push(Point::new(
-                            points[i].x - a.cos() * half_width,
-                            points[i].y - a.sin() * half_width,
-                        ));
-                    }
-                }
-            }
-        } else {
-            // Parallel segments, use normal offset
-            left_side.push(Point::new(
-                points[i].x + n1.x * half_width,
-                points[i].y + n1.y * half_width,
-            ));
-            right_side.push(Point::new(
-                points[i].x - n1.x * half_width,
-                points[i].y - n1.y * half_width,
-            ));
-        }
-    }
-
-    // Last point
-    let last_normal = normals[normals.len() - 1];
-    left_side.push(Point::new(
-        points[n - 1].x + last_normal.x * half_width,
-        points[n - 1].y + last_normal.y * half_width,
-    ));
-    right_side.push(Point::new(
-        points[n - 1].x - last_normal.x * half_width,
-        points[n - 1].y - last_normal.y * half_width,
-    ));
-
-    // Build the outline path
     if is_closed {
-        // For closed paths, connect left to right
-        if !left_side.is_empty() {
-            builder.move_to(left_side[0].x, left_side[0].y);
-            for p in &left_side[1..] {
-                builder.line_to(p.x, p.y);
-            }
-            builder.close();
-        }
-        if !right_side.is_empty() {
-            builder.move_to(right_side[0].x, right_side[0].y);
-            for p in &right_side[1..] {
-                builder.line_to(p.x, p.y);
-            }
-            builder.close();
-        }
+        stroke_closed(builder, &pts, half_width, params);
     } else {
-        // For open paths, create a single outline with caps
-        if !left_side.is_empty() {
-            builder.move_to(left_side[0].x, left_side[0].y);
+        stroke_open(builder, &pts, half_width, params);
+    }
+}
 
-            // Add start cap
-            add_cap(builder, points[0], normals[0], half_width, params.cap, true);
+/// Stroke a closed contour: strokes every segment including the closing edge,
+/// joins at every vertex (including the start/end vertex), and emits the outer
+/// ring forward and the inner ring reversed so winding cancels and the result
+/// renders as a frame. Mirrors `SkPathStroker::close` + `reversePathTo`.
+fn stroke_closed(builder: &mut PathBuilder, pts: &[Point], half_width: Scalar, params: &StrokeParams) {
+    let n = pts.len();
+    if n < 2 {
+        return;
+    }
 
-            // Left side (forward)
-            for p in &left_side {
-                builder.line_to(p.x, p.y);
+    // Segment normals, including the closing segment pts[n-1] -> pts[0].
+    let normals: Vec<Point> = (0..n).map(|i| seg_normal(pts[i], pts[(i + 1) % n])).collect();
+
+    let mut left: Vec<Point> = Vec::with_capacity(n);
+    let mut right: Vec<Point> = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let n1 = normals[(i + n - 1) % n]; // incoming segment normal
+        let n2 = normals[i]; // outgoing segment normal
+        add_join(&mut left, &mut right, pts[i], n1, n2, half_width, params);
+    }
+
+    // Outer ring forward, inner ring reversed => opposite winding => frame.
+    emit_ring(builder, &left, false);
+    emit_ring(builder, &right, true);
+}
+
+/// Stroke an open contour into a single filled outline with end caps.
+fn stroke_open(builder: &mut PathBuilder, pts: &[Point], half_width: Scalar, params: &StrokeParams) {
+    let n = pts.len();
+    if n < 2 {
+        // Zero-length contour: round/square caps still paint a dot.
+        if n == 1 {
+            emit_cap_dot(builder, pts[0], half_width, params.cap);
+        }
+        return;
+    }
+
+    let normals: Vec<Point> = (0..n - 1).map(|i| seg_normal(pts[i], pts[i + 1])).collect();
+
+    let mut left: Vec<Point> = Vec::with_capacity(n);
+    let mut right: Vec<Point> = Vec::with_capacity(n);
+
+    // First point.
+    let first_normal = normals[0];
+    left.push(Point::new(
+        pts[0].x + first_normal.x * half_width,
+        pts[0].y + first_normal.y * half_width,
+    ));
+    right.push(Point::new(
+        pts[0].x - first_normal.x * half_width,
+        pts[0].y - first_normal.y * half_width,
+    ));
+
+    for i in 1..n - 1 {
+        add_join(&mut left, &mut right, pts[i], normals[i - 1], normals[i], half_width, params);
+    }
+
+    // Last point.
+    let last_normal = normals[normals.len() - 1];
+    left.push(Point::new(
+        pts[n - 1].x + last_normal.x * half_width,
+        pts[n - 1].y + last_normal.y * half_width,
+    ));
+    right.push(Point::new(
+        pts[n - 1].x - last_normal.x * half_width,
+        pts[n - 1].y - last_normal.y * half_width,
+    ));
+
+    builder.move_to(left[0].x, left[0].y);
+    add_cap(builder, pts[0], normals[0], half_width, params.cap, true);
+    for p in &left {
+        builder.line_to(p.x, p.y);
+    }
+    add_cap(builder, pts[n - 1], last_normal, half_width, params.cap, false);
+    for p in right.iter().rev() {
+        builder.line_to(p.x, p.y);
+    }
+    builder.close();
+}
+
+/// Emit a cap-shaped dot for a zero-length contour (Round -> disc, Square ->
+/// square, Butt -> nothing), matching Skia's zero-length-segment handling.
+fn emit_cap_dot(builder: &mut PathBuilder, center: Point, half_width: Scalar, cap: StrokeCap) {
+    match cap {
+        StrokeCap::Butt => {}
+        StrokeCap::Square => {
+            builder.move_to(center.x - half_width, center.y - half_width);
+            builder.line_to(center.x + half_width, center.y - half_width);
+            builder.line_to(center.x + half_width, center.y + half_width);
+            builder.line_to(center.x - half_width, center.y + half_width);
+            builder.close();
+        }
+        StrokeCap::Round => {
+            let steps = 16;
+            builder.move_to(center.x + half_width, center.y);
+            for i in 1..steps {
+                let a = (i as Scalar / steps as Scalar) * std::f32::consts::TAU;
+                builder.line_to(center.x + a.cos() * half_width, center.y + a.sin() * half_width);
             }
-
-            // Add end cap
-            add_cap(
-                builder,
-                points[n - 1],
-                normals[normals.len() - 1],
-                half_width,
-                params.cap,
-                false,
-            );
-
-            // Right side (reverse)
-            for p in right_side.iter().rev() {
-                builder.line_to(p.x, p.y);
-            }
-
             builder.close();
         }
     }
@@ -435,38 +471,62 @@ fn add_cap(
     }
 }
 
-fn flatten_quad(points: &mut Vec<Point>, p0: Point, p1: Point, p2: Point, steps: usize) {
-    for i in 1..=steps {
-        let t = i as Scalar / steps as Scalar;
-        let mt = 1.0 - t;
-        let x = mt * mt * p0.x + 2.0 * mt * t * p1.x + t * t * p2.x;
-        let y = mt * mt * p0.y + 2.0 * mt * t * p1.y + t * t * p2.y;
-        points.push(Point::new(x, y));
-    }
-}
-
-fn flatten_cubic(
-    points: &mut Vec<Point>,
-    p0: Point,
-    p1: Point,
-    p2: Point,
-    p3: Point,
-    steps: usize,
-) {
-    for i in 1..=steps {
-        let t = i as Scalar / steps as Scalar;
-        let mt = 1.0 - t;
-        let mt2 = mt * mt;
-        let t2 = t * t;
-        let x = mt2 * mt * p0.x + 3.0 * mt2 * t * p1.x + 3.0 * mt * t2 * p2.x + t2 * t * p3.x;
-        let y = mt2 * mt * p0.y + 3.0 * mt2 * t * p1.y + 3.0 * mt * t2 * p2.y + t2 * t * p3.y;
-        points.push(Point::new(x, y));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FillType;
+    use skia_rs_core::Rect;
+
+    #[test]
+    fn test_stroked_rect_is_frame_with_empty_middle() {
+        // Stroking a rect and filling the result with the winding rule must
+        // yield a frame: the band under the original edges is filled and the
+        // interior (and exterior) is empty. Verified via contains().
+        let mut b = PathBuilder::new();
+        b.add_rect(&Rect::new(0.0, 0.0, 100.0, 100.0));
+        let path = b.build();
+
+        let params = StrokeParams::new(2.0); // half-width 1
+        let mut stroked = stroke_to_fill(&path, &params).unwrap();
+        stroked.set_fill_type(FillType::Winding);
+
+        // A point on the stroked frame (near the left edge at x=0) is filled.
+        assert!(
+            stroked.contains(Point::new(0.0, 50.0)),
+            "point on the stroked edge should be filled"
+        );
+        // The middle of the rect is empty (inner and outer rings cancel).
+        assert!(
+            !stroked.contains(Point::new(50.0, 50.0)),
+            "the middle of a stroked rect must be empty, not a filled slab"
+        );
+        // A point well outside the outer ring is empty.
+        assert!(
+            !stroked.contains(Point::new(200.0, 200.0)),
+            "outside the stroke must be empty"
+        );
+    }
+
+    #[test]
+    fn test_stroked_closed_triangle_is_frame() {
+        // A closed triangle stroked then winding-filled must be hollow.
+        let mut b = PathBuilder::new();
+        b.move_to(0.0, 0.0);
+        b.line_to(100.0, 0.0);
+        b.line_to(50.0, 100.0);
+        b.close();
+        let path = b.build();
+
+        let params = StrokeParams::new(4.0);
+        let mut stroked = stroke_to_fill(&path, &params).unwrap();
+        stroked.set_fill_type(FillType::Winding);
+
+        // Centroid is well inside -> must be empty (frame, not filled slab).
+        assert!(
+            !stroked.contains(Point::new(50.0, 33.0)),
+            "interior of stroked closed triangle must be empty"
+        );
+    }
 
     #[test]
     fn test_stroke_to_fill_line() {
