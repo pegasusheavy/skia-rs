@@ -31,6 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (only RGBA-order 8888 is supported) instead of silently mislabeling them.
   Image snapshots carry the surface's true color/alpha type and deliver
   unpremultiplied bytes when the surface's alpha type is `Unpremul`.
+- `Canvas::save`/`save_layer` (and `RecordingCanvas::save`) now return the
+  save count **before** the save (`SkCanvas::save` returns
+  `getSaveCount() - 1`; initial count is 1), not the post-save count.
+- `Canvas::restore_to_count` clamps its argument to 1 like
+  `SkCanvas::restoreToCount` (passing 0 previously looped forever).
+- `DrawCommand::ClipRect`/`ClipPath` record the `ClipOp` and replay it;
+  Difference clips recorded into pictures no longer replay as Intersect.
+- Picture playback of `SetMatrix` composes with the CTM at playback start
+  (`setMatrix(initialCTM * recorded)`) instead of replacing it.
+- `Canvas::draw_picture` (and `DrawCommand::DrawPicture` playback) honor the
+  optional paint via an implicit `save_layer`.
 
 ## [0.2.6] - 2026-04-26
 

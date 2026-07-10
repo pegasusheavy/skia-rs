@@ -233,6 +233,11 @@ impl<'a> Canvas<'a> {
     }
 
     /// Save the current state.
+    ///
+    /// Returns the save count **before** this save (`SkCanvas::save` returns
+    /// `getSaveCount() - 1`; a fresh canvas has save count 1). Pass the
+    /// returned value to [`restore_to_count`](Self::restore_to_count) to undo
+    /// this save.
     pub fn save(&mut self) -> usize {
         let matrix = *self.matrix_stack.last().unwrap();
         self.matrix_stack.push(matrix);
@@ -241,7 +246,7 @@ impl<'a> Canvas<'a> {
         if let Backing::Recording(commands) = &mut self.backing {
             commands.push(DrawCommand::Save);
         }
-        self.save_count
+        self.save_count - 1
     }
 
     /// Save the current state with a layer.
@@ -295,7 +300,9 @@ impl<'a> Canvas<'a> {
             });
         }
 
-        self.save_count
+        // Like save(): return the count BEFORE the save
+        // (SkCanvas::saveLayer returns getSaveCount() - 1).
+        self.save_count - 1
     }
 
     /// Restore to the previous state.
@@ -393,7 +400,12 @@ impl<'a> Canvas<'a> {
     }
 
     /// Restore to a specific save count.
+    ///
+    /// Like `SkCanvas::restoreToCount`, `count` is clamped to 1 (the initial
+    /// save count), so passing 0 restores everything instead of looping
+    /// forever.
     pub fn restore_to_count(&mut self, count: usize) {
+        let count = count.max(1);
         while self.save_count > count {
             self.restore();
         }
@@ -477,6 +489,7 @@ impl<'a> Canvas<'a> {
         if let Backing::Recording(commands) = &mut self.backing {
             commands.push(DrawCommand::ClipRect {
                 rect: *rect,
+                op,
                 anti_alias: do_anti_alias,
             });
         }
@@ -496,6 +509,7 @@ impl<'a> Canvas<'a> {
         if let Backing::Recording(commands) = &mut self.backing {
             commands.push(DrawCommand::ClipPath {
                 path: path.clone(),
+                op,
                 anti_alias: do_anti_alias,
             });
         }
@@ -788,14 +802,30 @@ impl<'a> Canvas<'a> {
         &mut self,
         picture: &crate::Picture,
         matrix: Option<&Matrix>,
-        _paint: Option<&Paint>,
+        paint: Option<&Paint>,
     ) {
-        self.save();
+        // SkCanvas::onDrawPicture: a non-null paint wraps the playback in an
+        // implicit saveLayer(bounds=cullRect, paint); otherwise a plain save.
+        let restore_count = if let Some(p) = paint {
+            let bounds = picture.cull_rect();
+            let rec = SaveLayerRec {
+                bounds: if bounds.is_empty() {
+                    None
+                } else {
+                    Some(&bounds)
+                },
+                paint: Some(p),
+                flags: SaveLayerFlags::NONE,
+            };
+            self.save_layer(&rec)
+        } else {
+            self.save()
+        };
         if let Some(m) = matrix {
             self.concat(m);
         }
         picture.playback(self);
-        self.restore();
+        self.restore_to_count(restore_count);
     }
 
     // =========================================================================
@@ -2497,7 +2527,8 @@ mod tests {
         let returned = canvas.save_layer(&SaveLayerRec::default());
         let during = canvas.save_count();
         assert_eq!(during, before + 1);
-        assert_eq!(returned, during);
+        // SkCanvas::saveLayer returns getSaveCount() - 1 (the pre-save count).
+        assert_eq!(returned, before);
         canvas.restore();
         assert_eq!(canvas.save_count(), before);
     }
@@ -3101,6 +3132,40 @@ mod tests {
         assert_eq!(canvas.save_count(), base + 3);
         canvas.restore_to_count(base);
         assert_eq!(canvas.save_count(), base);
+    }
+
+    #[test]
+    fn test_restore_to_count_clamps_below_one() {
+        // SkCanvas::restoreToCount clamps count < 1 to 1 — must terminate and
+        // leave the canvas at save count 1 (previously infinite-looped).
+        let mut buffer = PixelBuffer::new(10, 10);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        canvas.save();
+        canvas.save();
+        canvas.restore_to_count(0);
+        assert_eq!(canvas.save_count(), 1);
+        // And again with an already-minimal stack: still terminates.
+        canvas.restore_to_count(0);
+        assert_eq!(canvas.save_count(), 1);
+    }
+
+    #[test]
+    fn test_save_returns_previous_save_count() {
+        // SkCanvas::save returns getSaveCount() - 1, i.e. the count BEFORE
+        // the save. Fresh canvas: getSaveCount() == 1, save() returns 1 and
+        // the count becomes 2. restore_to_count(returned) undoes that save.
+        let mut buffer = PixelBuffer::new(10, 10);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        assert_eq!(canvas.save_count(), 1);
+        let ret = canvas.save();
+        assert_eq!(ret, 1, "save() must return the pre-save count");
+        assert_eq!(canvas.save_count(), 2);
+        canvas.translate(3.0, 0.0);
+        canvas.restore_to_count(ret);
+        assert_eq!(canvas.save_count(), 1);
+        // The translate was undone by restoring to the returned count.
+        let p = canvas.total_matrix().map_point(Point::new(0.0, 0.0));
+        assert_eq!(p.x, 0.0);
     }
 
     #[test]
