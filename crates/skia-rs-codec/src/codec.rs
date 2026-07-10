@@ -100,15 +100,20 @@ impl ImageFormat {
             }
         }
 
-        // WBMP: Type 0, FixHeaderField 0, followed by width/height
-        // First two bytes are 0, third and fourth bytes encode width and height
-        // Both dimensions must be non-zero for a valid WBMP
+        // WBMP: Type 0, FixHeaderField 0, followed by width/height encoded
+        // as WBMP multibyte integers (bit 7 = "more bytes follow"). Both
+        // dimensions must be non-zero for a valid WBMP. The previous check
+        // only accepted single-byte (< 128) dimensions and rejected any
+        // image wider or taller than 127 pixels.
         if data.len() >= 4 && data[0] == 0 && data[1] == 0 {
-            // Check if it looks like valid WBMP multibyte integers
-            // WBMP uses variable-length integers where bit 7 indicates continuation
-            // Both width and height must be non-zero
-            if data[2] < 128 && data[2] > 0 && data[3] < 128 && data[3] > 0 {
-                return Self::Wbmp;
+            let mut offset = 2;
+            if let (Some(width), Some(height)) = (
+                read_wbmp_int(data, &mut offset),
+                read_wbmp_int(data, &mut offset),
+            ) {
+                if width > 0 && height > 0 {
+                    return Self::Wbmp;
+                }
             }
         }
 
@@ -214,6 +219,23 @@ impl Default for EncoderQuality {
     }
 }
 
+/// Unpremultiply an interleaved 8-bit-per-channel buffer in place when the
+/// source image carries premultiplied pixels.
+///
+/// Image encoders must store **straight** (unpremultiplied) alpha: the PNG
+/// spec (11.2.3), BMP V3+ alpha, and WebP all define pixel samples as
+/// non-premultiplied, and JPEG discards alpha entirely so its RGB must be the
+/// unpremultiplied color. Canvas-backed images now report
+/// [`skia_rs_core::AlphaType::Premul`], so encoders call this before writing.
+///
+/// Alpha lives at byte index 3 of every 4-byte pixel in both RGBA and BGRA
+/// layouts, so this is safe to run on either ordering.
+fn unpremultiply_for_encode(image: &Image, buf: &mut [u8]) {
+    if image.alpha_type() == skia_rs_core::AlphaType::Premul {
+        skia_rs_core::unpremultiply_in_place(buf);
+    }
+}
+
 // =============================================================================
 // Simple PNG Codec (stub - would use png crate for real implementation)
 // =============================================================================
@@ -232,7 +254,16 @@ impl PngDecoder {
 impl ImageDecoder for PngDecoder {
     #[cfg(feature = "png")]
     fn decode<R: Read>(&self, reader: R) -> CodecResult<Image> {
-        let decoder = png::Decoder::new(reader);
+        let mut decoder = png::Decoder::new(reader);
+        // The `png` crate defaults to `Transformations::IDENTITY`, which
+        // hands back raw palette indices for PNG-8 and 16-bit-per-channel
+        // samples for deep images — neither of which our RGBA8 pipeline can
+        // consume. Enable EXPAND | STRIP_16 (the crate's
+        // `normalize_to_color8`) so paletted images expand to RGB(A),
+        // sub-8-bit grayscale expands to 8-bit, tRNS chunks expand to an
+        // alpha channel, and 16-bit samples are stripped to 8-bit. This
+        // matches SkPngCodec, which always decodes to an 8-bit destination.
+        decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
         let mut png_reader = decoder
             .read_info()
             .map_err(|e| CodecError::DecodingError(e.to_string()))?;
@@ -347,7 +378,7 @@ impl ImageEncoder for PngEncoder {
             .ok_or_else(|| CodecError::EncodingError("Cannot access pixels".into()))?;
 
         // Convert to RGBA if necessary based on color type
-        let rgba_data = match image.color_type() {
+        let mut rgba_data = match image.color_type() {
             skia_rs_core::ColorType::Rgba8888 => pixels.to_vec(),
             skia_rs_core::ColorType::Bgra8888 => {
                 let mut rgba = Vec::with_capacity(pixels.len());
@@ -365,6 +396,9 @@ impl ImageEncoder for PngEncoder {
                 ));
             }
         };
+
+        // PNG stores straight alpha; unpremultiply premultiplied input.
+        unpremultiply_for_encode(image, &mut rgba_data);
 
         png_writer
             .write_image_data(&rgba_data)
@@ -513,25 +547,20 @@ impl ImageEncoder for JpegEncoder {
             .peek_pixels()
             .ok_or_else(|| CodecError::EncodingError("Cannot access pixels".into()))?;
 
-        // Convert to RGB (JPEG doesn't support alpha)
-        let rgb = match image.color_type() {
-            skia_rs_core::ColorType::Rgba8888 => {
-                let mut rgb = Vec::with_capacity((image.width() * image.height() * 3) as usize);
-                for chunk in pixels.chunks(4) {
-                    rgb.push(chunk[0]);
-                    rgb.push(chunk[1]);
-                    rgb.push(chunk[2]);
-                }
-                rgb
-            }
+        // JPEG discards alpha, so we must emit the *unpremultiplied* color.
+        // Build an RGBA buffer, unpremultiply if the source is premul, then
+        // drop the alpha channel.
+        let mut rgba = match image.color_type() {
+            skia_rs_core::ColorType::Rgba8888 => pixels.to_vec(),
             skia_rs_core::ColorType::Bgra8888 => {
-                let mut rgb = Vec::with_capacity((image.width() * image.height() * 3) as usize);
+                let mut rgba = Vec::with_capacity(pixels.len());
                 for chunk in pixels.chunks(4) {
-                    rgb.push(chunk[2]); // R
-                    rgb.push(chunk[1]); // G
-                    rgb.push(chunk[0]); // B
+                    rgba.push(chunk[2]); // R
+                    rgba.push(chunk[1]); // G
+                    rgba.push(chunk[0]); // B
+                    rgba.push(chunk[3]); // A
                 }
-                rgb
+                rgba
             }
             _ => {
                 return Err(CodecError::Unsupported(
@@ -539,6 +568,13 @@ impl ImageEncoder for JpegEncoder {
                 ));
             }
         };
+        unpremultiply_for_encode(image, &mut rgba);
+        let mut rgb = Vec::with_capacity((image.width() * image.height() * 3) as usize);
+        for chunk in rgba.chunks_exact(4) {
+            rgb.push(chunk[0]);
+            rgb.push(chunk[1]);
+            rgb.push(chunk[2]);
+        }
 
         let encoder = jpeg_encoder::Encoder::new(&mut writer, self.quality.value());
         encoder
@@ -607,6 +643,11 @@ impl GifDecoder {
             .read_info(std::io::Cursor::new(data))
             .map_err(|e| CodecError::DecodingError(e.to_string()))?;
 
+        // Logical-screen (canvas) dimensions. Individual frames may be
+        // smaller and are positioned via their left/top offsets.
+        let canvas_width = decoder.width() as i32;
+        let canvas_height = decoder.height() as i32;
+
         let mut frames = Vec::new();
         while let Some(frame) = decoder
             .read_next_frame()
@@ -645,6 +686,8 @@ impl GifDecoder {
         Ok(crate::AnimatedImage {
             loop_count: decoder.repeat().into(),
             frames,
+            canvas_width,
+            canvas_height,
         })
     }
 
@@ -666,23 +709,50 @@ impl ImageDecoder for GifDecoder {
             .read_info(reader)
             .map_err(|e| CodecError::DecodingError(e.to_string()))?;
 
+        // Decode to the logical-screen canvas, not the (possibly smaller)
+        // first frame. SkGifCodec always reports the logical-screen size as
+        // the image dimensions and composites the first frame at its
+        // left/top offset over a transparent canvas.
+        let canvas_width = decoder.width() as usize;
+        let canvas_height = decoder.height() as usize;
+
         let first_frame = decoder
             .read_next_frame()
             .map_err(|e| CodecError::DecodingError(e.to_string()))?
             .ok_or_else(|| CodecError::DecodingError("No frames in GIF".into()))?;
 
-        let width = first_frame.width as i32;
-        let height = first_frame.height as i32;
-        let pixels = first_frame.buffer.to_vec();
+        let frame_width = first_frame.width as usize;
+        let frame_height = first_frame.height as usize;
+        let left = first_frame.left as usize;
+        let top = first_frame.top as usize;
+
+        // Transparent canvas; blit the frame into place, clipping any part
+        // that falls outside the logical screen.
+        let canvas_stride = canvas_width * 4;
+        let mut pixels = vec![0u8; canvas_height * canvas_stride];
+        for row in 0..frame_height {
+            let dst_y = top + row;
+            if dst_y >= canvas_height {
+                break;
+            }
+            let copy_w = frame_width.min(canvas_width.saturating_sub(left));
+            if copy_w == 0 {
+                continue;
+            }
+            let src_off = row * frame_width * 4;
+            let dst_off = dst_y * canvas_stride + left * 4;
+            pixels[dst_off..dst_off + copy_w * 4]
+                .copy_from_slice(&first_frame.buffer[src_off..src_off + copy_w * 4]);
+        }
 
         let info = crate::ImageInfo::new(
-            width,
-            height,
+            canvas_width as i32,
+            canvas_height as i32,
             skia_rs_core::ColorType::Rgba8888,
             skia_rs_core::AlphaType::Unpremul,
         );
 
-        Image::from_raster_data_owned(info, pixels, width as usize * 4)
+        Image::from_raster_data_owned(info, pixels, canvas_stride)
             .ok_or_else(|| CodecError::DecodingError("Failed to create image".into()))
     }
 
@@ -818,7 +888,7 @@ impl ImageEncoder for WebpEncoder {
         let height = image.height() as u32;
 
         // Convert to RGBA if needed
-        let rgba = match image.color_type() {
+        let mut rgba = match image.color_type() {
             skia_rs_core::ColorType::Rgba8888 => pixels.to_vec(),
             skia_rs_core::ColorType::Bgra8888 => {
                 let mut rgba = Vec::with_capacity(pixels.len());
@@ -836,6 +906,9 @@ impl ImageEncoder for WebpEncoder {
                 ));
             }
         };
+
+        // WebP stores straight alpha; unpremultiply premultiplied input.
+        unpremultiply_for_encode(image, &mut rgba);
 
         let encoder = webp::Encoder::from_rgba(&rgba, width, height);
         let encoded = if self.lossless {
@@ -900,9 +973,16 @@ impl BmpEncoder {
 
 impl ImageEncoder for BmpEncoder {
     fn encode<W: Write>(&self, image: &Image, mut writer: W) -> CodecResult<()> {
-        let pixels = image
+        let raw_pixels = image
             .peek_pixels()
             .ok_or_else(|| CodecError::EncodingError("Cannot access pixels".into()))?;
+
+        // BMP V3+ alpha is straight (unpremultiplied); unpremultiply if the
+        // source image carries premultiplied pixels. This assumes an
+        // RGBA/BGRA 8888 layout (the encoder always writes 32-bit BGRA).
+        let mut pixels = raw_pixels.to_vec();
+        unpremultiply_for_encode(image, &mut pixels);
+        let pixels = &pixels[..];
 
         let width = image.width() as u32;
         let height = image.height() as u32;
@@ -958,6 +1038,30 @@ impl ImageEncoder for BmpEncoder {
     }
 }
 
+/// Channel masks for a BI_BITFIELDS BMP.
+#[derive(Debug, Clone, Copy)]
+struct BitfieldMasks {
+    red: u32,
+    green: u32,
+    blue: u32,
+    alpha: u32,
+}
+
+impl BitfieldMasks {
+    /// Extract `mask`'s channel out of `value` and scale it to a full 8-bit
+    /// range (`round(raw * 255 / channel_max)`), matching `SkMasks`.
+    fn sample(&self, value: u32, mask: u32) -> u8 {
+        if mask == 0 {
+            return 0;
+        }
+        let shift = mask.trailing_zeros();
+        let bits = (mask >> shift).count_ones();
+        let raw = (value & mask) >> shift;
+        let max = (1u32 << bits) - 1;
+        ((raw * 255 + max / 2) / max) as u8
+    }
+}
+
 /// Decode a BMP image from bytes.
 fn decode_bmp(data: &[u8]) -> CodecResult<Image> {
     if data.len() < 54 {
@@ -985,18 +1089,23 @@ fn decode_bmp(data: &[u8]) -> CodecResult<Image> {
     let bits_per_pixel = u16::from_le_bytes([data[28], data[29]]);
     let compression = u32::from_le_bytes([data[30], data[31], data[32], data[33]]);
 
-    if width <= 0 {
-        return Err(CodecError::InvalidData("Invalid BMP width".into()));
+    // Reject non-positive / absurd dimensions before allocating. `height`
+    // may be `i32::MIN`, whose negation overflows, so use `unsigned_abs`.
+    if width <= 0 || height == 0 {
+        return Err(CodecError::InvalidData("Invalid BMP dimensions".into()));
     }
-
+    const MAX_DIM: usize = 1 << 24; // matches SkCodec's guard against absurd sizes
     let width = width as usize;
     let (height, bottom_up) = if height < 0 {
-        ((-height) as usize, false)
+        (height.unsigned_abs() as usize, false)
     } else {
         (height as usize, true)
     };
+    if width > MAX_DIM || height > MAX_DIM || width.checked_mul(height).is_none() {
+        return Err(CodecError::InvalidData("BMP dimensions too large".into()));
+    }
 
-    // Only support uncompressed and basic RLE for now
+    // Only support uncompressed (BI_RGB) and BI_BITFIELDS.
     if compression != 0 && compression != 3 {
         return Err(CodecError::Unsupported(format!(
             "BMP compression {} not supported",
@@ -1009,12 +1118,65 @@ fn decode_bmp(data: &[u8]) -> CodecResult<Image> {
     }
 
     let pixel_data = &data[pixel_offset..];
+
+    // Row stride (padded to a 4-byte boundary) and the total number of
+    // source bytes the pixel array must contain. A file that stops short of
+    // this is truncated and must be reported, not silently zero-filled.
+    let src_row_size = match bits_per_pixel {
+        32 => width
+            .checked_mul(4)
+            .ok_or_else(|| CodecError::InvalidData("BMP row too large".into()))?,
+        24 => (width * 3 + 3) & !3,
+        16 => (width * 2 + 3) & !3,
+        8 => (width + 3) & !3,
+        _ => {
+            return Err(CodecError::Unsupported(format!(
+                "BMP {} bits per pixel not supported",
+                bits_per_pixel
+            )));
+        }
+    };
+    let required = src_row_size
+        .checked_mul(height)
+        .ok_or_else(|| CodecError::InvalidData("BMP pixel array too large".into()))?;
+    if pixel_data.len() < required {
+        return Err(CodecError::InvalidData(
+            "BMP pixel data truncated".into(),
+        ));
+    }
+
+    // BI_BITFIELDS: channel masks live either inside a V4+ header or in the
+    // 12 bytes immediately after a 40-byte BITMAPINFOHEADER (absolute offset
+    // 54). Both land the red mask at absolute offset 54.
+    let masks = if compression == 3 {
+        let mask_at = |off: usize| -> u32 {
+            if off + 4 <= data.len() {
+                u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
+            } else {
+                0
+            }
+        };
+        let red = mask_at(54);
+        let green = mask_at(58);
+        let blue = mask_at(62);
+        // Alpha mask is only present for V3+ headers (>= 56 bytes) / V4.
+        let alpha = if header_size >= 56 { mask_at(66) } else { 0 };
+        Some(BitfieldMasks {
+            red,
+            green,
+            blue,
+            alpha,
+        })
+    } else {
+        None
+    };
+
     let mut rgba = vec![0u8; width * height * 4];
 
     match bits_per_pixel {
         24 => {
             // 24-bit BGR
-            let row_size = (width * 3 + 3) & !3;
+            let row_size = src_row_size;
             for y in 0..height {
                 let src_y = if bottom_up { height - 1 - y } else { y };
                 let src_row = src_y * row_size;
@@ -1032,9 +1194,43 @@ fn decode_bmp(data: &[u8]) -> CodecResult<Image> {
                 }
             }
         }
+        16 => {
+            // 16-bit is always mask-based. Default to X1R5G5B5 when no
+            // explicit bitfields are given.
+            let m = masks.unwrap_or(BitfieldMasks {
+                red: 0x7C00,
+                green: 0x03E0,
+                blue: 0x001F,
+                alpha: 0,
+            });
+            let row_size = src_row_size;
+            for y in 0..height {
+                let src_y = if bottom_up { height - 1 - y } else { y };
+                let src_row = src_y * row_size;
+                let dst_row = y * width * 4;
+                for x in 0..width {
+                    let src = src_row + x * 2;
+                    let dst = dst_row + x * 4;
+                    if src + 1 < pixel_data.len() {
+                        let value = u16::from_le_bytes([pixel_data[src], pixel_data[src + 1]]) as u32;
+                        rgba[dst] = m.sample(value, m.red);
+                        rgba[dst + 1] = m.sample(value, m.green);
+                        rgba[dst + 2] = m.sample(value, m.blue);
+                        rgba[dst + 3] = if m.alpha == 0 {
+                            255
+                        } else {
+                            m.sample(value, m.alpha)
+                        };
+                    }
+                }
+            }
+        }
         32 => {
-            // 32-bit BGRA or BGRX
-            let row_size = width * 4;
+            // 32-bit. For BI_RGB the fourth byte is undefined padding
+            // (kBGRX): SkBmpCodec treats a standalone 32-bit BI_RGB image as
+            // opaque and only honors the alpha byte for BMP-in-ICO. For
+            // BI_BITFIELDS we apply the declared channel masks.
+            let row_size = src_row_size;
             for y in 0..height {
                 let src_y = if bottom_up { height - 1 - y } else { y };
                 let src_row = src_y * row_size;
@@ -1044,10 +1240,28 @@ fn decode_bmp(data: &[u8]) -> CodecResult<Image> {
                     let src = src_row + x * 4;
                     let dst = dst_row + x * 4;
                     if src + 3 < pixel_data.len() {
-                        rgba[dst] = pixel_data[src + 2]; // R
-                        rgba[dst + 1] = pixel_data[src + 1]; // G
-                        rgba[dst + 2] = pixel_data[src]; // B
-                        rgba[dst + 3] = pixel_data[src + 3]; // A
+                        if let Some(m) = masks {
+                            let value = u32::from_le_bytes([
+                                pixel_data[src],
+                                pixel_data[src + 1],
+                                pixel_data[src + 2],
+                                pixel_data[src + 3],
+                            ]);
+                            rgba[dst] = m.sample(value, m.red);
+                            rgba[dst + 1] = m.sample(value, m.green);
+                            rgba[dst + 2] = m.sample(value, m.blue);
+                            rgba[dst + 3] = if m.alpha == 0 {
+                                255
+                            } else {
+                                m.sample(value, m.alpha)
+                            };
+                        } else {
+                            rgba[dst] = pixel_data[src + 2]; // R
+                            rgba[dst + 1] = pixel_data[src + 1]; // G
+                            rgba[dst + 2] = pixel_data[src]; // B
+                            // BI_RGB: 4th byte is padding, image is opaque.
+                            rgba[dst + 3] = 255; // A
+                        }
                     }
                 }
             }
@@ -1152,8 +1366,10 @@ fn decode_ico(data: &[u8]) -> CodecResult<Image> {
         return Err(CodecError::InvalidData("ICO has no images".into()));
     }
 
-    // Find the largest image
-    let mut best_index = 0;
+    // Find the largest image. Only consider directory entries that are
+    // fully present in the buffer — a truncated directory must not cause an
+    // out-of-bounds read.
+    let mut best_index: Option<usize> = None;
     let mut best_size = 0u32;
 
     for i in 0..image_count {
@@ -1174,13 +1390,16 @@ fn decode_ico(data: &[u8]) -> CodecResult<Image> {
         };
 
         let size = width * height;
-        if size > best_size {
+        if best_index.is_none() || size > best_size {
             best_size = size;
-            best_index = i;
+            best_index = Some(i);
         }
     }
 
-    // Get the best entry
+    // Get the best entry. If no complete entry was found the directory is
+    // truncated.
+    let best_index = best_index
+        .ok_or_else(|| CodecError::InvalidData("ICO directory truncated".into()))?;
     let entry_offset = 6 + best_index * 16;
     let image_offset = u32::from_le_bytes([
         data[entry_offset + 12],
@@ -1195,11 +1414,17 @@ fn decode_ico(data: &[u8]) -> CodecResult<Image> {
         data[entry_offset + 11],
     ]) as usize;
 
-    if image_offset + image_size > data.len() {
+    // Bounds-check the embedded image slice. `image_offset`/`image_size` are
+    // u32-derived, so their sum cannot overflow usize on 64-bit, but use a
+    // checked add for portability and reject offsets past the buffer end.
+    let end = image_offset
+        .checked_add(image_size)
+        .ok_or_else(|| CodecError::InvalidData("Invalid ICO image data".into()))?;
+    if image_size == 0 || image_offset >= data.len() || end > data.len() {
         return Err(CodecError::InvalidData("Invalid ICO image data".into()));
     }
 
-    let image_data = &data[image_offset..image_offset + image_size];
+    let image_data = &data[image_offset..end];
 
     // Check if it's PNG or BMP
     if image_data.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
@@ -1217,16 +1442,27 @@ fn decode_ico_bmp(data: &[u8]) -> CodecResult<Image> {
         return Err(CodecError::InvalidData("ICO BMP too short".into()));
     }
 
-    let header_size = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-    if header_size < 40 {
+    let header_size = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+    if header_size < 40 || header_size > data.len() {
         return Err(CodecError::Unsupported("Invalid ICO BMP header".into()));
     }
 
-    let width = i32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
-    let height = i32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize / 2; // Height includes mask
+    let width = i32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+    let height = i32::from_le_bytes([data[8], data[9], data[10], data[11]]);
+    // Reject non-positive / absurd dimensions before allocating. The stored
+    // height counts both the color bitmap and the AND mask, so it is halved.
+    if width <= 0 || height <= 0 {
+        return Err(CodecError::InvalidData("Invalid ICO BMP dimensions".into()));
+    }
+    const MAX_DIM: usize = 1 << 24;
+    let width = width as usize;
+    let height = height as usize / 2; // Height includes the mask
+    if width == 0 || height == 0 || width > MAX_DIM || height > MAX_DIM {
+        return Err(CodecError::InvalidData("Invalid ICO BMP dimensions".into()));
+    }
     let bits_per_pixel = u16::from_le_bytes([data[14], data[15]]);
 
-    let pixel_offset = header_size as usize;
+    let pixel_offset = header_size;
     let pixel_data = &data[pixel_offset..];
     let mut rgba = vec![0u8; width * height * 4];
 
@@ -2278,31 +2514,61 @@ fn get_png_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
     Ok((width, height))
 }
 
+/// Returns true if `marker` is a Start-Of-Frame marker that carries frame
+/// dimensions. SOF markers span C0-CF *except* C4 (DHT), C8 (JPG), and CC
+/// (DAC), which are not frame headers.
+fn is_jpeg_sof_marker(marker: u8) -> bool {
+    matches!(marker,
+        0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF)
+}
+
 fn get_jpeg_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
-    // JPEG dimensions are in SOF marker
+    // Walk the marker stream looking for any SOF header. Each marker is
+    // `0xFF` followed by a marker byte; multiple `0xFF` fill bytes may
+    // precede the marker byte.
     let mut i = 2;
-    while i < data.len() - 8 {
+    while i + 1 < data.len() {
         if data[i] != 0xFF {
             i += 1;
             continue;
         }
-
-        let marker = data[i + 1];
-
-        // SOF0, SOF1, SOF2 markers contain dimensions
-        if marker == 0xC0 || marker == 0xC1 || marker == 0xC2 {
-            let height = u16::from_be_bytes([data[i + 5], data[i + 6]]) as i32;
-            let width = u16::from_be_bytes([data[i + 7], data[i + 8]]) as i32;
-            return Ok((width, height));
+        // Consume any run of 0xFF fill bytes.
+        let mut marker = data[i + 1];
+        let mut j = i + 1;
+        while marker == 0xFF && j + 1 < data.len() {
+            j += 1;
+            marker = data[j];
         }
 
-        // Skip other markers
-        if marker >= 0xC0 {
-            let len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
-            i += 2 + len;
-        } else {
-            i += 1;
+        // Standalone markers have no length payload: TEM (0x01) and
+        // SOI/EOI/RST0-7 (0xD0-0xD9). Also skip padding 0x00.
+        if marker == 0x00 || marker == 0x01 || (0xD0..=0xD9).contains(&marker) {
+            i = j + 1;
+            continue;
         }
+
+        // All remaining markers carry a 2-byte big-endian segment length
+        // (which includes the length field itself).
+        if j + 3 >= data.len() {
+            break;
+        }
+        let len = u16::from_be_bytes([data[j + 1], data[j + 2]]) as usize;
+
+        if is_jpeg_sof_marker(marker) {
+            // Layout from the marker byte at `j`: length(2) at j+1..j+3,
+            // then the SOF payload precision(1) height(2) width(2).
+            if j + 7 < data.len() {
+                let height = u16::from_be_bytes([data[j + 4], data[j + 5]]) as i32;
+                let width = u16::from_be_bytes([data[j + 6], data[j + 7]]) as i32;
+                return Ok((width, height));
+            }
+            break;
+        }
+
+        if len < 2 {
+            break;
+        }
+        i = j + 1 + len;
     }
 
     Err(CodecError::InvalidData(
@@ -2316,7 +2582,9 @@ fn get_bmp_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
     }
 
     let width = i32::from_le_bytes([data[18], data[19], data[20], data[21]]);
-    let height = i32::from_le_bytes([data[22], data[23], data[24], data[25]]).abs();
+    // Height is signed (negative = top-down). Use `unsigned_abs` so
+    // `i32::MIN` does not panic in a debug build (`.abs()` overflows).
+    let height = i32::from_le_bytes([data[22], data[23], data[24], data[25]]).unsigned_abs() as i32;
 
     Ok((width, height))
 }
@@ -2726,5 +2994,346 @@ mod tests {
             decoded.color_space().is_some(),
             "iCCP chunk should populate ImageInfo.color_space"
         );
+    }
+
+    // ---- PNG palette / bit-depth decode (EXPAND | STRIP_16) --------------
+
+    /// Encode a paletted PNG-8 fixture in memory: a 2x2 image whose four
+    /// pixels index four distinct palette colors. With the default
+    /// `IDENTITY` transform the decoder would hand back raw indices
+    /// (single-channel); EXPAND must turn these into RGB.
+    #[cfg(feature = "png")]
+    #[test]
+    fn test_png_palette8_decodes_to_rgb() {
+        let palette = vec![
+            255, 0, 0, // 0 red
+            0, 255, 0, // 1 green
+            0, 0, 255, // 2 blue
+            255, 255, 0, // 3 yellow
+        ];
+        let mut out: Vec<u8> = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut out, 2, 2);
+            encoder.set_color(png::ColorType::Indexed);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.set_palette(palette);
+            let mut w = encoder.write_header().unwrap();
+            // Indices: (0,0)=0 (1,0)=1 / (0,1)=2 (1,1)=3
+            w.write_image_data(&[0, 1, 2, 3]).unwrap();
+        }
+
+        let decoded = PngDecoder::new().decode_bytes(&out).unwrap();
+        assert_eq!(decoded.dimensions(), (2, 2));
+        let px = decoded.peek_pixels().unwrap();
+        assert_eq!(&px[0..4], &[255, 0, 0, 255], "index 0 -> red");
+        assert_eq!(&px[4..8], &[0, 255, 0, 255], "index 1 -> green");
+        assert_eq!(&px[8..12], &[0, 0, 255, 255], "index 2 -> blue");
+        assert_eq!(&px[12..16], &[255, 255, 0, 255], "index 3 -> yellow");
+    }
+
+    /// A 16-bit-per-channel RGB PNG must decode via STRIP_16 to the high
+    /// byte of each sample. Without the transform, the `png` crate yields a
+    /// 6-byte-per-pixel buffer our RGBA8 path cannot interpret.
+    #[cfg(feature = "png")]
+    #[test]
+    fn test_png_rgb16_strips_to_high_byte() {
+        let mut out: Vec<u8> = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut out, 1, 1);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Sixteen);
+            let mut w = encoder.write_header().unwrap();
+            // One pixel, big-endian 16-bit R=0x1234 G=0x5678 B=0x9ABC.
+            w.write_image_data(&[0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC])
+                .unwrap();
+        }
+
+        let decoded = PngDecoder::new().decode_bytes(&out).unwrap();
+        let px = decoded.peek_pixels().unwrap();
+        // STRIP_16 keeps the most-significant byte of each channel.
+        assert_eq!(&px[0..4], &[0x12, 0x56, 0x9A, 255]);
+    }
+
+    /// A 4-bit grayscale PNG must expand to 8-bit gray. The `png` crate
+    /// scales sub-8-bit samples by `255 / (2^depth - 1)` (= 17 for 4-bit),
+    /// so index 0 -> 0, 15 -> 255, 8 -> 136.
+    #[cfg(feature = "png")]
+    #[test]
+    fn test_png_gray4_expands_to_8bit() {
+        let mut out: Vec<u8> = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut out, 2, 1);
+            encoder.set_color(png::ColorType::Grayscale);
+            encoder.set_depth(png::BitDepth::Four);
+            let mut w = encoder.write_header().unwrap();
+            // Two 4-bit samples packed into one byte: 0x0F -> (0, 15).
+            w.write_image_data(&[0x0F]).unwrap();
+        }
+
+        let decoded = PngDecoder::new().decode_bytes(&out).unwrap();
+        assert_eq!(decoded.dimensions(), (2, 1));
+        let px = decoded.peek_pixels().unwrap();
+        assert_eq!(&px[0..4], &[0, 0, 0, 255], "gray 0 -> black");
+        assert_eq!(&px[4..8], &[255, 255, 255, 255], "gray 15 -> white");
+    }
+
+    // ---- Encoder unpremultiplication ------------------------------------
+
+    /// Encoders must store straight (unpremultiplied) alpha. A premultiplied
+    /// source (50% red stored as r==a==128) must round-trip through PNG back
+    /// to unpremultiplied red (255, 0, 0, 128).
+    #[cfg(feature = "png")]
+    #[test]
+    fn test_png_encode_unpremultiplies() {
+        // Premultiplied 50% red: r = premul(255, a=128) = 128.
+        let info = crate::ImageInfo::new(
+            1,
+            1,
+            skia_rs_core::ColorType::Rgba8888,
+            skia_rs_core::AlphaType::Premul,
+        );
+        let image = Image::from_raster_data_owned(info, vec![128, 0, 0, 128], 4).unwrap();
+
+        let encoded = PngEncoder::new().encode_bytes(&image).unwrap();
+        let decoded = PngDecoder::new().decode_bytes(&encoded).unwrap();
+        let px = decoded.peek_pixels().unwrap();
+        // Unpremultiplying 128 with alpha 128 restores ~255.
+        assert!(px[0] >= 253, "R should unpremultiply back to ~255, got {}", px[0]);
+        assert_eq!(px[3], 128, "alpha preserved");
+    }
+
+    /// Differential check for the shared premul rounding landed in core:
+    /// premul(200, a=130) must round to 102 (SkMulDiv255Round), not truncate
+    /// to 101.
+    #[test]
+    fn test_premul_rounding_matches_skia() {
+        let mut px = vec![200u8, 200, 200, 130];
+        skia_rs_core::premultiply_in_place(&mut px);
+        assert_eq!(px[0], 102, "premul(200, 130) rounds to 102");
+    }
+
+    // ---- BMP 32-bit alpha / bitfields -----------------------------------
+
+    /// Build a standalone 32-bit BI_RGB BMP by hand (BITMAPINFOHEADER). The
+    /// stored 4th byte is 0 (padding), but SkBmpCodec treats standalone
+    /// 32-bit BI_RGB as opaque (kBGRX), so decoded alpha must be 255.
+    #[test]
+    fn test_bmp_32bit_bi_rgb_is_opaque() {
+        let mut bmp = build_bmp_header(1, 1, 32, 0);
+        // One pixel: B=10 G=20 R=30 X=0.
+        bmp.extend_from_slice(&[10, 20, 30, 0]);
+
+        let decoded = decode_bmp(&bmp).unwrap();
+        let px = decoded.peek_pixels().unwrap();
+        assert_eq!(&px[0..4], &[30, 20, 10, 255], "BI_RGB 4th byte ignored -> opaque");
+    }
+
+    /// A 32-bit BI_BITFIELDS BMP with explicit RGBA masks must honor them.
+    #[test]
+    fn test_bmp_32bit_bitfields_applies_masks() {
+        // Masks: R=0x00FF0000 G=0x0000FF00 B=0x000000FF A=0xFF000000.
+        // Header size 56 (V3) so an alpha mask is recognized. The 16 mask
+        // bytes fill the header out to the pixel offset (14 + 56 = 70).
+        let mut bmp = build_bmp_header_ex(1, 1, 32, 3, 56);
+        bmp.extend_from_slice(&0x00FF0000u32.to_le_bytes()); // red mask @54
+        bmp.extend_from_slice(&0x0000FF00u32.to_le_bytes()); // green mask @58
+        bmp.extend_from_slice(&0x000000FFu32.to_le_bytes()); // blue mask @62
+        bmp.extend_from_slice(&0xFF000000u32.to_le_bytes()); // alpha mask @66
+        // Pixel value 0xAABBCCDD (little-endian bytes DD CC BB AA):
+        //   A=0xAA R=0xBB G=0xCC B=0xDD
+        bmp.extend_from_slice(&[0xDD, 0xCC, 0xBB, 0xAA]);
+        let decoded = decode_bmp(&bmp).unwrap();
+        let px = decoded.peek_pixels().unwrap();
+        assert_eq!(px[0], 0xBB, "red from mask");
+        assert_eq!(px[1], 0xCC, "green from mask");
+        assert_eq!(px[2], 0xDD, "blue from mask");
+        assert_eq!(px[3], 0xAA, "alpha from mask");
+    }
+
+    /// A BMP whose pixel array is shorter than width*height*stride is
+    /// truncated and must be reported, not silently zero-filled.
+    #[test]
+    fn test_bmp_truncated_reports_error() {
+        let mut bmp = build_bmp_header(4, 4, 24, 0);
+        // Only supply a few bytes instead of 4 rows * padded stride.
+        bmp.extend_from_slice(&[0u8; 8]);
+        assert!(decode_bmp(&bmp).is_err(), "truncated BMP must error");
+    }
+
+    /// Absurd / non-positive dimensions must be rejected before allocation.
+    #[test]
+    fn test_bmp_absurd_dimensions_rejected() {
+        // width = i32::MAX, height = i32::MAX would overflow the allocation.
+        let mut bmp = build_bmp_header(i32::MAX, i32::MAX, 32, 0);
+        bmp.extend_from_slice(&[0u8; 16]);
+        assert!(decode_bmp(&bmp).is_err(), "huge BMP dims must error");
+
+        let zero = build_bmp_header(0, 1, 32, 0);
+        assert!(decode_bmp(&zero).is_err(), "zero width must error");
+    }
+
+    /// `get_bmp_dimensions` must not panic on a top-down BMP whose height is
+    /// `i32::MIN` (`.abs()` would overflow).
+    #[test]
+    fn test_bmp_dimensions_i32_min_height() {
+        let mut bmp = vec![0u8; 54];
+        bmp[0] = b'B';
+        bmp[1] = b'M';
+        bmp[18..22].copy_from_slice(&100i32.to_le_bytes());
+        bmp[22..26].copy_from_slice(&i32::MIN.to_le_bytes());
+        let (w, h) = get_bmp_dimensions(&bmp).unwrap();
+        assert_eq!(w, 100);
+        assert_eq!(h, i32::MIN.unsigned_abs() as i32);
+    }
+
+    /// Helper: build a minimal BITMAPFILEHEADER + BITMAPINFOHEADER for a
+    /// standalone BMP with the given dims/bpp/compression. Pixel data is
+    /// appended by the caller. Uses a 40-byte core header.
+    fn build_bmp_header(width: i32, height: i32, bpp: u16, compression: u32) -> Vec<u8> {
+        build_bmp_header_ex(width, height, bpp, compression, 40)
+    }
+
+    fn build_bmp_header_ex(
+        width: i32,
+        height: i32,
+        bpp: u16,
+        compression: u32,
+        header_size: u32,
+    ) -> Vec<u8> {
+        let mut bmp = Vec::new();
+        let pixel_offset = 14 + header_size;
+        // BITMAPFILEHEADER
+        bmp.extend_from_slice(b"BM");
+        bmp.extend_from_slice(&0u32.to_le_bytes()); // file size (unused)
+        bmp.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        bmp.extend_from_slice(&pixel_offset.to_le_bytes()); // pixel data offset
+        // BITMAPINFOHEADER (always write 40 core bytes)
+        bmp.extend_from_slice(&header_size.to_le_bytes());
+        bmp.extend_from_slice(&width.to_le_bytes());
+        bmp.extend_from_slice(&height.to_le_bytes());
+        bmp.extend_from_slice(&1u16.to_le_bytes()); // planes
+        bmp.extend_from_slice(&bpp.to_le_bytes());
+        bmp.extend_from_slice(&compression.to_le_bytes());
+        bmp.extend_from_slice(&0u32.to_le_bytes()); // image size
+        bmp.extend_from_slice(&0u32.to_le_bytes()); // x ppm
+        bmp.extend_from_slice(&0u32.to_le_bytes()); // y ppm
+        bmp.extend_from_slice(&0u32.to_le_bytes()); // colors used
+        bmp.extend_from_slice(&0u32.to_le_bytes()); // important colors
+        // Pad the header out to `header_size` (for V3/V4 the extra bytes hold
+        // the channel masks, which the caller appends).
+        bmp
+    }
+
+    // ---- Malformed ICO robustness ---------------------------------------
+
+    /// A truncated ICO directory (claims one image, but the entry is cut
+    /// off) must error, not panic with an out-of-bounds read.
+    #[test]
+    fn test_ico_truncated_directory_errors() {
+        // reserved=0, type=1, count=1, then only 4 of the 16 entry bytes.
+        let data = vec![0, 0, 1, 0, 1, 0, 16, 16, 0, 0];
+        assert!(decode_ico(&data).is_err());
+    }
+
+    /// An ICO entry whose image offset/size point past the buffer must
+    /// error.
+    #[test]
+    fn test_ico_bad_offset_errors() {
+        let mut data = vec![0u8; 6 + 16];
+        data[2] = 1; // type
+        data[4] = 1; // count
+        data[6] = 16; // width
+        data[7] = 16; // height
+        // image_size at +8, image_offset at +12 point way past the buffer.
+        data[6 + 8..6 + 12].copy_from_slice(&1000u32.to_le_bytes());
+        data[6 + 12..6 + 16].copy_from_slice(&1000u32.to_le_bytes());
+        assert!(decode_ico(&data).is_err());
+    }
+
+    // ---- WBMP multibyte sniffing ----------------------------------------
+
+    /// WBMP sniffing must accept multibyte width/height integers (dimensions
+    /// larger than 127), not just single-byte ones.
+    #[test]
+    fn test_wbmp_sniff_multibyte_dimensions() {
+        // type=0, fix=0, width=200 (multibyte: 0x81 0x48), height=200.
+        let data = [0u8, 0, 0x81, 0x48, 0x81, 0x48, 0, 0];
+        assert_eq!(ImageFormat::from_magic(&data), ImageFormat::Wbmp);
+    }
+
+    // ---- JPEG SOF / RST marker scan -------------------------------------
+
+    /// `get_jpeg_dimensions` must skip standalone RST markers (no length
+    /// payload) and read dimensions from a progressive SOF2 header.
+    #[test]
+    fn test_jpeg_dimensions_sof2_after_rst() {
+        // SOI, RST0 (standalone), then SOF2 with height=0x0064 width=0x00C8.
+        let data = [
+            0xFF, 0xD8, // SOI
+            0xFF, 0xD0, // RST0 (standalone, no length)
+            0xFF, 0xC2, // SOF2
+            0x00, 0x11, // length = 17
+            0x08, // precision
+            0x00, 0x64, // height = 100
+            0x00, 0xC8, // width = 200
+            0x03, // component count (padding for the scan)
+            0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        let (w, h) = get_jpeg_dimensions(&data).unwrap();
+        assert_eq!((w, h), (200, 100));
+    }
+
+    // ---- GIF canvas compositing -----------------------------------------
+
+    /// A GIF whose first frame is smaller than the logical screen and is
+    /// placed at an offset must decode to the *canvas* size, compositing the
+    /// frame at its left/top over a transparent background.
+    #[cfg(feature = "gif")]
+    #[test]
+    fn test_gif_decode_composites_first_frame_on_canvas() {
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            use gif::{Encoder, Frame, Repeat};
+            // 4x4 logical screen; global palette black/white.
+            let palette = [0, 0, 0, 255, 255, 255];
+            let mut encoder = Encoder::new(&mut buf, 4, 4, &palette).unwrap();
+            encoder.set_repeat(Repeat::Infinite).unwrap();
+            // A 2x2 opaque-white frame placed at (1,1).
+            let mut f = Frame::default();
+            f.width = 2;
+            f.height = 2;
+            f.left = 1;
+            f.top = 1;
+            f.buffer = std::borrow::Cow::Borrowed(&[1u8; 4]);
+            encoder.write_frame(&f).unwrap();
+        }
+
+        let decoded = GifDecoder::new().decode_bytes(&buf).unwrap();
+        assert_eq!(decoded.dimensions(), (4, 4), "decodes to logical screen");
+        let px = decoded.peek_pixels().unwrap();
+        // Pixel (0,0) is outside the frame -> transparent.
+        assert_eq!(&px[0..4], &[0, 0, 0, 0], "corner is transparent");
+        // Pixel (1,1) is the frame's top-left -> white opaque.
+        let off = (1 * 4 + 1) * 4;
+        assert_eq!(&px[off..off + 4], &[255, 255, 255, 255], "frame composited at offset");
+    }
+
+    /// `decode_animated` must report the logical-screen canvas dimensions.
+    #[cfg(feature = "gif")]
+    #[test]
+    fn test_gif_animated_carries_canvas_dimensions() {
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            use gif::{Encoder, Frame};
+            let palette = [0, 0, 0, 255, 255, 255];
+            let mut encoder = Encoder::new(&mut buf, 6, 5, &palette).unwrap();
+            let mut f = Frame::default();
+            f.width = 2;
+            f.height = 2;
+            f.buffer = std::borrow::Cow::Borrowed(&[0u8; 4]);
+            encoder.write_frame(&f).unwrap();
+        }
+        let anim = GifDecoder::new().decode_animated(&buf).unwrap();
+        assert_eq!(anim.canvas_dimensions(), (6, 5));
     }
 }
