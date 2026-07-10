@@ -584,6 +584,19 @@ The first public release of skia-rs, a pure Rust implementation of the Skia 2D g
 - `Alpha8` image sampling decodes as black-with-alpha `(0,0,0,a)`, not white.
 - `ImageShader::sample` honors `SamplingOptions`: `FilterMode::Linear` does
   bilinear filtering (was always nearest-neighbor).
+- Blur filters convert sigma to box radius via
+  `SkBlurMask::ConvertSigmaToRadius` (`(sigma − 0.5)/0.57735`, three-box
+  approximation) instead of truncating sigma — sigma 0.9 now blurs.
+- `BlurMaskFilter` implements `BlurStyle` Solid (src ∪ blur), Outer
+  (blur − src) and Inner (blur ∩ src) per `SkBlurMask`.
+- `ColorFilterImageFilter` unpremultiplies, applies the color matrix in
+  unpremul space, clamps and re-premultiplies (upstream
+  `SkColorFilters::Matrix` default).
+- `MatrixConvolutionImageFilter` honors its `tile_mode` (was always clamp)
+  and, when `convolve_alpha` is false, convolves unpremultiplied RGB and
+  re-premultiplies with the original alpha.
+- `TileImageFilter` fills only `dst_rect`, leaving the rest of the buffer
+  untouched.
 
 ### Planned for v0.2.0
 - Complete wgpu GPU backend
