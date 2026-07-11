@@ -26,9 +26,14 @@
 //!
 //! Reference counting operations (`ref`/`unref`) are **thread-safe** and use
 //! atomic operations internally. The generic [`sk_refcnt_get_count`] /
-//! [`sk_refcnt_is_unique`] entry points perform a magic-tag check before
-//! reading the refcount field, so passing a non-refcounted pointer returns 0
-//! instead of reading arbitrary memory.
+//! [`sk_refcnt_is_unique`] entry points perform a magic-tag check *after*
+//! reading the first 4 bytes at the pointer, so passing a pointer to a
+//! *live, non-refcounted* allocation of at least 4 bytes returns 0 instead
+//! of a bogus refcount. This is a best-effort heuristic, not a memory-safety
+//! guarantee: `ptr` must still be null or a pointer to a valid allocation of
+//! at least `size_of::<RefCountedHeader>()` bytes — passing a dangling,
+//! freed, unaligned, or too-short pointer is still undefined behavior, same
+//! as any other FFI entry point in this crate.
 //!
 //! # ABI Initialization
 //!
@@ -234,7 +239,10 @@ struct RefCountedHeader {
 
 /// Get the reference count of an object.
 ///
-/// Returns 0 if the pointer is null or fails the tag check.
+/// Returns 0 if the pointer is null or fails the tag check. The tag check
+/// is a best-effort heuristic against passing a non-refcounted pointer, not
+/// a memory-safety guarantee: `ptr` must still be null or point to a valid
+/// allocation of at least `size_of::<RefCountedHeader>()` readable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_refcnt_get_count(ptr: *const sk_refcnt_t) -> u32 {
     catch_panic(|| {
@@ -274,19 +282,45 @@ use skia_rs_text::{Font, TextBlob, Typeface, TypefaceRef};
 // =============================================================================
 
 /// Clip operation for canvas clipping functions.
+///
+/// Numeric values match upstream `SkClipOp` (`include/core/SkClipOp.h`):
+/// `kDifference = 0`, `kIntersect = 1`. These constants are exposed to C as
+/// plain `uint32_t` (see [`sk_clip_op_t`]) rather than a Rust-repr enum
+/// parameter, because an out-of-range value received directly into a Rust
+/// `#[repr(u32)] enum` parameter is undefined behavior; functions that take
+/// a clip op decode the raw integer via [`decode_clip_op`] instead.
 #[repr(u32)]
-#[derive(Debug, Clone, Copy)]
-pub enum sk_clip_op_t {
-    /// Intersect the existing clip with the new region.
-    Intersect = 0,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkClipOp {
     /// Subtract the new region from the existing clip (difference).
-    Difference = 1,
+    Difference = 0,
+    /// Intersect the existing clip with the new region.
+    Intersect = 1,
+}
+
+/// C ABI type for [`SkClipOp`]. Functions taking a clip op accept this raw
+/// `uint32_t` and decode it via [`decode_clip_op`], rejecting out-of-range
+/// values instead of constructing an invalid Rust enum from C.
+pub type sk_clip_op_t = u32;
+
+/// Decode a raw `sk_clip_op_t` into [`ClipOp`]. Returns `None` for any value
+/// other than the two defined by upstream `SkClipOp`.
+fn decode_clip_op(v: sk_clip_op_t) -> Option<ClipOp> {
+    match v {
+        0 => Some(ClipOp::Difference),
+        1 => Some(ClipOp::Intersect),
+        _ => None,
+    }
 }
 
 /// Region operation for region manipulation functions.
+///
+/// Numeric values match upstream `SkRegion::Op` (`include/core/SkRegion.h`).
+/// Exposed to C as a raw `uint32_t` (see [`sk_region_op_t`]) and decoded via
+/// [`decode_region_op`], which rejects out-of-range values.
 #[repr(u32)]
-#[derive(Debug, Clone, Copy)]
-pub enum sk_region_op_t {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkRegionOp {
     /// Subtract the operand from the target.
     Difference = 0,
     /// Intersect target and operand.
@@ -301,14 +335,49 @@ pub enum sk_region_op_t {
     Replace = 5,
 }
 
+/// C ABI type for [`SkRegionOp`]; see [`decode_region_op`].
+pub type sk_region_op_t = u32;
+
+/// Decode a raw `sk_region_op_t` into [`RegionOp`]. Returns `None` for any
+/// out-of-range value.
+fn decode_region_op(v: sk_region_op_t) -> Option<RegionOp> {
+    match v {
+        0 => Some(RegionOp::Difference),
+        1 => Some(RegionOp::Intersect),
+        2 => Some(RegionOp::Union),
+        3 => Some(RegionOp::Xor),
+        4 => Some(RegionOp::ReverseDifference),
+        5 => Some(RegionOp::Replace),
+        _ => None,
+    }
+}
+
 /// Trim path effect mode.
+///
+/// Numeric values match upstream `SkTrimPathEffect::Mode`
+/// (`include/effects/SkTrimPathEffect.h`): `kNormal = 0`, `kInverted = 1`.
+/// Exposed to C as a raw `uint32_t` (see [`sk_trim_mode_t`]) and decoded via
+/// [`decode_trim_mode`], which rejects out-of-range values.
 #[repr(u32)]
-#[derive(Debug, Clone, Copy)]
-pub enum sk_trim_mode_t {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkTrimMode {
     /// Normal trim: keep segment from start to end.
     Normal = 0,
     /// Inverted trim: discard segment from start to end.
     Inverted = 1,
+}
+
+/// C ABI type for [`SkTrimMode`]; see [`decode_trim_mode`].
+pub type sk_trim_mode_t = u32;
+
+/// Decode a raw `sk_trim_mode_t` into [`TrimMode`]. Returns `None` for any
+/// out-of-range value.
+fn decode_trim_mode(v: sk_trim_mode_t) -> Option<TrimMode> {
+    match v {
+        0 => Some(TrimMode::Normal),
+        1 => Some(TrimMode::Inverted),
+        _ => None,
+    }
 }
 
 /// C-compatible point structure.
@@ -488,15 +557,39 @@ impl From<sk_color4f_t> for Color4f {
     }
 }
 
-fn decode_color_type(v: u32) -> ColorType {
+/// Decode a raw `sk_color_type_t` into [`ColorType`], matching upstream
+/// `SkColorType` numbering (`include/core/SkColorType.h`): `kUnknown = 0`,
+/// `kAlpha_8 = 1`, `kRGB_565 = 2`, `kARGB_4444 = 3`, `kRGBA_8888 = 4`,
+/// `kRGB_888x = 5`, `kBGRA_8888 = 6`, `kRGBA_1010102 = 7`,
+/// `kBGRA_1010102 = 8`, `kRGB_101010x = 9`, `kBGR_101010x = 10`,
+/// `kGray_8 = 14`, `kRGBA_F16Norm = 15`, `kRGBA_F16 = 16`,
+/// `kRGBA_F32 = 18`, `kSRGBA_8888 = 26`, `kR8_unorm = 27`. Any value that
+/// upstream defines but this crate's [`ColorType`] has no representation
+/// for (and any wholly unknown value) returns `None` — never a silent
+/// fallback to RGBA.
+fn decode_color_type(v: u32) -> Option<ColorType> {
     match v {
-        0 => ColorType::Unknown,
-        1 => ColorType::Alpha8,
-        2 => ColorType::Rgb565,
-        3 => ColorType::Argb4444,
-        4 => ColorType::Rgba8888,
-        5 => ColorType::Bgra8888,
-        _ => ColorType::Rgba8888,
+        0 => Some(ColorType::Unknown),
+        1 => Some(ColorType::Alpha8),
+        2 => Some(ColorType::Rgb565),
+        3 => Some(ColorType::Argb4444),
+        4 => Some(ColorType::Rgba8888),
+        5 => Some(ColorType::Rgb888x),
+        6 => Some(ColorType::Bgra8888),
+        7 => Some(ColorType::Rgba1010102),
+        8 => Some(ColorType::Bgra1010102),
+        9 => Some(ColorType::Rgb101010x),
+        10 => Some(ColorType::Bgr101010x),
+        14 => Some(ColorType::Gray8),
+        15 => Some(ColorType::RgbaF16Norm),
+        16 => Some(ColorType::RgbaF16),
+        18 => Some(ColorType::RgbaF32),
+        26 => Some(ColorType::Srgba8888),
+        // `ColorType::R8Unorm` (15) is mislabeled "8-bit palette index" in
+        // skia-rs-core; `R8Unorm2` (22) is the true single-red-channel
+        // format matching upstream `kR8_unorm`.
+        27 => Some(ColorType::R8Unorm2),
+        _ => None,
     }
 }
 
@@ -581,10 +674,13 @@ pub unsafe extern "C" fn sk_surface_new_raster_with_info(
         }
 
         let info = &*info;
+        let Some(color_type) = decode_color_type(info.color_type) else {
+            return ptr::null_mut();
+        };
         let img_info = match ImageInfo::new(
             info.width,
             info.height,
-            decode_color_type(info.color_type),
+            color_type,
             decode_alpha_type(info.alpha_type),
         ) {
             Ok(i) => i,
@@ -610,7 +706,11 @@ pub unsafe extern "C" fn sk_surface_ref(surface: *mut sk_surface_t) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_surface_unref(surface: *mut sk_surface_t) {
     catch_panic_void(|| {
-        RefCounted::unref_ptr(surface);
+        if RefCounted::unref_ptr(surface) {
+            // The surface was freed — drop any stale lock entry so its
+            // address can be safely reused by a future allocation.
+            locked_surfaces().lock().unwrap().remove(&(surface as usize));
+        }
     });
 }
 
@@ -826,30 +926,72 @@ pub unsafe extern "C" fn sk_paint_is_antialias(paint: *const sk_paint_t) -> bool
 
 /// Set the paint's blend mode (matches [`abi::SkBlendModeABI`]).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_paint_set_blend_mode(paint: *mut sk_paint_t, mode: u32) {
-    catch_panic_void(|| {
-        if let Some(p) = RefCounted::get_mut(paint) {
-            let mode = match mode {
-                0 => BlendMode::Clear,
-                1 => BlendMode::Src,
-                2 => BlendMode::Dst,
-                3 => BlendMode::SrcOver,
-                4 => BlendMode::DstOver,
-                5 => BlendMode::SrcIn,
-                6 => BlendMode::DstIn,
-                7 => BlendMode::SrcOut,
-                8 => BlendMode::DstOut,
-                9 => BlendMode::SrcATop,
-                10 => BlendMode::DstATop,
-                11 => BlendMode::Xor,
-                12 => BlendMode::Plus,
-                13 => BlendMode::Modulate,
-                14 => BlendMode::Screen,
-                _ => BlendMode::SrcOver,
-            };
-            p.set_blend_mode(mode);
-        }
-    });
+/// Decode a raw `sk_blend_mode_t` into [`BlendMode`], matching upstream
+/// `SkBlendMode` numbering (`include/core/SkBlendMode.h`), all 29 modes
+/// (`kClear = 0` .. `kLuminosity = 28`). Returns `None` for any
+/// out-of-range value.
+fn decode_blend_mode(v: u32) -> Option<BlendMode> {
+    match v {
+        0 => Some(BlendMode::Clear),
+        1 => Some(BlendMode::Src),
+        2 => Some(BlendMode::Dst),
+        3 => Some(BlendMode::SrcOver),
+        4 => Some(BlendMode::DstOver),
+        5 => Some(BlendMode::SrcIn),
+        6 => Some(BlendMode::DstIn),
+        7 => Some(BlendMode::SrcOut),
+        8 => Some(BlendMode::DstOut),
+        9 => Some(BlendMode::SrcATop),
+        10 => Some(BlendMode::DstATop),
+        11 => Some(BlendMode::Xor),
+        12 => Some(BlendMode::Plus),
+        13 => Some(BlendMode::Modulate),
+        14 => Some(BlendMode::Screen),
+        15 => Some(BlendMode::Overlay),
+        16 => Some(BlendMode::Darken),
+        17 => Some(BlendMode::Lighten),
+        18 => Some(BlendMode::ColorDodge),
+        19 => Some(BlendMode::ColorBurn),
+        20 => Some(BlendMode::HardLight),
+        21 => Some(BlendMode::SoftLight),
+        22 => Some(BlendMode::Difference),
+        23 => Some(BlendMode::Exclusion),
+        24 => Some(BlendMode::Multiply),
+        25 => Some(BlendMode::Hue),
+        26 => Some(BlendMode::Saturation),
+        27 => Some(BlendMode::Color),
+        28 => Some(BlendMode::Luminosity),
+        _ => None,
+    }
+}
+
+/// Set the paint's blend mode. `mode` follows upstream `SkBlendMode`
+/// (0-28); see [`decode_blend_mode`]. Returns false (leaving the paint's
+/// blend mode unchanged) if `paint` is null or `mode` is out of range.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sk_paint_set_blend_mode(paint: *mut sk_paint_t, mode: u32) -> bool {
+    catch_panic(|| {
+        let Some(p) = RefCounted::get_mut(paint) else {
+            return false;
+        };
+        let Some(mode) = decode_blend_mode(mode) else {
+            return false;
+        };
+        p.set_blend_mode(mode);
+        true
+    })
+}
+
+/// Get the paint's blend mode as a raw `sk_blend_mode_t` (upstream
+/// `SkBlendMode` numbering, 0-28). Returns `SrcOver` (3) if `paint` is null,
+/// matching `SkPaint`'s default blend mode.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sk_paint_get_blend_mode(paint: *const sk_paint_t) -> u32 {
+    catch_panic(|| {
+        RefCounted::get_ref(paint)
+            .map(|p| p.blend_mode() as u32)
+            .unwrap_or(BlendMode::SrcOver as u32)
+    })
 }
 
 /// Attach a shader to the paint. Passing null clears it.
@@ -1377,7 +1519,15 @@ pub unsafe extern "C" fn sk_matrix_set_rotate(matrix: *mut sk_matrix_t, degrees:
     });
 }
 
-/// Concatenate two matrices.
+/// Concatenate two matrices: `*result = a * b`.
+///
+/// `result` may alias `a` and/or `b` (in-place concat is a supported usage,
+/// mirroring `SkMatrix::preConcat`/`postConcat` call patterns). Both inputs
+/// are copied into owned locals via [`ptr::read`] *before* anything is
+/// written through `result`, so no `&`/`&mut` reference ever aliases the
+/// same memory — forming `result.as_mut()` while `a`/`b` were still live
+/// `&`-refs into the same allocation would be immediate UB when `result`
+/// aliases an input.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_matrix_concat(
     result: *mut sk_matrix_t,
@@ -1385,15 +1535,21 @@ pub unsafe extern "C" fn sk_matrix_concat(
     b: *const sk_matrix_t,
 ) {
     catch_panic_void(|| {
-        if let (Some(r), Some(a), Some(b)) = (result.as_mut(), a.as_ref(), b.as_ref()) {
-            let ma: Matrix = (*a).into();
-            let mb: Matrix = (*b).into();
-            *r = ma.concat(&mb).into();
+        if result.is_null() || a.is_null() || b.is_null() {
+            return;
         }
+        let ma: Matrix = ptr::read(a).into();
+        let mb: Matrix = ptr::read(b).into();
+        let out: sk_matrix_t = ma.concat(&mb).into();
+        ptr::write(result, out);
     });
 }
 
 /// Map a point through a matrix.
+///
+/// `result` may alias `point` (in-place mapping). `matrix`/`point` are read
+/// via [`ptr::read`] before writing through `result`; see
+/// [`sk_matrix_concat`] for why that ordering matters.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_matrix_map_point(
     matrix: *const sk_matrix_t,
@@ -1401,32 +1557,36 @@ pub unsafe extern "C" fn sk_matrix_map_point(
     result: *mut sk_point_t,
 ) {
     catch_panic_void(|| {
-        if let (Some(m), Some(p), Some(r)) = (matrix.as_ref(), point.as_ref(), result.as_mut()) {
-            let mat: Matrix = (*m).into();
-            let pt: Point = (*p).into();
-            *r = mat.map_point(pt).into();
+        if matrix.is_null() || point.is_null() || result.is_null() {
+            return;
         }
+        let mat: Matrix = ptr::read(matrix).into();
+        let pt: Point = ptr::read(point).into();
+        let out: sk_point_t = mat.map_point(pt).into();
+        ptr::write(result, out);
     });
 }
 
 /// Invert a matrix into `result`. Returns true on success, false if the
 /// matrix is singular (non-invertible); on failure `result` is unchanged.
+///
+/// `result` may alias `matrix` (in-place inversion); `matrix` is read via
+/// [`ptr::read`] before writing through `result`; see [`sk_matrix_concat`]
+/// for why that ordering matters.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_matrix_invert(
     matrix: *const sk_matrix_t,
     result: *mut sk_matrix_t,
 ) -> bool {
     catch_panic(|| {
-        let Some(m) = matrix.as_ref() else {
+        if matrix.is_null() || result.is_null() {
             return false;
-        };
-        let Some(r) = result.as_mut() else {
-            return false;
-        };
-        let mat: Matrix = (*m).into();
+        }
+        let mat: Matrix = ptr::read(matrix).into();
         match mat.invert() {
             Some(inv) => {
-                *r = inv.into();
+                let out: sk_matrix_t = inv.into();
+                ptr::write(result, out);
                 true
             }
             None => false,
@@ -1463,9 +1623,12 @@ pub unsafe extern "C" fn sk_matrix_determinant(matrix: *const sk_matrix_t) -> f3
 // =============================================================================
 
 /// Get the library version as a NUL-terminated static string.
+///
+/// Sourced from the crate's `Cargo.toml` version (`CARGO_PKG_VERSION`) at
+/// compile time, so it always matches the shipped `skia-rs-ffi` release.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_version() -> *const c_char {
-    static VERSION: &[u8] = b"skia-rs 0.1.0\0";
+    static VERSION: &str = concat!("skia-rs ", env!("CARGO_PKG_VERSION"), "\0");
     VERSION.as_ptr() as *const c_char
 }
 
@@ -1479,10 +1642,31 @@ pub unsafe extern "C" fn sk_is_available() -> bool {
 // Surface drawing helpers (simplified path; prefer sk_canvas_* for parity)
 // =============================================================================
 
-/// Clear a surface with a color.
+/// Global set of surface pointer addresses currently locked via
+/// [`sk_surface_lock_canvas`]. Backs the documented lock contract: only one
+/// canvas may be held per surface at a time, and the `sk_surface_draw_*` /
+/// [`sk_surface_clear`] convenience helpers (which draw directly on the
+/// surface, bypassing the locked canvas) are rejected while a lock is held.
+fn locked_surfaces() -> &'static std::sync::Mutex<std::collections::HashSet<usize>> {
+    static LOCKED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<usize>>> =
+        std::sync::OnceLock::new();
+    LOCKED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Returns true if `surface` currently has an outstanding lock from
+/// [`sk_surface_lock_canvas`].
+unsafe fn is_surface_locked(surface: *const sk_surface_t) -> bool {
+    !surface.is_null() && locked_surfaces().lock().unwrap().contains(&(surface as usize))
+}
+
+/// Clear a surface with a color. No-op while the surface is locked (see
+/// [`sk_surface_lock_canvas`]).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_surface_clear(surface: *mut sk_surface_t, color: sk_color_t) {
     catch_panic_void(|| {
+        if is_surface_locked(surface) {
+            return;
+        }
         if let Some(s) = RefCounted::get_mut(surface) {
             let mut canvas = s.raster_canvas();
             canvas.clear(Color(color));
@@ -1490,7 +1674,8 @@ pub unsafe extern "C" fn sk_surface_clear(surface: *mut sk_surface_t, color: sk_
     });
 }
 
-/// Draw a rect on a surface.
+/// Draw a rect on a surface. No-op while the surface is locked (see
+/// [`sk_surface_lock_canvas`]).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_surface_draw_rect(
     surface: *mut sk_surface_t,
@@ -1498,6 +1683,9 @@ pub unsafe extern "C" fn sk_surface_draw_rect(
     paint: *const sk_paint_t,
 ) {
     catch_panic_void(|| {
+        if is_surface_locked(surface) {
+            return;
+        }
         if let (Some(s), Some(r), Some(p)) = (
             RefCounted::get_mut(surface),
             rect.as_ref(),
@@ -1509,7 +1697,8 @@ pub unsafe extern "C" fn sk_surface_draw_rect(
     });
 }
 
-/// Draw a circle on a surface.
+/// Draw a circle on a surface. No-op while the surface is locked (see
+/// [`sk_surface_lock_canvas`]).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_surface_draw_circle(
     surface: *mut sk_surface_t,
@@ -1519,6 +1708,9 @@ pub unsafe extern "C" fn sk_surface_draw_circle(
     paint: *const sk_paint_t,
 ) {
     catch_panic_void(|| {
+        if is_surface_locked(surface) {
+            return;
+        }
         if let (Some(s), Some(p)) = (RefCounted::get_mut(surface), RefCounted::get_ref(paint)) {
             let mut canvas = s.raster_canvas();
             canvas.draw_circle(Point::new(cx, cy), radius, p);
@@ -1526,7 +1718,8 @@ pub unsafe extern "C" fn sk_surface_draw_circle(
     });
 }
 
-/// Draw a path on a surface.
+/// Draw a path on a surface. No-op while the surface is locked (see
+/// [`sk_surface_lock_canvas`]).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_surface_draw_path(
     surface: *mut sk_surface_t,
@@ -1534,6 +1727,9 @@ pub unsafe extern "C" fn sk_surface_draw_path(
     paint: *const sk_paint_t,
 ) {
     catch_panic_void(|| {
+        if is_surface_locked(surface) {
+            return;
+        }
         if let (Some(s), Some(path), Some(p)) = (
             RefCounted::get_mut(surface),
             RefCounted::get_ref(path),
@@ -1545,7 +1741,8 @@ pub unsafe extern "C" fn sk_surface_draw_path(
     });
 }
 
-/// Draw a line on a surface.
+/// Draw a line on a surface. No-op while the surface is locked (see
+/// [`sk_surface_lock_canvas`]).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_surface_draw_line(
     surface: *mut sk_surface_t,
@@ -1556,6 +1753,9 @@ pub unsafe extern "C" fn sk_surface_draw_line(
     paint: *const sk_paint_t,
 ) {
     catch_panic_void(|| {
+        if is_surface_locked(surface) {
+            return;
+        }
         if let (Some(s), Some(p)) = (RefCounted::get_mut(surface), RefCounted::get_ref(paint)) {
             let mut canvas = s.raster_canvas();
             canvas.draw_line(Point::new(x0, y0), Point::new(x1, y1), p);
@@ -1579,6 +1779,10 @@ pub struct sk_canvas_t {
     width: i32,
     height: i32,
     state: CanvasState,
+    /// Identity (pointer address) of the [`sk_surface_t`] this canvas was
+    /// locked from, used to release the entry in [`LOCKED_SURFACES`] on
+    /// [`sk_canvas_release`]. 0 for canvases not tied to a surface lock.
+    locked_surface: usize,
 }
 
 /// Clip entry retained across the FFI canvas's transient [`Canvas<'_>`] instances.
@@ -1662,13 +1866,26 @@ impl sk_canvas_t {
 ///
 /// The returned canvas is valid until [`sk_canvas_release`] is called and
 /// must not outlive `surface`. Only one canvas may be held per surface at
-/// a time — attempting to lock twice returns null.
+/// a time — attempting to lock twice returns null. While a surface is
+/// locked, the `sk_surface_draw_*`/`sk_surface_clear` convenience helpers
+/// (which bypass the locked canvas and draw directly on the surface) are
+/// rejected (no-op) to avoid two independent mutable views of the same
+/// pixel buffer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_surface_lock_canvas(
     surface: *mut sk_surface_t,
 ) -> *mut sk_canvas_t {
     catch_panic(|| {
+        if surface.is_null() {
+            return ptr::null_mut();
+        }
+        let key = surface as usize;
+        if !locked_surfaces().lock().unwrap().insert(key) {
+            // Already locked.
+            return ptr::null_mut();
+        }
         let Some(s) = RefCounted::get_mut(surface) else {
+            locked_surfaces().lock().unwrap().remove(&key);
             return ptr::null_mut();
         };
         let width = s.width();
@@ -1684,6 +1901,7 @@ pub unsafe extern "C" fn sk_surface_lock_canvas(
                 stack: Vec::new(),
                 clips: Vec::new(),
             },
+            locked_surface: key,
         }))
     })
 }
@@ -1693,7 +1911,10 @@ pub unsafe extern "C" fn sk_surface_lock_canvas(
 pub unsafe extern "C" fn sk_canvas_release(canvas: *mut sk_canvas_t) {
     catch_panic_void(|| {
         if !canvas.is_null() {
-            drop(Box::from_raw(canvas));
+            let c = Box::from_raw(canvas);
+            if c.locked_surface != 0 {
+                locked_surfaces().lock().unwrap().remove(&c.locked_surface);
+            }
         }
     });
 }
@@ -1825,7 +2046,10 @@ pub unsafe extern "C" fn sk_canvas_rotate(canvas: *mut sk_canvas_t, degrees: f32
 pub unsafe extern "C" fn sk_canvas_clear(canvas: *mut sk_canvas_t, color: sk_color_t) {
     catch_panic_void(|| {
         let Some(c) = canvas.as_mut() else { return };
-        let mut inner = c.canvas();
+        // Route through `canvas_with_state` (not the bare `canvas()`) so
+        // `clear` respects the canvas's current clip stack, matching
+        // upstream `SkCanvas::clear` semantics.
+        let mut inner = c.canvas_with_state();
         inner.clear(Color(color));
     });
 }
@@ -1874,8 +2098,9 @@ pub unsafe extern "C" fn sk_canvas_draw_path(
 
 /// Intersect or subtract a rectangle from the clip.
 ///
-/// `op` follows [`ClipOp`]: 0 = Intersect, 1 = Difference. Returns false if
-/// the canvas handle is null; otherwise true.
+/// `op` follows upstream `SkClipOp`: 0 = Difference, 1 = Intersect (see
+/// [`decode_clip_op`]). Returns false if the canvas handle is null or `op`
+/// is out of range; otherwise true.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_canvas_clip_rect(
     canvas: *mut sk_canvas_t,
@@ -1890,9 +2115,8 @@ pub unsafe extern "C" fn sk_canvas_clip_rect(
         let Some(r) = rect.as_ref() else {
             return false;
         };
-        let clip_op = match op {
-            sk_clip_op_t::Intersect => ClipOp::Intersect,
-            sk_clip_op_t::Difference => ClipOp::Difference,
+        let Some(clip_op) = decode_clip_op(op) else {
+            return false;
         };
         c.state.clips.push(ClipEntry::Rect {
             rect: Rect::from(*r),
@@ -1904,6 +2128,9 @@ pub unsafe extern "C" fn sk_canvas_clip_rect(
 }
 
 /// Intersect or subtract a path from the clip.
+///
+/// `op` follows upstream `SkClipOp`; see [`decode_clip_op`]. Returns false
+/// if `op` is out of range.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_canvas_clip_path(
     canvas: *mut sk_canvas_t,
@@ -1918,9 +2145,8 @@ pub unsafe extern "C" fn sk_canvas_clip_path(
         let Some(p) = RefCounted::get_ref(path) else {
             return false;
         };
-        let clip_op = match op {
-            sk_clip_op_t::Intersect => ClipOp::Intersect,
-            sk_clip_op_t::Difference => ClipOp::Difference,
+        let Some(clip_op) = decode_clip_op(op) else {
+            return false;
         };
         c.state.clips.push(ClipEntry::Path {
             path: p.clone(),
@@ -2495,6 +2721,10 @@ pub unsafe extern "C" fn sk_matrix44_from_array(values: *const f32) -> sk_matrix
 }
 
 /// Map a 2D point through a 4x4 matrix (projects through W).
+///
+/// `result` may alias `point` (in-place mapping); inputs are read via
+/// [`ptr::read`] before writing through `result` — see
+/// [`sk_matrix_concat`] for why that ordering matters.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_matrix44_map_point(
     matrix: *const sk_matrix44_t,
@@ -2502,32 +2732,36 @@ pub unsafe extern "C" fn sk_matrix44_map_point(
     result: *mut sk_point_t,
 ) {
     catch_panic_void(|| {
-        if let (Some(m), Some(p), Some(r)) = (matrix.as_ref(), point.as_ref(), result.as_mut()) {
-            let mat: Matrix44 = (*m).into();
-            let pt: Point = (*p).into();
-            *r = mat.map_point(pt).into();
+        if matrix.is_null() || point.is_null() || result.is_null() {
+            return;
         }
+        let mat: Matrix44 = ptr::read(matrix).into();
+        let pt: Point = ptr::read(point).into();
+        let out: sk_point_t = mat.map_point(pt).into();
+        ptr::write(result, out);
     });
 }
 
 /// Invert a 4x4 matrix. Returns true on success; `result` is unchanged if
 /// the matrix is singular.
+///
+/// `result` may alias `matrix` (in-place inversion); `matrix` is read via
+/// [`ptr::read`] before writing through `result` — see
+/// [`sk_matrix_concat`] for why that ordering matters.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_matrix44_invert(
     matrix: *const sk_matrix44_t,
     result: *mut sk_matrix44_t,
 ) -> bool {
     catch_panic(|| {
-        let Some(m) = matrix.as_ref() else {
+        if matrix.is_null() || result.is_null() {
             return false;
-        };
-        let Some(r) = result.as_mut() else {
-            return false;
-        };
-        let mat: Matrix44 = (*m).into();
+        }
+        let mat: Matrix44 = ptr::read(matrix).into();
         match mat.invert() {
             Some(inv) => {
-                *r = inv.into();
+                let out: sk_matrix44_t = inv.into();
+                ptr::write(result, out);
                 true
             }
             None => false,
@@ -2559,7 +2793,11 @@ pub unsafe extern "C" fn sk_matrix44_determinant(matrix: *const sk_matrix44_t) -
     })
 }
 
-/// Concatenate two 4x4 matrices: `result = a * b`.
+/// Concatenate two 4x4 matrices: `*result = a * b`.
+///
+/// `result` may alias `a` and/or `b` (in-place concat); inputs are read via
+/// [`ptr::read`] before writing through `result` — see
+/// [`sk_matrix_concat`] for why that ordering matters.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_matrix44_concat(
     result: *mut sk_matrix44_t,
@@ -2567,11 +2805,13 @@ pub unsafe extern "C" fn sk_matrix44_concat(
     b: *const sk_matrix44_t,
 ) {
     catch_panic_void(|| {
-        if let (Some(r), Some(a), Some(b)) = (result.as_mut(), a.as_ref(), b.as_ref()) {
-            let ma: Matrix44 = (*a).into();
-            let mb: Matrix44 = (*b).into();
-            *r = ma.concat(&mb).into();
+        if result.is_null() || a.is_null() || b.is_null() {
+            return;
         }
+        let ma: Matrix44 = ptr::read(a).into();
+        let mb: Matrix44 = ptr::read(b).into();
+        let out: sk_matrix44_t = ma.concat(&mb).into();
+        ptr::write(result, out);
     });
 }
 
@@ -2753,6 +2993,12 @@ pub struct sk_picture_recorder_t {
     /// State of the borrowed recording canvas (if any).
     state: Option<CanvasState>,
     recording: bool,
+    /// Liveness flag shared with every [`sk_recording_canvas_t`] handed out
+    /// by [`sk_picture_recorder_begin_recording`]. Cleared *before* the
+    /// recorder is freed so outstanding recording-canvas handles can detect
+    /// use-after-free without ever dereferencing the (now dangling)
+    /// `recorder` pointer — see [`resolve_recording_canvas`].
+    alive: Arc<AtomicBool>,
 }
 
 /// Create a new picture recorder.
@@ -2764,15 +3010,23 @@ pub unsafe extern "C" fn sk_picture_recorder_new() -> *mut sk_picture_recorder_t
             cull_rect: Rect::EMPTY,
             state: None,
             recording: false,
+            alive: Arc::new(AtomicBool::new(true)),
         }))
     })
 }
 
 /// Destroy a picture recorder.
+///
+/// Any outstanding [`sk_recording_canvas_t`] handles are left dangling by
+/// design (the caller is responsible for releasing them), but every
+/// `sk_recording_canvas_*` entry point checks the shared liveness flag
+/// before touching the recorder, so calling them after this returns errors
+/// out safely instead of dereferencing freed memory.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_picture_recorder_delete(r: *mut sk_picture_recorder_t) {
     catch_panic_void(|| {
         if !r.is_null() {
+            (*r).alive.store(false, Ordering::Release);
             drop(Box::from_raw(r));
         }
     });
@@ -2784,20 +3038,31 @@ pub unsafe extern "C" fn sk_picture_recorder_delete(r: *mut sk_picture_recorder_
 /// [`sk_canvas_t`] (which is raster-backed).
 pub struct sk_recording_canvas_t {
     /// Points back to the owning recorder. The recorder outlives the
-    /// recording canvas.
+    /// recording canvas under normal use, but callers can delete the
+    /// recorder early — [`resolve_recording_canvas`] checks `alive` before
+    /// ever dereferencing this pointer, so that case is handled safely
+    /// rather than relying on caller discipline.
     recorder: *mut sk_picture_recorder_t,
+    /// Cloned from the owning recorder's `alive` flag at `begin_recording`
+    /// time. Never dereferences `recorder`.
+    alive: Arc<AtomicBool>,
 }
 
 /// Resolve a recording-canvas handle to its active `(recorder, state)` pair.
 ///
-/// Returns `None` if the handle, the recorder pointer it wraps, or the
-/// recorder's `state` (only populated between `begin_recording` and
-/// `finish_recording`) is absent. Collapsing the triple-lookup keeps the
-/// individual entry points to one line of error-path boilerplate.
+/// Returns `None` if the handle is null, the recorder that created it has
+/// since been deleted (checked via the shared `alive` flag *before* the
+/// `recorder` pointer is ever dereferenced — deleting the recorder frees
+/// that memory, so touching it afterwards would be undefined behavior), or
+/// the recorder's `state` (only populated between `begin_recording` and
+/// `finish_recording`) is absent.
 unsafe fn resolve_recording_canvas<'a>(
     canvas: *mut sk_recording_canvas_t,
 ) -> Option<(&'a mut sk_picture_recorder_t, &'a mut CanvasState)> {
     let rc = canvas.as_mut()?;
+    if !rc.alive.load(Ordering::Acquire) {
+        return None;
+    }
     let rec = rc.recorder.as_mut()?;
     // Split borrow: `rec.state` and `rec` otherwise alias.
     let state_ptr: *mut Option<CanvasState> = &mut rec.state;
@@ -2834,7 +3099,8 @@ pub unsafe extern "C" fn sk_picture_recorder_begin_recording(
             stack: Vec::new(),
             clips: Vec::new(),
         });
-        Box::into_raw(Box::new(sk_recording_canvas_t { recorder: r }))
+        let alive = rec.alive.clone();
+        Box::into_raw(Box::new(sk_recording_canvas_t { recorder: r, alive }))
     })
 }
 
@@ -3059,6 +3325,9 @@ pub unsafe extern "C" fn sk_region_set_rect(
 }
 
 /// Apply a rect op on the region.
+///
+/// `op` follows upstream `SkRegion::Op`; see [`decode_region_op`]. Returns
+/// false if `op` is out of range.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_region_op_rect(
     region: *mut sk_region_t,
@@ -3072,13 +3341,8 @@ pub unsafe extern "C" fn sk_region_op_rect(
         let Some(src) = rect.as_ref() else {
             return false;
         };
-        let region_op = match op {
-            sk_region_op_t::Difference => RegionOp::Difference,
-            sk_region_op_t::Intersect => RegionOp::Intersect,
-            sk_region_op_t::Union => RegionOp::Union,
-            sk_region_op_t::Xor => RegionOp::Xor,
-            sk_region_op_t::ReverseDifference => RegionOp::ReverseDifference,
-            sk_region_op_t::Replace => RegionOp::Replace,
+        let Some(region_op) = decode_region_op(op) else {
+            return false;
         };
         r.op_rect(
             IRect::new(src.left, src.top, src.right, src.bottom),
@@ -3168,7 +3432,8 @@ pub unsafe extern "C" fn sk_patheffect_new_dash(
 }
 
 /// Create a trim path effect. `start` and `end` are normalized lengths
-/// in [0, 1].
+/// in [0, 1]. `mode` follows upstream `SkTrimPathEffect::Mode`; see
+/// [`decode_trim_mode`]. Returns null if `mode` is out of range.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_patheffect_new_trim(
     start: f32,
@@ -3176,9 +3441,8 @@ pub unsafe extern "C" fn sk_patheffect_new_trim(
     mode: sk_trim_mode_t,
 ) -> *mut sk_patheffect_t {
     catch_panic(|| {
-        let trim_mode = match mode {
-            sk_trim_mode_t::Normal => TrimMode::Normal,
-            sk_trim_mode_t::Inverted => TrimMode::Inverted,
+        let Some(trim_mode) = decode_trim_mode(mode) else {
+            return ptr::null_mut();
         };
         match TrimEffect::new(start, end, trim_mode) {
             Some(e) => {
@@ -3757,7 +4021,7 @@ mod tests {
                 right: 7.0,
                 bottom: 7.0,
             };
-            assert!(sk_canvas_clip_rect(canvas, &clip_rect, sk_clip_op_t::Intersect, false));
+            assert!(sk_canvas_clip_rect(canvas, &clip_rect, SkClipOp::Intersect as u32, false));
 
             // Draw a full-canvas white rect — only the inner box survives.
             let paint = sk_paint_new();
@@ -3799,7 +4063,7 @@ mod tests {
             let path = sk_pathbuilder_detach(b);
             sk_pathbuilder_delete(b);
 
-            assert!(sk_canvas_clip_path(canvas, path, sk_clip_op_t::Intersect, true));
+            assert!(sk_canvas_clip_path(canvas, path, SkClipOp::Intersect as u32, true));
 
             sk_path_unref(path);
             sk_canvas_release(canvas);
@@ -3818,10 +4082,63 @@ mod tests {
                 right: 5.0,
                 bottom: 5.0,
             };
-            // Difference op should work.
-            assert!(sk_canvas_clip_rect(canvas, &rect, sk_clip_op_t::Difference, false));
+            // A valid op (Difference = 0) should work.
+            assert!(sk_canvas_clip_rect(canvas, &rect, SkClipOp::Difference as u32, false));
+            // An out-of-range raw op value must be rejected, not silently
+            // coerced into a Rust enum (which would be UB) or defaulted.
+            assert!(!sk_canvas_clip_rect(canvas, &rect, 2, false));
+            assert!(!sk_canvas_clip_rect(canvas, &rect, u32::MAX, false));
             sk_canvas_release(canvas);
             sk_surface_unref(surface);
+        }
+    }
+
+    #[test]
+    fn test_canvas_clip_path_rejects_invalid_op() {
+        unsafe {
+            let surface = sk_surface_new_raster(10, 10);
+            let canvas = sk_surface_lock_canvas(surface);
+            let b = sk_pathbuilder_new();
+            sk_pathbuilder_add_circle(b, 5.0, 5.0, 3.0);
+            let path = sk_pathbuilder_detach(b);
+            sk_pathbuilder_delete(b);
+
+            assert!(!sk_canvas_clip_path(canvas, path, 99, true));
+
+            sk_path_unref(path);
+            sk_canvas_release(canvas);
+            sk_surface_unref(surface);
+        }
+    }
+
+    #[test]
+    fn test_region_op_rect_rejects_invalid_op() {
+        unsafe {
+            let r = sk_region_new();
+            let rect = sk_irect_t {
+                left: 0,
+                top: 0,
+                right: 10,
+                bottom: 10,
+            };
+            assert!(sk_region_set_rect(r, &rect));
+            let other = sk_irect_t {
+                left: 5,
+                top: 5,
+                right: 15,
+                bottom: 15,
+            };
+            assert!(!sk_region_op_rect(r, &other, 6));
+            assert!(!sk_region_op_rect(r, &other, u32::MAX));
+            sk_region_unref(r);
+        }
+    }
+
+    #[test]
+    fn test_patheffect_new_trim_rejects_invalid_mode() {
+        unsafe {
+            let effect = sk_patheffect_new_trim(0.25, 0.75, 2);
+            assert!(effect.is_null());
         }
     }
 
@@ -3856,7 +4173,7 @@ mod tests {
                 right: 6.0,
                 bottom: 6.0,
             };
-            sk_canvas_clip_rect(canvas, &inner, sk_clip_op_t::Intersect, false);
+            sk_canvas_clip_rect(canvas, &inner, SkClipOp::Intersect as u32, false);
             assert!(sk_canvas_get_clip_ibounds(canvas, &mut bounds));
             assert!(bounds.left >= 2 && bounds.right <= 6);
 
@@ -4098,12 +4415,12 @@ mod tests {
                 right: 20,
                 bottom: 20,
             };
-            assert!(sk_region_op_rect(r, &other, sk_region_op_t::Union));
+            assert!(sk_region_op_rect(r, &other, SkRegionOp::Union as u32));
             assert!(sk_region_get_bounds(r, &mut bounds));
             assert_eq!(bounds.right, 20);
 
             // Test intersect op.
-            assert!(sk_region_op_rect(r, &other, sk_region_op_t::Intersect));
+            assert!(sk_region_op_rect(r, &other, SkRegionOp::Intersect as u32));
 
             sk_region_ref(r);
             assert_eq!(sk_refcnt_get_count(r as *const sk_refcnt_t), 2);
@@ -4121,7 +4438,7 @@ mod tests {
             assert!(!dash.is_null());
 
             // Trim effect.
-            let trim = sk_patheffect_new_trim(0.25, 0.75, sk_trim_mode_t::Normal);
+            let trim = sk_patheffect_new_trim(0.25, 0.75, SkTrimMode::Normal as u32);
             assert!(!trim.is_null());
 
             // Attaching to a paint.
@@ -4133,7 +4450,7 @@ mod tests {
             sk_paint_unref(paint);
 
             // Test inverted trim mode.
-            let inverted = sk_patheffect_new_trim(0.0, 1.0, sk_trim_mode_t::Inverted);
+            let inverted = sk_patheffect_new_trim(0.0, 1.0, SkTrimMode::Inverted as u32);
             assert!(!inverted.is_null());
             sk_patheffect_unref(inverted);
 
@@ -4194,6 +4511,241 @@ mod tests {
             sk_paint_unref(paint);
             sk_path_unref(path);
             sk_surface_unref(surface);
+        }
+    }
+
+    // -- Task 11 conformance-audit regression tests --------------------
+
+    #[test]
+    fn test_decode_color_type_matches_upstream_numbering() {
+        // include/core/SkColorType.h numbering.
+        assert_eq!(decode_color_type(0), Some(ColorType::Unknown));
+        assert_eq!(decode_color_type(4), Some(ColorType::Rgba8888));
+        assert_eq!(decode_color_type(5), Some(ColorType::Rgb888x));
+        assert_eq!(decode_color_type(6), Some(ColorType::Bgra8888));
+        assert_eq!(decode_color_type(7), Some(ColorType::Rgba1010102));
+        // Wholly unknown / unsupported values are errors, never a silent
+        // fallback to RGBA.
+        assert_eq!(decode_color_type(255), None);
+        assert_eq!(decode_color_type(u32::MAX), None);
+    }
+
+    #[test]
+    fn test_surface_new_raster_with_info_rejects_unknown_color_type() {
+        unsafe {
+            let info = sk_imageinfo_t {
+                width: 4,
+                height: 4,
+                color_type: u32::MAX,
+                alpha_type: 2, // Premul
+            };
+            let surface = sk_surface_new_raster_with_info(&info);
+            assert!(surface.is_null());
+        }
+    }
+
+    #[test]
+    fn test_surface_new_raster_with_info_bgra8888_is_index_6() {
+        unsafe {
+            // Index 5 (kRGB_888x) must NOT be interpreted as BGRA — it must
+            // succeed and be distinct from index 6 (kBGRA_8888).
+            let info_rgb888x = sk_imageinfo_t {
+                width: 2,
+                height: 2,
+                color_type: 5,
+                alpha_type: 1, // Opaque
+            };
+            let s1 = sk_surface_new_raster_with_info(&info_rgb888x);
+            assert!(!s1.is_null());
+            sk_surface_unref(s1);
+
+            let info_bgra = sk_imageinfo_t {
+                width: 2,
+                height: 2,
+                color_type: 6,
+                alpha_type: 2, // Premul
+            };
+            let s2 = sk_surface_new_raster_with_info(&info_bgra);
+            assert!(!s2.is_null());
+            sk_surface_unref(s2);
+        }
+    }
+
+    #[test]
+    fn test_blend_mode_decodes_all_29_modes() {
+        for v in 0..=28u32 {
+            assert!(decode_blend_mode(v).is_some(), "mode {v} should decode");
+        }
+        assert_eq!(decode_blend_mode(29), None);
+        assert_eq!(decode_blend_mode(u32::MAX), None);
+    }
+
+    #[test]
+    fn test_paint_set_blend_mode_round_trips_and_rejects_invalid() {
+        unsafe {
+            let paint = sk_paint_new();
+            // Default is SrcOver (3).
+            assert_eq!(sk_paint_get_blend_mode(paint), BlendMode::SrcOver as u32);
+
+            assert!(sk_paint_set_blend_mode(paint, BlendMode::Multiply as u32));
+            assert_eq!(sk_paint_get_blend_mode(paint), BlendMode::Multiply as u32);
+
+            assert!(sk_paint_set_blend_mode(paint, BlendMode::Luminosity as u32));
+            assert_eq!(sk_paint_get_blend_mode(paint), BlendMode::Luminosity as u32);
+
+            // Out-of-range value is rejected; blend mode is left unchanged.
+            assert!(!sk_paint_set_blend_mode(paint, 29));
+            assert_eq!(sk_paint_get_blend_mode(paint), BlendMode::Luminosity as u32);
+
+            sk_paint_unref(paint);
+        }
+    }
+
+    #[test]
+    fn test_sk_version_matches_cargo_pkg_version() {
+        unsafe {
+            let ptr = sk_version();
+            let cstr = std::ffi::CStr::from_ptr(ptr);
+            let s = cstr.to_str().unwrap();
+            assert!(
+                s.contains(env!("CARGO_PKG_VERSION")),
+                "sk_version() = {s:?} does not contain CARGO_PKG_VERSION"
+            );
+        }
+    }
+
+    #[test]
+    fn test_matrix_concat_in_place_aliasing_is_safe() {
+        unsafe {
+            let mut m: sk_matrix_t = Matrix::translate(2.0, 3.0).into();
+            let scale: sk_matrix_t = Matrix::scale(2.0, 2.0).into();
+            // result aliases `a` — must not UB and must produce the correct
+            // concatenation (m = m * scale).
+            let ptr = &mut m as *mut sk_matrix_t;
+            sk_matrix_concat(ptr, ptr, &scale);
+            let expect: sk_matrix_t = Matrix::translate(2.0, 3.0).concat(&Matrix::scale(2.0, 2.0)).into();
+            assert_eq!(m.values, expect.values);
+        }
+    }
+
+    #[test]
+    fn test_matrix_invert_in_place_aliasing_is_safe() {
+        unsafe {
+            let mut m: sk_matrix_t = Matrix::scale(2.0, 4.0).into();
+            let ptr = &mut m as *mut sk_matrix_t;
+            assert!(sk_matrix_invert(ptr, ptr));
+            let expect: sk_matrix_t = Matrix::scale(2.0, 4.0).invert().unwrap().into();
+            assert_eq!(m.values, expect.values);
+        }
+    }
+
+    #[test]
+    fn test_matrix_map_point_in_place_aliasing_is_safe() {
+        unsafe {
+            let m: sk_matrix_t = Matrix::translate(1.0, 1.0).into();
+            let mut p = sk_point_t { x: 2.0, y: 3.0 };
+            let ptr = &mut p as *mut sk_point_t;
+            sk_matrix_map_point(&m, ptr, ptr);
+            assert_eq!(p.x, 3.0);
+            assert_eq!(p.y, 4.0);
+        }
+    }
+
+    #[test]
+    fn test_surface_lock_canvas_rejects_second_lock() {
+        unsafe {
+            let surface = sk_surface_new_raster(10, 10);
+            let c1 = sk_surface_lock_canvas(surface);
+            assert!(!c1.is_null());
+
+            // A second lock while `c1` is outstanding must fail.
+            let c2 = sk_surface_lock_canvas(surface);
+            assert!(c2.is_null());
+
+            sk_canvas_release(c1);
+
+            // After releasing, locking again succeeds.
+            let c3 = sk_surface_lock_canvas(surface);
+            assert!(!c3.is_null());
+            sk_canvas_release(c3);
+
+            sk_surface_unref(surface);
+        }
+    }
+
+    #[test]
+    fn test_surface_draw_rejected_while_locked() {
+        unsafe {
+            let surface = sk_surface_new_raster(10, 10);
+            let canvas = sk_surface_lock_canvas(surface);
+            assert!(!canvas.is_null());
+
+            let paint = sk_paint_new();
+            sk_paint_set_color(paint, 0xFFFFFFFF);
+            let rect = sk_rect_t {
+                left: 0.0,
+                top: 0.0,
+                right: 5.0,
+                bottom: 5.0,
+            };
+            // Drawing directly on the surface (bypassing the locked canvas)
+            // must be a no-op while a canvas lock is outstanding.
+            sk_surface_draw_rect(surface, &rect, paint);
+            assert!(!sk_last_call_panicked());
+
+            sk_paint_unref(paint);
+            sk_canvas_release(canvas);
+
+            // Verify it was actually a no-op: the pixel buffer is still
+            // all-zero (the surface was never cleared/drawn on).
+            let mut buf = vec![0xAAu8; 10 * 10 * 4];
+            sk_surface_read_pixels(surface, buf.as_mut_ptr(), buf.len());
+            assert!(buf.iter().all(|&b| b == 0), "surface was drawn on while locked");
+
+            sk_surface_unref(surface);
+        }
+    }
+
+    #[test]
+    fn test_picture_recorder_delete_then_use_recording_canvas_is_safe() {
+        unsafe {
+            let recorder = sk_picture_recorder_new();
+            let rc = sk_picture_recorder_begin_recording(recorder, ptr::null());
+            assert!(!rc.is_null());
+
+            // Delete the recorder while the recording-canvas handle is
+            // still outstanding — a naive raw-pointer implementation would
+            // leave `rc` dangling. Every subsequent `sk_recording_canvas_*`
+            // call must detect this and return an error/no-op rather than
+            // dereferencing freed memory.
+            sk_picture_recorder_delete(recorder);
+
+            let save_count = sk_recording_canvas_save(rc);
+            assert_eq!(save_count, 0);
+            sk_recording_canvas_restore(rc); // must not crash
+            sk_recording_canvas_draw_rect(
+                rc,
+                &sk_rect_t {
+                    left: 0.0,
+                    top: 0.0,
+                    right: 1.0,
+                    bottom: 1.0,
+                },
+                ptr::null(),
+            ); // must not crash
+
+            assert!(!sk_last_call_panicked());
+            sk_recording_canvas_release(rc);
+        }
+    }
+
+    #[test]
+    fn test_refcnt_get_count_rejects_non_tagged_pointer() {
+        unsafe {
+            // A live, non-refcounted allocation of sufficient size must
+            // fail the tag check and return 0, not a bogus count.
+            let junk: [u32; 4] = [0xDEAD_BEEF, 1, 2, 3];
+            assert_eq!(sk_refcnt_get_count(junk.as_ptr() as *const sk_refcnt_t), 0);
         }
     }
 }
