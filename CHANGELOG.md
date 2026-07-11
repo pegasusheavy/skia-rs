@@ -258,6 +258,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`SkConic::chopIntoQuadsPOW2`-equivalent) instead of emitting a single
   naive, weight-dropping quad.
 
+### skia-rs-ffi / skia-rs-safe
+
+- **Breaking:** `sk_clip_op_t` values now match upstream `SkClipOp`
+  (`kDifference = 0`, `kIntersect = 1`) instead of the reversed mapping
+  previously used; `sk_canvas_clip_rect`/`sk_canvas_clip_path` now take a
+  raw `uint32_t` (decoded via `decode_clip_op`, rejecting out-of-range
+  values) instead of a C enum passed by value, which was undefined
+  behavior for any value outside the two valid discriminants.
+  `sk_region_op_rect`'s `op` and `sk_patheffect_new_trim`'s `mode` are
+  likewise raw `uint32_t` decoded with range checks instead of by-value
+  Rust enums.
+- **Breaking:** `decode_color_type` (used by `sk_surface_new_raster_with_info`)
+  now matches upstream `SkColorType` numbering (`kRGB_888x = 5`,
+  `kBGRA_8888 = 6`, …) instead of miscounting from index 5, and returns an
+  error for any color type it doesn't recognize instead of silently
+  falling back to RGBA8888.
+- **Breaking:** `sk_paint_set_blend_mode` now decodes all 29 upstream
+  `SkBlendMode` values (0-28) instead of only the first 15, returns `bool`
+  (`false`, paint left unchanged) for an out-of-range mode instead of
+  silently coercing to `SrcOver`, and gained a `sk_paint_get_blend_mode`
+  counterpart.
+- Fixed `WasmSurface::get_image_data` (wasm32): stopped swapping the R/B
+  channels (the surface is RGBA, not BGRA — the swap silently corrupted
+  every pixel's red/blue channels) and now unpremultiplies pixels before
+  handing them to `ImageData`, which expects straight (unpremultiplied)
+  alpha.
+- `sk_surface_lock_canvas` now actually enforces its documented one-lock-
+  per-surface contract: a second lock while one is outstanding returns
+  null, and `sk_surface_clear`/`sk_surface_draw_*` are no-ops while the
+  surface is locked (previously both could run concurrently with a locked
+  canvas, giving two independent mutable views of the same pixel buffer).
+- Fixed undefined behavior in `sk_matrix_concat`, `sk_matrix_map_point`,
+  `sk_matrix_invert`, `sk_matrix44_concat`, `sk_matrix44_map_point`, and
+  `sk_matrix44_invert` when `result` aliases an input pointer (a supported,
+  documented in-place usage): inputs are now copied out via `ptr::read`
+  before anything is written through `result`, instead of forming
+  simultaneous `&`/`&mut` references into the same memory.
+- Recording-canvas handles (`sk_recording_canvas_t`) now carry a shared
+  liveness flag from their owning `sk_picture_recorder_t`; calling any
+  `sk_recording_canvas_*` function after the recorder has been deleted now
+  returns an error/no-op instead of dereferencing freed memory.
+- `sk_canvas_clear` now respects the canvas's current clip stack (routes
+  through the same clip-aware canvas construction as the other draw
+  calls) instead of clearing the whole buffer regardless of clip.
+- `sk_version()` now reports the crate's actual `CARGO_PKG_VERSION`
+  instead of a hardcoded `"0.1.0"`.
+- `SkImageInfoABI`'s size assertion is now pointer-width aware (24 bytes on
+  64-bit targets, 20 bytes on 32-bit) instead of unconditionally asserting
+  24, and its docs no longer overclaim byte-for-byte binary compatibility
+  with upstream `SkImageInfo` (which embeds a ref-counted `sk_sp` smart
+  pointer, not a raw pointer).
+- Corrected the `sk_refcnt_get_count`/`sk_refcnt_is_unique` documentation:
+  the magic-tag check is a best-effort heuristic against non-refcounted
+  pointers, not a memory-safety guarantee — the pointer must still be null
+  or point to a valid allocation.
+- Regenerated the stale, drifted root `include/skia-rs.h` (previously
+  exposed types like `Paint`/`Path` as public opaque structs that
+  `cbindgen.toml` excludes, and was missing most `sk_*` functions added
+  since it was last hand-refreshed) so it matches the crate's current
+  exports and compiles as C; added `crates/skia-rs-ffi/tests/header_up_to_date.rs`
+  so `cargo test` catches future drift between the committed headers and
+  the crate's actual exports.
+- `skia-rs-safe` Android: `HardwareBufferFormat` no longer defines a
+  nonexistent `R4G4B4A4_UNORM` variant (there is no
+  `AHARDWAREBUFFER_FORMAT_R4G4B4A4_UNORM` in the NDK). `BitmapConfig`
+  values now match the real `ANDROID_BITMAP_FORMAT_*` native constants
+  instead of arbitrary sequential values. `HardwareBuffer::new` on Android
+  now returns `None` (fails closed) instead of returning a fake `Some`
+  that claimed a hardware buffer was allocated when no real
+  `AHardwareBuffer_allocate` call was ever made.
+
 ## [0.2.6] - 2026-04-26
 
 Phase 7 complete: resolved every remaining deferral across the
