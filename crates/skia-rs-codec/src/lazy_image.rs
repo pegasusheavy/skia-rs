@@ -360,8 +360,21 @@ impl LazyImage {
         if height == 0 {
             return true;
         }
-        let last_dst = (height - 1) * dst_row_bytes + copy_len;
-        let last_src = (height - 1) * cached.row_bytes + copy_len;
+        // `dst_row_bytes` is caller-supplied and may be a hostile
+        // near-`usize::MAX` value; use checked arithmetic so a wrapping
+        // multiply can't slip a too-small destination past this precheck.
+        let Some(last_dst) = (height - 1)
+            .checked_mul(dst_row_bytes)
+            .and_then(|v| v.checked_add(copy_len))
+        else {
+            return false;
+        };
+        let Some(last_src) = (height - 1)
+            .checked_mul(cached.row_bytes)
+            .and_then(|v| v.checked_add(copy_len))
+        else {
+            return false;
+        };
         if last_dst > dst.len() || last_src > cached.pixels.len() {
             return false;
         }
@@ -748,5 +761,17 @@ mod tests {
 
         let mut ok = vec![0u8; 4 * 4 * 4];
         assert!(lazy.read_pixels(&mut ok, 4 * 4));
+    }
+
+    /// A hostile near-`usize::MAX` `dst_row_bytes` must not wrap the
+    /// destination-fits precheck's multiply; `read_pixels` must return
+    /// `false` instead of panicking (overflow) or copying out of bounds.
+    #[test]
+    fn test_read_pixels_rejects_overflowing_row_bytes() {
+        let generator = SolidColorGenerator::new(4, 4, [1, 2, 3, 255]);
+        let lazy = LazyImage::from_generator(Box::new(generator));
+
+        let mut dst = vec![0u8; 4 * 4 * 4];
+        assert!(!lazy.read_pixels(&mut dst, usize::MAX - 1));
     }
 }

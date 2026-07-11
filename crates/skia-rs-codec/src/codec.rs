@@ -716,6 +716,31 @@ impl ImageDecoder for GifDecoder {
         let canvas_width = decoder.width() as usize;
         let canvas_height = decoder.height() as usize;
 
+        // Reject absurd logical-screen sizes before allocating the canvas
+        // buffer. The GIF header's width/height are attacker-controlled u16
+        // fields (max 65535 each), so a tiny malicious file can otherwise
+        // request a ~17GB allocation, aborting the process instead of
+        // returning an error. `MAX_DIM` matches SkCodec's per-dimension
+        // guard; `MAX_CANVAS_BYTES` additionally bounds the total
+        // allocation, since GIF's u16 dimensions never individually exceed
+        // `MAX_DIM` but can still multiply out to tens of gigabytes.
+        const MAX_DIM: usize = 1 << 24;
+        const MAX_CANVAS_BYTES: usize = 1 << 28; // 256 MiB
+        if canvas_width > MAX_DIM || canvas_height > MAX_DIM {
+            return Err(CodecError::InvalidData(
+                "GIF logical screen dimensions too large".into(),
+            ));
+        }
+        let canvas_stride = canvas_width
+            .checked_mul(4)
+            .ok_or_else(|| CodecError::InvalidData("GIF canvas row too large".into()))?;
+        let canvas_size = canvas_stride
+            .checked_mul(canvas_height)
+            .ok_or_else(|| CodecError::InvalidData("GIF canvas too large".into()))?;
+        if canvas_size > MAX_CANVAS_BYTES {
+            return Err(CodecError::InvalidData("GIF canvas too large".into()));
+        }
+
         let first_frame = decoder
             .read_next_frame()
             .map_err(|e| CodecError::DecodingError(e.to_string()))?
@@ -728,8 +753,7 @@ impl ImageDecoder for GifDecoder {
 
         // Transparent canvas; blit the frame into place, clipping any part
         // that falls outside the logical screen.
-        let canvas_stride = canvas_width * 4;
-        let mut pixels = vec![0u8; canvas_height * canvas_stride];
+        let mut pixels = vec![0u8; canvas_size];
         for row in 0..frame_height {
             let dst_y = top + row;
             if dst_y >= canvas_height {
@@ -3379,5 +3403,36 @@ mod tests {
         }
         let anim = GifDecoder::new().decode_animated(&buf).unwrap();
         assert_eq!(anim.canvas_dimensions(), (6, 5));
+    }
+
+    /// A GIF declaring an absurd logical-screen size (65535x65535, the max
+    /// representable in the format's u16 header fields) must be rejected
+    /// with an error rather than attempting a ~17GB canvas allocation,
+    /// which would abort the process instead of returning `Err`.
+    #[cfg(feature = "gif")]
+    #[test]
+    fn test_gif_decode_rejects_oversized_canvas() {
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            use gif::{Encoder, Frame};
+            let palette = [0, 0, 0, 255, 255, 255];
+            // Logical screen at the format's maximum (u16::MAX x u16::MAX)
+            // would require ~17GB for an RGBA canvas; a tiny 1x1 frame keeps
+            // the encoded file itself small.
+            let mut encoder = Encoder::new(&mut buf, u16::MAX, u16::MAX, &palette).unwrap();
+            let f = Frame {
+                width: 1,
+                height: 1,
+                buffer: std::borrow::Cow::Borrowed(&[0u8]),
+                ..Frame::default()
+            };
+            encoder.write_frame(&f).unwrap();
+        }
+
+        let result = GifDecoder::new().decode_bytes(&buf);
+        assert!(
+            result.is_err(),
+            "oversized GIF canvas must be rejected, not allocated"
+        );
     }
 }
