@@ -302,14 +302,7 @@ pub fn build_clip(masks: &[Mask], frame: Scalar, bounds: Rect) -> Option<Path> {
         });
     }
 
-    // Boolean-op results represent shells + holes as separate contours
-    // without a reliable signed winding convention; even-odd parity is the
-    // fill rule that correctly renders such composite regions (holes
-    // cancel via crossing parity regardless of ring winding direction).
-    result.map(|mut p| {
-        p.set_fill_type(FillType::EvenOdd);
-        p
-    })
+    result
 }
 
 /// Invert a path's geometry relative to `bounds` (i.e. "everywhere in

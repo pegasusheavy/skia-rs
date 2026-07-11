@@ -120,12 +120,22 @@ pub struct LayerModel {
     /// Masks.
     #[serde(rename = "masksProperties", default)]
     pub masks: Vec<MaskModel>,
-    /// Track matte type.
+    /// Track matte type (mode: 1=alpha, 2=alpha inverted, 3=luma, 4=luma
+    /// inverted), set on the *consumer* layer.
     #[serde(rename = "tt", default)]
     pub track_matte_type: Option<i32>,
-    /// Track matte layer.
+    /// Legacy "track matte source" hidden flag, set on the *source* layer
+    /// (Lottie < 1.0). Per upstream `Layer.cpp::is_hidden()`, only
+    /// consulted when `hd` is absent; the layer is excluded from the main
+    /// render list but its content tree is still built and used as a
+    /// matte input.
     #[serde(rename = "td", default)]
-    pub track_matte_layer: Option<i32>,
+    pub track_matte_source_hidden: bool,
+    /// Explicit track matte source layer index (`tp`). When absent, the
+    /// matte source defaults to the layer immediately preceding this one
+    /// in the layers array (legacy assets).
+    #[serde(rename = "tp", default)]
+    pub track_matte_parent: Option<i32>,
     /// Effects.
     #[serde(rename = "ef", default)]
     pub effects: Vec<EffectModel>,
@@ -227,6 +237,15 @@ pub struct KeyframeModel {
     /// Hold keyframe.
     #[serde(rename = "h", default)]
     pub hold: Option<i32>,
+    /// Spatial in-tangent (position properties only): the tangent, relative
+    /// to the *next* keyframe's value, of the incoming bezier motion path.
+    #[serde(rename = "ti", default)]
+    pub spatial_in_tangent: Option<Vec<Scalar>>,
+    /// Spatial out-tangent (position properties only): the tangent,
+    /// relative to *this* keyframe's value, of the outgoing bezier motion
+    /// path.
+    #[serde(rename = "to", default)]
+    pub spatial_out_tangent: Option<Vec<Scalar>>,
 }
 
 /// Tangent model for bezier easing.

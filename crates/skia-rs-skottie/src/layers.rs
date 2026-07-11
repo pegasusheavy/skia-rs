@@ -107,10 +107,15 @@ pub struct Layer {
     pub content: LayerContent,
     /// Masks.
     pub masks: Vec<Mask>,
-    /// Track matte type.
+    /// Track matte type (set on the consumer layer).
     pub matte_mode: Option<MatteMode>,
-    /// Track matte layer index.
+    /// Explicit track matte source layer index (`tp`); `None` means "the
+    /// previous layer in the array" (legacy assets).
     pub matte_layer: Option<i32>,
+    /// Legacy "track matte source" hidden flag (`td`). When set (and `hd`
+    /// is absent/false), this layer is excluded from the main render list
+    /// but its content is still available as a matte input.
+    pub matte_source_hidden: bool,
     /// Time stretch factor.
     pub time_stretch: Scalar,
     /// Time remapping.
@@ -369,7 +374,8 @@ impl Layer {
             content,
             masks,
             matte_mode: model.track_matte_type.map(MatteMode::from),
-            matte_layer: model.track_matte_layer,
+            matte_layer: model.track_matte_parent,
+            matte_source_hidden: model.track_matte_source_hidden,
             // "sr"/"tm" are only meaningful for precomp layers (upstream
             // `Layer.cpp`/`PrecompLayer.cpp` only reads them there); other
             // layer types simply carry through the defaults.
@@ -484,6 +490,7 @@ mod tests {
             masks: Vec::new(),
             matte_mode: None,
             matte_layer: None,
+            matte_source_hidden: false,
             time_stretch: 1.0,
             time_remap: None,
         };

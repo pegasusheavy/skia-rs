@@ -1012,11 +1012,62 @@ Lottie files previously rendered blank or static:
 - Rounded-rect corners use circular-arc cubic beziers instead of a
   quadratic approximation, and respect `"d"` (CW/CCW) winding
 
-Not implemented in this pass (tracked as follow-ups): track mattes
-(`td`/`tt` alpha/luma compositing), `ti`/`to` spatial bezier
-position interpolation, and mask opacity/feather soft-alpha
-compositing (masks with opacity < 100% or a feather currently apply
-as a hard clip).
+Not implemented in this pass (tracked as follow-ups): mask
+opacity/feather soft-alpha compositing (masks with opacity < 100% or
+a feather currently apply as a hard clip — see the fix-round entry
+below for why this is a separate, larger piece of work than the
+matte compositing it was previously bundled with).
+
+#### Fix round (re-audit against the current branch, not v0.2.7)
+
+The above pass was developed against a stale base that predated this
+branch's `Path::contains` (signed winding, Task 2) and `Canvas::save_layer`
+(alpha/blend/color-filter compositing, Task 4) fixes. This round
+re-verifies/completes the work against the current branch:
+
+- Removed the `Path::contains` "even-odd fallback" workaround in
+  `mask::build_clip`: `Path::contains` is now conformant (signed
+  winding number, not raw crossing count), so the winding fill type
+  produced by `skia_rs_path::ops::op()` composite paths (shell + hole
+  contours) renders correctly without forcing `EvenOdd`
+- **Track mattes** (`td`/`tt`) implemented: `tt` on the consumer layer
+  selects alpha (1), alpha-inverted (2), luma (3), or luma-inverted (4)
+  masking from the matte source (explicit `tp` index, or the layer
+  immediately preceding it in the `layers` array — matching upstream
+  `LayerBuilder::buildRenderTree`'s `prev_layer_index`); `td` (bool) on
+  the source hides it from the main render list while still rendering
+  its content as the matte input. Compositing matches upstream
+  `sksg::MaskEffect::onRender` exactly: an outer `save_layer` collects
+  mask coverage (luma mode applies a BT.709 luma-to-alpha color filter
+  at composite time), then an inner `save_layer` with blend mode
+  `SrcIn`/`SrcOut` composites the consumer's own content through that
+  coverage. This required adding `Canvas::save_layer` to the skottie
+  render trait/`SkiaCanvas` wrapper (previously unimplemented, and, it
+  turns out, dead code — see below)
+- **`ti`/`to` spatial bezier position interpolation** implemented:
+  position keyframes with spatial tangents now interpolate along the
+  cubic motion path `(v + to) -> (v_next + ti)` by arc length (via
+  `PathMeasure`), using the *eased* interpolation factor as the
+  arc-length fraction — matching upstream `Vec2KeyframeAnimator`
+  (position no longer just linearly lerps between keyframe endpoints)
+- Fixed a latent, previously-untested bug found while wiring up track
+  mattes: `SkiaCanvas` (the `skia-rs-canvas`-backed `Canvas` impl) was
+  gated behind a nonexistent `canvas` Cargo feature, so it never
+  compiled and its `Canvas` trait methods (`clip_path`/`clip_rect`
+  argument count, `get_transform`/`set_transform` — which don't exist
+  on `skia_rs_canvas::Canvas`) were stale/wrong. Removed the dead
+  feature gate and fixed the method bodies against the real
+  `skia_rs_canvas::Canvas` API
+
+Mask opacity/feather soft compositing remains a hard clip: unlike
+track mattes (a single source composited via one alpha/luma pass),
+Lottie's mask stack combines *multiple* masks with per-mask boolean
+modes (Add/Subtract/Intersect/Difference) *before* opacity/feather
+would apply, so soft-compositing it correctly means re-deriving
+`build_clip`'s boolean algebra in coverage/alpha space (rasterize each
+mask's coverage, combine per-mode, hard-clip only 100%-opacity/no-feather
+edges) rather than a single `save_layer` alpha pass — a materially
+larger change than what shipped in this round.
 
 ### Planned for v0.2.0
 - Complete wgpu GPU backend

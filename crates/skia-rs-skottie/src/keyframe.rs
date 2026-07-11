@@ -130,6 +130,14 @@ pub struct Keyframe {
     pub value: KeyframeValue,
     /// Easing to next keyframe.
     pub easing: Easing,
+    /// Spatial out-tangent (`to`), relative to this keyframe's value —
+    /// only meaningful for `Vec2`/`Vec3` position properties. Per
+    /// upstream `Vec2KeyframeAnimator`, the bezier motion path segment
+    /// from this keyframe to the next is
+    /// `cubicTo(value + spatial_out, next.value + next.spatial_in, next.value)`.
+    pub spatial_out: Option<[Scalar; 2]>,
+    /// Spatial in-tangent (`ti`), relative to this keyframe's value.
+    pub spatial_in: Option<[Scalar; 2]>,
 }
 
 impl Keyframe {
@@ -139,6 +147,8 @@ impl Keyframe {
             time,
             value,
             easing: Easing::Linear,
+            spatial_out: None,
+            spatial_in: None,
         }
     }
 
@@ -407,6 +417,13 @@ impl AnimatedProperty {
         let linear_t = (frame - prev.time) / duration;
         let eased_t = prev.easing.evaluate(linear_t);
 
+        if let (KeyframeValue::Vec2(v0), KeyframeValue::Vec2(v1)) = (&prev.value, &next.value) {
+            if let Some(pos) = spatial_bezier_at(*v0, prev.spatial_out, *v1, next.spatial_in, eased_t)
+            {
+                return KeyframeValue::Vec2(pos);
+            }
+        }
+
         prev.value.lerp(&next.value, eased_t)
     }
 
@@ -438,10 +455,23 @@ impl AnimatedProperty {
                         Easing::Linear
                     };
 
+                    let spatial_out = kf
+                        .spatial_out_tangent
+                        .as_ref()
+                        .filter(|v| v.len() >= 2)
+                        .map(|v| [v[0], v[1]]);
+                    let spatial_in = kf
+                        .spatial_in_tangent
+                        .as_ref()
+                        .filter(|v| v.len() >= 2)
+                        .map(|v| [v[0], v[1]]);
+
                     prop.add_keyframe(Keyframe {
                         time: kf.time,
                         value,
                         easing,
+                        spatial_out,
+                        spatial_in,
                     });
                 }
 
@@ -463,6 +493,64 @@ impl Default for AnimatedProperty {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Interpolate a position along the spatial bezier motion path defined by
+/// `ti`/`to` tangents, matching upstream `Vec2KeyframeAnimator::onSeek`:
+/// build the cubic `v0 -> v0+to -> v1+ti -> v1`, then walk it by arc length
+/// using `weight` (the *eased* interpolation factor) as the length
+/// fraction — not as the raw bezier parameter — so easing curves control
+/// speed along the path rather than the curve parametrization.
+///
+/// Returns `None` when neither tangent is present (caller falls back to a
+/// plain linear lerp).
+fn spatial_bezier_at(
+    v0: [Scalar; 2],
+    to: Option<[Scalar; 2]>,
+    v1: [Scalar; 2],
+    ti: Option<[Scalar; 2]>,
+    weight: Scalar,
+) -> Option<[Scalar; 2]> {
+    let to = to.unwrap_or([0.0, 0.0]);
+    let ti = ti.unwrap_or([0.0, 0.0]);
+    if to == [0.0, 0.0] && ti == [0.0, 0.0] {
+        return None;
+    }
+    if v0 == v1 {
+        // Spatial interpolation only makes sense for noncoincident values.
+        return None;
+    }
+
+    let mut builder = skia_rs_path::PathBuilder::new();
+    builder.move_to(v0[0], v0[1]);
+    builder.cubic_to(
+        v0[0] + to[0],
+        v0[1] + to[1],
+        v1[0] + ti[0],
+        v1[1] + ti[1],
+        v1[0],
+        v1[1],
+    );
+    let path = builder.build();
+    let measure = skia_rs_path::PathMeasure::new(&path);
+    let len = measure.length();
+    if len <= 0.0 {
+        return None;
+    }
+
+    let distance = len * weight;
+    let clamped = distance.clamp(0.0, len);
+    let point = measure.get_point_at(clamped)?;
+
+    if distance < 0.0 || distance > len {
+        // Extrapolate past the endpoints using the endpoint tangent, matching
+        // upstream's overshoot handling for sub/super-normal easing weights.
+        let tan = measure.get_tangent_at(clamped)?;
+        let overshoot = distance - clamped;
+        return Some([point.x + tan.x * overshoot, point.y + tan.y * overshoot]);
+    }
+
+    Some([point.x, point.y])
 }
 
 fn parse_keyframe_value(values: &[Scalar]) -> KeyframeValue {
@@ -615,6 +703,49 @@ mod tests {
             }
             other => panic!("expected Path, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_spatial_bezier_ti_to_bulges_off_the_straight_line() {
+        use crate::model::AnimatedValue;
+
+        // Position keyframes with "to"/"ti" spatial tangents that bow the
+        // motion path upward (negative y) away from the straight line
+        // between (0,0) and (100,0). A plain linear lerp at the midpoint
+        // would land on y=0; the spatial bezier should not.
+        let json = r#"{"a":1,"k":[
+            {"t":0,"s":[0,0],"to":[20,-40],"ti":[0,0]},
+            {"t":10,"s":[100,0],"to":[0,0],"ti":[-20,-40]}
+        ]}"#;
+        let av: AnimatedValue = serde_json::from_str(json).unwrap();
+        let prop = AnimatedProperty::from_lottie(&av);
+
+        let mid = prop.value_at(5.0).as_vec2().unwrap();
+        assert!(
+            mid[1] < -1.0,
+            "expected the midpoint to bow away from the straight line, got {mid:?}"
+        );
+
+        // Endpoints are still exact.
+        let start = prop.value_at(0.0).as_vec2().unwrap();
+        let end = prop.value_at(10.0).as_vec2().unwrap();
+        assert!((start[0] - 0.0).abs() < 1e-6 && (start[1] - 0.0).abs() < 1e-6);
+        assert!((end[0] - 100.0).abs() < 1e-6 && (end[1] - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_no_spatial_tangents_falls_back_to_linear_lerp() {
+        use crate::model::AnimatedValue;
+
+        let json = r#"{"a":1,"k":[
+            {"t":0,"s":[0,0]},
+            {"t":10,"s":[100,200]}
+        ]}"#;
+        let av: AnimatedValue = serde_json::from_str(json).unwrap();
+        let prop = AnimatedProperty::from_lottie(&av);
+
+        let mid = prop.value_at(5.0).as_vec2().unwrap();
+        assert_eq!(mid, [50.0, 100.0]);
     }
 
     #[test]

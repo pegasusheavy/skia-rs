@@ -52,6 +52,19 @@ pub trait Canvas {
     fn get_transform(&self) -> Matrix;
     /// Set the transform.
     fn set_transform(&mut self, matrix: &Matrix);
+    /// Push an offscreen layer. All draws until the matching [`Canvas::restore`]
+    /// go into this layer; on restore it composites onto its parent using
+    /// `paint`'s alpha, blend mode, and color filter (`None` = opaque
+    /// `SrcOver`, matching `SkCanvas::saveLayer`).
+    ///
+    /// Default implementation degrades to a plain [`Canvas::save`] (no
+    /// offscreen buffer) so existing `Canvas` implementations keep
+    /// compiling; conformant compositing (used by track mattes) requires
+    /// overriding this.
+    fn save_layer(&mut self, paint: Option<&Paint>) {
+        let _ = paint;
+        self.save();
+    }
 }
 
 impl<'a> RenderContext<'a> {
@@ -94,6 +107,21 @@ impl<'a> RenderContext<'a> {
         if let Some(opacity) = self.opacity_stack.pop() {
             self.current_opacity = opacity;
         }
+        self.canvas.restore();
+    }
+
+    /// Push an offscreen compositing layer directly on the underlying
+    /// canvas, bypassing [`RenderContext`]'s own transform/opacity stack
+    /// (matrix/opacity state is unaffected by a layer push in Skia's
+    /// model). Pair with [`RenderContext::restore_layer`]. Used by track
+    /// matte compositing.
+    fn save_layer(&mut self, paint: Option<&Paint>) {
+        self.canvas.save_layer(paint);
+    }
+
+    /// Pop a layer pushed via [`RenderContext::save_layer`], compositing it
+    /// onto its parent.
+    fn restore_layer(&mut self) {
         self.canvas.restore();
     }
 
@@ -147,10 +175,39 @@ impl<'a> RenderContext<'a> {
         assets: &HashMap<String, Asset>,
         siblings: &[Layer],
     ) {
-        if !layer.is_visible_at(frame) || layer.hidden {
+        // A legacy `td`-hidden matte source layer is excluded from the main
+        // render list (it still renders when pulled in as a matte input by
+        // `render_matte_composite`, below).
+        if !layer.is_visible_at(frame) || layer.matte_source_hidden {
             return;
         }
 
+        if let Some(mode) = layer
+            .matte_mode
+            .filter(|m| *m != crate::layers::MatteMode::None)
+        {
+            if let Some(source) = resolve_matte_source(layer, siblings) {
+                if source.is_visible_at(frame) {
+                    self.render_matte_composite(layer, source, mode, frame, assets, siblings);
+                    return;
+                }
+            }
+        }
+
+        self.render_layer_content(layer, frame, assets, siblings);
+    }
+
+    /// Render a layer's own transform/opacity/masks/content, with no matte
+    /// handling. Used both for normal layers and (directly, bypassing the
+    /// `matte_source_hidden` gate) for matte source/consumer content inside
+    /// [`RenderContext::render_matte_composite`].
+    fn render_layer_content(
+        &mut self,
+        layer: &Layer,
+        frame: Scalar,
+        assets: &HashMap<String, Asset>,
+        siblings: &[Layer],
+    ) {
         let opacity = layer.opacity_at(frame);
 
         self.save();
@@ -203,6 +260,59 @@ impl<'a> RenderContext<'a> {
         }
 
         self.restore();
+    }
+
+    /// Composite `layer` through a track matte sourced from `source`,
+    /// matching upstream `sksg::MaskEffect::onRender`
+    /// (`modules/sksg/src/SkSGMaskEffect.cpp`):
+    ///
+    /// 1. Push an outer layer.
+    /// 2. Render the matte source's content into it (an inner layer with a
+    ///    luma color filter, for luma modes, converts its composited RGB
+    ///    into mask coverage stored in alpha).
+    /// 3. Push an inner layer with blend mode `SrcIn` (normal) or `SrcOut`
+    ///    (inverted) and render the consumer's own content into it — on
+    ///    restore, this masks the content by the coverage accumulated in
+    ///    the outer layer.
+    /// 4. Restore the outer layer onto the real backdrop (`SrcOver`).
+    #[allow(clippy::too_many_arguments)]
+    fn render_matte_composite(
+        &mut self,
+        layer: &Layer,
+        source: &Layer,
+        mode: crate::layers::MatteMode,
+        frame: Scalar,
+        assets: &HashMap<String, Asset>,
+        siblings: &[Layer],
+    ) {
+        use crate::layers::MatteMode;
+
+        let inverted = matches!(mode, MatteMode::AlphaInverted | MatteMode::LumaInverted);
+        let luma = matches!(mode, MatteMode::Luma | MatteMode::LumaInverted);
+
+        self.save_layer(None); // outer: accumulates mask coverage, then masked content.
+
+        if luma {
+            let mut mask_paint = Paint::new();
+            mask_paint.set_color_filter(Some(Arc::new(luma_color_filter())));
+            self.save_layer(Some(&mask_paint));
+        } else {
+            self.save_layer(None);
+        }
+        self.render_layer_content(source, frame, assets, siblings);
+        self.restore_layer(); // composite mask coverage into the outer layer.
+
+        let mut content_paint = Paint::new();
+        content_paint.set_blend_mode(if inverted {
+            skia_rs_paint::BlendMode::SrcOut
+        } else {
+            skia_rs_paint::BlendMode::SrcIn
+        });
+        self.save_layer(Some(&content_paint));
+        self.render_layer_content(layer, frame, assets, siblings);
+        self.restore_layer(); // composite masked content into the outer layer.
+
+        self.restore_layer(); // composite the outer layer onto the real backdrop.
     }
 
     /// Render shapes.
@@ -419,6 +529,34 @@ fn compose_ancestor_matrix(layer: &Layer, frame: Scalar, siblings: &[Layer]) -> 
     result
 }
 
+/// Resolve a layer's track matte source, matching upstream
+/// `LayerBuilder::buildRenderTree` (`Layer.cpp`): the explicit `tp` index
+/// if present, otherwise the layer immediately preceding this one in the
+/// layers array (`siblings`) — *not* by `ind` value, by array position,
+/// matching upstream's `prev_layer_index`.
+fn resolve_matte_source<'s>(layer: &Layer, siblings: &'s [Layer]) -> Option<&'s Layer> {
+    if let Some(explicit) = layer.matte_layer {
+        return siblings.iter().find(|l| l.index == explicit);
+    }
+    let pos = siblings.iter().position(|l| l.index == layer.index)?;
+    pos.checked_sub(1).map(|prev| &siblings[prev])
+}
+
+/// `SkLumaColorFilter`: converts RGB to a single alpha channel via
+/// BT.709 luma weights, zeroing RGB. Applied at layer-composite time (see
+/// [`RenderContext::render_matte_composite`]) so the accumulated mask
+/// layer's RGB becomes mask *coverage* stored in alpha.
+fn luma_color_filter() -> skia_rs_paint::ColorMatrixFilter {
+    #[rustfmt::skip]
+    let m: [Scalar; 20] = [
+        0.0,    0.0,    0.0,    0.0, 0.0,
+        0.0,    0.0,    0.0,    0.0, 0.0,
+        0.0,    0.0,    0.0,    0.0, 0.0,
+        0.2126, 0.7152, 0.0722, 0.0, 0.0,
+    ];
+    skia_rs_paint::ColorMatrixFilter::new(m)
+}
+
 /// Trim a path to the `[start, stop]` fraction of its length (both in
 /// `0..=1`) using path measure, matching `SkTrimPathEffect` semantics. When
 /// `inverted`, the *complement* interval (`[0,start] U [stop,1]`) is kept
@@ -535,21 +673,18 @@ fn build_gradient_shader(
 }
 
 /// Simple canvas implementation using skia-rs-canvas.
-#[cfg(feature = "canvas")]
-pub struct SkiaCanvas<'a> {
-    inner: &'a mut skia_rs_canvas::Canvas,
+pub struct SkiaCanvas<'c, 'a> {
+    inner: &'c mut skia_rs_canvas::Canvas<'a>,
 }
 
-#[cfg(feature = "canvas")]
-impl<'a> SkiaCanvas<'a> {
+impl<'c, 'a> SkiaCanvas<'c, 'a> {
     /// Create a new Skia canvas wrapper.
-    pub fn new(canvas: &'a mut skia_rs_canvas::Canvas) -> Self {
+    pub fn new(canvas: &'c mut skia_rs_canvas::Canvas<'a>) -> Self {
         Self { inner: canvas }
     }
 }
 
-#[cfg(feature = "canvas")]
-impl<'a> Canvas for SkiaCanvas<'a> {
+impl<'c, 'a> Canvas for SkiaCanvas<'c, 'a> {
     fn save(&mut self) {
         self.inner.save();
     }
@@ -571,19 +706,30 @@ impl<'a> Canvas for SkiaCanvas<'a> {
     }
 
     fn clip_path(&mut self, path: &Path) {
-        self.inner.clip_path(path);
+        self.inner
+            .clip_path(path, skia_rs_canvas::ClipOp::Intersect, true);
     }
 
     fn clip_rect(&mut self, rect: &Rect) {
-        self.inner.clip_rect(*rect);
+        self.inner
+            .clip_rect(rect, skia_rs_canvas::ClipOp::Intersect, true);
     }
 
     fn get_transform(&self) -> Matrix {
-        self.inner.get_transform()
+        *self.inner.total_matrix()
     }
 
     fn set_transform(&mut self, matrix: &Matrix) {
-        self.inner.set_transform(matrix);
+        self.inner.set_matrix(matrix);
+    }
+
+    fn save_layer(&mut self, paint: Option<&Paint>) {
+        let rec = skia_rs_canvas::SaveLayerRec {
+            bounds: None,
+            paint,
+            flags: skia_rs_canvas::SaveLayerFlags::NONE,
+        };
+        self.inner.save_layer(&rec);
     }
 }
 
@@ -737,5 +883,145 @@ mod tests {
         anim.render_frame(&mut ctx, 0.0);
         anim.render_frame(&mut ctx, 30.0);
         anim.render_frame(&mut ctx, 59.0);
+    }
+
+    #[test]
+    fn test_resolve_matte_source_prefers_explicit_tp() {
+        use crate::model::LayerModel;
+
+        let mk = |ind: i32, extra: &str| -> Layer {
+            let json = format!(
+                r#"{{"ty":4,"nm":"l","ind":{ind},"ip":0,"op":100,"shapes":[]{extra}}}"#
+            );
+            let model: LayerModel = serde_json::from_str(&json).unwrap();
+            Layer::from_lottie(&model)
+        };
+
+        let a = mk(1, "");
+        let b = mk(2, "");
+        let consumer = mk(3, r#","tt":1,"tp":1"#);
+        let siblings = vec![a.clone(), b, consumer.clone()];
+
+        let source = resolve_matte_source(&consumer, &siblings).unwrap();
+        assert_eq!(source.index, 1, "explicit tp should win over array position");
+    }
+
+    #[test]
+    fn test_resolve_matte_source_falls_back_to_previous_array_element() {
+        use crate::model::LayerModel;
+
+        let mk = |ind: i32, extra: &str| -> Layer {
+            let json = format!(
+                r#"{{"ty":4,"nm":"l","ind":{ind},"ip":0,"op":100,"shapes":[]{extra}}}"#
+            );
+            let model: LayerModel = serde_json::from_str(&json).unwrap();
+            Layer::from_lottie(&model)
+        };
+
+        let source = mk(1, r#","td":true"#);
+        let consumer = mk(2, r#","tt":1"#);
+        let siblings = vec![source.clone(), consumer.clone()];
+
+        let resolved = resolve_matte_source(&consumer, &siblings).unwrap();
+        assert_eq!(resolved.index, 1);
+        assert!(resolved.matte_source_hidden);
+    }
+
+    /// End-to-end alpha track matte: a full-canvas red fill (`tt`:1) masked
+    /// by a left-half-only white shape (`td`:true, hidden as a standalone
+    /// layer). Per upstream `AttachMatteLayer`, the matte source is the
+    /// layer immediately preceding the consumer in the JSON `layers` array.
+    #[test]
+    fn test_alpha_track_matte_composites_end_to_end() {
+        use crate::animation::Animation;
+        use skia_rs_canvas::Canvas as RasterCanvas;
+        use skia_rs_canvas::PixelBuffer;
+
+        let json = r#"{
+            "v":"5.5.7","fr":30,"ip":0,"op":60,"w":100,"h":100,
+            "layers":[
+                {"ty":4,"nm":"source","ind":1,"ip":0,"op":60,"td":true,
+                 "shapes":[
+                    {"ty":"rc","p":{"a":0,"k":[25,50]},"s":{"a":0,"k":[50,100]}},
+                    {"ty":"fl","c":{"a":0,"k":[1,1,1,1]},"o":{"a":0,"k":100}}
+                 ]},
+                {"ty":4,"nm":"consumer","ind":2,"ip":0,"op":60,"tt":1,
+                 "shapes":[
+                    {"ty":"rc","p":{"a":0,"k":[50,50]},"s":{"a":0,"k":[100,100]}},
+                    {"ty":"fl","c":{"a":0,"k":[1,0,0,1]},"o":{"a":0,"k":100}}
+                 ]}
+            ]
+        }"#;
+
+        let anim = Animation::from_json(json).unwrap();
+        let mut buffer = PixelBuffer::new(100, 100);
+        let mut raster = RasterCanvas::new_raster(&mut buffer);
+        let mut canvas = SkiaCanvas::new(&mut raster);
+        let mut ctx = RenderContext::new(&mut canvas);
+
+        anim.render_frame(&mut ctx, 0.0);
+
+        // Under the matte (left half): red, fully opaque.
+        let inside = buffer.get_pixel(10, 50).unwrap();
+        assert!(inside.alpha() > 200, "expected opaque pixel under the matte, got {inside:?}");
+        assert!(inside.red() > 200, "expected red under the matte, got {inside:?}");
+
+        // Outside the matte (right half): fully masked out (transparent).
+        let outside = buffer.get_pixel(75, 50).unwrap();
+        assert_eq!(
+            outside.alpha(),
+            0,
+            "expected transparent pixel outside the matte, got {outside:?}"
+        );
+
+        // The (legacy-hidden) source itself must not be rendered standalone
+        // — no white pixels anywhere.
+        let source_area = buffer.get_pixel(10, 10).unwrap();
+        assert!(
+            !(source_area.red() > 200 && source_area.green() > 200 && source_area.blue() > 200),
+            "matte source should not render standalone, got {source_area:?}"
+        );
+    }
+
+    /// End-to-end luma track matte (`tt`:3): a 50%-gray source produces
+    /// ~50% mask coverage (BT.709 luma of an equal-channel gray is that
+    /// channel's value, independent of the exact weights).
+    #[test]
+    fn test_luma_track_matte_composites_end_to_end() {
+        use crate::animation::Animation;
+        use skia_rs_canvas::Canvas as RasterCanvas;
+        use skia_rs_canvas::PixelBuffer;
+
+        let json = r#"{
+            "v":"5.5.7","fr":30,"ip":0,"op":60,"w":100,"h":100,
+            "layers":[
+                {"ty":4,"nm":"source","ind":1,"ip":0,"op":60,"td":true,
+                 "shapes":[
+                    {"ty":"rc","p":{"a":0,"k":[50,50]},"s":{"a":0,"k":[100,100]}},
+                    {"ty":"fl","c":{"a":0,"k":[0.5,0.5,0.5,1]},"o":{"a":0,"k":100}}
+                 ]},
+                {"ty":4,"nm":"consumer","ind":2,"ip":0,"op":60,"tt":3,
+                 "shapes":[
+                    {"ty":"rc","p":{"a":0,"k":[50,50]},"s":{"a":0,"k":[100,100]}},
+                    {"ty":"fl","c":{"a":0,"k":[1,0,0,1]},"o":{"a":0,"k":100}}
+                 ]}
+            ]
+        }"#;
+
+        let anim = Animation::from_json(json).unwrap();
+        let mut buffer = PixelBuffer::new(100, 100);
+        let mut raster = RasterCanvas::new_raster(&mut buffer);
+        let mut canvas = SkiaCanvas::new(&mut raster);
+        let mut ctx = RenderContext::new(&mut canvas);
+
+        anim.render_frame(&mut ctx, 0.0);
+
+        let pixel = buffer.get_pixel(50, 50).unwrap();
+        // ~50% coverage -> alpha roughly in [96, 160] (127 +/- slop for
+        // sRGB-vs-linear luma weighting/AA differences).
+        assert!(
+            (96..=160).contains(&(pixel.alpha() as i32)),
+            "expected ~50% alpha from luma matte, got {pixel:?}"
+        );
     }
 }
