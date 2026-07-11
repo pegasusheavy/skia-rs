@@ -133,11 +133,23 @@ impl ExtGraphicsState {
     }
 
     /// Create a unique key for caching.
+    ///
+    /// Must cover every field that affects the emitted `/ExtGState`
+    /// dictionary — omitting one (as this used to, for `soft_mask`,
+    /// `alpha_is_shape`, `text_knockout`, and the overprint flags) makes
+    /// `TransparencyManager::add_ext_gstate` wrongly dedupe two distinct
+    /// states that happen to share the same alpha/blend-mode into a single
+    /// cached object, silently dropping the other attributes.
     pub fn cache_key(&self) -> ExtGStateKey {
         ExtGStateKey {
             stroke_alpha: self.stroke_alpha.map(|a| (a * 1000.0) as i32),
             fill_alpha: self.fill_alpha.map(|a| (a * 1000.0) as i32),
             blend_mode: self.blend_mode,
+            soft_mask: self.soft_mask,
+            alpha_is_shape: self.alpha_is_shape,
+            text_knockout: self.text_knockout,
+            stroke_overprint: self.stroke_overprint,
+            fill_overprint: self.fill_overprint,
         }
     }
 }
@@ -151,6 +163,16 @@ pub struct ExtGStateKey {
     fill_alpha: Option<i32>,
     /// Blend mode.
     blend_mode: Option<PdfBlendMode>,
+    /// Soft mask object reference.
+    soft_mask: Option<u32>,
+    /// Alpha is shape (AIS).
+    alpha_is_shape: Option<bool>,
+    /// Text knockout (TK).
+    text_knockout: Option<bool>,
+    /// Overprint for stroking (OP).
+    stroke_overprint: Option<bool>,
+    /// Overprint for non-stroking (op).
+    fill_overprint: Option<bool>,
 }
 
 /// PDF blend modes.
@@ -528,6 +550,46 @@ mod tests {
         let dict = state.to_pdf_dict(6);
 
         assert!(dict.contains("/BM /Multiply"));
+    }
+
+    #[test]
+    fn test_cache_key_distinguishes_soft_mask_and_flags() {
+        let mut manager = TransparencyManager::new();
+
+        let plain = ExtGraphicsState {
+            fill_alpha: Some(0.5),
+            stroke_alpha: Some(0.5),
+            ..Default::default()
+        };
+        let idx_plain = manager.add_ext_gstate(plain);
+
+        // Same alpha, but with a soft mask attached — must NOT collide
+        // with `plain` in the cache.
+        let masked = ExtGraphicsState {
+            fill_alpha: Some(0.5),
+            stroke_alpha: Some(0.5),
+            soft_mask: Some(42),
+            ..Default::default()
+        };
+        let idx_masked = manager.add_ext_gstate(masked);
+        assert_ne!(idx_plain, idx_masked, "soft_mask must affect cache_key");
+
+        // Same alpha, differing only by alpha_is_shape / text_knockout /
+        // overprint — also must not collide with `plain`.
+        let flagged = ExtGraphicsState {
+            fill_alpha: Some(0.5),
+            stroke_alpha: Some(0.5),
+            alpha_is_shape: Some(true),
+            text_knockout: Some(true),
+            stroke_overprint: Some(true),
+            fill_overprint: Some(true),
+            ..Default::default()
+        };
+        let idx_flagged = manager.add_ext_gstate(flagged);
+        assert_ne!(idx_plain, idx_flagged);
+        assert_ne!(idx_masked, idx_flagged);
+
+        assert_eq!(manager.ext_gstates().len(), 3);
     }
 
     #[test]
