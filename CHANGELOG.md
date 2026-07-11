@@ -177,6 +177,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `DisposalMethod::Background` is documented as clear-to-**transparent**
   (never the GIF background color), matching `SkGifCodec`.
 
+### Changed (skia-rs-gpu — conformance audit)
+- Built-in solid/gradient/cover fragment shaders now output **premultiplied**
+  color, and `blend_mode_to_state` derives per-mode **alpha** blend components
+  from Ganesh's `gBlendTable` (color→alpha factor substitution) instead of a
+  hardwired SrcOver alpha. Together these change the bytes written for
+  translucent gradient/solid GPU fills to premultiplied form.
+- The paint→GPU bridge reads **real gradient geometry and stops** (endpoints,
+  radius, straight-alpha colors) via a new `Shader::as_any` downcast, instead
+  of probing premultiplied `sample()` values.
+- `PipelineKey` now distinguishes pipelines by every state that affects
+  compilation (stencil/depth ops, blend operations + alpha, write mask,
+  topology, cull mode, entry points, vertex formats); previously-colliding
+  distinct pipelines no longer share a cache slot.
+- Stencil-cover emits the closing fan triangle and supports inverse fill types
+  (`Equal 0` cover over clip bounds); fill tessellation routes multi-contour
+  and non-convex paths through stencil-cover so holes stay holes.
+- Curve flattening is device-space (`set_view_matrix` scales tolerance to
+  source space); subdivision is tolerance-driven up to `MAX_POINTS_PER_CURVE`
+  rather than a small fixed cap, so magnified curves are smoother.
+- Stroking honors join (miter with limit + bevel fallback) and cap
+  (butt/square/round) styles via `StrokeStyle`.
+- Gradient LUTs premultiply **after** sRGB encoding and sample at half-texel
+  centers (no Repeat seam); sweep `t=0` is the +x axis (Skia
+  `xy_to_unit_angle`).
+- SDF textures pack **inside as high** (>128, edge at 128) per
+  `SkDistanceFieldGen`, with a half-texel edge-distance correction.
+- Image tiling handles tile modes per axis (a Clamp axis no longer tiles).
+- Atlas: TooLarge accounts for padding; `uv_rect` insets a half texel;
+  `compact` drops unplaceable entries instead of re-placing at stale
+  coordinates; glyph eviction frees atlas regions and `GlyphBatch::validate`
+  flags stale (bumped-generation) batches.
+- wgpu: pipelines build from the shader's real bind-group layouts (auto
+  layout); clear colors are linearized for `*UnormSrgb` targets; compute
+  dispatches record a real `DispatchCompute` (never replayed as a draw);
+  `ScissorRect::from_rect` clamps the box instead of sliding its edges.
+- Removed undefined behavior in the Vulkan backend (`CString::from_raw` over a
+  borrowed device-name array); Metal gates `Depth24Unorm_Stencil8` on device
+  support and reports Tier1 argument buffers as available.
+
 ## [0.2.6] - 2026-04-26
 
 Phase 7 complete: resolved every remaining deferral across the
