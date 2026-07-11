@@ -29,12 +29,17 @@
 
 use crate::dom::SvgDom;
 use crate::parser::parse_svg;
-use crate::render::render_svg;
+use crate::render::render_svg_in_container;
 use flate2::read::GzDecoder;
 use skia_rs_canvas::Canvas;
 use skia_rs_core::Point;
 use skia_rs_text::Font;
 use std::io::Read;
+
+/// Fallback units-per-em when a font exposes no typeface metrics. 1000 is
+/// the common PostScript/OpenType default and matches Skia's behaviour for
+/// fonts without a usable head table.
+const DEFAULT_UPEM: f32 = 1000.0;
 
 /// gzip magic bytes (`0x1f 0x8b`) — the two-byte prefix of every gzip
 /// stream (RFC 1952 section 2.3.1).
@@ -75,21 +80,31 @@ pub fn glyph_svg_to_dom(raw: &[u8]) -> Option<SvgDom> {
 /// Returns `true` when the glyph had an SVG entry and was drawn,
 /// `false` otherwise so the caller can fall through to an outline /
 /// COLR path.
-pub fn draw_glyph_svg(
-    canvas: &mut Canvas<'_>,
-    font: &Font,
-    glyph: u16,
-    origin: Point,
-) -> bool {
+pub fn draw_glyph_svg(canvas: &mut Canvas<'_>, font: &Font, glyph: u16, origin: Point) -> bool {
     let Some(raw) = font.glyph_svg(glyph) else {
         return false;
     };
     let Some(dom) = glyph_svg_to_dom(&raw) else {
         return false;
     };
+
+    // SVG glyph documents are authored in font units: their coordinate
+    // system spans the em box (upem × upem). Render them into that em box and
+    // scale by ppem/upem so the glyph lands at the requested pixel size,
+    // rather than stretching the document to fill the whole canvas
+    // (SkSVGOpenTypeSVGDecoder::render sets the container size to upem).
+    let upem = font
+        .typeface()
+        .map(|tf| tf.units_per_em() as f32)
+        .filter(|u| *u > 0.0)
+        .unwrap_or(DEFAULT_UPEM);
+    let ppem = font.size();
+    let scale = ppem / upem;
+
     canvas.save();
     canvas.translate(origin.x, origin.y);
-    render_svg(&dom, canvas);
+    canvas.scale(scale, scale);
+    render_svg_in_container(&dom, canvas, upem, upem);
     canvas.restore();
     true
 }

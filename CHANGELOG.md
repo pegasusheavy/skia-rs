@@ -216,6 +216,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   borrowed device-name array); Metal gates `Depth24Unorm_Stencil8` on device
   support and reports Tier1 argument buffers as available.
 
+### Changed (skia-rs-svg — conformance audit)
+- Presentation attributes (`fill`, `stroke`, `stroke-width`, `color`,
+  `fill-opacity`, `stroke-opacity`, `fill-rule`, `stroke-linecap`,
+  `stroke-linejoin`, `stroke-dasharray`, `stroke-dashoffset`) now **inherit**
+  down the element tree via a presentation-context stack. The `fill: black`
+  initial value lives at the render root, not on every node, so an element
+  with no `fill` correctly inherits its ancestor's paint instead of drawing
+  black. `SvgNode`'s inherited fields are now `Option` (unset = inherit) and
+  `SvgPaint` gained `CurrentColor` and a `url(#id) <fallback>` form.
+- `currentColor` resolves against the inherited `color` property (default
+  black) instead of silently falling back to an unset paint.
+- Percentage lengths resolve against the viewport per SVG 1.1 §7.10
+  (`x`/width → viewport width, `y`/height → height, `r`/font-size →
+  `sqrt(w²+h²)/√2`) rather than collapsing to a raw `0..1` fraction.
+- Group/element `opacity` composites through a `saveLayer` (alpha), with the
+  Skia leaf-node optimization applying it as paint alpha only for a single
+  atomic draw (one of fill/stroke, no descendants). Overlapping content in a
+  translucent group is no longer double-composited.
+- `<polyline>` and `<polygon>` now **fill** by default (previously polyline
+  rendered stroke-only); the fill closes the contour implicitly.
+- `preserveAspectRatio` is honored (default `xMidYMid meet` uniform-scale +
+  centering; `none` non-uniform; all align/meet/slice combinations), instead
+  of an unconditional min-scale fit.
+- Parsed `fill-rule` (even-odd), `stroke-dasharray`/`-dashoffset`,
+  `stroke-linecap`, and `stroke-linejoin` are applied to the path/paint.
+- objectBoundingBox gradients map through the bbox matrix composed as
+  `bbox × gradientTransform`; radial OBB gradients are now correctly
+  elliptical for non-square bounds.
+- `<clipPath>` child transforms are honored for all shape kinds.
+- `<use>` applies its `x`/`y` translation, and a depth guard prevents
+  malformed reference cycles from overflowing the stack.
+- CSS declarations apply in document/cascade order (ordered list, not
+  `HashMap` iteration); `fill-opacity`/`stroke-opacity` multiply into the
+  paint alpha instead of mutating the fill/stroke color.
+- A missing `url(#id)` paint reference uses the grammar's fallback color when
+  provided.
+- SVG-in-OpenType glyph documents render in font units scaled by `ppem/upem`
+  (via `render_svg_in_container`) instead of being stretched to the canvas.
+- Path export subdivides conics into a quad spline
+  (`SkConic::chopIntoQuadsPOW2`-equivalent) instead of emitting a single
+  naive, weight-dropping quad.
+
 ## [0.2.6] - 2026-04-26
 
 Phase 7 complete: resolved every remaining deferral across the

@@ -8,19 +8,149 @@
 
 use crate::css::apply_stylesheet;
 use crate::dom::*;
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use skia_rs_canvas::{Canvas, ClipOp, Surface};
+use base64::engine::general_purpose::STANDARD;
+use skia_rs_canvas::{Canvas, ClipOp, SaveLayerRec, Surface};
 use skia_rs_codec::decode_image;
 use skia_rs_core::{Color, Color4f, Matrix, Point, Rect, Scalar};
 use skia_rs_paint::{
-    LinearGradient as PaintLinearGradient, Paint, RadialGradient as PaintRadialGradient,
-    ShaderRef, Style, TileMode,
+    LinearGradient as PaintLinearGradient, Paint, RadialGradient as PaintRadialGradient, ShaderRef,
+    StrokeCap, StrokeJoin, Style, TileMode,
 };
-use skia_rs_path::{Path, PathBuilder};
+use skia_rs_path::{DashEffect, FillType, Path, PathBuilder, PathEffectRef};
 use skia_rs_text::Font;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Maximum `<use>` reference depth before the render walk bails out. Guards
+/// against malformed documents whose `<use>` elements form a cycle (which
+/// would otherwise recurse until the stack overflows). SVG has no legal use
+/// for nesting this deep.
+const MAX_USE_DEPTH: u32 = 64;
+
+/// Resolved, inheritable presentation state threaded down the render walk.
+///
+/// Mirrors the inherited half of `SkSVGPresentationContext` — every field
+/// here is a CSS-inherited property, initialised to the values from
+/// `SkSVGPresentationAttributes::MakeInitial`. `opacity` is deliberately
+/// absent: it composites the element as a unit and is handled per node.
+#[derive(Clone)]
+struct PresentationState {
+    /// Fill paint selector (initial: black).
+    fill: SvgPaint,
+    /// Stroke paint selector (initial: none).
+    stroke: SvgPaint,
+    /// Stroke width in user units (initial: 1).
+    stroke_width: Scalar,
+    /// Fill opacity (initial: 1).
+    fill_opacity: Scalar,
+    /// Stroke opacity (initial: 1).
+    stroke_opacity: Scalar,
+    /// `color` property, resolves `currentColor` (initial: black).
+    color: Color,
+    /// Fill rule (initial: nonzero winding).
+    fill_rule: FillType,
+    /// Stroke line cap (initial: butt).
+    stroke_cap: StrokeCap,
+    /// Stroke line join (initial: miter).
+    stroke_join: StrokeJoin,
+    /// Dash intervals in user units (initial: none).
+    dash_array: Option<Vec<Scalar>>,
+    /// Dash phase in user units (initial: 0).
+    dash_offset: Scalar,
+}
+
+impl PresentationState {
+    /// The document-root initial presentation state
+    /// (`SkSVGPresentationAttributes::MakeInitial`).
+    fn initial() -> Self {
+        Self {
+            fill: SvgPaint::Color(Color::BLACK),
+            stroke: SvgPaint::None,
+            stroke_width: 1.0,
+            fill_opacity: 1.0,
+            stroke_opacity: 1.0,
+            color: Color::BLACK,
+            fill_rule: FillType::Winding,
+            stroke_cap: StrokeCap::Butt,
+            stroke_join: StrokeJoin::Miter,
+            dash_array: None,
+            dash_offset: 0.0,
+        }
+    }
+
+    /// Derive the child state for `node`: start from the parent (inheritance)
+    /// and override with any properties the element specifies.
+    fn resolve(&self, node: &SvgNode) -> Self {
+        let mut s = self.clone();
+        // `color` is resolved first so that a `fill="currentColor"` on the
+        // same element sees this element's `color`.
+        if let Some(c) = node.color {
+            s.color = c;
+        }
+        if let Some(f) = &node.fill {
+            s.fill = f.clone();
+        }
+        if let Some(st) = &node.stroke {
+            s.stroke = st.clone();
+        }
+        if let Some(w) = node.stroke_width {
+            s.stroke_width = w;
+        }
+        if let Some(o) = node.fill_opacity {
+            s.fill_opacity = o;
+        }
+        if let Some(o) = node.stroke_opacity {
+            s.stroke_opacity = o;
+        }
+        if let Some(v) = node.attributes.get("fill-rule") {
+            s.fill_rule = match v.trim() {
+                "evenodd" => FillType::EvenOdd,
+                _ => FillType::Winding,
+            };
+        }
+        if let Some(v) = node.attributes.get("stroke-linecap") {
+            s.stroke_cap = match v.trim() {
+                "round" => StrokeCap::Round,
+                "square" => StrokeCap::Square,
+                _ => StrokeCap::Butt,
+            };
+        }
+        if let Some(v) = node.attributes.get("stroke-linejoin") {
+            s.stroke_join = match v.trim() {
+                "round" => StrokeJoin::Round,
+                "bevel" => StrokeJoin::Bevel,
+                _ => StrokeJoin::Miter,
+            };
+        }
+        if let Some(v) = node.attributes.get("stroke-dasharray") {
+            s.dash_array = parse_dash_array(v);
+        }
+        if let Some(v) = node.attributes.get("stroke-dashoffset") {
+            s.dash_offset = crate::parser::parse_length(v);
+        }
+        s
+    }
+}
+
+/// Parse a `stroke-dasharray` value into user-unit intervals. Returns `None`
+/// for `none`, empty, or all-zero patterns (which disable dashing).
+fn parse_dash_array(s: &str) -> Option<Vec<Scalar>> {
+    let s = s.trim();
+    if s.is_empty() || s == "none" {
+        return None;
+    }
+    let intervals: Vec<Scalar> = s
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|t| !t.is_empty())
+        .map(crate::parser::parse_length)
+        .collect();
+    if intervals.is_empty() || intervals.iter().all(|v| *v <= 0.0) {
+        None
+    } else {
+        Some(intervals)
+    }
+}
 
 /// Resolved context passed through the render walk.
 ///
@@ -81,22 +211,82 @@ pub fn render_svg(dom: &SvgDom, canvas: &mut Canvas<'_>) {
 
     let ctx = RenderContext::new(&working);
 
-    // Calculate scale to fit.
+    // Map the viewBox into the device viewport honouring preserveAspectRatio
+    // (SkSVGSVG::onPrepareToRender + ComputeViewboxMatrix).
     let view_box = working.get_view_box();
     if view_box.width() <= 0.0 || view_box.height() <= 0.0 {
         return;
     }
-    let scale_x = canvas.width() as Scalar / view_box.width();
-    let scale_y = canvas.height() as Scalar / view_box.height();
-    let scale = scale_x.min(scale_y);
+    let viewport = Rect::from_xywh(
+        0.0,
+        0.0,
+        canvas.width() as Scalar,
+        canvas.height() as Scalar,
+    );
+    let content_matrix =
+        compute_viewbox_matrix(&view_box, &viewport, working.preserve_aspect_ratio);
 
     canvas.save();
-    canvas.scale(scale, scale);
-    canvas.translate(-view_box.left, -view_box.top);
+    canvas.concat(&content_matrix);
 
-    render_node(&working.root, canvas, &ctx);
+    render_node(
+        &working.root,
+        canvas,
+        &ctx,
+        &PresentationState::initial(),
+        0,
+    );
 
     canvas.restore();
+}
+
+/// Compute the viewBox→viewport matrix for a `preserveAspectRatio`
+/// (`SkSVGNode::ComputeViewboxMatrix`).
+fn compute_viewbox_matrix(view_box: &Rect, viewport: &Rect, par: PreserveAspectRatio) -> Matrix {
+    if view_box.width() <= 0.0
+        || view_box.height() <= 0.0
+        || viewport.width() <= 0.0
+        || viewport.height() <= 0.0
+    {
+        return Matrix::scale(0.0, 0.0);
+    }
+
+    let sx = viewport.width() / view_box.width();
+    let sy = viewport.height() / view_box.height();
+
+    let (scale_x, scale_y) = match par.align {
+        // "none" -> anisotropic scaling regardless of meet/slice.
+        None => (sx, sy),
+        Some(_) => {
+            let s = match par.meet_or_slice {
+                MeetOrSlice::Meet => sx.min(sy),
+                MeetOrSlice::Slice => sx.max(sy),
+            };
+            (s, s)
+        }
+    };
+
+    let (cx, cy) = match par.align {
+        None => (0.0, 0.0),
+        Some((ax, ay)) => (
+            match ax {
+                AlignX::Min => 0.0,
+                AlignX::Mid => 0.5,
+                AlignX::Max => 1.0,
+            },
+            match ay {
+                AlignY::Min => 0.0,
+                AlignY::Mid => 0.5,
+                AlignY::Max => 1.0,
+            },
+        ),
+    };
+
+    let tx = -view_box.left * scale_x + (viewport.width() - view_box.width() * scale_x) * cx;
+    let ty = -view_box.top * scale_y + (viewport.height() - view_box.height() * scale_y) * cy;
+
+    Matrix::translate(viewport.left + tx, viewport.top + ty)
+        .concat(&Matrix::scale(scale_x, scale_y))
 }
 
 fn dom_has_inline_styles(node: &SvgNode) -> bool {
@@ -106,11 +296,40 @@ fn dom_has_inline_styles(node: &SvgNode) -> bool {
     node.children.iter().any(dom_has_inline_styles)
 }
 
-/// Render a single SVG node.
-fn render_node(node: &SvgNode, canvas: &mut Canvas<'_>, ctx: &RenderContext<'_>) {
+/// True when a node draws a single atomic shape and has no descendants —
+/// the condition under which `opacity` can be applied as paint alpha rather
+/// than an offscreen layer (`SkSVGRenderContext::applyOpacity`, kLeaf).
+fn is_leaf_shape(node: &SvgNode) -> bool {
+    node.children.is_empty()
+        && matches!(
+            node.kind,
+            SvgNodeKind::Rect(_)
+                | SvgNodeKind::Circle(_)
+                | SvgNodeKind::Ellipse(_)
+                | SvgNodeKind::Line(_)
+                | SvgNodeKind::Polyline(_)
+                | SvgNodeKind::Polygon(_)
+                | SvgNodeKind::Path(_)
+        )
+}
+
+/// Render a single SVG node under the inherited presentation `parent`.
+///
+/// `depth` bounds `<use>` recursion so cyclic references cannot overflow the
+/// stack.
+fn render_node(
+    node: &SvgNode,
+    canvas: &mut Canvas<'_>,
+    ctx: &RenderContext<'_>,
+    parent: &PresentationState,
+    depth: u32,
+) {
     if !node.visible {
         return;
     }
+
+    // Resolve this element's presentation state against the inherited one.
+    let state = parent.resolve(node);
 
     canvas.save();
     canvas.concat(&node.transform);
@@ -130,18 +349,66 @@ fn render_node(node: &SvgNode, canvas: &mut Canvas<'_>, ctx: &RenderContext<'_>)
         }
     }
 
+    // Group/element opacity (SkSVGRenderContext::applyOpacity). We can fold
+    // opacity into paint alpha only when it affects a single atomic draw:
+    // a leaf shape with exactly one of fill/stroke. Otherwise we composite
+    // through an offscreen layer so overlapping coverage isn't double-hit.
+    let has_fill = !matches!(state.fill, SvgPaint::None);
+    let has_stroke = !matches!(state.stroke, SvgPaint::None);
+    let opacity = node.opacity.clamp(0.0, 1.0);
+    let can_defer = opacity < 1.0 && is_leaf_shape(node) && (has_fill ^ has_stroke);
+    let deferred = if can_defer { opacity } else { 1.0 };
+    let use_layer = opacity < 1.0 && !can_defer && !matches!(node.kind, SvgNodeKind::Image(_));
+    let mut layer_open = false;
+    if use_layer {
+        let mut layer_paint = Paint::new();
+        layer_paint.set_alpha(opacity);
+        canvas.save_layer(&SaveLayerRec {
+            bounds: None,
+            paint: Some(&layer_paint),
+            flags: Default::default(),
+        });
+        layer_open = true;
+    }
+
     let node_bounds_for_gradient = node.bounds();
 
-    let fill_paint = node.fill.as_ref().and_then(|fill| {
-        create_paint_from_svg_paint(fill, Style::Fill, node, ctx, node_bounds_for_gradient)
-    });
+    let fill_paint = if has_fill {
+        build_paint(
+            &state.fill,
+            Style::Fill,
+            state.fill_opacity,
+            deferred,
+            &state,
+            ctx,
+            node_bounds_for_gradient,
+        )
+    } else {
+        None
+    };
 
-    let stroke_paint = node.stroke.as_ref().and_then(|stroke| {
-        let mut paint =
-            create_paint_from_svg_paint(stroke, Style::Stroke, node, ctx, node_bounds_for_gradient)?;
-        paint.set_stroke_width(node.stroke_width);
-        Some(paint)
-    });
+    let stroke_paint = if has_stroke {
+        build_paint(
+            &state.stroke,
+            Style::Stroke,
+            state.stroke_opacity,
+            deferred,
+            &state,
+            ctx,
+            node_bounds_for_gradient,
+        )
+        .map(|mut paint| {
+            paint.set_stroke_width(state.stroke_width);
+            paint.set_stroke_cap(state.stroke_cap);
+            paint.set_stroke_join(state.stroke_join);
+            if let Some(effect) = build_dash_effect(&state) {
+                paint.set_path_effect(Some(effect));
+            }
+            paint
+        })
+    } else {
+        None
+    };
 
     match &node.kind {
         SvgNodeKind::Rect(rect) => {
@@ -187,23 +454,44 @@ fn render_node(node: &SvgNode, canvas: &mut Canvas<'_>, ctx: &RenderContext<'_>)
         }
         SvgNodeKind::Line(line) => {
             if let Some(paint) = &stroke_paint {
-                canvas.draw_line(
-                    Point::new(line.x1, line.y1),
-                    Point::new(line.x2, line.y2),
-                    paint,
-                );
+                // `draw_line` does not run path effects; route dashed strokes
+                // through a path so stroke-dasharray takes effect.
+                if paint.path_effect().is_some() {
+                    let mut b = PathBuilder::new();
+                    b.move_to(line.x1, line.y1);
+                    b.line_to(line.x2, line.y2);
+                    canvas.draw_path(&b.build(), paint);
+                } else {
+                    canvas.draw_line(
+                        Point::new(line.x1, line.y1),
+                        Point::new(line.x2, line.y2),
+                        paint,
+                    );
+                }
             }
         }
         SvgNodeKind::Polyline(points) => {
+            // A polyline is an open path: per SVG it is *filled* (with the
+            // contour implicitly closed) and *stroked* (left open).
             if points.len() >= 2 {
-                let mut builder = PathBuilder::new();
-                builder.move_to(points[0].x, points[0].y);
-                for p in &points[1..] {
-                    builder.line_to(p.x, p.y);
-                }
-                let path = builder.build();
-                if let Some(paint) = &stroke_paint {
+                if let Some(paint) = &fill_paint {
+                    let mut b = PathBuilder::new();
+                    b.move_to(points[0].x, points[0].y);
+                    for p in &points[1..] {
+                        b.line_to(p.x, p.y);
+                    }
+                    b.close();
+                    let mut path = b.build();
+                    path.set_fill_type(state.fill_rule);
                     canvas.draw_path(&path, paint);
+                }
+                if let Some(paint) = &stroke_paint {
+                    let mut b = PathBuilder::new();
+                    b.move_to(points[0].x, points[0].y);
+                    for p in &points[1..] {
+                        b.line_to(p.x, p.y);
+                    }
+                    canvas.draw_path(&b.build(), paint);
                 }
             }
         }
@@ -215,7 +503,8 @@ fn render_node(node: &SvgNode, canvas: &mut Canvas<'_>, ctx: &RenderContext<'_>)
                     builder.line_to(p.x, p.y);
                 }
                 builder.close();
-                let path = builder.build();
+                let mut path = builder.build();
+                path.set_fill_type(state.fill_rule);
                 if let Some(paint) = &fill_paint {
                     canvas.draw_path(&path, paint);
                 }
@@ -225,8 +514,11 @@ fn render_node(node: &SvgNode, canvas: &mut Canvas<'_>, ctx: &RenderContext<'_>)
             }
         }
         SvgNodeKind::Path(path) => {
+            // Honour the resolved fill-rule for the fill pass.
+            let mut filled = path.clone();
+            filled.set_fill_type(state.fill_rule);
             if let Some(paint) = &fill_paint {
-                canvas.draw_path(path, paint);
+                canvas.draw_path(&filled, paint);
             }
             if let Some(paint) = &stroke_paint {
                 canvas.draw_path(path, paint);
@@ -236,16 +528,18 @@ fn render_node(node: &SvgNode, canvas: &mut Canvas<'_>, ctx: &RenderContext<'_>)
             render_text(text, canvas, fill_paint.as_ref(), stroke_paint.as_ref());
         }
         SvgNodeKind::Image(img) => {
-            render_image(img, canvas, node.opacity);
+            render_image(img, canvas, opacity);
         }
         SvgNodeKind::Use(href) => {
-            if let Some(referenced) = ctx.lookup(href) {
-                render_node(referenced, canvas, ctx);
+            if depth < MAX_USE_DEPTH {
+                if let Some(referenced) = ctx.lookup(href) {
+                    render_node(referenced, canvas, ctx, &state, depth + 1);
+                }
             }
         }
         SvgNodeKind::Group | SvgNodeKind::Svg => {
             for child in &node.children {
-                render_node(child, canvas, ctx);
+                render_node(child, canvas, ctx, &state, depth);
             }
         }
         SvgNodeKind::Defs
@@ -259,12 +553,23 @@ fn render_node(node: &SvgNode, canvas: &mut Canvas<'_>, ctx: &RenderContext<'_>)
             // <a>) don't hide their contents. <style> elements are handled
             // separately during parse and don't reach render.
             for child in &node.children {
-                render_node(child, canvas, ctx);
+                render_node(child, canvas, ctx, &state, depth);
             }
         }
     }
 
+    if layer_open {
+        canvas.restore();
+    }
     canvas.restore();
+}
+
+/// Build a dash [`PathEffectRef`] from the resolved presentation state, or
+/// `None` when dashing is disabled.
+fn build_dash_effect(state: &PresentationState) -> Option<PathEffectRef> {
+    let intervals = state.dash_array.as_ref()?;
+    let dash = DashEffect::new(intervals.clone(), state.dash_offset)?;
+    Some(Arc::new(dash) as PathEffectRef)
 }
 
 /// Extract the id from an `url(#id)` reference; returns None if `s` is
@@ -284,52 +589,76 @@ fn extract_url_id(s: &str) -> Option<&str> {
 }
 
 /// Build a combined Path representing the geometry inside a `<clipPath>`
-/// element. Walks direct children and unions their geometry.
+/// element. Walks direct children and unions their geometry, honouring each
+/// child's `transform` (and any nested group transforms) so the clip region
+/// matches how the shapes would render (`SkSVGClipPath`).
 fn build_clip_path(clip_node: &SvgNode) -> Path {
     let mut builder = PathBuilder::new();
     for child in &clip_node.children {
-        add_node_geometry(child, &mut builder);
+        add_node_geometry(child, &mut builder, &Matrix::IDENTITY);
     }
     builder.build()
 }
 
-fn add_node_geometry(node: &SvgNode, builder: &mut PathBuilder) {
-    match &node.kind {
+/// Accumulate `node`'s geometry into `builder`, transformed by `parent`
+/// (the composed ancestor transform) pre-concatenated with the node's own
+/// transform.
+fn add_node_geometry(node: &SvgNode, builder: &mut PathBuilder, parent: &Matrix) {
+    let m = parent.concat(&node.transform);
+    let shape: Option<Path> = match &node.kind {
         SvgNodeKind::Rect(rect) => {
-            builder.add_rect(&Rect::from_xywh(rect.x, rect.y, rect.width, rect.height));
+            let mut b = PathBuilder::new();
+            b.add_rect(&Rect::from_xywh(rect.x, rect.y, rect.width, rect.height));
+            Some(b.build())
         }
         SvgNodeKind::Circle(c) => {
-            builder.add_oval(&Rect::from_xywh(
+            let mut b = PathBuilder::new();
+            b.add_oval(&Rect::from_xywh(
                 c.cx - c.r,
                 c.cy - c.r,
                 c.r * 2.0,
                 c.r * 2.0,
             ));
+            Some(b.build())
         }
         SvgNodeKind::Ellipse(e) => {
-            builder.add_oval(&Rect::from_xywh(
+            let mut b = PathBuilder::new();
+            b.add_oval(&Rect::from_xywh(
                 e.cx - e.rx,
                 e.cy - e.ry,
                 e.rx * 2.0,
                 e.ry * 2.0,
             ));
+            Some(b.build())
         }
-        SvgNodeKind::Path(p) => {
-            let transformed = p.transformed(&node.transform);
-            builder.add_path(&transformed);
-        }
+        SvgNodeKind::Path(p) => Some(p.clone()),
         SvgNodeKind::Polygon(points) if points.len() >= 3 => {
-            builder.move_to(points[0].x, points[0].y);
+            let mut b = PathBuilder::new();
+            b.move_to(points[0].x, points[0].y);
             for p in &points[1..] {
-                builder.line_to(p.x, p.y);
+                b.line_to(p.x, p.y);
             }
-            builder.close();
+            b.close();
+            Some(b.build())
         }
-        _ => {
-            // Recurse so groups inside clipPath contribute their geometry.
-            for child in &node.children {
-                add_node_geometry(child, builder);
+        SvgNodeKind::Polyline(points) if points.len() >= 2 => {
+            let mut b = PathBuilder::new();
+            b.move_to(points[0].x, points[0].y);
+            for p in &points[1..] {
+                b.line_to(p.x, p.y);
             }
+            Some(b.build())
+        }
+        _ => None,
+    };
+
+    if let Some(path) = shape {
+        builder.add_path(&path.transformed(&m));
+    } else {
+        // Recurse so groups/use wrappers inside clipPath contribute their
+        // geometry under the accumulated transform.
+        for child in &node.children {
+            add_node_geometry(child, builder, &m);
         }
     }
 }
@@ -363,8 +692,7 @@ fn render_text(
         let advance = font.glyph_advance(glyph);
 
         if let Some(glyph_path) = font.glyph_path(glyph) {
-            let translated =
-                glyph_path.transformed(&Matrix::translate(x_offset, y_baseline));
+            let translated = glyph_path.transformed(&Matrix::translate(x_offset, y_baseline));
             if let Some(paint) = fill_paint {
                 canvas.draw_path(&translated, paint);
             }
@@ -434,115 +762,128 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
     STANDARD.decode(&cleaned).ok()
 }
 
-/// Create a Paint from an SVG paint specification, resolving gradient
-/// URL references against the context's defs.
-fn create_paint_from_svg_paint(
+/// Build a [`Paint`] for a resolved fill/stroke paint selector.
+///
+/// `opacity_prop` is the fill-opacity or stroke-opacity; `deferred` is the
+/// element `opacity` folded in for leaf shapes. The final paint alpha is
+/// `base_alpha * opacity_prop * deferred`, clamped — matching
+/// `SkSVGRenderContext::commonPaint`'s three opacity components.
+fn build_paint(
     svg_paint: &SvgPaint,
     style: Style,
-    node: &SvgNode,
+    opacity_prop: Scalar,
+    deferred: Scalar,
+    state: &PresentationState,
     ctx: &RenderContext<'_>,
     node_bounds: Rect,
 ) -> Option<Paint> {
-    match svg_paint {
-        SvgPaint::None => None,
-        SvgPaint::Color(color) => {
-            let mut paint = Paint::new();
-            paint.set_color32(*color);
-            paint.set_style(style);
-            paint.set_alpha(node.opacity);
-            Some(paint)
-        }
-        SvgPaint::Url(url) => {
-            let id = url.trim_start_matches('#');
-            let referenced = ctx.defs.get(id).copied();
-            let shader = referenced.and_then(|r| build_gradient_shader(r, node_bounds));
+    let mut paint = Paint::new();
+    paint.set_style(style);
+    paint.set_anti_alias(true);
 
-            let mut paint = Paint::new();
-            paint.set_style(style);
-            paint.set_alpha(node.opacity);
+    let mut base_alpha: Scalar = 1.0;
+    match svg_paint {
+        SvgPaint::None => return None,
+        SvgPaint::Color(color) => {
+            paint.set_color32(*color);
+            base_alpha = color.alpha() as Scalar / 255.0;
+        }
+        SvgPaint::CurrentColor => {
+            paint.set_color32(state.color);
+            base_alpha = state.color.alpha() as Scalar / 255.0;
+        }
+        SvgPaint::Url(url, fallback) => {
+            let id = url.trim_start_matches('#');
+            let shader = ctx
+                .defs
+                .get(id)
+                .copied()
+                .and_then(|r| build_gradient_shader(r, node_bounds));
             if let Some(shader) = shader {
                 paint.set_shader(Some(shader));
             } else {
-                // No gradient found / unresolvable URL: fall back to black
-                // so the geometry is still visible rather than silently
-                // vanishing.
-                paint.set_color32(Color::BLACK);
+                // Unresolvable reference: use the grammar's fallback color if
+                // present, else Skia's fallback (black).
+                let fb = fallback.unwrap_or(Color::BLACK);
+                paint.set_color32(fb);
+                base_alpha = fb.alpha() as Scalar / 255.0;
             }
-            Some(paint)
         }
     }
+
+    paint.set_alpha((base_alpha * opacity_prop * deferred).clamp(0.0, 1.0));
+    Some(paint)
 }
 
 /// Convert an SVG gradient node into a skia-rs-paint shader.
+///
+/// For `objectBoundingBox` units the gradient is defined in the unit square
+/// and a local matrix maps it through the object's bounding box (composed as
+/// `bbox × gradientTransform`), which yields the correct elliptical mapping
+/// for non-square bounds. For `userSpaceOnUse` the coordinates are already in
+/// user space and only `gradientTransform` applies.
 fn build_gradient_shader(node: &SvgNode, object_bounds: Rect) -> Option<ShaderRef> {
     match &node.kind {
         SvgNodeKind::LinearGradient(grad) => {
-            let (start, end) = resolve_linear_endpoints(grad, object_bounds);
             let (colors, positions) = stops_to_colors(&grad.stops);
             if colors.is_empty() {
                 return None;
             }
-            let tile_mode = spread_to_tile_mode(grad.spread);
-            let gradient = PaintLinearGradient::new(start, end, colors, positions, tile_mode);
-            let gradient = if grad.transform != Matrix::IDENTITY {
-                gradient.with_local_matrix(grad.transform)
-            } else {
-                gradient
+            let (start, end, local) = match grad.units {
+                GradientUnits::ObjectBoundingBox => (
+                    Point::new(grad.x1, grad.y1),
+                    Point::new(grad.x2, grad.y2),
+                    obb_matrix(object_bounds).concat(&grad.transform),
+                ),
+                GradientUnits::UserSpaceOnUse => (
+                    Point::new(grad.x1, grad.y1),
+                    Point::new(grad.x2, grad.y2),
+                    grad.transform,
+                ),
             };
+            let tile_mode = spread_to_tile_mode(grad.spread);
+            let mut gradient = PaintLinearGradient::new(start, end, colors, positions, tile_mode);
+            if local != Matrix::IDENTITY {
+                gradient = gradient.with_local_matrix(local);
+            }
             Some(Arc::new(gradient) as ShaderRef)
         }
         SvgNodeKind::RadialGradient(grad) => {
-            let (center, radius) = resolve_radial_params(grad, object_bounds);
             let (colors, positions) = stops_to_colors(&grad.stops);
             if colors.is_empty() {
                 return None;
             }
-            let tile_mode = spread_to_tile_mode(grad.spread);
-            let gradient =
-                PaintRadialGradient::new(center, radius, colors, positions, tile_mode);
-            let gradient = if grad.transform != Matrix::IDENTITY {
-                gradient.with_local_matrix(grad.transform)
-            } else {
-                gradient
+            let (center, radius, local) = match grad.units {
+                GradientUnits::ObjectBoundingBox => (
+                    // Unit-square coords; the OBB matrix turns the unit circle
+                    // into the (possibly elliptical) object-space region. A
+                    // percentage radius resolves against the unit diagonal,
+                    // which is 1, so the stored fraction is used directly.
+                    Point::new(grad.cx, grad.cy),
+                    grad.r,
+                    obb_matrix(object_bounds).concat(&grad.transform),
+                ),
+                GradientUnits::UserSpaceOnUse => {
+                    (Point::new(grad.cx, grad.cy), grad.r, grad.transform)
+                }
             };
+            let tile_mode = spread_to_tile_mode(grad.spread);
+            let mut gradient =
+                PaintRadialGradient::new(center, radius, colors, positions, tile_mode);
+            if local != Matrix::IDENTITY {
+                gradient = gradient.with_local_matrix(local);
+            }
             Some(Arc::new(gradient) as ShaderRef)
         }
         _ => None,
     }
 }
 
-fn resolve_linear_endpoints(grad: &SvgLinearGradient, bounds: Rect) -> (Point, Point) {
-    match grad.units {
-        GradientUnits::ObjectBoundingBox => {
-            // Stored endpoints are in the 0..1 domain (e.g. from a `50%`
-            // attribute parsed as 0.5); map into object-local coords.
-            let w = bounds.width();
-            let h = bounds.height();
-            (
-                Point::new(bounds.left + grad.x1 * w, bounds.top + grad.y1 * h),
-                Point::new(bounds.left + grad.x2 * w, bounds.top + grad.y2 * h),
-            )
-        }
-        GradientUnits::UserSpaceOnUse => (
-            Point::new(grad.x1, grad.y1),
-            Point::new(grad.x2, grad.y2),
-        ),
-    }
-}
-
-fn resolve_radial_params(grad: &SvgRadialGradient, bounds: Rect) -> (Point, Scalar) {
-    match grad.units {
-        GradientUnits::ObjectBoundingBox => {
-            let w = bounds.width();
-            let h = bounds.height();
-            let size = w.min(h);
-            (
-                Point::new(bounds.left + grad.cx * w, bounds.top + grad.cy * h),
-                grad.r * size,
-            )
-        }
-        GradientUnits::UserSpaceOnUse => (Point::new(grad.cx, grad.cy), grad.r),
-    }
+/// The unit-square → object-bounding-box matrix
+/// (`translate(x, y) · scale(w, h)`), i.e. `transformForCurrentOBB`.
+fn obb_matrix(bounds: Rect) -> Matrix {
+    Matrix::translate(bounds.left, bounds.top)
+        .concat(&Matrix::scale(bounds.width(), bounds.height()))
 }
 
 fn stops_to_colors(stops: &[GradientStop]) -> (Vec<Color4f>, Option<Vec<Scalar>>) {
@@ -569,6 +910,54 @@ fn spread_to_tile_mode(spread: SpreadMethod) -> TileMode {
         SpreadMethod::Reflect => TileMode::Mirror,
         SpreadMethod::Repeat => TileMode::Repeat,
     }
+}
+
+/// Render an SVG DOM into a container of `container_w` × `container_h` under
+/// the canvas's current transform, mapping the document's viewBox into that
+/// container via `preserveAspectRatio` — without stretching to the canvas
+/// pixel dimensions.
+///
+/// This is the entry point used for SVG-in-OpenType glyphs: the caller sets
+/// the CTM to `translate(origin) · scale(ppem/upem)` and passes the em box
+/// (`upem × upem`) as the container so the glyph renders in font units at the
+/// requested pixel size (`SkSVGOpenTypeSVGDecoder::render` +
+/// `setContainerSize`).
+pub fn render_svg_in_container(
+    dom: &SvgDom,
+    canvas: &mut Canvas<'_>,
+    container_w: Scalar,
+    container_h: Scalar,
+) {
+    let mut working = dom.clone();
+    let sheet = working.stylesheet.clone();
+    if !sheet.rules.is_empty() {
+        apply_stylesheet(&mut working, &sheet);
+    } else if dom_has_inline_styles(&working.root) {
+        apply_stylesheet(&mut working, &crate::css::Stylesheet::new());
+    }
+
+    let ctx = RenderContext::new(&working);
+
+    // The document viewport is the container; a viewBox (when present) is
+    // mapped into it, otherwise the mapping is identity.
+    let viewport = Rect::from_xywh(0.0, 0.0, container_w, container_h);
+    let view_box = working.view_box.unwrap_or(viewport);
+    if view_box.width() <= 0.0 || view_box.height() <= 0.0 {
+        return;
+    }
+    let content_matrix =
+        compute_viewbox_matrix(&view_box, &viewport, working.preserve_aspect_ratio);
+
+    canvas.save();
+    canvas.concat(&content_matrix);
+    render_node(
+        &working.root,
+        canvas,
+        &ctx,
+        &PresentationState::initial(),
+        0,
+    );
+    canvas.restore();
 }
 
 /// Render an SVG string to a new surface.
@@ -693,11 +1082,7 @@ mod tests {
 
         let left = pixel_at(&surface, 5, 10).unwrap();
         let right = pixel_at(&surface, 95, 10).unwrap();
-        assert!(
-            left.red() > 200,
-            "left edge should be red, got {:?}",
-            left
-        );
+        assert!(left.red() > 200, "left edge should be red, got {:?}", left);
         assert!(
             right.blue() > 200,
             "right edge should be blue, got {:?}",
@@ -748,6 +1133,445 @@ mod tests {
         assert_eq!(decode_base64("SGVsbG8gV29ybGQ=").unwrap(), b"Hello World");
         // Whitespace tolerated.
         assert_eq!(decode_base64("SGVs\nbG8=").unwrap(), b"Hello");
+    }
+
+    #[test]
+    fn test_fill_inherits_from_group() {
+        // The rect specifies no fill; it must inherit red from the group,
+        // not fall back to a per-node black default.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">
+            <g fill="red"><rect x="0" y="0" width="20" height="20"/></g>
+        </svg>"#;
+        let surface = render_svg_string(svg, 20, 20).unwrap();
+        let c = pixel_at(&surface, 10, 10).unwrap();
+        assert!(
+            c.red() > 200 && c.green() < 60,
+            "inherited red, got {:?}",
+            c
+        );
+    }
+
+    #[test]
+    fn test_default_fill_is_black_at_root() {
+        // No fill anywhere -> initial value black (from the render root).
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">
+            <rect x="0" y="0" width="20" height="20"/>
+        </svg>"#;
+        let surface = render_svg_string(svg, 20, 20).unwrap();
+        let c = pixel_at(&surface, 10, 10).unwrap();
+        assert!(
+            c.red() < 30 && c.green() < 30 && c.blue() < 30,
+            "black, got {:?}",
+            c
+        );
+    }
+
+    #[test]
+    fn test_current_color_resolves_inherited_color() {
+        // fill="currentColor" resolves against the inherited `color`.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">
+            <g color="rgb(0,0,255)">
+                <rect x="0" y="0" width="20" height="20" fill="currentColor"/>
+            </g>
+        </svg>"#;
+        let surface = render_svg_string(svg, 20, 20).unwrap();
+        let c = pixel_at(&surface, 10, 10).unwrap();
+        assert!(
+            c.blue() > 200 && c.red() < 60,
+            "currentColor blue, got {:?}",
+            c
+        );
+    }
+
+    #[test]
+    fn test_group_opacity_composites_group() {
+        // A half-opaque red group over white -> ~ (255, 128, 128).
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">
+            <g opacity="0.5"><rect x="0" y="0" width="20" height="20" fill="red"/></g>
+        </svg>"#;
+        let surface = render_svg_string(svg, 20, 20).unwrap();
+        let c = pixel_at(&surface, 10, 10).unwrap();
+        assert!(c.red() > 240, "red stays high, got {:?}", c);
+        assert!(
+            (c.green() as i32 - 128).abs() < 20 && (c.blue() as i32 - 128).abs() < 20,
+            "half-blended toward white, got {:?}",
+            c
+        );
+    }
+
+    #[test]
+    fn test_group_opacity_no_double_composite_on_overlap() {
+        // Two overlapping opaque rects inside a half-opaque group. If the
+        // group composited via a layer (correct), the overlap is blended once
+        // (~128). If opacity were wrongly applied per-leaf, the overlap would
+        // be darker. Red on red -> overlap red channel ~255 either way, so
+        // check the *green* channel stays ~128 (single 50% composite).
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">
+            <g opacity="0.5">
+                <rect x="0" y="0" width="15" height="20" fill="red"/>
+                <rect x="5" y="0" width="15" height="20" fill="red"/>
+            </g>
+        </svg>"#;
+        let surface = render_svg_string(svg, 20, 20).unwrap();
+        // Sample the overlap region (x in [5,15)).
+        let c = pixel_at(&surface, 10, 10).unwrap();
+        assert!(
+            (c.green() as i32 - 128).abs() < 25,
+            "overlap composited once, got green {}",
+            c.green()
+        );
+    }
+
+    #[test]
+    fn test_fill_opacity_multiplies_paint_alpha() {
+        // fill-opacity 0.5 on an opaque red rect over white -> ~(255,128,128).
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">
+            <rect x="0" y="0" width="20" height="20" fill="red" fill-opacity="0.5"/>
+        </svg>"#;
+        let surface = render_svg_string(svg, 20, 20).unwrap();
+        let c = pixel_at(&surface, 10, 10).unwrap();
+        assert!(c.red() > 240, "red high, got {:?}", c);
+        assert!(
+            (c.green() as i32 - 128).abs() < 20,
+            "fill-opacity blended halfway, got green {}",
+            c.green()
+        );
+    }
+
+    #[test]
+    fn test_leaf_opacity_applied_as_paint_alpha() {
+        // A single fill-only leaf shape with opacity 0.5: Skia folds opacity
+        // into the paint alpha (no layer). Visual result matches a 50%
+        // composite over white.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">
+            <rect x="0" y="0" width="20" height="20" fill="red" opacity="0.5"/>
+        </svg>"#;
+        let surface = render_svg_string(svg, 20, 20).unwrap();
+        let c = pixel_at(&surface, 10, 10).unwrap();
+        assert!(
+            c.red() > 240 && (c.green() as i32 - 128).abs() < 20,
+            "leaf opacity, got {:?}",
+            c
+        );
+    }
+
+    #[test]
+    fn test_stroke_linecap_inherited_and_applied() {
+        // stroke-linecap="square" (inherited from the group) extends the
+        // stroke past the endpoint by half the stroke width; butt would not.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="30" height="20">
+            <g stroke-linecap="square">
+                <path d="M10 10 L20 10" stroke="black" stroke-width="8" fill="none"/>
+            </g>
+        </svg>"#;
+        let surface = render_svg_string(svg, 30, 20).unwrap();
+        // Just past the x=20 endpoint (square cap extends ~4px to x≈24).
+        let past = pixel_at(&surface, 22, 10).unwrap();
+        assert!(
+            past.red() < 80,
+            "square cap extends past endpoint, got {:?}",
+            past
+        );
+        // Butt cap (default) must NOT extend there.
+        let svg_butt = r#"<svg xmlns="http://www.w3.org/2000/svg" width="30" height="20">
+            <path d="M10 10 L20 10" stroke="black" stroke-width="8" fill="none"/>
+        </svg>"#;
+        let surface2 = render_svg_string(svg_butt, 30, 20).unwrap();
+        let past2 = pixel_at(&surface2, 22, 10).unwrap();
+        assert!(
+            past2.red() > 200,
+            "butt cap does not extend, got {:?}",
+            past2
+        );
+    }
+
+    #[test]
+    fn test_polyline_is_filled_by_default() {
+        // A polyline forming a triangle fills (default black) even without an
+        // explicit fill; previously only stroke rendered.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">
+            <polyline points="20,2 38,38 2,38"/>
+        </svg>"#;
+        let surface = render_svg_string(svg, 40, 40).unwrap();
+        let c = pixel_at(&surface, 20, 28).unwrap();
+        assert!(
+            c.red() < 40 && c.green() < 40 && c.blue() < 40,
+            "polyline interior filled black, got {:?}",
+            c
+        );
+    }
+
+    #[test]
+    fn test_polygon_fill_and_stroke() {
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">
+            <polygon points="20,2 38,38 2,38" fill="green"/>
+        </svg>"#;
+        let surface = render_svg_string(svg, 40, 40).unwrap();
+        let c = pixel_at(&surface, 20, 28).unwrap();
+        assert!(
+            c.green() > 100 && c.red() < 60,
+            "polygon filled green, got {:?}",
+            c
+        );
+    }
+
+    #[test]
+    fn test_preserve_aspect_ratio_meet_centers() {
+        // viewBox 100x50 into a 100x100 canvas, xMidYMid meet -> uniform
+        // scale 1, vertically centered by (100-50)/2 = 25px. A band at the
+        // top of the viewBox lands around y=25..35, leaving y<20 white.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 50">
+            <rect x="0" y="0" width="100" height="10" fill="red"/>
+        </svg>"#;
+        let surface = render_svg_string(svg, 100, 100).unwrap();
+        let top = pixel_at(&surface, 50, 5).unwrap();
+        assert!(
+            top.red() > 240 && top.green() > 240,
+            "top stays white, got {:?}",
+            top
+        );
+        let band = pixel_at(&surface, 50, 30).unwrap();
+        assert!(
+            band.red() > 200 && band.green() < 60,
+            "band centered, got {:?}",
+            band
+        );
+    }
+
+    #[test]
+    fn test_preserve_aspect_ratio_none_stretches() {
+        // "none" stretches non-uniformly to fill the whole canvas.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 50" preserveAspectRatio="none">
+            <rect x="0" y="0" width="100" height="50" fill="red"/>
+        </svg>"#;
+        let surface = render_svg_string(svg, 100, 100).unwrap();
+        // Bottom row is covered because the rect stretches to full height.
+        let bottom = pixel_at(&surface, 50, 95).unwrap();
+        assert!(
+            bottom.red() > 200 && bottom.green() < 60,
+            "stretched to fill, got {:?}",
+            bottom
+        );
+    }
+
+    #[test]
+    fn test_fill_rule_evenodd_creates_hole() {
+        // Two nested rectangles in one path with even-odd -> the inner region
+        // is a hole (background shows through).
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">
+            <path d="M2 2 H38 V38 H2 Z M12 12 H28 V28 H12 Z" fill="black" fill-rule="evenodd"/>
+        </svg>"#;
+        let surface = render_svg_string(svg, 40, 40).unwrap();
+        let hole = pixel_at(&surface, 20, 20).unwrap();
+        assert!(
+            hole.red() > 240 && hole.green() > 240,
+            "even-odd hole white, got {:?}",
+            hole
+        );
+        let ring = pixel_at(&surface, 5, 20).unwrap();
+        assert!(ring.red() < 40, "ring filled black, got {:?}", ring);
+    }
+
+    #[test]
+    fn test_fill_rule_inherits() {
+        // fill-rule on a group is inherited by the path.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">
+            <g fill-rule="evenodd">
+                <path d="M2 2 H38 V38 H2 Z M12 12 H28 V28 H12 Z" fill="black"/>
+            </g>
+        </svg>"#;
+        let surface = render_svg_string(svg, 40, 40).unwrap();
+        let hole = pixel_at(&surface, 20, 20).unwrap();
+        assert!(hole.red() > 240, "inherited even-odd hole, got {:?}", hole);
+    }
+
+    #[test]
+    fn test_stroke_dasharray_applied() {
+        // A dashed horizontal stroke leaves gaps: along the line some pixels
+        // are the stroke color and some remain the white background.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="10">
+            <line x1="0" y1="5" x2="40" y2="5" stroke="black" stroke-width="4" stroke-dasharray="4 4"/>
+        </svg>"#;
+        let surface = render_svg_string(svg, 40, 10).unwrap();
+        let mut saw_dark = false;
+        let mut saw_light = false;
+        for x in 0..40 {
+            let c = pixel_at(&surface, x, 5).unwrap();
+            if c.red() < 80 {
+                saw_dark = true;
+            }
+            if c.red() > 220 {
+                saw_light = true;
+            }
+        }
+        assert!(
+            saw_dark && saw_light,
+            "dashes produce gaps: dark={} light={}",
+            saw_dark,
+            saw_light
+        );
+    }
+
+    #[test]
+    fn test_paint_url_fallback_color_renders() {
+        // fill references a missing gradient with a red fallback -> red.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">
+            <rect x="0" y="0" width="20" height="20" fill="url(#missing) red"/>
+        </svg>"#;
+        let surface = render_svg_string(svg, 20, 20).unwrap();
+        let c = pixel_at(&surface, 10, 10).unwrap();
+        assert!(c.red() > 200 && c.green() < 60, "fallback red, got {:?}", c);
+    }
+
+    #[test]
+    fn test_clip_path_honors_child_transform() {
+        // The clip rect is translated by (25,25); only that region shows.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50">
+          <defs>
+            <clipPath id="c">
+              <rect x="0" y="0" width="5" height="5" transform="translate(25,25)"/>
+            </clipPath>
+          </defs>
+          <rect x="0" y="0" width="50" height="50" fill="red" clip-path="url(#c)"/>
+        </svg>"#;
+        let surface = render_svg_string(svg, 50, 50).unwrap();
+        // Inside the translated clip.
+        let inside = pixel_at(&surface, 27, 27).unwrap();
+        assert!(
+            inside.red() > 200 && inside.green() < 60,
+            "inside translated clip, got {:?}",
+            inside
+        );
+        // The original (untranslated) location must now be clipped out.
+        let outside = pixel_at(&surface, 2, 2).unwrap();
+        assert!(
+            outside.red() > 240 && outside.green() > 240,
+            "old spot clipped out, got {:?}",
+            outside
+        );
+    }
+
+    #[test]
+    fn test_use_applies_x_y_offset() {
+        // <use x="20"> shifts the referenced rect right by 20px.
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">
+          <defs><rect id="r" x="0" y="0" width="10" height="20" fill="red"/></defs>
+          <use href="#r" x="20" y="0"/>
+        </svg>"##;
+        let surface = render_svg_string(svg, 40, 20).unwrap();
+        let shifted = pixel_at(&surface, 25, 10).unwrap();
+        assert!(shifted.red() > 200, "use shifted right, got {:?}", shifted);
+        let origin = pixel_at(&surface, 5, 10).unwrap();
+        assert!(
+            origin.red() > 240 && origin.green() > 240,
+            "origin empty, got {:?}",
+            origin
+        );
+    }
+
+    #[test]
+    fn test_use_cycle_does_not_stack_overflow() {
+        // Two <use> elements referencing each other must terminate via the
+        // depth guard rather than recursing until the stack overflows.
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">
+          <g id="a"><use href="#b"/></g>
+          <g id="b"><use href="#a"/></g>
+        </svg>"##;
+        // Rendering must simply return.
+        let surface = render_svg_string(svg, 20, 20);
+        assert!(surface.is_some());
+    }
+
+    #[test]
+    fn test_obb_radial_gradient_is_elliptical() {
+        // objectBoundingBox radial on a wide (2:1) rect. The gradient maps
+        // the unit circle through the bbox, so at the same fractional offset
+        // it reaches the horizontal edge later (in pixels) than the vertical
+        // edge. Verify the center is the inner stop color and the far
+        // horizontal edge is the outer color.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40">
+          <defs>
+            <radialGradient id="g" cx="50%" cy="50%" r="50%">
+              <stop offset="0" stop-color="white"/>
+              <stop offset="1" stop-color="black"/>
+            </radialGradient>
+          </defs>
+          <rect x="0" y="0" width="80" height="40" fill="url(#g)"/>
+        </svg>"#;
+        let surface = render_svg_string(svg, 80, 40).unwrap();
+        let center = pixel_at(&surface, 40, 20).unwrap();
+        assert!(center.red() > 200, "center near white, got {:?}", center);
+        let h_edge = pixel_at(&surface, 78, 20).unwrap();
+        assert!(
+            h_edge.red() < 80,
+            "horizontal edge near black (ellipse reaches it), got {:?}",
+            h_edge
+        );
+    }
+
+    #[test]
+    fn test_obb_gradient_transform_composes() {
+        // A gradientTransform rotating 90deg turns a horizontal OBB linear
+        // gradient into a vertical one: top red, bottom blue.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">
+          <defs>
+            <linearGradient id="g" x1="0" y1="0" x2="1" y2="0"
+                gradientTransform="rotate(90, 0.5, 0.5)">
+              <stop offset="0" stop-color="red"/>
+              <stop offset="1" stop-color="blue"/>
+            </linearGradient>
+          </defs>
+          <rect x="0" y="0" width="40" height="40" fill="url(#g)"/>
+        </svg>"#;
+        let surface = render_svg_string(svg, 40, 40).unwrap();
+        let top = pixel_at(&surface, 20, 3).unwrap();
+        let bottom = pixel_at(&surface, 20, 37).unwrap();
+        assert!(top.red() > 180, "top red after rotate, got {:?}", top);
+        assert!(
+            bottom.blue() > 180,
+            "bottom blue after rotate, got {:?}",
+            bottom
+        );
+    }
+
+    #[test]
+    fn test_render_svg_in_container_scales() {
+        // A 100x100 document rendered into a 100x100 container under a 0.2
+        // scale must land in a 20x20 region, not stretch to the canvas.
+        use skia_rs_canvas::raster::PixelBuffer;
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+            <rect x="0" y="0" width="100" height="100" fill="red"/>
+        </svg>"#;
+        let dom = crate::parse_svg(svg).unwrap();
+        let mut buffer = PixelBuffer::new(100, 100);
+        {
+            let mut canvas = Canvas::new_raster(&mut buffer);
+            canvas.clear(Color::WHITE);
+            canvas.scale(0.2, 0.2);
+            render_svg_in_container(&dom, &mut canvas, 100.0, 100.0);
+        }
+        let surface_pixels = &buffer.pixels;
+        let at = |x: i32, y: i32| -> Color {
+            let off = (y as usize) * 100 * 4 + (x as usize) * 4;
+            Color::from_argb(
+                surface_pixels[off + 3],
+                surface_pixels[off],
+                surface_pixels[off + 1],
+                surface_pixels[off + 2],
+            )
+        };
+        // Inside the 20x20 scaled region.
+        assert!(
+            at(5, 5).red() > 200,
+            "scaled rect present at (5,5): {:?}",
+            at(5, 5)
+        );
+        // Outside it (would be covered if it stretched to full canvas).
+        assert!(
+            at(50, 50).red() > 240 && at(50, 50).green() > 240,
+            "no stretch to canvas: {:?}",
+            at(50, 50)
+        );
     }
 
     #[test]
