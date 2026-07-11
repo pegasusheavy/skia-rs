@@ -242,10 +242,15 @@ fn type0_font_emits_descendant_fonts_array() {
         .register_truetype_cid("Demo", DEMO_TTF.to_vec());
 
     {
+        // `draw_text`/`draw_text_with_font` fail closed against Type0/CID
+        // fonts (see `type0_font_draw_text_fails_closed` below), so we
+        // can't drive resource usage through a live draw here. `set_font`
+        // alone is enough to register the font as used for this page's
+        // `/Resources`, and the `/DescendantFonts` structure below is
+        // emitted for every registered Type0 font regardless of whether
+        // any text was drawn through it (see `PdfDocument::write_to`).
         let mut canvas = doc.begin_page(200.0, 200.0);
         canvas.set_font(font_idx);
-        let paint = Paint::new();
-        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint);
         let page = canvas.finish();
         doc.end_page(page);
     }
@@ -268,6 +273,34 @@ fn type0_font_emits_descendant_fonts_array() {
     assert!(s.contains("/W ["));
     // Embedded outlines are shared with the simple-TrueType path.
     assert!(s.contains("/FontFile2"));
+}
+
+/// A font registered via `register_truetype_cid` is emitted with
+/// `/Encoding /Identity-H`, which a reader interprets as a stream of
+/// 2-byte CIDs. `draw_text`/`draw_text_with_font` don't yet resolve
+/// per-glyph CIDs, so drawing live text through such a font must fail
+/// closed (panic) instead of silently emitting 1-byte WinAnsi codes
+/// against a 2-byte encoding, which would decode as garbage glyphs.
+#[test]
+fn type0_font_draw_text_fails_closed() {
+    let mut doc = PdfDocument::new();
+
+    let font_idx = doc
+        .fonts_mut()
+        .register_truetype_cid("Demo", DEMO_TTF.to_vec());
+
+    let mut canvas = doc.begin_page(200.0, 200.0);
+    canvas.set_font(font_idx);
+    let paint = Paint::new();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint);
+    }));
+
+    assert!(
+        result.is_err(),
+        "draw_text against a Type0/Identity-H font must fail closed, not emit 1-byte codes"
+    );
 }
 
 /// PDF/A OutputIntents require a real, parseable ICC profile in

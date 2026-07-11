@@ -1,6 +1,6 @@
 //! PDF canvas for drawing.
 
-use crate::font::{PdfFontManager, StandardFont};
+use crate::font::{PdfFontManager, PdfFontType, StandardFont};
 use crate::image::PdfImageManager;
 use crate::transparency::{PdfBlendMode, TransparencyManager};
 use skia_rs_core::{Color, Matrix, Point, Rect, Scalar};
@@ -434,6 +434,32 @@ impl<'a> PdfCanvas<'a> {
             "font index {} out of range",
             font_idx
         );
+
+        // Type0/CID fonts (see `PdfFontManager::register_truetype_cid`) are
+        // emitted with `/Encoding /Identity-H`, which readers interpret as
+        // a stream of 2-byte CIDs. This canvas does not yet resolve
+        // per-glyph CIDs at draw time (that requires shaping text into
+        // glyph ids and emitting 2-byte codes, plus a CID-keyed
+        // ToUnicode CMap) — only the simple-font WinAnsi path below is
+        // implemented. Silently falling through would emit 1-byte WinAnsi
+        // codes against a 2-byte encoding, which readers decode as
+        // garbage glyphs. Fail closed instead of producing a corrupt PDF;
+        // the `/DescendantFonts` structure can still be registered and
+        // emitted (see `PdfFontManager::register_truetype_cid` and
+        // `PdfDocument::write_to`) even though live text can't yet be
+        // drawn through it.
+        if let Some(font) = self.fonts.get(font_idx) {
+            assert!(
+                !matches!(font.font_type, PdfFontType::Type0 | PdfFontType::OpenTypeCff),
+                "draw_text_with_font: font {} is a Type0/CID font (registered via \
+                 register_truetype_cid, encoded /Identity-H); live per-glyph CID text drawing \
+                 is not yet implemented, so drawing through this font would silently emit \
+                 invalid 1-byte codes against a 2-byte CID encoding. Register the text as a \
+                 simple TrueType font (PdfFontManager::register_truetype) instead.",
+                font_idx
+            );
+        }
+
         self.used_fonts.insert(font_idx);
 
         // Track the characters that were written so the font can produce an

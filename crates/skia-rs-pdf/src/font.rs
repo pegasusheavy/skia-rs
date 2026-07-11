@@ -224,10 +224,23 @@ impl PdfFont {
     /// Create a Type0 (composite) font wrapping TrueType outlines, with a
     /// `CIDFontType2` descendant addressed via `/CIDToGIDMap /Identity`
     /// (PDF 32000-1 §9.7.4). Shares metric parsing with
-    /// [`truetype`](Self::truetype); the difference is purely in how the
-    /// font is addressed from the content stream (2-byte CIDs instead of a
-    /// single-byte WinAnsi code) and emitted (`/DescendantFonts` instead of
-    /// `/Widths` + `/Encoding`).
+    /// [`truetype`](Self::truetype); the font dictionary is emitted with
+    /// `/Encoding /Identity-H` and a `/DescendantFonts` array (instead of
+    /// `/Widths` + `/Encoding`), so a compliant reader interprets the
+    /// content stream's text strings as 2-byte CIDs rather than 1-byte
+    /// WinAnsi codes.
+    ///
+    /// **Limitation:** only the `/DescendantFonts` structure (widths,
+    /// `FontFile2`, `CIDSystemInfo`, etc.) is implemented today. Live
+    /// per-glyph CID text drawing — shaping a string into glyph ids and
+    /// emitting the matching 2-byte codes plus a CID-keyed ToUnicode CMap —
+    /// is not yet implemented. Calling
+    /// [`PdfCanvas::draw_text`](crate::PdfCanvas::draw_text) or
+    /// [`PdfCanvas::draw_text_with_font`](crate::PdfCanvas::draw_text_with_font)
+    /// against a font returned from this constructor will panic rather
+    /// than silently emit invalid 1-byte codes against the `/Identity-H`
+    /// encoding. Use [`truetype`](Self::truetype) if you need to draw
+    /// live text today.
     pub fn truetype_cid(name: &str, data: Vec<u8>) -> Self {
         let metrics = parse_truetype_metrics(&data);
         let subset_tag = subset_tag_for(&data, name);
