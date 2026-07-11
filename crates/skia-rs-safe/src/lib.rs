@@ -55,6 +55,10 @@ pub use skia_rs_skottie as skottie;
 #[cfg_attr(docsrs, doc(cfg(feature = "gpu")))]
 pub use skia_rs_gpu as gpu;
 
+// Pixel-buffer conversion helpers shared by platform bindings (not gated to
+// any target so its pure logic is unit-testable on the host).
+mod pixel_convert;
+
 // WASM support
 #[cfg(target_arch = "wasm32")]
 mod wasm;
