@@ -695,8 +695,13 @@ impl From<Color> for u32 {
 
 /// Computes `a * b / 255` with rounding, matching Skia's `SkMulDiv255Round`
 /// (`(a*b + 128)` then `(prod + (prod >> 8)) >> 8`).
+///
+/// Both inputs must be in `0..=255`. This is the single canonical
+/// implementation of the rounded byte-domain multiply-divide used across
+/// the workspace for premultiply/blend math.
 #[inline]
-pub(crate) fn mul_div_255_round(a: u32, b: u32) -> u8 {
+#[must_use]
+pub fn mul_div_255_round(a: u32, b: u32) -> u8 {
     let prod = a * b + 128;
     ((prod + (prod >> 8)) >> 8) as u8
 }

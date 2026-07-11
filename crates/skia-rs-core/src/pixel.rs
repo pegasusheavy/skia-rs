@@ -1261,6 +1261,9 @@ pub fn swizzle_rb_in_place(pixels: &mut [u8]) {
 }
 
 /// Convert premultiplied alpha to unpremultiplied in place.
+///
+/// Uses Skia's rounded `SkUnPreMultiply::ApplyScale` semantics (round to
+/// nearest), matching the rounding already used by `premultiply_in_place`.
 pub fn unpremultiply_in_place(pixels: &mut [u8]) {
     for chunk in pixels.chunks_exact_mut(4) {
         let a = chunk[3];
@@ -1270,9 +1273,9 @@ pub fn unpremultiply_in_place(pixels: &mut [u8]) {
             chunk[2] = 0;
         } else if a < 255 {
             let scale = 255.0 / a as f32;
-            chunk[0] = (chunk[0] as f32 * scale).min(255.0) as u8;
-            chunk[1] = (chunk[1] as f32 * scale).min(255.0) as u8;
-            chunk[2] = (chunk[2] as f32 * scale).min(255.0) as u8;
+            chunk[0] = (chunk[0] as f32 * scale).round().min(255.0) as u8;
+            chunk[1] = (chunk[1] as f32 * scale).round().min(255.0) as u8;
+            chunk[2] = (chunk[2] as f32 * scale).round().min(255.0) as u8;
         }
     }
 }

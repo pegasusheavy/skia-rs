@@ -1157,6 +1157,26 @@ mod tests {
     }
 
     #[test]
+    fn rejects_eval_on_non_child() {
+        let p = parse(
+            "uniform float2 p; \
+             half4 main(float2 coord) { return p.eval(coord); }",
+        );
+        let err = validate_program(&p).unwrap_err();
+        assert!(matches!(err, ValidationError::InvalidOperator { .. }));
+    }
+
+    #[test]
+    fn rejects_unknown_method() {
+        let p = parse(
+            "uniform shader child; \
+             half4 main(float2 coord) { return child.frobnicate(coord); }",
+        );
+        let err = validate_program(&p).unwrap_err();
+        assert!(matches!(err, ValidationError::InvalidOperator { .. }));
+    }
+
+    #[test]
     fn for_loop_scope_confined() {
         let p = parse(
             "vec4 main(vec2 coord) { \

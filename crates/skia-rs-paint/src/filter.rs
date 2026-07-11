@@ -1,6 +1,6 @@
 //! Color, mask, and image filters.
 
-use skia_rs_core::{Color4f, Rect, Scalar};
+use skia_rs_core::{Color4f, Rect, Scalar, mul_div_255_round};
 use std::sync::Arc;
 
 // =============================================================================
@@ -1787,14 +1787,6 @@ pub type ImageFilterRef = Arc<dyn ImageFilter + Send + Sync>;
 // =============================================================================
 // Box Blur Helpers
 // =============================================================================
-
-/// Skia's `SkMulDiv255Round`: (a*b + 128) * 257 >> 16, i.e. a*b/255 rounded
-/// to nearest.
-#[inline]
-fn mul_div_255_round(a: u32, b: u32) -> u8 {
-    let prod = a * b + 128;
-    ((prod + (prod >> 8)) >> 8) as u8
-}
 
 /// Convert a Gaussian sigma to the box-blur radius of the three-box
 /// approximation, per `SkBlurMask::ConvertSigmaToRadius`:

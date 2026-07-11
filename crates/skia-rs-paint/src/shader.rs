@@ -110,12 +110,6 @@ fn apply_tile_mode(t: Scalar, mode: TileMode) -> Scalar {
     }
 }
 
-/// Premultiply a straight-alpha color.
-#[inline]
-fn premultiply(c: Color4f) -> Color4f {
-    Color4f::new(c.r * c.a, c.g * c.a, c.b * c.a, c.a)
-}
-
 /// Interpolate a gradient color at position t.
 ///
 /// Positions are handled like `SkGradientBaseShader`: each explicit stop is
@@ -206,14 +200,14 @@ fn interpolate_gradient_color_with_flags(
             return Color4f::transparent();
         }
         if colors.len() == 1 {
-            return premultiply(colors[0]);
+            return colors[0].premul();
         }
 
-        let premul: Vec<Color4f> = colors.iter().map(|c| premultiply(*c)).collect();
+        let premul: Vec<Color4f> = colors.iter().map(|c| c.premul()).collect();
         // Already premultiplied — return as-is.
         interpolate_gradient_color(&premul, positions, t)
     } else {
-        premultiply(interpolate_gradient_color(colors, positions, t))
+        interpolate_gradient_color(colors, positions, t).premul()
     }
 }
 
@@ -455,7 +449,7 @@ impl Shader for ColorShader {
 
     fn sample(&self, _x: Scalar, _y: Scalar) -> Color4f {
         // sample() returns premultiplied color; the stored color is straight.
-        premultiply(self.color)
+        self.color.premul()
     }
 
     fn serialize(&self) -> Option<Vec<u8>> {
@@ -571,12 +565,12 @@ impl Shader for LinearGradient {
 
         if len_sq < 1e-10 {
             // Degenerate gradient (start == end)
-            return premultiply(
-                self.colors
-                    .first()
-                    .cloned()
-                    .unwrap_or(Color4f::transparent()),
-            );
+            return self
+                .colors
+                .first()
+                .cloned()
+                .unwrap_or(Color4f::transparent())
+                .premul();
         }
 
         // Project point onto gradient line
@@ -718,12 +712,12 @@ impl Shader for RadialGradient {
 
     fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
         if self.radius <= 0.0 {
-            return premultiply(
-                self.colors
-                    .first()
-                    .cloned()
-                    .unwrap_or(Color4f::transparent()),
-            );
+            return self
+                .colors
+                .first()
+                .cloned()
+                .unwrap_or(Color4f::transparent())
+                .premul();
         }
 
         // Calculate distance from center

@@ -15,18 +15,7 @@
 //! - Premultiplied alpha operations
 
 use skia_rs_core::Color;
-
-/// Skia's `SkMulDiv255Round(a, b)` = round(a*b / 255).
-///
-/// Both inputs must be in `0..=255`. Uses the exact integer form
-/// `prod = a*b + 128; (prod + (prod >> 8)) >> 8`, matching
-/// `skia/include/private/base/SkTo.h` / `SkMath.h`. All byte-domain
-/// color math in this crate rounds to nearest via this helper.
-#[inline]
-pub(crate) fn mul_div_255_round(a: u32, b: u32) -> u8 {
-    let prod = a * b + 128;
-    ((prod + (prod >> 8)) >> 8) as u8
-}
+pub(crate) use skia_rs_core::mul_div_255_round;
 
 /// Premultiplied SrcOver on straight byte channels that are already
 /// premultiplied: `out = src + SkMulDiv255Round(dst, 255 - srcA)`, per
