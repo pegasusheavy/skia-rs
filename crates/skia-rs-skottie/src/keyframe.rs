@@ -417,11 +417,30 @@ impl AnimatedProperty {
         let linear_t = (frame - prev.time) / duration;
         let eased_t = prev.easing.evaluate(linear_t);
 
-        if let (KeyframeValue::Vec2(v0), KeyframeValue::Vec2(v1)) = (&prev.value, &next.value) {
-            if let Some(pos) = spatial_bezier_at(*v0, prev.spatial_out, *v1, next.spatial_in, eased_t)
-            {
-                return KeyframeValue::Vec2(pos);
+        match (&prev.value, &next.value) {
+            (KeyframeValue::Vec2(v0), KeyframeValue::Vec2(v1)) => {
+                if let Some(pos) =
+                    spatial_bezier_at(*v0, prev.spatial_out, *v1, next.spatial_in, eased_t)
+                {
+                    return KeyframeValue::Vec2(pos);
+                }
             }
+            // Bodymovin commonly exports positions as 3-component arrays
+            // (z = 0 for 2D layers): the spatial bezier applies to x/y,
+            // z interpolates linearly.
+            (KeyframeValue::Vec3(v0), KeyframeValue::Vec3(v1)) => {
+                if let Some(pos) = spatial_bezier_at(
+                    [v0[0], v0[1]],
+                    prev.spatial_out,
+                    [v1[0], v1[1]],
+                    next.spatial_in,
+                    eased_t,
+                ) {
+                    let z = v0[2] + (v1[2] - v0[2]) * eased_t;
+                    return KeyframeValue::Vec3([pos[0], pos[1], z]);
+                }
+            }
+            _ => {}
         }
 
         prev.value.lerp(&next.value, eased_t)
@@ -727,6 +746,39 @@ mod tests {
         );
 
         // Endpoints are still exact.
+        let start = prop.value_at(0.0).as_vec2().unwrap();
+        let end = prop.value_at(10.0).as_vec2().unwrap();
+        assert!((start[0] - 0.0).abs() < 1e-6 && (start[1] - 0.0).abs() < 1e-6);
+        assert!((end[0] - 100.0).abs() < 1e-6 && (end[1] - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_spatial_bezier_applies_to_vec3_positions() {
+        use crate::model::AnimatedValue;
+
+        // Bodymovin's dominant export format uses 3-component position
+        // arrays (z = 0 for 2D layers); ti/to must not be inert for them.
+        // Same geometry as the Vec2 test: the motion path bows upward
+        // (negative y) away from the straight line.
+        let json = r#"{"a":1,"k":[
+            {"t":0,"s":[0,0,0],"to":[20,-40,0],"ti":[0,0,0]},
+            {"t":10,"s":[100,0,0],"to":[0,0,0],"ti":[-20,-40,0]}
+        ]}"#;
+        let av: AnimatedValue = serde_json::from_str(json).unwrap();
+        let prop = AnimatedProperty::from_lottie(&av);
+
+        let mid = prop.value_at(5.0);
+        // Value type stays Vec3 (z lerps linearly).
+        let v3 = match &mid {
+            KeyframeValue::Vec3(v) => *v,
+            other => panic!("expected Vec3, got {other:?}"),
+        };
+        assert!(
+            v3[1] < -1.0,
+            "expected the Vec3 midpoint to bow away from the straight line, got {v3:?}"
+        );
+        assert!((v3[2] - 0.0).abs() < 1e-6);
+
         let start = prop.value_at(0.0).as_vec2().unwrap();
         let end = prop.value_at(10.0).as_vec2().unwrap();
         assert!((start[0] - 0.0).abs() < 1e-6 && (start[1] - 0.0).abs() < 1e-6);

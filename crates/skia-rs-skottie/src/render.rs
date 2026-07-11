@@ -187,10 +187,13 @@ impl<'a> RenderContext<'a> {
             .filter(|m| *m != crate::layers::MatteMode::None)
         {
             if let Some(source) = resolve_matte_source(layer, siblings) {
-                if source.is_visible_at(frame) {
-                    self.render_matte_composite(layer, source, mode, frame, assets, siblings);
-                    return;
-                }
+                // Always composite through the matte, even when the source
+                // is not visible at this frame: per sksg::MaskEffect, an
+                // empty mask layer means zero coverage — the consumer is
+                // masked out entirely (or fully shown, for inverted modes)
+                // rather than rendered unmasked.
+                self.render_matte_composite(layer, source, mode, frame, assets, siblings);
+                return;
             }
         }
 
@@ -299,7 +302,12 @@ impl<'a> RenderContext<'a> {
         } else {
             self.save_layer(None);
         }
-        self.render_layer_content(source, frame, assets, siblings);
+        // A source outside its in/out range contributes nothing — zero
+        // coverage. The SrcIn/SrcOut composite below then masks the
+        // consumer out entirely (or shows it fully, when inverted).
+        if source.is_visible_at(frame) {
+            self.render_layer_content(source, frame, assets, siblings);
+        }
         self.restore_layer(); // composite mask coverage into the outer layer.
 
         let mut content_paint = Paint::new();
@@ -388,11 +396,7 @@ impl<'a> RenderContext<'a> {
 
         // Apply trim (path measure based) if present.
         let final_paths: Vec<Path> = if let Some(trim_shape) = trim {
-            let (start_t, stop_t, inverted) = trim_shape.resolved_at(frame);
-            paths
-                .into_iter()
-                .map(|p| trim_path(&p, start_t, stop_t, inverted))
-                .collect()
+            apply_trim(paths, trim_shape, frame)
         } else {
             paths
         };
@@ -555,6 +559,38 @@ fn luma_color_filter() -> skia_rs_paint::ColorMatrixFilter {
         0.2126, 0.7152, 0.0722, 0.0, 0.0,
     ];
     skia_rs_paint::ColorMatrixFilter::new(m)
+}
+
+/// Apply a trim-path shape to the collected geometry, matching upstream
+/// `ShapeBuilder::AttachTrimGeometryEffect` (`TrimPaths.cpp`):
+///
+/// - `m:1` ("Trim Multiple Shapes: Simultaneously", upstream `kParallel`,
+///   the default) — each geometry is trimmed independently with the same
+///   start/stop.
+/// - `m:2` ("Trim Multiple Shapes: Individually", upstream `kSerial`) —
+///   all geometry is merged into a single path and ONE trim is applied
+///   across the combined length (`SkTrimPE` parameterizes by total length
+///   across contours, which [`PathMeasure::get_segment`] matches, so the
+///   trim span crosses path boundaries).
+fn apply_trim(
+    paths: Vec<Path>,
+    trim: &TrimPathShape,
+    frame: Scalar,
+) -> Vec<Path> {
+    let (start_t, stop_t, inverted) = trim.resolved_at(frame);
+
+    if trim.mode == 2 && paths.len() > 1 {
+        let mut builder = skia_rs_path::PathBuilder::new();
+        for p in &paths {
+            builder.add_path(p);
+        }
+        return vec![trim_path(&builder.build(), start_t, stop_t, inverted)];
+    }
+
+    paths
+        .into_iter()
+        .map(|p| trim_path(&p, start_t, stop_t, inverted))
+        .collect()
 }
 
 /// Trim a path to the `[start, stop]` fraction of its length (both in
@@ -980,6 +1016,147 @@ mod tests {
         assert!(
             !(source_area.red() > 200 && source_area.green() > 200 && source_area.blue() > 200),
             "matte source should not render standalone, got {source_area:?}"
+        );
+    }
+
+    fn trim_shape(mode: i32, start_pct: Scalar, end_pct: Scalar) -> TrimPathShape {
+        use crate::keyframe::{AnimatedProperty, KeyframeValue};
+        TrimPathShape {
+            name: String::new(),
+            start: AnimatedProperty::static_value(KeyframeValue::Scalar(start_pct)),
+            end: AnimatedProperty::static_value(KeyframeValue::Scalar(end_pct)),
+            offset: AnimatedProperty::static_value(KeyframeValue::Scalar(0.0)),
+            mode,
+        }
+    }
+
+    fn horizontal_line(y: Scalar) -> Path {
+        let mut b = skia_rs_path::PathBuilder::new();
+        b.move_to(0.0, y);
+        b.line_to(100.0, y);
+        b.build()
+    }
+
+    /// `m:2` ("Individually", upstream kSerial in TrimPaths.cpp): all
+    /// geometry merges into one path and a single trim spans the combined
+    /// length — end=50% of two 100-unit lines keeps the FIRST line fully
+    /// and leaves the second untouched.
+    #[test]
+    fn test_trim_mode_individual_spans_across_path_boundaries() {
+        let paths = vec![horizontal_line(0.0), horizontal_line(10.0)];
+        let trimmed = apply_trim(paths, &trim_shape(2, 0.0, 50.0), 0.0);
+
+        assert_eq!(trimmed.len(), 1, "m:2 merges geometry into a single path");
+        let measure = PathMeasure::new(&trimmed[0]);
+        assert!(
+            (measure.length() - 100.0).abs() < 0.01,
+            "expected half of the combined 200-unit length, got {}",
+            measure.length()
+        );
+        // Only the first line (y = 0) survives; the second (y = 10) is untouched.
+        let bounds = trimmed[0].bounds();
+        assert!(
+            bounds.bottom < 5.0,
+            "expected only the first (y=0) line to remain, got bounds {bounds:?}"
+        );
+    }
+
+    /// `m:1` ("Simultaneously", upstream kParallel — the default): each
+    /// geometry is trimmed independently with the same start/end.
+    #[test]
+    fn test_trim_mode_simultaneous_trims_each_path_independently() {
+        let paths = vec![horizontal_line(0.0), horizontal_line(10.0)];
+        let trimmed = apply_trim(paths, &trim_shape(1, 0.0, 50.0), 0.0);
+
+        assert_eq!(trimmed.len(), 2, "m:1 keeps geometry separate");
+        for p in &trimmed {
+            let measure = PathMeasure::new(p);
+            assert!(
+                (measure.length() - 50.0).abs() < 0.01,
+                "expected each line trimmed to its own half, got {}",
+                measure.length()
+            );
+        }
+    }
+
+    /// A matte source that is not visible at the frame contributes ZERO
+    /// coverage (per sksg::MaskEffect: content composited SrcIn against
+    /// nothing) — the consumer must render nothing, not render unmasked.
+    #[test]
+    fn test_alpha_matte_with_invisible_source_masks_everything_out() {
+        use crate::animation::Animation;
+        use skia_rs_canvas::Canvas as RasterCanvas;
+        use skia_rs_canvas::PixelBuffer;
+
+        // Source is only visible on frames [30, 60); we render frame 0.
+        let json = r#"{
+            "v":"5.5.7","fr":30,"ip":0,"op":60,"w":100,"h":100,
+            "layers":[
+                {"ty":4,"nm":"source","ind":1,"ip":30,"op":60,"td":true,
+                 "shapes":[
+                    {"ty":"rc","p":{"a":0,"k":[50,50]},"s":{"a":0,"k":[100,100]}},
+                    {"ty":"fl","c":{"a":0,"k":[1,1,1,1]},"o":{"a":0,"k":100}}
+                 ]},
+                {"ty":4,"nm":"consumer","ind":2,"ip":0,"op":60,"tt":1,
+                 "shapes":[
+                    {"ty":"rc","p":{"a":0,"k":[50,50]},"s":{"a":0,"k":[100,100]}},
+                    {"ty":"fl","c":{"a":0,"k":[1,0,0,1]},"o":{"a":0,"k":100}}
+                 ]}
+            ]
+        }"#;
+
+        let anim = Animation::from_json(json).unwrap();
+        let mut buffer = PixelBuffer::new(100, 100);
+        let mut raster = RasterCanvas::new_raster(&mut buffer);
+        let mut canvas = SkiaCanvas::new(&mut raster);
+        let mut ctx = RenderContext::new(&mut canvas);
+
+        anim.render_frame(&mut ctx, 0.0);
+
+        let pixel = buffer.get_pixel(50, 50).unwrap();
+        assert_eq!(
+            pixel.alpha(),
+            0,
+            "zero matte coverage must mask the consumer out entirely, got {pixel:?}"
+        );
+    }
+
+    /// Inverted alpha matte (`tt`:2) with an invisible source: zero
+    /// coverage inverts to FULL coverage — the consumer renders fully.
+    #[test]
+    fn test_inverted_alpha_matte_with_invisible_source_shows_consumer_fully() {
+        use crate::animation::Animation;
+        use skia_rs_canvas::Canvas as RasterCanvas;
+        use skia_rs_canvas::PixelBuffer;
+
+        let json = r#"{
+            "v":"5.5.7","fr":30,"ip":0,"op":60,"w":100,"h":100,
+            "layers":[
+                {"ty":4,"nm":"source","ind":1,"ip":30,"op":60,"td":true,
+                 "shapes":[
+                    {"ty":"rc","p":{"a":0,"k":[50,50]},"s":{"a":0,"k":[100,100]}},
+                    {"ty":"fl","c":{"a":0,"k":[1,1,1,1]},"o":{"a":0,"k":100}}
+                 ]},
+                {"ty":4,"nm":"consumer","ind":2,"ip":0,"op":60,"tt":2,
+                 "shapes":[
+                    {"ty":"rc","p":{"a":0,"k":[50,50]},"s":{"a":0,"k":[100,100]}},
+                    {"ty":"fl","c":{"a":0,"k":[1,0,0,1]},"o":{"a":0,"k":100}}
+                 ]}
+            ]
+        }"#;
+
+        let anim = Animation::from_json(json).unwrap();
+        let mut buffer = PixelBuffer::new(100, 100);
+        let mut raster = RasterCanvas::new_raster(&mut buffer);
+        let mut canvas = SkiaCanvas::new(&mut raster);
+        let mut ctx = RenderContext::new(&mut canvas);
+
+        anim.render_frame(&mut ctx, 0.0);
+
+        let pixel = buffer.get_pixel(50, 50).unwrap();
+        assert!(
+            pixel.alpha() > 200 && pixel.red() > 200,
+            "inverted matte with zero coverage must show the consumer fully, got {pixel:?}"
         );
     }
 

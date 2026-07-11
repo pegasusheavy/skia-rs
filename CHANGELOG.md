@@ -1058,6 +1058,23 @@ re-verifies/completes the work against the current branch:
   on `skia_rs_canvas::Canvas`) were stale/wrong. Removed the dead
   feature gate and fixed the method bodies against the real
   `skia_rs_canvas::Canvas` API
+- `ti`/`to` spatial interpolation also applies to 3-component (`Vec3`)
+  position keyframes — Bodymovin's dominant export format — with the
+  bezier walk on x/y and z interpolated linearly (previously the
+  spatial branch only matched 2-component values and Vec3 positions
+  silently fell back to a linear lerp)
+- Trim mode `m:2` ("Trim Multiple Shapes: Individually", upstream
+  `kSerial` in `TrimPaths.cpp`) now merges all collected geometry into
+  a single path and applies one trim across the combined length
+  (spanning path boundaries, per `SkTrimPE`'s total-length
+  parameterization); `m:1` ("Simultaneously", `kParallel`, the
+  default) keeps the existing per-geometry trim. Note: upstream's
+  mode-to-behavior mapping is `m:1` = parallel/per-shape and `m:2` =
+  merged/serial — per `AttachTrimGeometryEffect`
+- A track matte whose source layer is not visible at the frame now
+  contributes zero coverage, matching `sksg::MaskEffect`: the consumer
+  is masked out entirely (normal modes) or shown fully (inverted
+  modes), instead of incorrectly rendering unmasked
 
 Mask opacity/feather soft compositing remains a hard clip: unlike
 track mattes (a single source composited via one alpha/luma pass),
