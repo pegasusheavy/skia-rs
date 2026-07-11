@@ -1,21 +1,27 @@
 //! Binary ABI Compatibility Layer
 //!
-//! This module provides C ABI-compatible struct layouts that match Skia's
-//! binary representation for maximum interoperability with existing Skia
-//! code and bindings.
+//! This module provides C-ABI struct layouts for skia-rs's own C API. Plain
+//! POD types with no upstream indirect/ref-counted members (points, sizes,
+//! rects, matrices, colors) are laid out identically to their upstream
+//! `Sk*` counterparts and are safe to treat as binary-interchangeable with
+//! real Skia. Types that embed pointers to non-POD upstream state (e.g.
+//! [`SkImageInfoABI`]'s `color_space` field, which stands in for an
+//! `sk_sp<SkColorSpace>`) are **not** byte-for-byte compatible with
+//! upstream Skia's internal layout — see each type's own docs for the
+//! specifics.
 //!
-//! # Binary Compatibility Guarantees
+//! # Guarantees
 //!
 //! The types in this module guarantee:
-//! - Exact struct size matching Skia's C API types
-//! - Exact field offsets matching Skia's memory layout
-//! - Compatible calling conventions for all FFI functions
-//! - ABI stability across minor version bumps
+//! - Stable size/layout for the plain POD types across skia-rs minor
+//!   version bumps (verified by `size_of`/`align_of` assertions, checked
+//!   per target pointer width where a type contains a pointer field)
+//! - Compatible `extern "C"` calling conventions for all FFI functions
 //!
 //! # Usage
 //!
 //! ```c
-//! // These types are binary-compatible with Skia's C API
+//! // These POD types are binary-compatible with Skia's C API
 //! sk_point_t point = { 10.0f, 20.0f };
 //! sk_rect_t rect = { 0.0f, 0.0f, 100.0f, 100.0f };
 //! sk_matrix_t identity = SK_MATRIX_IDENTITY;
@@ -240,7 +246,17 @@ pub enum SkAlphaTypeABI {
     Unpremul = 3,
 }
 
-/// Binary-compatible image info (matches SkImageInfo layout)
+/// A simplified, C-ABI-friendly stand-in for `SkImageInfo`.
+///
+/// This does **not** claim byte-for-byte binary compatibility with upstream
+/// `SkImageInfo` (`include/core/SkImageInfo.h`): real `SkImageInfo` embeds
+/// an `SkColorInfo` holding an `sk_sp<SkColorSpace>` (a ref-counted smart
+/// pointer with its own control-block layout), not a raw pointer, and its
+/// field order/packing is an implementation detail not part of Skia's
+/// public ABI contract. This struct only guarantees a *stable layout for
+/// this crate's own C API* across skia-rs releases; treat `color_space` as
+/// an opaque `SkColorSpace*` handle, not a `sk_sp` you can memcpy into
+/// upstream Skia code.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SkImageInfoABI {
@@ -251,7 +267,14 @@ pub struct SkImageInfoABI {
     pub color_space: *const c_void, // SkColorSpace*
 }
 
+// Size depends on the target's pointer width (`color_space` is a raw
+// pointer): 24 bytes on 64-bit targets (4 x i32 fields + 4 bytes padding +
+// an 8-byte pointer), 20 bytes on 32-bit targets (no padding needed before
+// a 4-byte-aligned pointer field).
+#[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<SkImageInfoABI>() == 24);
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(std::mem::size_of::<SkImageInfoABI>() == 20);
 
 impl Default for SkImageInfoABI {
     fn default() -> Self {
@@ -457,6 +480,21 @@ mod tests {
     #[test]
     fn test_abi_sizes() {
         assert!(sk_abi_validate());
+    }
+
+    #[test]
+    fn test_imageinfo_abi_size_is_pointer_width_aware() {
+        // `SkImageInfoABI::color_space` is a raw pointer, so the struct's
+        // size depends on the target's pointer width; the compile-time
+        // assert next to the type definition already enforces this per
+        // `#[cfg(target_pointer_width = ...)]`, this test just documents
+        // the expected value for the size actually compiled in.
+        let expected = if cfg!(target_pointer_width = "64") {
+            24
+        } else {
+            20
+        };
+        assert_eq!(std::mem::size_of::<SkImageInfoABI>(), expected);
     }
 
     #[test]
