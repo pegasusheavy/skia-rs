@@ -263,7 +263,9 @@ impl<'a> PdfCanvas<'a> {
             rect.width(),
             rect.height()
         ));
-        self.stroke_or_fill(paint);
+        // A single non-self-intersecting rectangle fills identically under
+        // nonzero-winding and even-odd, so the plain operators are fine.
+        self.stroke_or_fill(paint, false);
     }
 
     /// Draw a line.
@@ -318,7 +320,8 @@ impl<'a> PdfCanvas<'a> {
             center.y
         ));
 
-        self.stroke_or_fill(paint);
+        // A circle approximation is a single non-self-intersecting loop.
+        self.stroke_or_fill(paint, false);
     }
 
     /// Draw a path.
@@ -389,7 +392,13 @@ impl<'a> PdfCanvas<'a> {
             }
         }
 
-        self.stroke_or_fill(paint);
+        // PDF 32000-1 table 51/60/92: `f*`/`B*`/`W*` select the even-odd
+        // fill rule instead of the default nonzero-winding operators.
+        let even_odd = matches!(
+            path.fill_type(),
+            skia_rs_path::FillType::EvenOdd | skia_rs_path::FillType::InverseEvenOdd
+        );
+        self.stroke_or_fill(paint, even_odd);
     }
 
     /// Draw text using the currently selected font (see [`set_font`]).
@@ -438,18 +447,48 @@ impl<'a> PdfCanvas<'a> {
         self.apply_paint(paint);
         self.write_op("BT\n");
         self.write_op(&format!("/F{} {} Tf\n", font_idx + 1, font_size));
-        self.write_op(&format!("{} {} Td\n", x, y));
+        // The page CTM includes a `1 0 0 -1 0 height` y-flip (see `new`) so
+        // that callers can draw in a top-left-origin, y-down space. Glyph
+        // outlines in a Type1/TrueType font are defined upright in that
+        // same flipped space, so without compensation they render mirrored
+        // upside-down. Per upstream `SkPDFDevice::GlyphPositioner`
+        // (`skia/src/pdf/SkPDFDevice.cpp`), the fix is to set the text
+        // matrix to `1 0 skew -1 x y Tm` — the `-1` in `d` cancels the
+        // outer y-flip. We don't support italic skew synthesis here, so
+        // skew is always 0.
+        self.write_op(&format!("1 0 0 -1 {} {} Tm\n", x, y));
 
-        // Emit the text literal. For ASCII-clean WinAnsi strings we can use a
-        // PDF literal string `(...)`; for anything that contains non-ASCII
-        // we fall back to a UTF-16BE hex string `<FEFF...>` so that readers
-        // can recover the codepoints via the ToUnicode CMap.
+        // Emit the text literal. Simple (Type1/TrueType) fonts index into a
+        // single-byte encoding (WinAnsiEncoding for everything but Symbol/
+        // ZapfDingbats), so the content-stream string must contain
+        // single-byte WinAnsi codes — never a UTF-16BE hex string, which is
+        // only meaningful against a Type0/CID font's Encoding CMap. ASCII
+        // text is already a WinAnsi subset. For non-ASCII text we map each
+        // character to its WinAnsi byte where possible; characters outside
+        // WinAnsi (true CJK/exotic Unicode) fall back to `?` since this
+        // canvas does not yet support switching a run to a Type0 font.
         if text.is_ascii() {
             self.write_op(&format!("({}) Tj\n", escape_pdf_string(text)));
         } else {
-            self.write_op(&format!("<{}> Tj\n", utf16be_hex(text)));
+            let bytes: Vec<u8> = text
+                .chars()
+                .map(|c| winansi_byte(c).unwrap_or(b'?'))
+                .collect();
+            self.write_literal_bytes(&escape_pdf_bytes(&bytes));
+            self.write_op(" Tj\n");
         }
         self.write_op("ET\n");
+    }
+
+    /// Write a PDF literal string `(...)` from already-escaped raw bytes.
+    ///
+    /// Used for WinAnsi-encoded text, where the bytes are not necessarily
+    /// valid UTF-8 and so can't go through [`write_op`](Self::write_op)'s
+    /// `&str` interface.
+    fn write_literal_bytes(&mut self, escaped: &[u8]) {
+        self.content.push(b'(');
+        self.content.extend_from_slice(escaped);
+        self.content.push(b')');
     }
 
     /// Draw a PDF image registered with the document's image manager.
@@ -465,10 +504,18 @@ impl<'a> PdfCanvas<'a> {
         );
         self.used_images.insert(image_idx);
 
-        // cm: scale + translate; then Do. We save/restore so we don't leak
-        // the transform.
+        // Image XObjects are painted onto the unit square (0,0)-(1,1) with
+        // sample row 0 (the top of the raster) conventionally placed at
+        // v=1. Composing that directly with a naive `w 0 0 h x y cm` places
+        // row 0 at the *bottom* of the destination rect, flipping the
+        // image vertically. Upstream SkPDFDevice::internalDrawImageRect
+        // (`skia/src/pdf/SkPDFDevice.cpp`) counters this with
+        // `setScale(1,-1); postTranslate(0,1)` before scaling to the
+        // destination size and translating into place; folding that
+        // through algebraically for a `(x, y, w, h)` top-left destination
+        // rect yields `w 0 0 -h x (y+h) cm`.
         self.write_op("q\n");
-        self.write_op(&format!("{} 0 0 {} {} {} cm\n", w, h, x, y));
+        self.write_op(&format!("{} 0 0 {} {} {} cm\n", w, -h, x, y + h));
         self.write_op(&format!("/Im{} Do\n", image_idx + 1));
         self.write_op("Q\n");
     }
@@ -540,11 +587,17 @@ impl<'a> PdfCanvas<'a> {
     }
 
     /// Write stroke or fill operator.
-    fn stroke_or_fill(&mut self, paint: &Paint) {
-        match paint.style() {
-            Style::Fill => self.write_op("f\n"),
-            Style::Stroke => self.write_op("S\n"),
-            Style::StrokeAndFill => self.write_op("B\n"),
+    ///
+    /// `even_odd` selects the `f*`/`B*` even-odd variants (PDF 32000-1
+    /// §8.5.3) instead of the default nonzero-winding `f`/`B`. Stroke-only
+    /// painting (`S`) has no fill rule and is unaffected.
+    fn stroke_or_fill(&mut self, paint: &Paint, even_odd: bool) {
+        match (paint.style(), even_odd) {
+            (Style::Fill, false) => self.write_op("f\n"),
+            (Style::Fill, true) => self.write_op("f*\n"),
+            (Style::Stroke, _) => self.write_op("S\n"),
+            (Style::StrokeAndFill, false) => self.write_op("B\n"),
+            (Style::StrokeAndFill, true) => self.write_op("B*\n"),
         }
     }
 }
@@ -577,6 +630,76 @@ pub fn escape_pdf_string(s: &str) -> String {
         }
     }
     result
+}
+
+/// Map a Unicode scalar to its single-byte WinAnsiEncoding (PDF 32000-1
+/// Annex D.2, effectively CP1252) code, if representable.
+///
+/// Codes `0x20..=0x7E` match ASCII directly; `0xA0..=0xFF` match their
+/// Unicode code point (Latin-1 supplement); `0x80..=0x9F` are a fixed
+/// CP1252-specific remapping of the C1 control block, spelled out below.
+/// Anything else (undefined WinAnsi slots, or codepoints outside Latin-1)
+/// returns `None`.
+pub fn winansi_byte(c: char) -> Option<u8> {
+    match c {
+        '\u{20}'..='\u{7E}' => Some(c as u8),
+        '\u{20AC}' => Some(0x80), // EURO SIGN
+        '\u{201A}' => Some(0x82), // SINGLE LOW-9 QUOTATION MARK
+        '\u{0192}' => Some(0x83), // LATIN SMALL LETTER F WITH HOOK
+        '\u{201E}' => Some(0x84), // DOUBLE LOW-9 QUOTATION MARK
+        '\u{2026}' => Some(0x85), // HORIZONTAL ELLIPSIS
+        '\u{2020}' => Some(0x86), // DAGGER
+        '\u{2021}' => Some(0x87), // DOUBLE DAGGER
+        '\u{02C6}' => Some(0x88), // MODIFIER LETTER CIRCUMFLEX ACCENT
+        '\u{2030}' => Some(0x89), // PER MILLE SIGN
+        '\u{0160}' => Some(0x8A), // LATIN CAPITAL LETTER S WITH CARON
+        '\u{2039}' => Some(0x8B), // SINGLE LEFT-POINTING ANGLE QUOTATION MARK
+        '\u{0152}' => Some(0x8C), // LATIN CAPITAL LIGATURE OE
+        '\u{017D}' => Some(0x8E), // LATIN CAPITAL LETTER Z WITH CARON
+        '\u{2018}' => Some(0x91), // LEFT SINGLE QUOTATION MARK
+        '\u{2019}' => Some(0x92), // RIGHT SINGLE QUOTATION MARK
+        '\u{201C}' => Some(0x93), // LEFT DOUBLE QUOTATION MARK
+        '\u{201D}' => Some(0x94), // RIGHT DOUBLE QUOTATION MARK
+        '\u{2022}' => Some(0x95), // BULLET
+        '\u{2013}' => Some(0x96), // EN DASH
+        '\u{2014}' => Some(0x97), // EM DASH
+        '\u{02DC}' => Some(0x98), // SMALL TILDE
+        '\u{2122}' => Some(0x99), // TRADE MARK SIGN
+        '\u{0161}' => Some(0x9A), // LATIN SMALL LETTER S WITH CARON
+        '\u{203A}' => Some(0x9B), // SINGLE RIGHT-POINTING ANGLE QUOTATION MARK
+        '\u{0153}' => Some(0x9C), // LATIN SMALL LIGATURE OE
+        '\u{017E}' => Some(0x9E), // LATIN SMALL LETTER Z WITH CARON
+        '\u{0178}' => Some(0x9F), // LATIN CAPITAL LETTER Y WITH DIAERESIS
+        '\u{A0}'..='\u{FF}' => Some(c as u32 as u8),
+        _ => None,
+    }
+}
+
+/// Escape special bytes in a PDF literal string given raw (already
+/// single-byte-encoded, e.g. WinAnsi) bytes.
+///
+/// Byte-oriented counterpart to [`escape_pdf_string`] for text that is not
+/// valid UTF-8 on its own (WinAnsi bytes `0x80..=0xFF` don't roundtrip
+/// through `char`).
+pub fn escape_pdf_bytes(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    for &b in bytes {
+        match b {
+            b'(' => out.extend_from_slice(b"\\("),
+            b')' => out.extend_from_slice(b"\\)"),
+            b'\\' => out.extend_from_slice(b"\\\\"),
+            b'\n' => out.extend_from_slice(b"\\n"),
+            b'\r' => out.extend_from_slice(b"\\r"),
+            b'\t' => out.extend_from_slice(b"\\t"),
+            0x08 => out.extend_from_slice(b"\\b"),
+            0x0C => out.extend_from_slice(b"\\f"),
+            b if b < 0x20 || b == 0x7F => {
+                out.extend_from_slice(format!("\\{:03o}", b).as_bytes());
+            }
+            b => out.push(b),
+        }
+    }
+    out
 }
 
 /// Encode a UTF-8 string as an uppercase hex UTF-16BE literal with a BOM,
@@ -661,11 +784,18 @@ mod tests {
         assert_eq!(page.used_fonts, vec![0]);
         let content = String::from_utf8(page.content).unwrap();
         assert!(content.contains("/F1 12 Tf"));
+        // The text matrix must counter the page's outer y-flip CTM, per
+        // upstream SkPDFDevice::GlyphPositioner, or glyphs render mirrored.
+        assert!(
+            content.contains("1 0 0 -1 72 72 Tm"),
+            "missing compensating text matrix: {}",
+            content
+        );
         assert!(content.contains("(Hello) Tj"));
     }
 
     #[test]
-    fn test_canvas_draw_text_unicode_uses_utf16be() {
+    fn test_canvas_draw_text_non_ascii_uses_winansi_not_utf16be() {
         let mut fonts = PdfFontManager::new();
         let mut images = PdfImageManager::new();
         let mut transparency = TransparencyManager::new();
@@ -679,13 +809,47 @@ mod tests {
             canvas.finish()
         };
 
-        let content = String::from_utf8(page.content).unwrap();
-        // "héllo" encoded as UTF-16BE is 0068 00E9 006C 006C 006F, preceded
-        // by a BOM FEFF.
+        // A simple (Type1) font indexes a single-byte encoding, so 'é' must
+        // appear as its WinAnsi byte 0xE9 inside a literal string — never
+        // as a UTF-16BE hex string, which only makes sense against a
+        // Type0/CID font's CMap encoding.
+        let expected: &[u8] = b"(h\xE9llo) Tj";
         assert!(
-            content.contains("<FEFF006800E9006C006C006F> Tj"),
-            "content missing UTF-16BE encoded literal: {}",
-            content
+            page.content
+                .windows(expected.len())
+                .any(|w| w == expected),
+            "content missing WinAnsi-encoded literal: {:?}",
+            String::from_utf8_lossy(&page.content)
+        );
+        assert!(
+            !page.content.windows(5).any(|w| w == b"<FEFF"),
+            "must never emit a UTF-16BE hex string against a simple font"
+        );
+    }
+
+    #[test]
+    fn test_canvas_draw_text_unrepresentable_char_falls_back_without_hex() {
+        let mut fonts = PdfFontManager::new();
+        let mut images = PdfImageManager::new();
+        let mut transparency = TransparencyManager::new();
+
+        let page = {
+            let mut canvas = mk_canvas(&mut fonts, &mut images, &mut transparency);
+            canvas.use_standard_font(StandardFont::Helvetica);
+            let paint = Paint::new();
+            // '中' is outside WinAnsiEncoding entirely.
+            canvas.draw_text("a中b", 72.0, 72.0, 12.0, &paint);
+            canvas.finish()
+        };
+
+        assert!(
+            !page.content.windows(5).any(|w| w == b"<FEFF"),
+            "must never emit a UTF-16BE hex string against a simple font"
+        );
+        assert!(
+            page.content.windows(7).any(|w| w == b"(a?b) T"),
+            "expected literal fallback: {:?}",
+            String::from_utf8_lossy(&page.content)
         );
     }
 
@@ -707,6 +871,44 @@ mod tests {
         assert_eq!(page.used_images, vec![0]);
         let content = String::from_utf8(page.content).unwrap();
         assert!(content.contains("/Im1 Do"));
+        // Counter-flip: `w 0 0 -h x (y+h) cm` per SkPDFDevice's
+        // setScale(1,-1)/postTranslate(0,1) unit-square correction, so the
+        // raster's top row lands at the top of the destination rect.
+        assert!(
+            content.contains("30 0 0 -40 10 60 cm"),
+            "missing counter-flip cm for image placement: {}",
+            content
+        );
+    }
+
+    #[test]
+    fn test_canvas_draw_path_even_odd_uses_star_operator() {
+        use skia_rs_path::{FillType, PathBuilder};
+
+        let mut fonts = PdfFontManager::new();
+        let mut images = PdfImageManager::new();
+        let mut transparency = TransparencyManager::new();
+
+        let mut builder = PathBuilder::with_fill_type(FillType::EvenOdd);
+        builder.move_to(0.0, 0.0);
+        builder.line_to(10.0, 0.0);
+        builder.line_to(10.0, 10.0);
+        builder.close();
+        let path = builder.build();
+
+        let page = {
+            let mut canvas = mk_canvas(&mut fonts, &mut images, &mut transparency);
+            let paint = Paint::new();
+            canvas.draw_path(&path, &paint);
+            canvas.finish()
+        };
+
+        let content = String::from_utf8(page.content).unwrap();
+        assert!(
+            content.contains("f*\n"),
+            "even-odd fill must use f*: {}",
+            content
+        );
     }
 
     #[test]
