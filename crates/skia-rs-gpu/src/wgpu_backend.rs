@@ -838,6 +838,9 @@ pub struct ExecuteStats {
     pub pipeline_switches: u32,
     /// Number of bytes copied buffer-to-buffer.
     pub bytes_copied: u64,
+    /// Number of compute dispatches skipped because this render-pass executor
+    /// does not support compute (they are never replayed as draws).
+    pub unsupported_compute_dispatches: u32,
 }
 
 /// Executor that walks a `CommandBuffer` and issues wgpu commands against a
@@ -1099,6 +1102,10 @@ impl WgpuExecutor {
                         | DrawCommand::CopyTextureToBuffer { .. }
                         | DrawCommand::CopyTextureToTexture { .. }
                         | DrawCommand::Clear { .. } => unreachable!(),
+                        // Compute dispatches are filtered out before the pass
+                        // is built (this executor has no compute pass); they
+                        // must never be replayed as a draw.
+                        DrawCommand::DispatchCompute { .. } => {}
                     }
                 }
             }
@@ -1167,6 +1174,13 @@ impl WgpuExecutor {
                     // Callers that need these today can still use
                     // `copy_texture_to_buffer` on the surface directly via
                     // `read_pixels`.
+                }
+                DrawCommand::DispatchCompute { .. } => {
+                    // This render-pass executor does not support compute
+                    // dispatches. Reject by skipping — crucially, do NOT push
+                    // it into `pending_ops` where it would be replayed as a
+                    // draw call.
+                    stats.unsupported_compute_dispatches += 1;
                 }
                 other => {
                     // Anything else is pass content.
