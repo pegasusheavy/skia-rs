@@ -287,10 +287,13 @@ impl GpuSurface for WgpuSurface {
     }
 
     fn clear(&mut self, color: Color) {
-        let r = color.red() as f64 / 255.0;
-        let g = color.green() as f64 / 255.0;
-        let b = color.blue() as f64 / 255.0;
-        let a = color.alpha() as f64 / 255.0;
+        let clear = clear_color_for_format(
+            color.red() as f64 / 255.0,
+            color.green() as f64 / 255.0,
+            color.blue() as f64 / 255.0,
+            color.alpha() as f64 / 255.0,
+            self.format,
+        );
 
         let mut encoder = self
             .device
@@ -305,7 +308,7 @@ impl GpuSurface for WgpuSurface {
                     view: &self.view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a }),
+                        load: wgpu::LoadOp::Clear(clear),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -670,17 +673,18 @@ fn build_wgpu_pipeline(
         alpha_to_coverage_enabled: desc.multisample.alpha_to_coverage_enabled,
     };
 
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: desc.label.as_deref(),
-        bind_group_layouts: &[],
-        push_constant_ranges: &[],
-    });
-
+    // Use an auto-derived pipeline layout (`layout: None`). wgpu reflects the
+    // shader's `@group(0)` declarations and builds bind group layouts that
+    // exactly match them (uniform buffer for solid/gradient; texture +
+    // sampler + uniforms for textured). The previous explicit *empty* layout
+    // (`bind_group_layouts: &[]`) made pipeline creation FAIL for every shader
+    // that declared any binding, since group 0 was then unsatisfied. Callers
+    // retrieve the derived layouts via `pipeline.get_bind_group_layout(i)`.
     let fragment_module = fs_module.as_ref().unwrap_or(&vs_module);
 
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: desc.label.as_deref(),
-        layout: Some(&layout),
+        layout: None,
         vertex: wgpu::VertexState {
             module: &vs_module,
             entry_point: Some(desc.vertex_entry.as_str()),
@@ -724,6 +728,33 @@ fn build_wgpu_pipeline(
     });
 
     Ok(pipeline)
+}
+
+/// True if a target format applies an sRGB transfer function on write.
+fn format_is_srgb(format: TextureFormat) -> bool {
+    matches!(
+        format,
+        TextureFormat::Rgba8UnormSrgb | TextureFormat::Bgra8UnormSrgb
+    )
+}
+
+/// Build a `wgpu::Color` clear value for a target of `format`.
+///
+/// wgpu treats clear-color components as **linear**; for a `*UnormSrgb`
+/// target the hardware then re-encodes them to sRGB on write. So an sRGB
+/// clear color (e.g. from an 8-bit `Color`) must be linearized first,
+/// otherwise the visible result is too bright. Non-sRGB targets pass through.
+fn clear_color_for_format(r: f64, g: f64, b: f64, a: f64, format: TextureFormat) -> wgpu::Color {
+    if format_is_srgb(format) {
+        wgpu::Color {
+            r: crate::gradient::srgb_to_linear(r as f32) as f64,
+            g: crate::gradient::srgb_to_linear(g as f32) as f64,
+            b: crate::gradient::srgb_to_linear(b as f32) as f64,
+            a, // alpha is always linear
+        }
+    } else {
+        wgpu::Color { r, g, b, a }
+    }
 }
 
 fn convert_compare(c: crate::pipeline::CompareFunction) -> wgpu::CompareFunction {
@@ -858,6 +889,13 @@ pub struct WgpuExecutor {
     pipeline_by_id: Mutex<HashMap<u64, Arc<wgpu::RenderPipeline>>>,
     /// Mapping from the recorded `buffer_id` fields to real vertex/index buffers.
     buffers: Mutex<HashMap<u64, Arc<wgpu::Buffer>>>,
+    /// Optional depth24/stencil8 attachment. When set (via
+    /// [`WgpuExecutor::enable_stencil`]), every render pass gains a stencil
+    /// attachment that is cleared at pass start — making stencil-then-cover
+    /// executable. Off by default: pipelines used with a stencil attachment
+    /// must declare a matching depth/stencil state, so this is opt-in for
+    /// stencil-cover workloads.
+    stencil: Mutex<Option<wgpu::Texture>>,
 }
 
 impl WgpuExecutor {
@@ -869,6 +907,7 @@ impl WgpuExecutor {
             pipelines: Arc::new(WgpuPipelineCache::new()),
             pipeline_by_id: Mutex::new(HashMap::new()),
             buffers: Mutex::new(HashMap::new()),
+            stencil: Mutex::new(None),
         }
     }
 
@@ -880,7 +919,37 @@ impl WgpuExecutor {
             pipelines: cache,
             pipeline_by_id: Mutex::new(HashMap::new()),
             buffers: Mutex::new(HashMap::new()),
+            stencil: Mutex::new(None),
         }
+    }
+
+    /// Enable a depth24/stencil8 attachment of the given size (and MSAA sample
+    /// count) so subsequent [`WgpuExecutor::execute`] passes can run
+    /// stencil-then-cover. Each render pass clears the stencil buffer at the
+    /// start, so stencil state does not leak between path draws. Only enable
+    /// this for stencil-cover workloads: pipelines drawn under it must declare
+    /// a matching depth/stencil state.
+    pub fn enable_stencil(&self, width: u32, height: u32, sample_count: u32) {
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("skia-rs executor stencil"),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: sample_count.max(1),
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth24PlusStencil8,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        *self.stencil.lock() = Some(texture);
+    }
+
+    /// Disable the stencil attachment (return to plain color rendering).
+    pub fn disable_stencil(&self) {
+        *self.stencil.lock() = None;
     }
 
     /// Access the underlying pipeline cache.
@@ -972,6 +1041,26 @@ impl WgpuExecutor {
                 return Ok(());
             }
             {
+                // Attach the stencil buffer (if enabled) and clear it at pass
+                // start, so stencil-then-cover works and no stencil state
+                // leaks between path draws.
+                let stencil_guard = ctx.stencil.lock();
+                let stencil_view = stencil_guard
+                    .as_ref()
+                    .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()));
+                let depth_stencil_attachment = stencil_view.as_ref().map(|v| {
+                    wgpu::RenderPassDepthStencilAttachment {
+                        view: v,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Discard,
+                        }),
+                        stencil_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                    }
+                });
                 let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("skia-rs render pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -985,7 +1074,7 @@ impl WgpuExecutor {
                             store: wgpu::StoreOp::Store,
                         },
                     })],
-                    depth_stencil_attachment: None,
+                    depth_stencil_attachment,
                     timestamp_writes: None,
                     occlusion_query_set: None,
                 });
@@ -1131,12 +1220,13 @@ impl WgpuExecutor {
                     }
                     stats.clears += 1;
                     state = PassState::Open {
-                        clear: Some(wgpu::Color {
-                            r: color.red() as f64 / 255.0,
-                            g: color.green() as f64 / 255.0,
-                            b: color.blue() as f64 / 255.0,
-                            a: color.alpha() as f64 / 255.0,
-                        }),
+                        clear: Some(clear_color_for_format(
+                            color.red() as f64 / 255.0,
+                            color.green() as f64 / 255.0,
+                            color.blue() as f64 / 255.0,
+                            color.alpha() as f64 / 255.0,
+                            surface.format,
+                        )),
                     };
                 }
                 DrawCommand::CopyBufferToBuffer {
@@ -1627,6 +1717,72 @@ mod tests {
         assert_eq!(cache.len(), 0);
         cache.clear();
         assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn test_build_all_builtin_pipelines_headless() {
+        // Regression for the bind-group-layout fix: with the previous empty
+        // pipeline layout, every builtin whose shader declared a @group(0)
+        // binding failed pipeline creation. Auto-layout must let all of them
+        // compile. Requires a GPU adapter; skips gracefully without one.
+        let ctx = match WgpuContext::new_blocking() {
+            Ok(c) => c,
+            Err(_) => {
+                eprintln!("no wgpu adapter available; skipping builtin pipeline test");
+                return;
+            }
+        };
+        use crate::pipeline::{
+            BlendState, ColorTargetState, RenderPipelineDescriptor, VertexAttribute,
+            VertexBufferLayout, VertexFormat, VertexStepMode,
+        };
+        use crate::shader::builtin;
+
+        let layout = VertexBufferLayout {
+            stride: 16,
+            step_mode: VertexStepMode::Vertex,
+            attributes: vec![
+                VertexAttribute { location: 0, offset: 0, format: VertexFormat::Float32x2 },
+                VertexAttribute { location: 1, offset: 8, format: VertexFormat::Float32x2 },
+            ],
+        };
+
+        let builtins: &[(&str, &str, &str)] = &[
+            ("solid", builtin::SOLID_COLOR_VS, builtin::SOLID_COLOR_FS),
+            ("linear_gradient", builtin::GRADIENT_VS, builtin::LINEAR_GRADIENT_FS),
+            ("radial_gradient", builtin::GRADIENT_VS, builtin::RADIAL_GRADIENT_FS),
+            ("textured", builtin::TEXTURED_VS, builtin::TEXTURED_FS),
+            ("path_cover", builtin::PATH_FILL_VS, builtin::PATH_COVER_FS),
+        ];
+
+        for (name, vs, fs) in builtins {
+            let desc = RenderPipelineDescriptor::new(vs, fs)
+                .with_vertex_buffer(layout.clone())
+                .with_color_target(
+                    ColorTargetState::new(TextureFormat::Rgba8Unorm)
+                        .with_blend(BlendState::PREMULTIPLIED_ALPHA),
+                );
+            let result = build_wgpu_pipeline(&ctx.device, &desc);
+            assert!(
+                result.is_ok(),
+                "builtin pipeline {name} failed to build: {:?}",
+                result.err()
+            );
+        }
+    }
+
+    #[test]
+    fn test_clear_color_srgb_linearized() {
+        // Regression: sRGB targets need the clear color linearized; non-sRGB
+        // targets pass through unchanged.
+        let c = clear_color_for_format(0.5, 0.5, 0.5, 1.0, TextureFormat::Rgba8Unorm);
+        assert!((c.r - 0.5).abs() < 1e-9, "non-sRGB passes through");
+
+        let cs = clear_color_for_format(0.5, 0.5, 0.5, 1.0, TextureFormat::Rgba8UnormSrgb);
+        let expected = crate::gradient::srgb_to_linear(0.5) as f64;
+        assert!((cs.r - expected).abs() < 1e-6, "sRGB target linearizes clear");
+        assert!(cs.r < 0.5, "linearized mid-gray is darker than sRGB 0.5");
+        assert_eq!(cs.a, 1.0, "alpha stays linear");
     }
 
     #[test]
