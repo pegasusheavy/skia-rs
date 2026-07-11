@@ -4546,28 +4546,24 @@ mod tests {
 
     #[test]
     fn test_surface_new_raster_with_info_bgra8888_is_index_6() {
-        unsafe {
-            // Index 5 (kRGB_888x) must NOT be interpreted as BGRA — it must
-            // succeed and be distinct from index 6 (kBGRA_8888).
-            let info_rgb888x = sk_imageinfo_t {
-                width: 2,
-                height: 2,
-                color_type: 5,
-                alpha_type: 1, // Opaque
-            };
-            let s1 = sk_surface_new_raster_with_info(&info_rgb888x);
-            assert!(!s1.is_null());
-            sk_surface_unref(s1);
+        // Index 5 (kRGB_888x) must NOT be interpreted as BGRA — the decode
+        // table must keep it distinct from index 6 (kBGRA_8888), matching
+        // upstream SkColorType numbering.
+        assert_eq!(decode_color_type(5), Some(ColorType::Rgb888x));
+        assert_eq!(decode_color_type(6), Some(ColorType::Bgra8888));
 
+        // The raster backend only supports RGBA-order 8888 surfaces, so a
+        // BGRA request decodes correctly but surface creation reports
+        // failure (null) instead of silently mislabeling an RGBA buffer.
+        unsafe {
             let info_bgra = sk_imageinfo_t {
                 width: 2,
                 height: 2,
                 color_type: 6,
                 alpha_type: 2, // Premul
             };
-            let s2 = sk_surface_new_raster_with_info(&info_bgra);
-            assert!(!s2.is_null());
-            sk_surface_unref(s2);
+            let s = sk_surface_new_raster_with_info(&info_bgra);
+            assert!(s.is_null());
         }
     }
 
