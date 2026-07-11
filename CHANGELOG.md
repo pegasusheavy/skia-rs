@@ -862,6 +862,42 @@ The first public release of skia-rs, a pure Rust implementation of the Skia 2D g
   follow IEEE (±inf/NaN); `&`, `|`, `^`, `<<`, `>>` are wired into the GLSL
   precedence chain and `half(x)` parses as a constructor.
 
+### skia-rs-pdf
+- **Breaking (visual):** fixed text rendering upside-down — the PDF page
+  CTM's `1 0 0 -1 0 height` y-flip was never compensated for glyph runs,
+  so every drawn string rendered mirrored. Text now sets the text matrix
+  to `1 0 0 -1 x y Tm` per upstream `SkPDFDevice::GlyphPositioner`.
+- **Breaking (visual):** fixed images rendering vertically flipped —
+  `draw_image` now emits the `setScale(1,-1); postTranslate(0,1)`
+  counter-flip (`w 0 0 -h x (y+h) cm`) before placement, matching
+  `SkPDFDevice::internalDrawImageRect`.
+- **Breaking:** non-ASCII text drawn against a simple (Type1/TrueType)
+  font is now encoded as single-byte WinAnsiEncoding bytes instead of an
+  (invalid, per PDF 32000-1) UTF-16BE hex string; characters outside
+  WinAnsi fall back to `?` until per-run Type0 font switching exists.
+- **Breaking:** `Path` fill type is now honored when filling/stroking —
+  `EvenOdd`/`InverseEvenOdd` paths emit `f*`/`B*` instead of always
+  `f`/`B` (nonzero winding).
+- Fixed ToUnicode CMap codespace for simple fonts: declares a 1-byte
+  codespace (`<00> <FF>`) with 2-hex-digit `bfchar` source codes instead
+  of a 2-byte range with 4-digit codes that didn't match the actual
+  content-stream byte.
+- Type0 (CID) fonts now emit a proper `/DescendantFonts` array
+  (`CIDFontType2` with `/CIDSystemInfo`, `/CIDToGIDMap /Identity`, `/W`)
+  per PDF 32000-1 §9.7.6, instead of a Type0 dict with no glyph source.
+  New `PdfFont::truetype_cid` / `PdfFontManager::register_truetype_cid`.
+- Symbol/ZapfDingbats standard fonts now omit `/Encoding` so readers use
+  the font's built-in symbolic encoding, instead of incorrectly
+  declaring `/Encoding /StandardEncoding` (which has no entries for
+  their glyph names).
+- `ExtGraphicsState::cache_key` now covers `soft_mask`, `alpha_is_shape`,
+  `text_knockout`, and both overprint flags, fixing a bug where two
+  distinct ExtGStates differing only in those fields were wrongly
+  deduplicated into one cached `/ExtGState` object.
+- PDF/A OutputIntents now embed a real, valid sRGB ICC v2.1 profile
+  (`assets/srgb-v2.icc`) instead of a 9-byte placeholder string that
+  wasn't parseable ICC data at all.
+
 ### Planned for v0.2.0
 - Complete wgpu GPU backend
 - Vulkan backend
