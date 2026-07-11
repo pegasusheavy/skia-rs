@@ -370,8 +370,11 @@ impl Layer {
             masks,
             matte_mode: model.track_matte_type.map(MatteMode::from),
             matte_layer: model.track_matte_layer,
-            time_stretch: 1.0,
-            time_remap: None,
+            // "sr"/"tm" are only meaningful for precomp layers (upstream
+            // `Layer.cpp`/`PrecompLayer.cpp` only reads them there); other
+            // layer types simply carry through the defaults.
+            time_stretch: model.stretch.unwrap_or(1.0),
+            time_remap: model.time_remap.as_ref().map(AnimatedProperty::from_lottie),
         }
     }
 
@@ -380,9 +383,25 @@ impl Layer {
         !self.hidden && frame >= self.in_point && frame < self.out_point
     }
 
-    /// Get the local frame for this layer at a global frame.
-    pub fn local_frame(&self, global_frame: Scalar) -> Scalar {
-        (global_frame - self.start_time) * self.time_stretch
+    /// Get the local (content) frame for a precomp layer's *nested*
+    /// composition, at a given (unadjusted) comp frame.
+    ///
+    /// Per upstream `attachPrecompLayer` (`PrecompLayer.cpp`), only the
+    /// precomp's content time is remapped — the precomp layer's own
+    /// transform/opacity/masks evaluate at the unadjusted comp frame.
+    /// `tm` (if present) overrides the linear `(t - st) / sr` mapping.
+    pub fn precomp_content_frame(&self, frame: Scalar, frame_rate: Scalar) -> Scalar {
+        if let Some(ref remap) = self.time_remap {
+            let seconds = remap.value_at(frame).as_scalar().unwrap_or(0.0);
+            seconds * frame_rate
+        } else {
+            let stretch = if self.time_stretch != 0.0 {
+                self.time_stretch
+            } else {
+                1.0
+            };
+            (frame - self.start_time) / stretch
+        }
     }
 
     /// Get the opacity at a specific frame.
@@ -473,5 +492,49 @@ mod tests {
         assert!(layer.is_visible_at(10.0));
         assert!(layer.is_visible_at(30.0));
         assert!(!layer.is_visible_at(50.0));
+    }
+
+    #[test]
+    fn test_precomp_stretch_and_start_time_parsed_and_applied() {
+        let json = r#"{
+            "ty":0, "nm":"precomp", "ind":1, "ip":0, "op":100, "st":10, "sr":2,
+            "refId":"comp_0"
+        }"#;
+        let model: crate::model::LayerModel = serde_json::from_str(json).unwrap();
+        let layer = Layer::from_lottie(&model);
+
+        assert_eq!(layer.time_stretch, 2.0);
+        // (frame - st) / sr
+        assert_eq!(layer.precomp_content_frame(30.0, 30.0), (30.0 - 10.0) / 2.0);
+    }
+
+    #[test]
+    fn test_precomp_time_remap_overrides_linear_mapping() {
+        let json = r#"{
+            "ty":0, "nm":"precomp", "ind":1, "ip":0, "op":100, "st":10, "sr":2,
+            "refId":"comp_0", "tm":{"a":0,"k":1.5}
+        }"#;
+        let model: crate::model::LayerModel = serde_json::from_str(json).unwrap();
+        let layer = Layer::from_lottie(&model);
+
+        // tm is in seconds; content frame = tm * fps, ignoring st/sr.
+        assert_eq!(layer.precomp_content_frame(30.0, 30.0), 45.0);
+    }
+
+    #[test]
+    fn test_sr_st_do_not_affect_own_opacity_or_transform_frame() {
+        // A non-precomp layer's own transform/opacity are evaluated at the
+        // raw comp frame - "sr"/"st" must not shift them (only precomp
+        // *content* is remapped).
+        let json = r#"{
+            "ty":4, "nm":"shape", "ind":1, "ip":0, "op":100, "st":10, "sr":2,
+            "ks": {"o": {"a":1,"k":[{"t":0,"s":[0]},{"t":10,"s":[100]}]}}
+        }"#;
+        let model: crate::model::LayerModel = serde_json::from_str(json).unwrap();
+        let layer = Layer::from_lottie(&model);
+
+        // At comp frame 10, opacity should be 100 (raw frame), not shifted
+        // by "st" as if it were (10-10)/2=0.
+        assert_eq!(layer.opacity_at(10.0), 1.0);
     }
 }

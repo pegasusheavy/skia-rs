@@ -7,8 +7,9 @@
 
 use crate::keyframe::{AnimatedProperty, KeyframeValue, PathData};
 use crate::model::MaskModel;
-use skia_rs_core::Scalar;
-use skia_rs_path::{Path, PathBuilder};
+use skia_rs_core::{Rect, Scalar};
+use skia_rs_path::ops::{op, PathOp};
+use skia_rs_path::{FillType, Path, PathBuilder};
 
 /// Mask mode (boolean operation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,87 +245,84 @@ impl MaskGroup {
             .collect()
     }
 
-    /// Compute the combined mask path.
+    /// Compute the combined mask clip path for `bounds` (the layer/comp
+    /// bounds, needed to resolve inverted masks to a finite region).
     ///
-    /// This performs boolean operations to combine masks.
-    pub fn compute_combined_path(&self, frame: Scalar) -> Option<Path> {
-        let mask_paths = self.get_mask_paths(frame);
-
-        if mask_paths.is_empty() {
-            return None;
-        }
-
-        // Start with first mask
-        let mut result = mask_paths[0].0.clone();
-
-        // Combine subsequent masks
-        for (path, mode, _opacity) in mask_paths.iter().skip(1) {
-            result = match mode {
-                MaskMode::Add => {
-                    // Union - combine paths
-                    combine_paths(&result, path)
-                }
-                MaskMode::Subtract => {
-                    // Difference
-                    subtract_path(&result, path)
-                }
-                MaskMode::Intersect => {
-                    // Intersection
-                    intersect_paths(&result, path)
-                }
-                _ => result,
-            };
-        }
-
-        Some(result)
+    /// Matches upstream `AttachMask` (`Layer.cpp`): Add unions, Subtract
+    /// subtracts (`kDstOut`), Intersect intersects, Difference xors; `inv`
+    /// inverts an individual mask's geometry (relative to `bounds`); the
+    /// *first* mask in the stack always draws in "source" mode, with its
+    /// effective inversion flipped when its own mode is Subtract.
+    pub fn compute_combined_path(&self, frame: Scalar, bounds: Rect) -> Option<Path> {
+        build_clip(&self.masks, frame, bounds)
     }
 }
 
-/// Combine two paths (union).
-fn combine_paths(a: &Path, b: &Path) -> Path {
-    // Simple implementation: just append paths
-    // A proper implementation would use path boolean operations
-    let mut builder = PathBuilder::new();
+/// Build the combined clip path for a set of masks at a frame.
+///
+/// See [`MaskGroup::compute_combined_path`] for the semantics.
+pub fn build_clip(masks: &[Mask], frame: Scalar, bounds: Rect) -> Option<Path> {
+    let mut result: Option<Path> = None;
 
-    for element in a.iter() {
-        match element {
-            skia_rs_path::PathElement::Move(p) => builder.move_to(p.x, p.y),
-            skia_rs_path::PathElement::Line(p) => builder.line_to(p.x, p.y),
-            skia_rs_path::PathElement::Quad(c, p) => builder.quad_to(c.x, c.y, p.x, p.y),
-            skia_rs_path::PathElement::Conic(c, p, w) => builder.conic_to(c.x, c.y, p.x, p.y, w),
-            skia_rs_path::PathElement::Cubic(c1, c2, p) => {
-                builder.cubic_to(c1.x, c1.y, c2.x, c2.y, p.x, p.y)
-            }
-            skia_rs_path::PathElement::Close => builder.close(),
+    for (i, mask) in masks
+        .iter()
+        .filter(|m| m.is_active(frame))
+        .enumerate()
+    {
+        let Some(path) = mask.path_at(frame) else {
+            continue;
         };
-    }
 
-    for element in b.iter() {
-        match element {
-            skia_rs_path::PathElement::Move(p) => builder.move_to(p.x, p.y),
-            skia_rs_path::PathElement::Line(p) => builder.line_to(p.x, p.y),
-            skia_rs_path::PathElement::Quad(c, p) => builder.quad_to(c.x, c.y, p.x, p.y),
-            skia_rs_path::PathElement::Conic(c, p, w) => builder.conic_to(c.x, c.y, p.x, p.y, w),
-            skia_rs_path::PathElement::Cubic(c1, c2, p) => {
-                builder.cubic_to(c1.x, c1.y, c2.x, c2.y, p.x, p.y)
-            }
-            skia_rs_path::PathElement::Close => builder.close(),
+        let effective_inverted = if i == 0 {
+            // First mask: always "source" mode; Subtract's geometry is
+            // implicitly inverted, so an explicit `inv` flag flips it back.
+            mask.inverted != (mask.mode == MaskMode::Subtract)
+        } else {
+            mask.inverted
         };
+
+        let path = if effective_inverted {
+            invert_path(&path, bounds)
+        } else {
+            path
+        };
+
+        result = Some(match result {
+            None => path,
+            Some(acc) => {
+                let combined = match mask.mode {
+                    MaskMode::Add => op(&acc, &path, PathOp::Union),
+                    MaskMode::Subtract => op(&acc, &path, PathOp::Difference),
+                    MaskMode::Intersect => op(&acc, &path, PathOp::Intersect),
+                    MaskMode::Difference => op(&acc, &path, PathOp::Xor),
+                    _ => Some(acc.clone()),
+                };
+                combined.unwrap_or(acc)
+            }
+        });
     }
 
-    builder.build()
+    // Boolean-op results represent shells + holes as separate contours
+    // without a reliable signed winding convention; even-odd parity is the
+    // fill rule that correctly renders such composite regions (holes
+    // cancel via crossing parity regardless of ring winding direction).
+    result.map(|mut p| {
+        p.set_fill_type(FillType::EvenOdd);
+        p
+    })
 }
 
-/// Subtract path b from path a.
-fn subtract_path(a: &Path, _b: &Path) -> Path {
-    // Simplified: just return a (proper implementation would use path ops)
-    a.clone()
-}
-
-/// Intersect two paths.
-fn intersect_paths(a: &Path, _b: &Path) -> Path {
-    // Simplified: just return a (proper implementation would use path ops)
-    a.clone()
+/// Invert a path's geometry relative to `bounds` (i.e. "everywhere in
+/// `bounds` except `path`"), used to resolve Lottie's `inv` mask flag.
+fn invert_path(path: &Path, bounds: Rect) -> Path {
+    let mut universe = PathBuilder::new();
+    universe.add_rect(&bounds);
+    let universe = universe.build();
+    op(&universe, path, PathOp::Difference).unwrap_or_else(|| {
+        let mut p = path.clone();
+        p.set_fill_type(FillType::InverseWinding);
+        p
+    })
 }
 
 #[cfg(test)]
@@ -359,5 +357,71 @@ mod tests {
         group.add(Mask::new(MaskMode::Subtract));
 
         assert_eq!(group.masks.len(), 2);
+    }
+
+    fn rect_mask(mode: MaskMode, x: Scalar, y: Scalar, w: Scalar, h: Scalar, inv: bool) -> Mask {
+        let mut builder = PathBuilder::new();
+        builder.add_rect(&skia_rs_core::Rect::from_xywh(x, y, w, h));
+        let path = builder.build();
+
+        let path_data = PathData {
+            vertices: vec![[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
+            in_tangents: vec![[0.0, 0.0]; 4],
+            out_tangents: vec![[0.0, 0.0]; 4],
+            closed: true,
+        };
+        let _ = path; // geometry built directly from PathData below
+
+        Mask {
+            name: String::new(),
+            mode,
+            path: AnimatedProperty::static_value(KeyframeValue::Path(path_data)),
+            opacity: AnimatedProperty::static_value(KeyframeValue::Scalar(100.0)),
+            inverted: inv,
+            expansion: AnimatedProperty::static_value(KeyframeValue::Scalar(0.0)),
+        }
+    }
+
+    #[test]
+    fn test_build_clip_subtract_removes_geometry() {
+        let masks = vec![
+            rect_mask(MaskMode::Add, 0.0, 0.0, 100.0, 100.0, false),
+            rect_mask(MaskMode::Subtract, 25.0, 25.0, 50.0, 50.0, false),
+        ];
+        let bounds = skia_rs_core::Rect::from_xywh(0.0, 0.0, 100.0, 100.0);
+        let clip = build_clip(&masks, 0.0, bounds).unwrap();
+
+        // The subtracted center should no longer be inside the clip region.
+        assert!(!clip.contains(skia_rs_core::Point::new(50.0, 50.0)));
+        // A corner still inside the outer rect (but outside the hole) should remain.
+        assert!(clip.contains(skia_rs_core::Point::new(5.0, 5.0)));
+    }
+
+    #[test]
+    fn test_build_clip_intersect_shrinks_geometry() {
+        let masks = vec![
+            rect_mask(MaskMode::Add, 0.0, 0.0, 100.0, 100.0, false),
+            rect_mask(MaskMode::Intersect, 25.0, 25.0, 50.0, 50.0, false),
+        ];
+        let bounds = skia_rs_core::Rect::from_xywh(0.0, 0.0, 100.0, 100.0);
+        let clip = build_clip(&masks, 0.0, bounds).unwrap();
+
+        assert!(clip.contains(skia_rs_core::Point::new(50.0, 50.0)));
+        // Outside the intersected (smaller) region.
+        assert!(!clip.contains(skia_rs_core::Point::new(5.0, 5.0)));
+    }
+
+    #[test]
+    fn test_build_clip_add_unions_geometry() {
+        let masks = vec![
+            rect_mask(MaskMode::Add, 0.0, 0.0, 40.0, 40.0, false),
+            rect_mask(MaskMode::Add, 60.0, 60.0, 40.0, 40.0, false),
+        ];
+        let bounds = skia_rs_core::Rect::from_xywh(0.0, 0.0, 100.0, 100.0);
+        let clip = build_clip(&masks, 0.0, bounds).unwrap();
+
+        assert!(clip.contains(skia_rs_core::Point::new(20.0, 20.0)));
+        assert!(clip.contains(skia_rs_core::Point::new(80.0, 80.0)));
+        assert!(!clip.contains(skia_rs_core::Point::new(50.0, 50.0)));
     }
 }

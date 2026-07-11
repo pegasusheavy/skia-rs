@@ -6,7 +6,7 @@
 //! - Hold keyframes
 //! - Multi-dimensional values
 
-use crate::model::{AnimatedValue, KeyframeModel, TangentModel, TangentValue};
+use crate::model::{AnimatedValue, TangentModel};
 use skia_rs_core::Scalar;
 
 /// Easing function for keyframe interpolation.
@@ -96,7 +96,7 @@ fn cubic_bezier_x(p1: Scalar, p2: Scalar, t: Scalar) -> Scalar {
     let t3 = t2 * t;
     let mt = 1.0 - t;
     let mt2 = mt * mt;
-    let mt3 = mt2 * mt;
+    let _mt3 = mt2 * mt;
 
     3.0 * mt2 * t * p1 + 3.0 * mt * t2 * p2 + t3
 }
@@ -116,7 +116,7 @@ fn cubic_bezier_y(p1: Scalar, p2: Scalar, t: Scalar) -> Scalar {
     let t3 = t2 * t;
     let mt = 1.0 - t;
     let mt2 = mt * mt;
-    let mt3 = mt2 * mt;
+    let _mt3 = mt2 * mt;
 
     3.0 * mt2 * t * p1 + 3.0 * mt * t2 * p2 + t3
 }
@@ -162,6 +162,9 @@ pub enum KeyframeValue {
     Color([Scalar; 4]),
     /// Path data.
     Path(PathData),
+    /// Raw float array (used for gradient stop tables, which pack an
+    /// arbitrary number of color/opacity records).
+    FloatArray(Vec<Scalar>),
 }
 
 impl KeyframeValue {
@@ -175,9 +178,14 @@ impl KeyframeValue {
     }
 
     /// Get as vec2.
+    ///
+    /// Bodymovin frequently exports positions/anchors as 3-component
+    /// arrays (with a z of 0 for 2D layers); accept `Vec3` by taking the
+    /// first two components.
     pub fn as_vec2(&self) -> Option<[Scalar; 2]> {
         match self {
             KeyframeValue::Vec2(v) => Some(*v),
+            KeyframeValue::Vec3(v) => Some([v[0], v[1]]),
             KeyframeValue::Scalar(v) => Some([*v, *v]),
             _ => None,
         }
@@ -198,6 +206,14 @@ impl KeyframeValue {
         match self {
             KeyframeValue::Color(v) => Some(*v),
             KeyframeValue::Vec3(v) => Some([v[0], v[1], v[2], 1.0]),
+            _ => None,
+        }
+    }
+
+    /// Get as a raw float array (e.g. gradient stop tables).
+    pub fn as_float_array(&self) -> Option<&[Scalar]> {
+        match self {
+            KeyframeValue::FloatArray(v) => Some(v),
             _ => None,
         }
     }
@@ -223,6 +239,16 @@ impl KeyframeValue {
                 a[3] + (b[3] - a[3]) * t,
             ]),
             (KeyframeValue::Path(a), KeyframeValue::Path(b)) => KeyframeValue::Path(a.lerp(b, t)),
+            (KeyframeValue::FloatArray(a), KeyframeValue::FloatArray(b))
+                if a.len() == b.len() =>
+            {
+                KeyframeValue::FloatArray(
+                    a.iter()
+                        .zip(b.iter())
+                        .map(|(x, y)| x + (y - x) * t)
+                        .collect(),
+                )
+            }
             // Mismatched types - return first
             _ => self.clone(),
         }
@@ -390,11 +416,16 @@ impl AnimatedProperty {
             AnimatedValue::Animated { keyframes, .. } => {
                 let mut prop = Self::new();
 
-                for (i, kf) in keyframes.iter().enumerate() {
+                for kf in keyframes.iter() {
                     let value = if let Some(ref start) = kf.start {
-                        parse_keyframe_value(start)
+                        parse_json_value(start)
                     } else if let Some(ref end) = kf.end {
-                        parse_keyframe_value(end)
+                        parse_json_value(end)
+                    } else if let Some(prev) = prop.keyframes.last() {
+                        // A trailing `{"t":N}`-only keyframe (no "s"/"e")
+                        // just marks an end time and inherits the previous
+                        // keyframe's value.
+                        prev.value.clone()
                     } else {
                         KeyframeValue::Scalar(0.0)
                     };
@@ -440,19 +471,31 @@ fn parse_keyframe_value(values: &[Scalar]) -> KeyframeValue {
         1 => KeyframeValue::Scalar(values[0]),
         2 => KeyframeValue::Vec2([values[0], values[1]]),
         3 => KeyframeValue::Vec3([values[0], values[1], values[2]]),
-        _ => KeyframeValue::Color([
-            values.get(0).copied().unwrap_or(0.0),
-            values.get(1).copied().unwrap_or(0.0),
-            values.get(2).copied().unwrap_or(0.0),
-            values.get(3).copied().unwrap_or(1.0),
-        ]),
+        4 => KeyframeValue::Color([values[0], values[1], values[2], values[3]]),
+        // Longer arrays (e.g. gradient stop tables, which pack an
+        // arbitrary number of color/opacity records) are kept as-is.
+        _ => KeyframeValue::FloatArray(values.to_vec()),
     }
 }
 
 fn parse_json_value(value: &serde_json::Value) -> KeyframeValue {
     match value {
         serde_json::Value::Number(n) => KeyframeValue::Scalar(n.as_f64().unwrap_or(0.0) as Scalar),
+        serde_json::Value::Object(_) => {
+            // Static (non-animated) bezier path value: `"k": {"i","o","v","c"}`.
+            parse_path_object(value)
+                .map(KeyframeValue::Path)
+                .unwrap_or(KeyframeValue::Scalar(0.0))
+        }
         serde_json::Value::Array(arr) => {
+            // Animated bezier path value: `"s": [{"i","o","v","c"}]`.
+            if let Some(first) = arr.first() {
+                if first.is_object() {
+                    return parse_path_object(first)
+                        .map(KeyframeValue::Path)
+                        .unwrap_or(KeyframeValue::Scalar(0.0));
+                }
+            }
             let values: Vec<Scalar> = arr
                 .iter()
                 .filter_map(|v| v.as_f64().map(|n| n as Scalar))
@@ -461,6 +504,36 @@ fn parse_json_value(value: &serde_json::Value) -> KeyframeValue {
         }
         _ => KeyframeValue::Scalar(0.0),
     }
+}
+
+/// Parse a bezier path object (`{"i":[[x,y],...],"o":[[x,y],...],"v":[[x,y],...],"c":bool}`)
+/// into a [`PathData`]. `i`/`o` are tangent offsets *relative* to the
+/// corresponding vertex in `v`, matching the Lottie/Bodymovin convention.
+fn parse_path_object(value: &serde_json::Value) -> Option<PathData> {
+    let obj = value.as_object()?;
+
+    let get_points = |key: &str| -> Vec<[Scalar; 2]> {
+        obj.get(key)
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|p| {
+                        let pa = p.as_array()?;
+                        let x = pa.first()?.as_f64()? as Scalar;
+                        let y = pa.get(1)?.as_f64()? as Scalar;
+                        Some([x, y])
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    Some(PathData {
+        vertices: get_points("v"),
+        in_tangents: get_points("i"),
+        out_tangents: get_points("o"),
+        closed: obj.get("c").and_then(|v| v.as_bool()).unwrap_or(false),
+    })
 }
 
 #[cfg(test)]
@@ -500,6 +573,66 @@ mod tests {
 
         let result = a.lerp(&b, 0.5);
         assert_eq!(result.as_vec2(), Some([50.0, 100.0]));
+    }
+
+    #[test]
+    fn test_as_vec2_accepts_vec3() {
+        // Bodymovin frequently exports position/anchor as 3-component arrays.
+        let v = KeyframeValue::Vec3([10.0, 20.0, 0.0]);
+        assert_eq!(v.as_vec2(), Some([10.0, 20.0]));
+    }
+
+    #[test]
+    fn test_static_bezier_path_value_parses_geometry() {
+        use crate::model::AnimatedValue;
+
+        let json = r#"{"a":0,"k":{"i":[[0,0],[0,0]],"o":[[0,0],[0,0]],"v":[[0,0],[10,10]],"c":false}}"#;
+        let av: AnimatedValue = serde_json::from_str(json).unwrap();
+        let prop = AnimatedProperty::from_lottie(&av);
+        match prop.value_at(0.0) {
+            KeyframeValue::Path(p) => {
+                assert_eq!(p.vertices, vec![[0.0, 0.0], [10.0, 10.0]]);
+                assert!(!p.closed);
+            }
+            other => panic!("expected Path, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_animated_bezier_path_keyframes_interpolate() {
+        use crate::model::AnimatedValue;
+
+        let json = r#"{"a":1,"k":[
+            {"t":0,"s":[{"i":[[0,0]],"o":[[0,0]],"v":[[0,0]],"c":false}]},
+            {"t":10,"s":[{"i":[[0,0]],"o":[[0,0]],"v":[[100,100]],"c":false}]}
+        ]}"#;
+        let av: AnimatedValue = serde_json::from_str(json).unwrap();
+        let prop = AnimatedProperty::from_lottie(&av);
+
+        match prop.value_at(5.0) {
+            KeyframeValue::Path(p) => {
+                assert_eq!(p.vertices[0], [50.0, 50.0]);
+            }
+            other => panic!("expected Path, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_trailing_time_only_keyframe_inherits_previous_value() {
+        use crate::model::AnimatedValue;
+
+        // Final keyframe has only "t" (no "s"/"e") - it should just mark an
+        // end time and hold the previous keyframe's value.
+        let json = r#"{"a":1,"k":[
+            {"t":0,"s":[0]},
+            {"t":10,"s":[100]},
+            {"t":20}
+        ]}"#;
+        let av: AnimatedValue = serde_json::from_str(json).unwrap();
+        let prop = AnimatedProperty::from_lottie(&av);
+
+        assert_eq!(prop.value_at(15.0).as_scalar(), Some(100.0));
+        assert_eq!(prop.value_at(20.0).as_scalar(), Some(100.0));
     }
 
     #[test]

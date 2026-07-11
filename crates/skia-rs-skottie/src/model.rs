@@ -129,6 +129,13 @@ pub struct LayerModel {
     /// Effects.
     #[serde(rename = "ef", default)]
     pub effects: Vec<EffectModel>,
+    /// Time stretch factor (only meaningful for precomp layers; upstream
+    /// `Layer.cpp`/`PrecompLayer.cpp` only reads this for precomps).
+    #[serde(rename = "sr", default)]
+    pub stretch: Option<Scalar>,
+    /// Time remap (seconds, animated); only meaningful for precomp layers.
+    #[serde(rename = "tm", default)]
+    pub time_remap: Option<AnimatedValue>,
 }
 
 /// Transform model.
@@ -203,12 +210,14 @@ pub struct KeyframeModel {
     /// Time.
     #[serde(rename = "t")]
     pub time: Scalar,
-    /// Start value.
+    /// Start value. Stored as raw JSON since this can be either a plain
+    /// numeric array (scalar/vec2/vec3/color) or a bezier path object
+    /// (`{"i","o","v","c"}`, itself wrapped in a single-element array).
     #[serde(rename = "s", default)]
-    pub start: Option<Vec<Scalar>>,
-    /// End value.
+    pub start: Option<serde_json::Value>,
+    /// End value (same shape as `start`).
     #[serde(rename = "e", default)]
-    pub end: Option<Vec<Scalar>>,
+    pub end: Option<serde_json::Value>,
     /// In tangent (bezier).
     #[serde(rename = "i", default)]
     pub in_tangent: Option<TangentModel>,
@@ -324,21 +333,70 @@ pub struct ShapeModel {
     /// Star type (1=star, 2=polygon).
     #[serde(rename = "sy", default)]
     pub star_type: Option<i32>,
-    /// Trim start (0-100%).
-    #[serde(skip)]
-    pub trim_start: Option<AnimatedValue>,
-    /// Trim end (0-100%).
-    #[serde(skip)]
+    /// Trim end (0-100%); trim start reuses `size` ("s"), trim offset
+    /// (degrees) reuses `opacity` ("o") — Lottie overloads those keys
+    /// per shape type, same as upstream `skjson` object access.
+    #[serde(rename = "e", default)]
     pub trim_end: Option<AnimatedValue>,
-    /// Trim offset (degrees).
-    #[serde(skip)]
-    pub trim_offset: Option<AnimatedValue>,
     /// Multiple shapes mode.
     #[serde(rename = "m", default)]
     pub trim_mode: Option<i32>,
-    /// Direction.
+    /// Direction (`rc`/`el`/`sh`/`sr`) or dash array (`st`/`gs`) — same
+    /// JSON key ("d") is overloaded by shape type in the Lottie format.
     #[serde(rename = "d", default)]
-    pub direction: Option<i32>,
+    pub direction: Option<DirectionOrDash>,
+    /// Skew (degrees); only meaningful for group transform ("tr") items.
+    #[serde(rename = "sk", default)]
+    pub skew: Option<AnimatedValue>,
+    /// Skew axis (degrees); only meaningful for group transform ("tr") items.
+    #[serde(rename = "sa", default)]
+    pub skew_axis: Option<AnimatedValue>,
+    /// Gradient highlight length (radial gradients, "h").
+    #[serde(rename = "h", default)]
+    pub gradient_highlight_length: Option<AnimatedValue>,
+}
+
+/// Either a shape direction (`rc`/`el`/`sh`/`sr`) or a stroke dash array
+/// (`st`/`gs`) — Lottie overloads the `"d"` JSON key by shape type.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum DirectionOrDash {
+    /// Dash array: N intervals followed by a trailing offset element.
+    Dashes(Vec<DashElementModel>),
+    /// Path direction (1 = normal/CW, 3 = reversed/CCW).
+    Direction(i32),
+}
+
+impl DirectionOrDash {
+    /// Get as a direction value, if this is a direction.
+    pub fn as_direction(&self) -> Option<i32> {
+        match self {
+            DirectionOrDash::Direction(d) => Some(*d),
+            _ => None,
+        }
+    }
+
+    /// Get as a dash array, if this is a dash array.
+    pub fn as_dashes(&self) -> Option<&[DashElementModel]> {
+        match self {
+            DirectionOrDash::Dashes(d) => Some(d),
+            _ => None,
+        }
+    }
+}
+
+/// A single dash array element (`{"n","nm","v"}`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DashElementModel {
+    /// Element kind (unused by us — position determines meaning).
+    #[serde(rename = "n", default)]
+    pub kind: String,
+    /// Name.
+    #[serde(rename = "nm", default)]
+    pub name: String,
+    /// Value.
+    #[serde(rename = "v")]
+    pub value: AnimatedValue,
 }
 
 /// Gradient colors model.
