@@ -359,10 +359,12 @@ struct WriteCtx<'a> {
     font_ids: Vec<u32>,
     /// Object IDs for each font's FontDescriptor dict (TrueType only).
     font_desc_ids: Vec<Option<u32>>,
-    /// Object IDs for each font's FontFile2 stream (TrueType only).
+    /// Object IDs for each font's FontFile2 stream (TrueType/Type0 only).
     font_file_ids: Vec<Option<u32>>,
     /// Object IDs for each font's ToUnicode stream.
     font_tounicode_ids: Vec<u32>,
+    /// Object IDs for each Type0 font's CIDFontType2 descendant dict.
+    font_descendant_ids: Vec<Option<u32>>,
     /// Object IDs for each image's XObject.
     image_ids: Vec<u32>,
     /// Object IDs for each ExtGState.
@@ -391,6 +393,7 @@ impl<'a> WriteCtx<'a> {
             font_desc_ids: Vec::new(),
             font_file_ids: Vec::new(),
             font_tounicode_ids: Vec::new(),
+            font_descendant_ids: Vec::new(),
             image_ids: Vec::new(),
             ext_gstate_ids: Vec::new(),
             metadata_id: None,
@@ -425,20 +428,32 @@ impl<'a> WriteCtx<'a> {
             .map(|_| (self.alloc(), self.alloc()))
             .collect();
 
-        // Fonts.
-        let is_ttf: Vec<bool> = self
+        // Fonts. Both simple TrueType fonts and Type0/CID fonts built on
+        // TrueType outlines get a FontDescriptor + embedded FontFile2;
+        // Type0 fonts additionally get a CIDFontType2 descendant dict.
+        let needs_embed: Vec<bool> = self
             .doc
             .fonts
             .fonts()
             .iter()
-            .map(|f| f.font_type == PdfFontType::TrueType && f.font_data.is_some())
+            .map(|f| {
+                matches!(f.font_type, PdfFontType::TrueType | PdfFontType::Type0)
+                    && f.font_data.is_some()
+            })
             .collect();
-        for &is_ttf_font in &is_ttf {
+        let is_type0: Vec<bool> = self
+            .doc
+            .fonts
+            .fonts()
+            .iter()
+            .map(|f| f.font_type == PdfFontType::Type0)
+            .collect();
+        for (&embed, &type0) in needs_embed.iter().zip(&is_type0) {
             let id = self.alloc();
             self.font_ids.push(id);
             let tu = self.alloc();
             self.font_tounicode_ids.push(tu);
-            if is_ttf_font {
+            if embed {
                 let desc = self.alloc();
                 let file = self.alloc();
                 self.font_desc_ids.push(Some(desc));
@@ -446,6 +461,12 @@ impl<'a> WriteCtx<'a> {
             } else {
                 self.font_desc_ids.push(None);
                 self.font_file_ids.push(None);
+            }
+            if type0 {
+                let descendant = self.alloc();
+                self.font_descendant_ids.push(Some(descendant));
+            } else {
+                self.font_descendant_ids.push(None);
             }
         }
 
@@ -586,6 +607,15 @@ impl<'a> WriteCtx<'a> {
                     self.write_bytes(writer, &compressed)?;
                     self.write_bytes(writer, b"\nendstream\nendobj\n")?;
                 }
+
+                // CIDFontType2 descendant dict for Type0 fonts (PDF
+                // 32000-1 §9.7.4/§9.7.6): CIDSystemInfo, CIDToGIDMap, /W
+                // widths, referencing this same FontDescriptor.
+                if let Some(descendant_id) = self.font_descendant_ids[i] {
+                    self.offsets.push((descendant_id, self.offset));
+                    let cid_dict = font.to_cid_font_dict(descendant_id, desc_id);
+                    self.write_bytes(writer, cid_dict.as_bytes())?;
+                }
             }
         }
 
@@ -656,13 +686,13 @@ impl<'a> WriteCtx<'a> {
             );
             self.write_bytes(writer, oi.as_bytes())?;
 
-            // Minimal ICC profile stream — flate-compressed 1-byte payload
-            // acts as a placeholder. A real sRGB ICC profile is ~3 KB and
-            // would be dropped in here; PDF/A validators normally require
-            // a valid profile, but at the reader level this keeps the
-            // structure intact.
+            // Real minimal sRGB ICC v2 profile stream, flate-compressed.
+            // PDF/A OutputIntents require an actual ICC profile — a
+            // placeholder byte string (as this used to embed) is not a
+            // valid ICC stream and fails conformance in any validator that
+            // parses it, even though the PDF object structure looks right.
             self.offsets.push((icc_id, self.offset));
-            let icc_payload = flate_compress(MINIMAL_SRGB_ICC_STUB);
+            let icc_payload = flate_compress(SRGB_ICC_V2_PROFILE);
             let icc_hdr = format!(
                 "{} 0 obj\n<< /N 3 /Alternate /DeviceRGB /Length {} /Filter /FlateDecode >>\nstream\n",
                 icc_id,
@@ -780,7 +810,9 @@ impl<'a> WriteCtx<'a> {
                 dict.push_str("/Type /Font\n");
                 dict.push_str("/Subtype /Type1\n");
                 dict.push_str(&format!("/BaseFont /{}\n", font.base_font));
-                dict.push_str(&format!("/Encoding /{}\n", font.encoding));
+                if let Some(ref enc) = font.encoding {
+                    dict.push_str(&format!("/Encoding /{}\n", enc));
+                }
             }
             PdfFontType::TrueType => {
                 dict.push_str("/Type /Font\n");
@@ -799,13 +831,21 @@ impl<'a> WriteCtx<'a> {
                 if let Some(desc_id) = self.font_desc_ids[i] {
                     dict.push_str(&format!("/FontDescriptor {} 0 R\n", desc_id));
                 }
-                dict.push_str(&format!("/Encoding /{}\n", font.encoding));
+                if let Some(ref enc) = font.encoding {
+                    dict.push_str(&format!("/Encoding /{}\n", enc));
+                }
             }
             PdfFontType::OpenTypeCff | PdfFontType::Type0 => {
                 dict.push_str("/Type /Font\n");
                 dict.push_str("/Subtype /Type0\n");
                 dict.push_str(&format!("/BaseFont /{}\n", font.pdf_base_font()));
                 dict.push_str("/Encoding /Identity-H\n");
+                // PDF 32000-1 §9.7.3: a Type0 font's glyphs come entirely
+                // from its descendant CID font — without this array the
+                // font has no outlines at all.
+                if let Some(desc_id) = self.font_descendant_ids[i] {
+                    dict.push_str(&format!("/DescendantFonts [{} 0 R]\n", desc_id));
+                }
             }
         }
 
@@ -840,11 +880,16 @@ fn flate_compress(data: &[u8]) -> Vec<u8> {
     enc.finish().unwrap()
 }
 
-/// A short placeholder for an sRGB ICC profile. A real PDF/A producer
-/// would embed the full 3 KB sRGB profile; for our purposes the structure
-/// is what matters — the stream is present, flate-compressed, tagged as 3
-/// components, and referenced from the OutputIntent.
-const MINIMAL_SRGB_ICC_STUB: &[u8] = b"sRGB-stub";
+/// A real, minimal sRGB ICC v2.1 profile (2576 bytes; "monitor" device
+/// class, RGB → XYZ PCS), embedded verbatim in the OutputIntent's
+/// `/DestOutputProfile` stream for PDF/A conformance (ISO 19005 requires an
+/// actual, parseable ICC profile there — not just a plausible-looking PDF
+/// object). Provenance: the "Artifex Software sRGB ICC Profile" already
+/// vendored in this workspace at
+/// `crates/skia-rs-core/tests/fixtures/srgb.icc` for color-management
+/// tests; copied here unmodified as `assets/srgb-v2.icc` so this crate
+/// doesn't depend on another crate's test fixtures.
+const SRGB_ICC_V2_PROFILE: &[u8] = include_bytes!("../assets/srgb-v2.icc");
 
 /// Produce a 32-char hex document-ID string (used in the trailer `/ID`
 /// entry). Derived from the current system time; the trailer `/ID` is

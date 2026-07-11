@@ -229,6 +229,98 @@ fn truetype_subset_actually_prunes_large_glyf() {
     assert_eq!(face.number_of_glyphs() as usize, 10);
 }
 
+/// A Type0 (CID-keyed) font, once registered and used, must emit a
+/// `/DescendantFonts` array pointing at a `CIDFontType2` dict with
+/// `/CIDToGIDMap`, `/W`, and `/CIDSystemInfo` — per PDF 32000-1 §9.7.6, a
+/// Type0 font is otherwise glyph-less.
+#[test]
+fn type0_font_emits_descendant_fonts_array() {
+    let mut doc = PdfDocument::new();
+
+    let font_idx = doc
+        .fonts_mut()
+        .register_truetype_cid("Demo", DEMO_TTF.to_vec());
+
+    {
+        let mut canvas = doc.begin_page(200.0, 200.0);
+        canvas.set_font(font_idx);
+        let paint = Paint::new();
+        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint);
+        let page = canvas.finish();
+        doc.end_page(page);
+    }
+
+    let mut buf = Vec::new();
+    doc.write_to(&mut buf).expect("write should succeed");
+    let s = String::from_utf8_lossy(&buf);
+
+    assert!(s.contains("/Subtype /Type0"), "{}", s);
+    assert!(
+        s.contains("/DescendantFonts ["),
+        "missing /DescendantFonts: {}",
+        s
+    );
+    assert!(s.contains("/Subtype /CIDFontType2"));
+    assert!(s.contains("/CIDToGIDMap /Identity"));
+    assert!(s.contains(
+        "/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>"
+    ));
+    assert!(s.contains("/W ["));
+    // Embedded outlines are shared with the simple-TrueType path.
+    assert!(s.contains("/FontFile2"));
+}
+
+/// PDF/A OutputIntents require a real, parseable ICC profile in
+/// `/DestOutputProfile` — a placeholder byte string is not valid ICC data
+/// and fails conformance even though the surrounding PDF object looks
+/// structurally correct. Decompress the emitted stream and check for the
+/// ICC 'acsp' file signature at its spec-mandated offset (36).
+#[test]
+fn pdfa_output_intent_embeds_real_icc_profile() {
+    let mut doc = PdfDocument::new();
+    doc.set_pdfa_conformance(PdfALevel::A2b);
+    {
+        let canvas = doc.begin_page(100.0, 100.0);
+        let page = canvas.finish();
+        doc.end_page(page);
+    }
+
+    let mut buf = Vec::new();
+    doc.write_to(&mut buf).expect("write should succeed");
+
+    // Locate the DestOutputProfile stream and decompress it.
+    let needle = b"/N 3 /Alternate /DeviceRGB";
+    let start = buf
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .expect("ICC profile stream header not found");
+    let stream_start = buf[start..]
+        .windows(7)
+        .position(|w| w == b"stream\n")
+        .map(|p| start + p + 7)
+        .expect("stream keyword not found");
+    let stream_end = buf[stream_start..]
+        .windows(10)
+        .position(|w| w == b"\nendstream")
+        .map(|p| stream_start + p)
+        .expect("endstream not found");
+
+    use std::io::Read as _;
+    let mut decoder = flate2::read::ZlibDecoder::new(&buf[stream_start..stream_end]);
+    let mut icc = Vec::new();
+    decoder
+        .read_to_end(&mut icc)
+        .expect("ICC stream must be valid FlateDecode data");
+
+    assert!(icc.len() > 500, "ICC profile too small: {} bytes", icc.len());
+    assert_eq!(
+        &icc[36..40],
+        b"acsp",
+        "missing ICC file signature 'acsp' at offset 36"
+    );
+    assert_eq!(&icc[16..20], b"RGB ", "profile must be an RGB color space");
+}
+
 /// Construct a minimal TrueType file with `num_glyphs` glyphs, each of
 /// which is a "simple glyph" with `outline_bytes` bytes of 0-filled
 /// outline data. The resulting font is structurally valid enough for
