@@ -30,7 +30,16 @@ pub struct RenderContext<'a> {
     frame_rate: Scalar,
     /// Bounds of the current composition, used to resolve inverted masks.
     bounds: Rect,
+    /// Current precomp nesting depth, guarding against self-referencing or
+    /// cyclic `refId` chains (see [`MAX_PRECOMP_DEPTH`]).
+    precomp_depth: u32,
 }
+
+/// Maximum precomp nesting depth. A cyclic or self-referencing `refId`
+/// chain is bailed out past this cap rather than recursing until the
+/// thread stack overflows (mirrors `skia-rs-svg`'s `MAX_USE_DEPTH`
+/// convention for `<use>` cycles).
+const MAX_PRECOMP_DEPTH: u32 = 64;
 
 /// Canvas trait for rendering.
 pub trait Canvas {
@@ -78,6 +87,7 @@ impl<'a> RenderContext<'a> {
             current_opacity: 1.0,
             frame_rate: 30.0,
             bounds: Rect::from_xywh(0.0, 0.0, 100000.0, 100000.0),
+            precomp_depth: 0,
         }
     }
 
@@ -501,11 +511,21 @@ impl<'a> RenderContext<'a> {
         frame: Scalar,
         assets: &HashMap<String, Asset>,
     ) {
+        // Guard against a self-referencing or cyclic `refId` chain: without
+        // this cap, a precomp asset that (directly or transitively)
+        // references itself would recurse via `render_layer` ->
+        // `render_layer_content` -> `render_precomp` until the thread stack
+        // overflows and aborts (uncatchable).
+        if self.precomp_depth >= MAX_PRECOMP_DEPTH {
+            return;
+        }
+        self.precomp_depth += 1;
         for layer in precomp.layers.iter().rev() {
             if layer.is_visible_at(frame) {
                 self.render_layer(layer, frame, assets, &precomp.layers);
             }
         }
+        self.precomp_depth -= 1;
     }
 }
 
@@ -919,6 +939,33 @@ mod tests {
         anim.render_frame(&mut ctx, 0.0);
         anim.render_frame(&mut ctx, 30.0);
         anim.render_frame(&mut ctx, 59.0);
+    }
+
+    #[test]
+    fn test_self_referencing_precomp_does_not_overflow_stack() {
+        use crate::animation::Animation;
+
+        // A precomp asset "c" whose only layer is itself a comp layer
+        // referencing "c" — a self-referencing `refId` cycle. Rendering
+        // must bail out past MAX_PRECOMP_DEPTH rather than recursing until
+        // the thread stack overflows.
+        let json = r#"{
+            "v":"5.5.7","fr":30,"ip":0,"op":60,"w":100,"h":100,
+            "assets":[{"id":"c","layers":[
+                {"ty":0,"nm":"self","ind":1,"ip":0,"op":100,"refId":"c",
+                 "w":100,"h":100}
+            ]}],
+            "layers":[
+                {"ty":0,"nm":"root","ind":1,"ip":0,"op":60,"refId":"c",
+                 "w":100,"h":100}
+            ]
+        }"#;
+
+        let anim = Animation::from_json(json).unwrap();
+        let mut canvas = MockCanvas::new();
+        let mut ctx = RenderContext::new(&mut canvas);
+        // Must complete and return rather than overflowing the stack.
+        anim.render_frame(&mut ctx, 0.0);
     }
 
     #[test]

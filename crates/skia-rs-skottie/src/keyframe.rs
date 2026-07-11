@@ -96,7 +96,6 @@ fn cubic_bezier_x(p1: Scalar, p2: Scalar, t: Scalar) -> Scalar {
     let t3 = t2 * t;
     let mt = 1.0 - t;
     let mt2 = mt * mt;
-    let _mt3 = mt2 * mt;
 
     3.0 * mt2 * t * p1 + 3.0 * mt * t2 * p2 + t3
 }

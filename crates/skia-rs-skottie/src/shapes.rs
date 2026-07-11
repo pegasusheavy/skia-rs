@@ -1040,7 +1040,10 @@ fn resolve_gradient_stops(
         .map(|s| s.0)
         .chain(opacity_stops.iter().map(|s| s.0))
         .collect();
-    positions.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    // `total_cmp` (rather than `partial_cmp().unwrap()`) tolerates a NaN
+    // offset reachable via degenerate keyframe interpolation instead of
+    // panicking.
+    positions.sort_by(f32::total_cmp);
     positions.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
     if positions.is_empty() {
         positions = vec![0.0, 1.0];
@@ -1225,6 +1228,25 @@ impl ShapeTransform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_resolve_gradient_stops_with_nan_offset_does_not_panic() {
+        // A degenerate stop table with a NaN offset (reachable via
+        // degenerate keyframe interpolation) must not panic when the
+        // consolidated position list is sorted.
+        let colors = AnimatedProperty::static_value(KeyframeValue::FloatArray(vec![
+            f32::NAN,
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+        ]));
+        let stops = resolve_gradient_stops(&colors, 2, 0.0);
+        assert_eq!(stops.len(), 2);
+    }
 
     #[test]
     fn test_rectangle_path() {
