@@ -898,6 +898,55 @@ The first public release of skia-rs, a pure Rust implementation of the Skia 2D g
   (`assets/srgb-v2.icc`) instead of a 9-byte placeholder string that
   wasn't parseable ICC data at all.
 
+### skia-rs-skottie
+
+Conformance-audit fixes for the Lottie player (Task 10) — most real
+Lottie files previously rendered blank or static:
+
+- `as_vec2()` now accepts `Vec3` values (Bodymovin exports 3-component
+  position/anchor arrays)
+- Bezier path keyframes (`{"i","o","v","c"}`) parse into real
+  `KeyframeValue::Path` geometry and interpolate point-wise; `"sh"`
+  shapes and masks now produce real geometry instead of empty paths
+- Group `"tr"` transform items parse into a real `Transform`
+  (anchor/position/scale/rotation/skew/opacity, animated) and apply to
+  the group's children; group opacity multiplies
+- Stroke dash arrays (`"d"`) no longer collide with the shape
+  `direction` field (now a `DirectionOrDash` union); dashed strokes
+  parse and render via `DashEffect`
+- Layer transform/opacity/masks now evaluate at the unadjusted
+  composition frame; only precomp **content** gets the `st`/`sr`/`tm`
+  remap, matching upstream `Layer.cpp`/`PrecompLayer.cpp` — behavior
+  change: non-precomp layers with `st`/`sr` set (previously
+  misapplied) no longer shift
+- `"sr"` (stretch) and `"tm"` (time remap) parse and apply to precomp
+  content: `(t - st) / sr`, with `tm` (seconds) overriding when present
+- A trailing `{"t":N}`-only keyframe now inherits the previous
+  keyframe's value instead of resetting to 0
+- Fill rule `"r"` (2 = even-odd) parses and sets the path's fill type
+- Mask modes implemented via real polygon boolean ops: Add unions,
+  Subtract subtracts, Intersect intersects; `inv` and the first-mask
+  source-mode flip are honored (previously all masks behaved as a
+  plain intersect clip regardless of mode)
+- Layer parenting composes the parent transform chain (cycle-guarded)
+  — previously parent references were ignored entirely
+- Trim paths (`s`/`e`/`o`/`m`) implemented via path measure, matching
+  upstream start/stop/offset/inverted resolution (previously a no-op)
+- Gradient fills/strokes parse `g` (stop count + interleaved
+  pos/rgb[+alpha]), `s`/`e`, and `t` (linear/radial with highlight
+  focal point) and build a real gradient shader (previously a flat
+  gray placeholder)
+- Skew is now `Skew(tan(-radians(pin(sk, -85, 85))))` (negated,
+  pinned), matching upstream `Transform.cpp`
+- Rounded-rect corners use circular-arc cubic beziers instead of a
+  quadratic approximation, and respect `"d"` (CW/CCW) winding
+
+Not implemented in this pass (tracked as follow-ups): track mattes
+(`td`/`tt` alpha/luma compositing), `ti`/`to` spatial bezier
+position interpolation, and mask opacity/feather soft-alpha
+compositing (masks with opacity < 100% or a feather currently apply
+as a hard clip).
+
 ### Planned for v0.2.0
 - Complete wgpu GPU backend
 - Vulkan backend
