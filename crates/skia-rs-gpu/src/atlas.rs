@@ -3,7 +3,7 @@
 //! This module provides texture atlas management for efficiently batching
 //! small paths, glyphs, and other small elements into larger textures.
 
-use skia_rs_core::{Point, Rect, Scalar};
+use skia_rs_core::Rect;
 use std::collections::HashMap;
 
 /// Unique identifier for an atlas entry.
@@ -39,12 +39,19 @@ pub struct AtlasRegion {
 
 impl AtlasRegion {
     /// Get UV coordinates for this region within an atlas of given size.
+    ///
+    /// The rect is inset by half a texel on every edge so that bilinear
+    /// sampling never reaches into a neighbouring entry's texels (the classic
+    /// atlas-bleed artifact). This matches Skia's convention of sampling at
+    /// texel centers for atlased content.
     pub fn uv_rect(&self, atlas_width: u32, atlas_height: u32) -> [f32; 4] {
+        let half_w = 0.5 / atlas_width as f32;
+        let half_h = 0.5 / atlas_height as f32;
         [
-            self.x as f32 / atlas_width as f32,
-            self.y as f32 / atlas_height as f32,
-            (self.x + self.width) as f32 / atlas_width as f32,
-            (self.y + self.height) as f32 / atlas_height as f32,
+            self.x as f32 / atlas_width as f32 + half_w,
+            self.y as f32 / atlas_height as f32 + half_h,
+            (self.x + self.width) as f32 / atlas_width as f32 - half_w,
+            (self.y + self.height) as f32 / atlas_height as f32 - half_h,
         ]
     }
 
@@ -89,11 +96,12 @@ impl Default for AtlasConfig {
 /// Atlas allocation result.
 #[derive(Debug)]
 pub enum AtlasAllocResult {
-    /// Successfully allocated.
-    Success(AtlasRegion),
+    /// Successfully allocated. Carries the entry id (so callers can later
+    /// [`TextureAtlas::free`] the region) and the placed region.
+    Success(AtlasEntryId, AtlasRegion),
     /// Atlas is full, need to flush and reset.
     Full,
-    /// Request too large for atlas.
+    /// Request too large for atlas (even with padding, in an empty atlas).
     TooLarge,
 }
 
@@ -227,8 +235,15 @@ impl TextureAtlas {
 
     /// Allocate a region in the atlas.
     pub fn allocate(&mut self, width: u32, height: u32) -> AtlasAllocResult {
-        // Check if request is too large
-        if width > self.config.width || height > self.config.height {
+        // Too-large check must account for the padding the allocator adds on
+        // every side: an entry needs `width + 2*padding` texels to fit. A
+        // request that can never fit even in a fresh, empty atlas is
+        // `TooLarge` (retrying/evicting would loop forever), distinct from
+        // `Full` (would fit in an empty atlas but not right now).
+        let pad = self.config.padding.saturating_mul(2);
+        if width.saturating_add(pad) > self.config.width
+            || height.saturating_add(pad) > self.config.height
+        {
             return AtlasAllocResult::TooLarge;
         }
 
@@ -247,7 +262,7 @@ impl TextureAtlas {
                 };
 
                 self.entries.insert(id, region);
-                return AtlasAllocResult::Success(region);
+                return AtlasAllocResult::Success(id, region);
             }
         }
 
@@ -270,7 +285,7 @@ impl TextureAtlas {
                 };
 
                 self.entries.insert(id, region);
-                return AtlasAllocResult::Success(region);
+                return AtlasAllocResult::Success(id, region);
             }
         }
 
@@ -284,10 +299,7 @@ impl TextureAtlas {
         height: u32,
     ) -> Option<(AtlasEntryId, AtlasRegion)> {
         match self.allocate(width, height) {
-            AtlasAllocResult::Success(region) => {
-                let id = AtlasEntryId::new(self.next_id - 1);
-                Some((id, region))
-            }
+            AtlasAllocResult::Success(id, region) => Some((id, region)),
             _ => None,
         }
     }
@@ -339,7 +351,7 @@ impl TextureAtlas {
             .map(|(id, region)| (*id, *region))
             .collect();
 
-        let removed: Vec<AtlasEntryId> = self.freed.iter().copied().collect();
+        let mut removed: Vec<AtlasEntryId> = self.freed.iter().copied().collect();
 
         // Clear the layers — we're about to replay all surviving entries
         // into a fresh packing.
@@ -406,9 +418,13 @@ impl TextureAtlas {
 
             if !placed {
                 // Unable to re-pack — this only happens if the atlas has
-                // pathological fragmentation across max_layers. Re-insert
-                // at its original slot so the caller doesn't lose data.
-                self.entries.insert(id, old_region);
+                // pathological fragmentation across max_layers. We must NOT
+                // re-insert at the stale original slot: after the layers were
+                // reset that coordinate is no longer reserved, so another
+                // entry may be packed on top of it, producing overlapping
+                // regions and corrupt sampling. Drop the entry and report it
+                // as evicted so the caller re-rasterizes it on demand.
+                removed.push(id);
             }
         }
 
@@ -523,11 +539,83 @@ mod tests {
             layer: 0,
         };
 
+        // uv_rect insets by half a texel on every edge to avoid atlas bleed.
         let uv = region.uv_rect(1000, 1000);
-        assert_eq!(uv[0], 0.1);
-        assert_eq!(uv[1], 0.2);
-        assert_eq!(uv[2], 0.15);
-        assert_eq!(uv[3], 0.275);
+        let half = 0.5 / 1000.0;
+        assert!((uv[0] - (0.1 + half)).abs() < 1e-6);
+        assert!((uv[1] - (0.2 + half)).abs() < 1e-6);
+        assert!((uv[2] - (0.15 - half)).abs() < 1e-6);
+        assert!((uv[3] - (0.275 - half)).abs() < 1e-6);
+        // Inset shrinks the rect, so u0<u1 and v0<v1 still hold.
+        assert!(uv[0] < uv[2] && uv[1] < uv[3]);
+    }
+
+    #[test]
+    fn test_atlas_too_large_includes_padding() {
+        // Regression: a request whose footprint + padding cannot fit even in
+        // an empty atlas must be TooLarge, not Full (which would make the
+        // glyph-cache retry loop spin forever).
+        let config = AtlasConfig {
+            width: 256,
+            height: 256,
+            max_layers: 1,
+            padding: 4,
+            allow_resize: false,
+        };
+        let mut atlas = TextureAtlas::new(config);
+        // 250 + 2*4 = 258 > 256 -> TooLarge even though 250 < 256.
+        match atlas.allocate(250, 10) {
+            AtlasAllocResult::TooLarge => {}
+            other => panic!("expected TooLarge, got {:?}", other),
+        }
+        // Exactly-fits case (248 + 8 = 256) still succeeds.
+        match atlas.allocate(248, 10) {
+            AtlasAllocResult::Success(_, _) => {}
+            other => panic!("expected Success, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_compact_survivors_do_not_overlap() {
+        // Regression: compact() must never re-place an entry at a stale slot
+        // that another entry now occupies. Verify all surviving regions are
+        // pairwise non-overlapping after a compaction that frees some.
+        let mut atlas = TextureAtlas::new(AtlasConfig {
+            width: 256,
+            height: 256,
+            max_layers: 2,
+            padding: 1,
+            allow_resize: false,
+        });
+        let mut ids = Vec::new();
+        for _ in 0..20 {
+            if let Some((id, _)) = atlas.allocate_with_id(40, 30) {
+                ids.push(id);
+            }
+        }
+        // Free every third entry, then compact.
+        for (i, id) in ids.iter().enumerate() {
+            if i % 3 == 0 {
+                atlas.free(*id);
+            }
+        }
+        atlas.compact();
+
+        let regions: Vec<AtlasRegion> = atlas.entries.values().copied().collect();
+        for i in 0..regions.len() {
+            for j in (i + 1)..regions.len() {
+                let a = &regions[i];
+                let b = &regions[j];
+                if a.layer != b.layer {
+                    continue;
+                }
+                let disjoint = a.x + a.width <= b.x
+                    || b.x + b.width <= a.x
+                    || a.y + a.height <= b.y
+                    || b.y + b.height <= a.y;
+                assert!(disjoint, "compact produced overlapping regions {a:?} / {b:?}");
+            }
+        }
     }
 
     #[test]
@@ -544,7 +632,7 @@ mod tests {
 
         // First allocation should succeed
         match atlas.allocate(64, 64) {
-            AtlasAllocResult::Success(region) => {
+            AtlasAllocResult::Success(_, region) => {
                 assert_eq!(region.width, 64);
                 assert_eq!(region.height, 64);
             }
@@ -573,7 +661,7 @@ mod tests {
         // Allocate multiple small regions
         for _ in 0..16 {
             match atlas.allocate(32, 32) {
-                AtlasAllocResult::Success(_) => {}
+                AtlasAllocResult::Success(..) => {}
                 _ => panic!("Expected success"),
             }
         }
@@ -698,7 +786,7 @@ mod tests {
 
         // Now the 100x100 should fit.
         match atlas.allocate(100, 100) {
-            AtlasAllocResult::Success(_) => {}
+            AtlasAllocResult::Success(..) => {}
             other => panic!("expected Success, got {:?}", other),
         }
     }
