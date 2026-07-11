@@ -38,7 +38,14 @@ use std::ptr::NonNull;
 // Hardware Buffer Format
 // =============================================================================
 
-/// Hardware buffer pixel formats (mirrors AHardwareBuffer_Format).
+/// Hardware buffer pixel formats (mirrors `AHardwareBuffer_Format` from
+/// `<android/hardware_buffer.h>`).
+///
+/// There is no `AHARDWAREBUFFER_FORMAT_R4G4B4A4_UNORM` constant in the NDK
+/// — a prior revision of this enum invented one at value 5, which does not
+/// correspond to any real hardware buffer format and would silently
+/// misinterpret buffers tagged with the real format at that slot
+/// (`AHARDWAREBUFFER_FORMAT_R5G6B5_UNORM` is 4; nothing is defined at 5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum HardwareBufferFormat {
@@ -50,8 +57,6 @@ pub enum HardwareBufferFormat {
     R8G8B8_UNORM = 3,
     /// 16-bit RGB, 5-6-5 bits per channel.
     R5G6B5_UNORM = 4,
-    /// 16-bit RGBA, 4 bits per channel.
-    R4G4B4A4_UNORM = 5, // Deprecated in API 26
     /// 16-bit float per channel RGBA.
     R16G16B16A16_FLOAT = 0x16,
     /// 10-bit RGB, 2-bit alpha.
@@ -80,7 +85,7 @@ impl HardwareBufferFormat {
         match self {
             Self::R8G8B8A8_UNORM | Self::R8G8B8X8_UNORM => Some(4),
             Self::R8G8B8_UNORM => Some(3),
-            Self::R5G6B5_UNORM | Self::R4G4B4A4_UNORM => Some(2),
+            Self::R5G6B5_UNORM => Some(2),
             Self::R16G16B16A16_FLOAT => Some(8),
             Self::R10G10B10A2_UNORM => Some(4),
             Self::D16_UNORM => Some(2),
@@ -95,10 +100,7 @@ impl HardwareBufferFormat {
     pub fn has_alpha(self) -> bool {
         matches!(
             self,
-            Self::R8G8B8A8_UNORM
-                | Self::R4G4B4A4_UNORM
-                | Self::R16G16B16A16_FLOAT
-                | Self::R10G10B10A2_UNORM
+            Self::R8G8B8A8_UNORM | Self::R16G16B16A16_FLOAT | Self::R10G10B10A2_UNORM
         )
     }
 }
@@ -186,6 +188,14 @@ pub struct HardwareBuffer {
 
 impl HardwareBuffer {
     /// Create a new hardware buffer.
+    ///
+    /// On Android this does **not** yet call `AHardwareBuffer_allocate` —
+    /// no real, GPU-visible memory is allocated. Returning a fake `Some`
+    /// here would let callers believe they hold a valid hardware buffer
+    /// (and e.g. hand its (nonexistent) native handle to the GPU), which is
+    /// worse than failing loudly. This fails closed (`None`) until the NDK
+    /// binding is implemented. Non-Android builds use a simulated
+    /// heap-backed buffer for host-side testing.
     pub fn new(
         width: u32,
         height: u32,
@@ -197,28 +207,27 @@ impl HardwareBuffer {
             return None;
         }
 
-        let stride = width; // Simplified; real impl queries from AHardwareBuffer
-
-        let desc = HardwareBufferDesc {
-            width,
-            height,
-            layers,
-            format,
-            usage,
-            stride,
-        };
+        #[cfg(target_os = "android")]
+        {
+            let _ = (format, usage);
+            None
+        }
 
         #[cfg(not(target_os = "android"))]
-        let pixels = {
+        {
+            let stride = width; // Simplified; real impl queries from AHardwareBuffer
+            let desc = HardwareBufferDesc {
+                width,
+                height,
+                layers,
+                format,
+                usage,
+                stride,
+            };
             let bpp = format.bytes_per_pixel().unwrap_or(4);
-            vec![0u8; (stride as usize) * (height as usize) * bpp]
-        };
-
-        Some(Self {
-            desc,
-            #[cfg(not(target_os = "android"))]
-            pixels,
-        })
+            let pixels = vec![0u8; (stride as usize) * (height as usize) * bpp];
+            Some(Self { desc, pixels })
+        }
     }
 
     /// Get the buffer description.
@@ -332,24 +341,38 @@ impl<'a> LockedBufferMut<'a> {
 // Android Bitmap
 // =============================================================================
 
-/// Android bitmap configuration (mirrors Bitmap.Config).
+/// Android bitmap configuration (mirrors `android.graphics.Bitmap.Config`).
+///
+/// Numeric values match the native `ANDROID_BITMAP_FORMAT_*` constants from
+/// `<android/bitmap.h>` (the format `AndroidBitmap_getInfo` reports), not
+/// the unrelated `Bitmap.Config` Java-enum ordinals. `HARDWARE` has no
+/// native-bitmap-format equivalent (`AndroidBitmap_getInfo` fails on
+/// hardware bitmaps prior to API 30's `AHardwareBuffer` path), so it uses a
+/// sentinel value distinct from every real format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum BitmapConfig {
-    /// Each pixel is stored on 4 bytes. Alpha, Red, Green, Blue.
-    ARGB_8888 = 0,
+    /// Each pixel is stored on 4 bytes. Red, Green, Blue, Alpha.
+    /// `ANDROID_BITMAP_FORMAT_RGBA_8888`.
+    ARGB_8888 = 1,
     /// Each pixel is stored on 2 bytes. RGB channels with 5-6-5 bit depths.
-    RGB_565 = 1,
-    /// Deprecated. Each pixel is 4 bits (16 color palette).
-    ARGB_4444 = 2,
-    /// Each pixel is a single byte (grayscale).
-    ALPHA_8 = 3,
-    /// Each pixel is 8 bytes (RGBA float16).
-    RGBA_F16 = 4,
-    /// Each pixel is 8 bytes (RGBA float16) but no alpha blending.
-    RGBA_1010102 = 5,
-    /// Hardware-accelerated bitmap.
-    HARDWARE = 6,
+    /// `ANDROID_BITMAP_FORMAT_RGB_565`.
+    RGB_565 = 4,
+    /// Deprecated. Each pixel is stored on 2 bytes (4-4-4-4 ARGB).
+    /// `ANDROID_BITMAP_FORMAT_RGBA_4444`.
+    ARGB_4444 = 7,
+    /// Each pixel is a single byte (alpha only).
+    /// `ANDROID_BITMAP_FORMAT_A_8`.
+    ALPHA_8 = 8,
+    /// Each pixel is 8 bytes (RGBA, 16-bit float per channel).
+    /// `ANDROID_BITMAP_FORMAT_RGBA_F16`.
+    RGBA_F16 = 9,
+    /// Each pixel is stored on 4 bytes (10-10-10-2 RGBA).
+    /// `ANDROID_BITMAP_FORMAT_RGBA_1010102`.
+    RGBA_1010102 = 10,
+    /// Hardware-accelerated bitmap. No native `AndroidBitmapFormat`
+    /// equivalent; CPU pixel access is unsupported for this config.
+    HARDWARE = 0xFFFF,
 }
 
 impl BitmapConfig {
@@ -848,9 +871,33 @@ mod tests {
             HardwareBufferFormat::R8G8B8A8_UNORM.bytes_per_pixel(),
             Some(4)
         );
-        assert_eq!(HardwareBufferFormat::RGB_565.bytes_per_pixel(), Some(2));
+        assert_eq!(
+            HardwareBufferFormat::R5G6B5_UNORM.bytes_per_pixel(),
+            Some(2)
+        );
         assert!(HardwareBufferFormat::R8G8B8A8_UNORM.has_alpha());
         assert!(!HardwareBufferFormat::R8G8B8_UNORM.has_alpha());
+        assert!(!HardwareBufferFormat::R5G6B5_UNORM.has_alpha());
+    }
+
+    #[test]
+    fn test_bitmap_config_matches_android_bitmap_format_constants() {
+        // include/android/bitmap.h ANDROID_BITMAP_FORMAT_* values.
+        assert_eq!(BitmapConfig::ARGB_8888 as u32, 1);
+        assert_eq!(BitmapConfig::RGB_565 as u32, 4);
+        assert_eq!(BitmapConfig::ARGB_4444 as u32, 7);
+        assert_eq!(BitmapConfig::ALPHA_8 as u32, 8);
+        assert_eq!(BitmapConfig::RGBA_F16 as u32, 9);
+        assert_eq!(BitmapConfig::RGBA_1010102 as u32, 10);
+    }
+
+    #[test]
+    fn test_hardware_buffer_format_has_no_fake_r4g4b4a4() {
+        // AHardwareBuffer_Format has no R4G4B4A4_UNORM constant; a prior
+        // revision of this enum invented one at value 5. Confirm the real
+        // format at value 5 doesn't exist and 4/6 are the real neighbors.
+        assert_eq!(HardwareBufferFormat::R5G6B5_UNORM as u32, 4);
+        assert_eq!(HardwareBufferFormat::R8G8B8_UNORM as u32, 3);
     }
 
     #[test]
@@ -883,5 +930,36 @@ mod tests {
         let display = DisplayInfo::default_display();
         assert!(display.density() > 0.0);
         assert_eq!(display.refresh_rate, 60.0);
+    }
+
+    #[test]
+    #[cfg(target_os = "android")]
+    fn test_hardware_buffer_new_on_android_fails_closed() {
+        // No real `AHardwareBuffer_allocate` binding exists yet; `new` must
+        // not return a fake `Some` that claims a hardware buffer was
+        // allocated when no GPU-visible memory backs it.
+        let buffer = HardwareBuffer::new(
+            64,
+            64,
+            HardwareBufferFormat::R8G8B8A8_UNORM,
+            1,
+            HardwareBufferUsage::GPU_SAMPLED_IMAGE,
+        );
+        assert!(buffer.is_none());
+    }
+
+    #[test]
+    #[cfg(not(target_os = "android"))]
+    fn test_hardware_buffer_new_off_android_still_simulates() {
+        // Off-Android this is a host-side simulation used for testing
+        // higher-level code; it should still succeed.
+        let buffer = HardwareBuffer::new(
+            64,
+            64,
+            HardwareBufferFormat::R8G8B8A8_UNORM,
+            1,
+            HardwareBufferUsage::GPU_SAMPLED_IMAGE,
+        );
+        assert!(buffer.is_some());
     }
 }
