@@ -73,7 +73,11 @@ var<uniform> uniforms: Uniforms;
 
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
-    return uniforms.color;
+    // Output premultiplied color: the pixel pipeline blends premultiplied
+    // sources (matches Skia's raster pipeline / Ganesh). The uniform holds
+    // straight (unpremultiplied) rgba, so premultiply here.
+    let c = uniforms.color;
+    return vec4<f32>(c.rgb * c.a, c.a);
 }
 "#;
 
@@ -170,11 +174,13 @@ fn fs_main(@location(0) local_position: vec2<f32>) -> @location(0) vec4<f32> {
     let dir = gradient.end - gradient.start;
     let len = length(dir);
     if len < 0.0001 {
-        return gradient.color0;
+        return vec4<f32>(gradient.color0.rgb * gradient.color0.a, gradient.color0.a);
     }
     let norm_dir = dir / len;
     let t = clamp(dot(local_position - gradient.start, norm_dir) / len, 0.0, 1.0);
-    return mix(gradient.color0, gradient.color1, t);
+    let c = mix(gradient.color0, gradient.color1, t);
+    // Emit premultiplied color for the premultiplied blend pipeline.
+    return vec4<f32>(c.rgb * c.a, c.a);
 }
 "#;
 
@@ -195,7 +201,9 @@ var<uniform> gradient: GradientUniforms;
 fn fs_main(@location(0) local_position: vec2<f32>) -> @location(0) vec4<f32> {
     let dist = length(local_position - gradient.center);
     let t = clamp(dist / gradient.radius, 0.0, 1.0);
-    return mix(gradient.color0, gradient.color1, t);
+    let c = mix(gradient.color0, gradient.color1, t);
+    // Emit premultiplied color for the premultiplied blend pipeline.
+    return vec4<f32>(c.rgb * c.a, c.a);
 }
 "#;
 
@@ -329,7 +337,9 @@ var<uniform> uniforms: Uniforms;
 
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
-    return uniforms.color;
+    // Premultiplied output for the stencil-then-cover color pass.
+    let c = uniforms.color;
+    return vec4<f32>(c.rgb * c.a, c.a);
 }
 "#;
 }
@@ -630,6 +640,31 @@ fn fs_main() -> @location(0) vec4<f32> {
                 "built-in shader {} failed WGSL validation: {:?}",
                 name,
                 report.error()
+            );
+        }
+    }
+
+    #[test]
+    fn test_color_shaders_output_premultiplied() {
+        // Regression: solid + gradient fragment shaders must premultiply their
+        // color output so it feeds the premultiplied blend pipeline. Assert on
+        // the WGSL content and that it still validates.
+        let compiler = ShaderCompiler::new();
+        for (name, src) in [
+            ("SOLID_COLOR_FS", builtin::SOLID_COLOR_FS),
+            ("LINEAR_GRADIENT_FS", builtin::LINEAR_GRADIENT_FS),
+            ("RADIAL_GRADIENT_FS", builtin::RADIAL_GRADIENT_FS),
+            ("PATH_COVER_FS", builtin::PATH_COVER_FS),
+        ] {
+            assert!(
+                src.contains(".rgb * ") && src.contains(".a"),
+                "shader {} must premultiply rgb by alpha",
+                name
+            );
+            assert!(
+                compiler.validate(src),
+                "shader {} must remain valid WGSL",
+                name
             );
         }
     }

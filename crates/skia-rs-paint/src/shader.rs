@@ -375,6 +375,20 @@ pub trait Shader: Send + Sync + std::fmt::Debug {
     fn serialize(&self) -> Option<Vec<u8>> {
         None
     }
+
+    /// Concrete-type downcast hook.
+    ///
+    /// Returns `Some(self as &dyn Any)` for shaders that support exact
+    /// parameter extraction (the built-in gradients), enabling consumers such
+    /// as the GPU paint bridge to read real geometry — endpoints, radius,
+    /// angles, color stops — rather than probing via [`Shader::sample`].
+    /// Defaults to `None`; a `None` result means the caller must fall back to
+    /// sampling. Kept as an explicit accessor (rather than an `Any`
+    /// supertrait) to stay within the crate's MSRV, which predates trait
+    /// upcasting.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 /// Kind of shader (for debugging/inspection).
@@ -545,6 +559,10 @@ impl Shader for LinearGradient {
         ShaderKind::LinearGradient
     }
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
         // Calculate the projection of the point onto the gradient line
         let dx = self.end.x - self.start.x;
@@ -692,6 +710,10 @@ impl Shader for RadialGradient {
 
     fn shader_kind(&self) -> ShaderKind {
         ShaderKind::RadialGradient
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
@@ -845,6 +867,10 @@ impl Shader for SweepGradient {
 
     fn shader_kind(&self) -> ShaderKind {
         ShaderKind::SweepGradient
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
