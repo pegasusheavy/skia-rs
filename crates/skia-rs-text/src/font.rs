@@ -906,6 +906,8 @@ impl Font {
             palette,
             foreground: fg,
             scale,
+            scale_x: self.scale_x,
+            skew_x: self.skew_x,
             transform_stack: vec![Matrix::IDENTITY],
             clip_stack: Vec::new(),
             layer_stack: Vec::new(),
@@ -1660,38 +1662,53 @@ fn argb_from_ttf_rgba(c: ttf_parser::RgbaColor) -> u32 {
 /// size/upem scale.
 #[cfg(test)]
 fn matrix_from_ttf_transform(t: ttf_parser::Transform) -> Matrix {
-    matrix_from_ttf_transform_scaled(t, 1.0)
+    matrix_from_ttf_transform_scaled(t, 1.0, 1.0, 0.0)
 }
 
-/// Like [`matrix_from_ttf_transform`], but additionally scales the
-/// translation components (e, f) by `scale`. The `a b c d` scale/skew
-/// components are unit-less ratios and need no scaling; only the
-/// translation is expressed in font design units and must be mapped
-/// into the same pixel space as the (size/upem-scaled) glyph outline.
-fn matrix_from_ttf_transform_scaled(t: ttf_parser::Transform, scale: Scalar) -> Matrix {
-    // Row-major 3x3:
+/// Like [`matrix_from_ttf_transform`], but maps the transform into the
+/// same pixel-space, text-matrix convention as the (already-scaled/sheared)
+/// glyph outline: `scale` = size/upem, `scale_x`/`skew_x` are the font's
+/// synthetic condense/oblique factors, matching `GlyphOutlineBuilder::map`.
+///
+/// A COLR transform `A` acts on font-space points; the outline it composes
+/// against has already been mapped into pixel space by the linear map `L`
+/// that `GlyphOutlineBuilder::map` applies (scale, y-flip, scale_x, skew_x).
+/// To keep `A` consistent with pixel-space geometry it must be conjugated:
+/// `T = L · A · L⁻¹`, so that `T(L(p)) == L(A(p))` for every font-space
+/// point `p`. When `scale_x == 1.0 && skew_x == 0.0`, `L` reduces to the
+/// plain `diag(scale, -scale)` y-flip and this is byte-identical to the
+/// historical `a, -c, e*scale, -b, d, -f*scale` formula.
+fn matrix_from_ttf_transform_scaled(
+    t: ttf_parser::Transform,
+    scale: Scalar,
+    scale_x: Scalar,
+    skew_x: Scalar,
+) -> Matrix {
+    // Row-major 3x3, matching `Matrix::values`:
     //   | scale_x  skew_x   trans_x |   | a  c   e |
     //   | skew_y   scale_y  trans_y | = | b  d   f |   (in font y-up)
     //   |    0       0        1    |   | 0  0   1 |
-    //
-    // In y-down screen space the y component is negated. The resulting
-    // transform Y = FlipY · T · FlipY^-1, which for an affine with no
-    // perspective is:
-    //   a_s =  a,   c_s = -c,   e_s =  e
-    //   b_s = -b,   d_s =  d,   f_s = -f
-    Matrix {
+    let a = Matrix {
+        values: [t.a, t.c, t.e, t.b, t.d, t.f, 0.0, 0.0, 1.0],
+    };
+    // L: the same linear map `GlyphOutlineBuilder::map` applies to outline
+    // points (translation-free, since it maps vectors/paint geometry, not
+    // positions relative to an origin).
+    let l = Matrix {
         values: [
-            t.a,
-            -t.c,
-            t.e * scale,
-            -t.b,
-            t.d,
-            -t.f * scale,
+            scale_x * scale,
+            -skew_x * scale,
+            0.0,
+            0.0,
+            -scale,
+            0.0,
             0.0,
             0.0,
             1.0,
         ],
-    }
+    };
+    let l_inv = l.invert().unwrap_or(Matrix::IDENTITY);
+    l.concat(&a).concat(&l_inv)
 }
 
 /// One entry on the walker's clip stack. COLR clips come in two flavours:
@@ -1734,6 +1751,12 @@ struct ColorLayerWalker {
     /// COLR v0 never carries transforms or gradients, so this is a
     /// no-op for v0 fonts.
     scale: Scalar,
+    /// The font's synthetic `scale_x`/`skew_x`, folded into COLR paint
+    /// geometry the same way `GlyphOutlineBuilder::map` folds them into
+    /// the glyph outline, so gradients and transforms stay aligned with
+    /// a condensed/expanded or obliqued outline. No-op when 1.0/0.0.
+    scale_x: Scalar,
+    skew_x: Scalar,
     /// Stack of accumulated transforms. Top element is the currently
     /// active transform; `push_transform` composes onto it.
     transform_stack: Vec<Matrix>,
@@ -1788,24 +1811,25 @@ impl ColorLayerWalker {
             }
             ttf_parser::colr::Paint::LinearGradient(g) => {
                 // Font space is y-up; our glyph paths live in y-down
-                // screen space, already scaled by size/upem. `scale_colr_point`
-                // negates y and applies the same scale so gradient geometry
-                // (font design units) matches the scaled outline (pixel units).
-                let s = self.scale;
+                // screen space, already scaled by size/upem and sheared by
+                // scale_x/skew_x. `scale_colr_point` applies the same
+                // text-matrix mapping so gradient geometry (font design
+                // units) matches the scaled/sheared outline (pixel units).
+                let (s, sx, kx) = (self.scale, self.scale_x, self.skew_x);
                 GlyphPaint::LinearGradient {
-                    p0: scale_colr_point(g.x0, g.y0, s),
-                    p1: scale_colr_point(g.x1, g.y1, s),
-                    p2: scale_colr_point(g.x2, g.y2, s),
+                    p0: scale_colr_point(g.x0, g.y0, s, sx, kx),
+                    p1: scale_colr_point(g.x1, g.y1, s, sx, kx),
+                    p2: scale_colr_point(g.x2, g.y2, s, sx, kx),
                     stops: collect_stops(g.stops(palette, &[])),
                     extend: g.extend.into(),
                 }
             }
             ttf_parser::colr::Paint::RadialGradient(g) => {
-                let s = self.scale;
+                let (s, sx, kx) = (self.scale, self.scale_x, self.skew_x);
                 GlyphPaint::RadialGradient {
-                    c0: scale_colr_point(g.x0, g.y0, s),
+                    c0: scale_colr_point(g.x0, g.y0, s, sx, kx),
                     r0: g.r0 * s,
-                    c1: scale_colr_point(g.x1, g.y1, s),
+                    c1: scale_colr_point(g.x1, g.y1, s, sx, kx),
                     r1: g.r1 * s,
                     stops: collect_stops(g.stops(palette, &[])),
                     extend: g.extend.into(),
@@ -1820,9 +1844,9 @@ impl ColorLayerWalker {
                 // negation — so we do the same. The centre point is in font
                 // design units and must be scaled to pixel space like the
                 // linear/radial gradient points; angles are unit-less.
-                let s = self.scale;
+                let (s, sx, kx) = (self.scale, self.scale_x, self.skew_x);
                 GlyphPaint::SweepGradient {
-                    center: scale_colr_point(g.center_x, g.center_y, s),
+                    center: scale_colr_point(g.center_x, g.center_y, s, sx, kx),
                     start_angle: g.start_angle * 180.0,
                     end_angle: g.end_angle * 180.0,
                     stops: collect_stops(g.stops(palette, &[])),
@@ -1834,12 +1858,17 @@ impl ColorLayerWalker {
 }
 
 /// Map a COLR gradient control point from font design units (y-up) into
-/// the pixel-space, y-down convention used by the emitted layers: negate
-/// y (to match the outline's Y-flip) and apply `scale` = size / upem so
-/// the point lands in the same space as the already-scaled glyph outline.
+/// the pixel-space, y-down convention used by the emitted layers. This is
+/// the exact mapping `GlyphOutlineBuilder::map` applies to outline points:
+/// scale by `size / upem`, flip y, then fold in the font's `scale_x`
+/// (horizontal condense/expand) and `skew_x` (synthetic oblique) shear, so
+/// gradient geometry lands in the same text-matrix space as the
+/// already-scaled/sheared glyph outline.
 #[inline]
-fn scale_colr_point(x: f32, y: f32, scale: Scalar) -> Point {
-    Point::new(x * scale, -y * scale)
+fn scale_colr_point(x: f32, y: f32, scale: Scalar, scale_x: Scalar, skew_x: Scalar) -> Point {
+    let px = x * scale;
+    let py = -y * scale;
+    Point::new(scale_x * px + skew_x * py, py)
 }
 
 fn collect_stops(iter: ttf_parser::colr::GradientStopsIter<'_, '_>) -> Vec<GradientStop> {
@@ -1942,7 +1971,8 @@ impl<'a> ttf_parser::colr::Painter<'a> for ColorLayerWalker {
     }
 
     fn push_transform(&mut self, transform: ttf_parser::Transform) {
-        let local = matrix_from_ttf_transform_scaled(transform, self.scale);
+        let local =
+            matrix_from_ttf_transform_scaled(transform, self.scale, self.scale_x, self.skew_x);
         let combined = self.current_transform().concat(&local);
         self.transform_stack.push(combined);
     }
@@ -2141,7 +2171,7 @@ mod tests {
         // space), NOT the raw 200. This pins the ~upem/size mis-scale fix.
         let scale = 16.0 / 1000.0;
         let t = ttf_parser::Transform::new(1.0, 0.0, 0.0, 1.0, 200.0, 200.0);
-        let m = matrix_from_ttf_transform_scaled(t, scale);
+        let m = matrix_from_ttf_transform_scaled(t, scale, 1.0, 0.0);
         assert_eq!(m.values[Matrix::TRANS_X], 200.0 * scale);
         assert_eq!(m.values[Matrix::TRANS_Y], -200.0 * scale);
         // Scale/skew components are unit-less ratios and stay unscaled.
@@ -2155,7 +2185,7 @@ mod tests {
         // byte-identical to the historical unscaled behaviour.
         let t = ttf_parser::Transform::new(2.0, 0.5, -0.5, 2.0, 30.0, 40.0);
         assert_eq!(
-            matrix_from_ttf_transform_scaled(t, 1.0).values,
+            matrix_from_ttf_transform_scaled(t, 1.0, 1.0, 0.0).values,
             matrix_from_ttf_transform(t).values,
         );
     }
@@ -2166,9 +2196,50 @@ mod tests {
         // size 16 must come out at 900 * 16/1000 = 14.4 px, with y
         // negated and scaled the same way — not the raw font-unit value.
         let scale = 16.0 / 1000.0;
-        let p = scale_colr_point(900.0, 250.0, scale);
+        let p = scale_colr_point(900.0, 250.0, scale, 1.0, 0.0);
         assert_eq!(p.x, 900.0 * scale);
         assert_eq!(p.y, -250.0 * scale);
+    }
+
+    #[test]
+    fn scale_colr_point_folds_in_scale_x_and_skew_x() {
+        // A COLR gradient endpoint must land in the SAME sheared/condensed
+        // space as the glyph outline: GlyphOutlineBuilder::map computes
+        // px = x*scale, py = -y*scale, then (scale_x*px + skew_x*py, py).
+        // With scale_x = 0.5 (condensed) and skew_x = 0.25 (oblique), a
+        // point that ignored scale_x/skew_x would slide off the outline.
+        let scale = 16.0 / 1000.0;
+        let (scale_x, skew_x) = (0.5, 0.25);
+        let p = scale_colr_point(900.0, 250.0, scale, scale_x, skew_x);
+        let px = 900.0 * scale;
+        let py = -250.0 * scale;
+        assert_eq!(p.x, scale_x * px + skew_x * py);
+        assert_eq!(p.y, py);
+        // Sanity: this must differ from the naive (unsheared) mapping,
+        // otherwise the regression wouldn't be exercised.
+        assert_ne!(p.x, px);
+    }
+
+    #[test]
+    fn matrix_from_ttf_transform_scaled_folds_in_scale_x_and_skew_x() {
+        // The COLR transform's translation must be mapped through the same
+        // text matrix as scale_colr_point/GlyphOutlineBuilder::map: for a
+        // pure-translation transform (e, f), the emitted pixel-space
+        // translation must equal `scale_colr_point`'s mapping of (e, f)
+        // as a vector (px = e*scale, py = -f*scale, then
+        // (scale_x*px + skew_x*py, py)) — i.e. gradient geometry and COLR
+        // transforms share the outline's full text-matrix space.
+        let scale = 16.0 / 1000.0;
+        let (scale_x, skew_x) = (0.5, 0.25);
+        let t = ttf_parser::Transform::new(1.0, 0.0, 0.0, 1.0, 200.0, 300.0);
+        let m = matrix_from_ttf_transform_scaled(t, scale, scale_x, skew_x);
+
+        let px = 200.0 * scale;
+        let py = -300.0 * scale;
+        let expected_x = scale_x * px + skew_x * py;
+        let expected_y = py;
+        assert!((m.values[Matrix::TRANS_X] - expected_x).abs() < 1e-5);
+        assert!((m.values[Matrix::TRANS_Y] - expected_y).abs() < 1e-5);
     }
 
     // =========================================================================
@@ -2186,6 +2257,8 @@ mod tests {
             palette: 0,
             foreground: ttf_parser::RgbaColor::new(0, 0, 0, 255),
             scale,
+            scale_x: 1.0,
+            skew_x: 0.0,
             transform_stack: vec![Matrix::IDENTITY],
             clip_stack: Vec::new(),
             layer_stack: Vec::new(),
