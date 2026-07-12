@@ -170,6 +170,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact test assertion against a literal parsed from fixed SVG text"
+    )]
     fn glyph_svg_to_dom_parses_plain_svg() {
         let dom = glyph_svg_to_dom(PLAIN_SVG.as_bytes()).expect("parse");
         assert_eq!(dom.width, 10.0);
@@ -179,6 +183,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact test assertion against a literal parsed from fixed SVG text"
+    )]
     fn glyph_svg_to_dom_parses_gzipped_svg() {
         let gz = gzip(PLAIN_SVG.as_bytes());
         let dom = glyph_svg_to_dom(&gz).expect("decompress + parse");

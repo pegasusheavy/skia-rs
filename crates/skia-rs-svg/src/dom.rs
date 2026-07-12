@@ -34,11 +34,13 @@ impl SvgDom {
     }
 
     /// Get the intrinsic size.
+    #[must_use]
     pub const fn intrinsic_size(&self) -> (Scalar, Scalar) {
         (self.width, self.height)
     }
 
     /// Get the view box or calculate from size.
+    #[must_use]
     pub fn get_view_box(&self) -> Rect {
         self.view_box
             .unwrap_or_else(|| Rect::from_xywh(0.0, 0.0, self.width, self.height))
@@ -125,7 +127,7 @@ pub enum SvgNodeKind {
     /// Polygon.
     Polygon(Vec<Point>),
     /// Path.
-    Path(Path),
+    Path(Box<Path>),
     /// Text.
     Text(SvgText),
     /// Image.
@@ -194,6 +196,7 @@ impl SvgNode {
     /// the render walk can resolve them against the parent presentation
     /// context. The `fill: black` initial value lives at the root of that
     /// context, not on every node.
+    #[must_use]
     pub fn new(kind: SvgNodeKind) -> Self {
         Self {
             kind,
@@ -219,6 +222,7 @@ impl SvgNode {
     }
 
     /// Find a node by ID.
+    #[must_use]
     pub fn find_by_id(&self, id: &str) -> Option<&Self> {
         if self.id.as_deref() == Some(id) {
             return Some(self);
@@ -232,6 +236,7 @@ impl SvgNode {
     }
 
     /// Get the bounds of this node.
+    #[must_use]
     pub fn bounds(&self) -> Rect {
         match &self.kind {
             SvgNodeKind::Rect(r) => Rect::from_xywh(r.x, r.y, r.width, r.height),

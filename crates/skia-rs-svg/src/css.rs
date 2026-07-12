@@ -25,7 +25,12 @@ impl Stylesheet {
     }
 
     /// Parse a CSS stylesheet from a string.
-    #[must_use] 
+    ///
+    /// # Panics
+    ///
+    /// Never panics in practice: the internal `unwrap()` only fires on a
+    /// character just confirmed present via `peek()`.
+    #[must_use]
     pub fn parse(css: &str) -> Self {
         let mut stylesheet = Self::new();
         let css = css.trim();
@@ -147,7 +152,13 @@ pub enum CssSelector {
 
 impl CssSelector {
     /// Parse a selector string.
-    #[must_use] 
+    ///
+    /// # Panics
+    ///
+    /// Never panics in practice: the internal `expect()` only fires when
+    /// exactly one simple selector was collected, in which case `pop()`
+    /// always succeeds.
+    #[must_use]
     pub fn parse(s: &str) -> Self {
         let s = s.trim();
 
@@ -175,7 +186,7 @@ impl CssSelector {
         // Check for combined selectors (e.g., rect.classname#id)
         let mut selectors = Vec::new();
         let mut current = String::new();
-        let chars = s.chars().peekable();
+        let chars = s.chars();
 
         for c in chars {
             match c {
@@ -234,6 +245,7 @@ impl CssSelector {
     }
 
     /// Check if this selector matches a node.
+    #[must_use]
     pub fn matches(&self, node: &SvgNode, ancestors: &[&SvgNode]) -> bool {
         match self {
             Self::Universal => true,
@@ -257,11 +269,9 @@ impl CssSelector {
                     return false;
                 }
                 // Check immediate parent
-                if let Some(parent) = ancestors.last() {
+                ancestors.last().is_some_and(|parent| {
                     parent_sel.matches(parent, &ancestors[..ancestors.len().saturating_sub(1)])
-                } else {
-                    false
-                }
+                })
             }
             Self::And(selectors) => selectors.iter().all(|s| s.matches(node, ancestors)),
         }
@@ -535,19 +545,23 @@ fn parse_opacity_value(s: &str) -> Option<Scalar> {
     Some(v.clamp(0.0, 1.0))
 }
 
+#[allow(
+    clippy::option_if_let_else,
+    reason = "five-way unit suffix dispatch reads far more clearly as an if/else-if chain than nested map_or_else calls"
+)]
 fn parse_css_length(s: &str) -> Scalar {
     let s = s.trim();
-    if s.ends_with("px") {
-        s[..s.len() - 2].parse().unwrap_or(0.0)
-    } else if s.ends_with("pt") {
-        s[..s.len() - 2].parse::<Scalar>().unwrap_or(0.0) * 1.333
-    } else if s.ends_with("em") {
-        s[..s.len() - 2].parse::<Scalar>().unwrap_or(0.0) * 16.0
-    } else if s.ends_with("rem") {
-        s[..s.len() - 3].parse::<Scalar>().unwrap_or(0.0) * 16.0
-    } else if s.ends_with('%') {
+    if let Some(stripped) = s.strip_suffix("px") {
+        stripped.parse().unwrap_or(0.0)
+    } else if let Some(stripped) = s.strip_suffix("pt") {
+        stripped.parse::<Scalar>().unwrap_or(0.0) * 1.333
+    } else if let Some(stripped) = s.strip_suffix("rem") {
+        stripped.parse::<Scalar>().unwrap_or(0.0) * 16.0
+    } else if let Some(stripped) = s.strip_suffix("em") {
+        stripped.parse::<Scalar>().unwrap_or(0.0) * 16.0
+    } else if let Some(stripped) = s.strip_suffix('%') {
         // Percentage - context dependent, return as fraction
-        s[..s.len() - 1].parse::<Scalar>().unwrap_or(0.0) / 100.0
+        stripped.parse::<Scalar>().unwrap_or(0.0) / 100.0
     } else {
         s.parse().unwrap_or(0.0)
     }
@@ -559,6 +573,7 @@ fn parse_css_transform(s: &str) -> Matrix {
 }
 
 /// Extract embedded stylesheets from an SVG DOM.
+#[must_use]
 pub fn extract_stylesheets(dom: &SvgDom) -> Stylesheet {
     let mut stylesheet = Stylesheet::new();
     extract_stylesheets_from_node(&dom.root, &mut stylesheet);
@@ -642,11 +657,11 @@ mod tests {
 
     #[test]
     fn test_parse_stylesheet() {
-        let css = r#"
+        let css = r"
             rect { fill: red; }
             .highlight { stroke: yellow; }
             #main { opacity: 0.5; }
-        "#;
+        ";
 
         let stylesheet = Stylesheet::parse(css);
         assert_eq!(stylesheet.rules.len(), 3);
