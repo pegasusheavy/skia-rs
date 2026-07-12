@@ -275,6 +275,67 @@ fn type0_font_emits_descendant_fonts_array() {
     assert!(s.contains("/FontFile2"));
 }
 
+/// Symbolic standard fonts (`Symbol`, `ZapfDingbats`) must omit `/Encoding`
+/// so a reader falls back to the font's built-in encoding; non-symbolic
+/// standard fonts (e.g. `Helvetica`) keep `/Encoding /WinAnsiEncoding`.
+/// Each font is drawn on its own page so every `/Encoding` occurrence in
+/// the output maps back to a single, unambiguous font dict.
+#[test]
+fn standard_font_encoding_is_omitted_only_for_symbolic_fonts() {
+    let mut doc = PdfDocument::new();
+    let paint = Paint::new();
+
+    {
+        let mut canvas = doc.begin_page(200.0, 200.0);
+        canvas.use_standard_font(StandardFont::Symbol);
+        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint);
+        let page = canvas.finish();
+        doc.end_page(page);
+    }
+    let mut buf = Vec::new();
+    doc.write_to(&mut buf).expect("write should succeed");
+    let s = String::from_utf8_lossy(&buf);
+    assert!(
+        !s.contains("/Encoding"),
+        "Symbol must omit /Encoding to use its built-in encoding: {}",
+        s
+    );
+
+    let mut doc = PdfDocument::new();
+    {
+        let mut canvas = doc.begin_page(200.0, 200.0);
+        canvas.use_standard_font(StandardFont::ZapfDingbats);
+        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint);
+        let page = canvas.finish();
+        doc.end_page(page);
+    }
+    let mut buf = Vec::new();
+    doc.write_to(&mut buf).expect("write should succeed");
+    let s = String::from_utf8_lossy(&buf);
+    assert!(
+        !s.contains("/Encoding"),
+        "ZapfDingbats must omit /Encoding to use its built-in encoding: {}",
+        s
+    );
+
+    let mut doc = PdfDocument::new();
+    {
+        let mut canvas = doc.begin_page(200.0, 200.0);
+        canvas.use_standard_font(StandardFont::Helvetica);
+        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint);
+        let page = canvas.finish();
+        doc.end_page(page);
+    }
+    let mut buf = Vec::new();
+    doc.write_to(&mut buf).expect("write should succeed");
+    let s = String::from_utf8_lossy(&buf);
+    assert!(
+        s.contains("/Encoding /WinAnsiEncoding"),
+        "Helvetica should keep /Encoding /WinAnsiEncoding: {}",
+        s
+    );
+}
+
 /// A font registered via `register_truetype_cid` is emitted with
 /// `/Encoding /Identity-H`, which a reader interprets as a stream of
 /// 2-byte CIDs. `draw_text`/`draw_text_with_font` don't yet resolve

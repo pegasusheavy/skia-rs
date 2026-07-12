@@ -305,63 +305,6 @@ impl PdfFont {
         }
     }
 
-    /// Generate the font dictionary PDF object.
-    ///
-    /// `descendant_id` is the object id of the `CIDFontType2` descendant
-    /// font (see [`to_cid_font_dict`](Self::to_cid_font_dict)); it is
-    /// required for `Type0`/`OpenTypeCff` fonts and ignored otherwise. Per
-    /// PDF 32000-1 §9.7.3 a Type0 font's `/DescendantFonts` array must
-    /// reference exactly one CID font — omitting it (as this method used
-    /// to) produces a font with no glyph source at all.
-    pub fn to_pdf_dict(&self, id: u32, descendant_id: Option<u32>) -> String {
-        let mut dict = format!("{} 0 obj\n<<\n", id);
-
-        match self.font_type {
-            PdfFontType::Type1 => {
-                dict.push_str("/Type /Font\n");
-                dict.push_str("/Subtype /Type1\n");
-                dict.push_str(&format!("/BaseFont /{}\n", self.base_font));
-                if let Some(ref enc) = self.encoding {
-                    dict.push_str(&format!("/Encoding /{}\n", enc));
-                }
-            }
-            PdfFontType::TrueType => {
-                dict.push_str("/Type /Font\n");
-                dict.push_str("/Subtype /TrueType\n");
-                dict.push_str(&format!("/BaseFont /{}\n", self.pdf_base_font()));
-                dict.push_str(&format!("/FirstChar {}\n", self.first_char));
-                dict.push_str(&format!("/LastChar {}\n", self.last_char));
-
-                // Widths array
-                dict.push_str("/Widths [");
-                for i in self.first_char..=self.last_char {
-                    let width = self.widths.get(&i).copied().unwrap_or(0);
-                    dict.push_str(&format!("{} ", width));
-                }
-                dict.push_str("]\n");
-
-                if let Some(desc_id) = self.descriptor_id {
-                    dict.push_str(&format!("/FontDescriptor {} 0 R\n", desc_id));
-                }
-                if let Some(ref enc) = self.encoding {
-                    dict.push_str(&format!("/Encoding /{}\n", enc));
-                }
-            }
-            PdfFontType::OpenTypeCff | PdfFontType::Type0 => {
-                dict.push_str("/Type /Font\n");
-                dict.push_str("/Subtype /Type0\n");
-                dict.push_str(&format!("/BaseFont /{}\n", self.pdf_base_font()));
-                dict.push_str("/Encoding /Identity-H\n");
-                if let Some(desc_id) = descendant_id {
-                    dict.push_str(&format!("/DescendantFonts [{} 0 R]\n", desc_id));
-                }
-            }
-        }
-
-        dict.push_str(">>\nendobj\n");
-        dict
-    }
-
     /// Generate the `CIDFontType2` descendant font dictionary referenced
     /// from a `Type0` font's `/DescendantFonts` array (PDF 32000-1 §9.7.4,
     /// §9.7.6).
@@ -818,45 +761,8 @@ mod tests {
     }
 
     #[test]
-    fn test_font_pdf_dict() {
-        let font = PdfFont::standard(StandardFont::TimesRoman);
-        let dict = font.to_pdf_dict(5, None);
-
-        assert!(dict.contains("/Type /Font"));
-        assert!(dict.contains("/BaseFont /Times-Roman"));
-    }
-
-    #[test]
-    fn test_symbol_font_omits_encoding() {
-        let font = PdfFont::standard(StandardFont::Symbol);
-        let dict = font.to_pdf_dict(5, None);
-        assert!(
-            !dict.contains("/Encoding"),
-            "Symbol must omit /Encoding to use its built-in encoding: {}",
-            dict
-        );
-
-        let zapf = PdfFont::standard(StandardFont::ZapfDingbats);
-        let zapf_dict = zapf.to_pdf_dict(6, None);
-        assert!(!zapf_dict.contains("/Encoding"), "{}", zapf_dict);
-
-        // Non-symbolic standard fonts keep WinAnsiEncoding.
-        let helv = PdfFont::standard(StandardFont::Helvetica);
-        let helv_dict = helv.to_pdf_dict(7, None);
-        assert!(helv_dict.contains("/Encoding /WinAnsiEncoding"));
-    }
-
-    #[test]
-    fn test_type0_font_dict_references_descendant_fonts() {
+    fn test_cid_font_dict() {
         let font = PdfFont::truetype_cid("MyFont", vec![0, 1, 2, 3]);
-        let dict = font.to_pdf_dict(10, Some(11));
-        assert!(dict.contains("/Subtype /Type0"));
-        assert!(
-            dict.contains("/DescendantFonts [11 0 R]"),
-            "dict: {}",
-            dict
-        );
-
         let cid_dict = font.to_cid_font_dict(11, 12);
         assert!(cid_dict.contains("/Subtype /CIDFontType2"));
         assert!(cid_dict.contains("/CIDToGIDMap /Identity"));
