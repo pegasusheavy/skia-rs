@@ -4618,9 +4618,10 @@ mod tests {
         assert_eq!(decode_color_type(5), Some(ColorType::Rgb888x));
         assert_eq!(decode_color_type(6), Some(ColorType::Bgra8888));
 
-        // The raster backend only supports RGBA-order 8888 surfaces, so a
-        // BGRA request decodes correctly but surface creation reports
-        // failure (null) instead of silently mislabeling an RGBA buffer.
+        // The raster backend now supports BGRA-order 8888 surfaces (stored
+        // RGBA internally, presented BGRA on snapshot readback), so a BGRA
+        // request creates a surface rather than reporting failure. This is
+        // what makes N32 raster surfaces work on Windows (where n32 is BGRA).
         unsafe {
             let info_bgra = sk_imageinfo_t {
                 width: 2,
@@ -4629,7 +4630,8 @@ mod tests {
                 alpha_type: 2, // Premul
             };
             let s = sk_surface_new_raster_with_info(&info_bgra);
-            assert!(s.is_null());
+            assert!(!s.is_null());
+            sk_surface_unref(s);
         }
     }
 
