@@ -276,10 +276,12 @@ impl HardwareBuffer {
     pub fn lock_for_write(&mut self) -> Option<LockedBufferMut<'_>> {
         #[cfg(not(target_os = "android"))]
         {
-            Some(LockedBufferMut {
-                buffer: self,
-                ptr: self.pixels.as_mut_ptr(),
-            })
+            // Take the raw pointer before moving `self` into the struct so the
+            // transient `&mut` from `as_mut_ptr()` ends first (otherwise the
+            // two mutable uses of `self` in one expression are an aliasing
+            // borrow-check error, E0499).
+            let ptr = self.pixels.as_mut_ptr();
+            Some(LockedBufferMut { buffer: self, ptr })
         }
         #[cfg(target_os = "android")]
         {

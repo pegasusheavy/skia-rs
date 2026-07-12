@@ -15,6 +15,28 @@ members = [
     "crates/skia-rs-safe",
     "crates/skia-rs-bench",
     "crates/skia-rs",
+    "crates/skia-rs-node",
+    "crates/skia-rs-python",
+]
+
+# Binding crates (node/python) require external toolchains (napi/pyo3) and
+# build cdylibs; keep them out of the default `cargo build` set so a plain
+# workspace build stays lean, while `cargo build --workspace` still covers them.
+default-members = [
+    "crates/skia-rs-core",
+    "crates/skia-rs-path",
+    "crates/skia-rs-paint",
+    "crates/skia-rs-canvas",
+    "crates/skia-rs-text",
+    "crates/skia-rs-gpu",
+    "crates/skia-rs-codec",
+    "crates/skia-rs-svg",
+    "crates/skia-rs-pdf",
+    "crates/skia-rs-skottie",
+    "crates/skia-rs-ffi",
+    "crates/skia-rs-safe",
+    "crates/skia-rs-bench",
+    "crates/skia-rs",
 ]
 exclude = ["fuzz"]  # Fuzz crate uses different edition for libfuzzer compatibility
 
