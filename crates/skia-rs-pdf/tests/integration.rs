@@ -28,7 +28,7 @@ fn simple_pdf_has_valid_structure() {
         c.use_standard_font(StandardFont::Helvetica);
         let mut p = Paint::new();
         p.set_color32(Color::from_rgb(0, 0, 0));
-        c.draw_text("Hello, World!", 72.0, 72.0, 14.0, &p);
+        c.draw_text("Hello, World!", 72.0, 72.0, 14.0, &p).expect("draw_text should succeed");
         let page = c.finish();
         doc.end_page(page);
     }
@@ -59,7 +59,7 @@ fn end_to_end_pdf_with_text_image_transparency_pdfa() {
 
         let mut paint = Paint::new();
         paint.set_color32(Color::from_rgb(0, 0, 0));
-        canvas.draw_text("Hello, PDF!", 72.0, 100.0, 14.0, &paint);
+        canvas.draw_text("Hello, PDF!", 72.0, 100.0, 14.0, &paint).expect("draw_text should succeed");
 
         // Translucent rect — should register an ExtGState.
         let mut translucent = Paint::new();
@@ -116,7 +116,7 @@ fn truetype_embedding_emits_fontfile2_and_widths() {
         let mut canvas = doc.begin_page(200.0, 200.0);
         canvas.set_font(font_idx);
         let paint = Paint::new();
-        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint);
+        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint).expect("draw_text should succeed");
         let page = canvas.finish();
         doc.end_page(page);
     }
@@ -168,7 +168,7 @@ fn truetype_subset_length1_matches_stream_length() {
         let mut canvas = doc.begin_page(200.0, 200.0);
         canvas.set_font(font_idx);
         let paint = Paint::new();
-        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint);
+        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint).expect("draw_text should succeed");
         let page = canvas.finish();
         doc.end_page(page);
     }
@@ -288,7 +288,7 @@ fn standard_font_encoding_is_omitted_only_for_symbolic_fonts() {
     {
         let mut canvas = doc.begin_page(200.0, 200.0);
         canvas.use_standard_font(StandardFont::Symbol);
-        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint);
+        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint).expect("draw_text should succeed");
         let page = canvas.finish();
         doc.end_page(page);
     }
@@ -305,7 +305,7 @@ fn standard_font_encoding_is_omitted_only_for_symbolic_fonts() {
     {
         let mut canvas = doc.begin_page(200.0, 200.0);
         canvas.use_standard_font(StandardFont::ZapfDingbats);
-        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint);
+        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint).expect("draw_text should succeed");
         let page = canvas.finish();
         doc.end_page(page);
     }
@@ -322,7 +322,7 @@ fn standard_font_encoding_is_omitted_only_for_symbolic_fonts() {
     {
         let mut canvas = doc.begin_page(200.0, 200.0);
         canvas.use_standard_font(StandardFont::Helvetica);
-        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint);
+        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint).expect("draw_text should succeed");
         let page = canvas.finish();
         doc.end_page(page);
     }
@@ -340,8 +340,9 @@ fn standard_font_encoding_is_omitted_only_for_symbolic_fonts() {
 /// `/Encoding /Identity-H`, which a reader interprets as a stream of
 /// 2-byte CIDs. `draw_text`/`draw_text_with_font` don't yet resolve
 /// per-glyph CIDs, so drawing live text through such a font must fail
-/// closed (panic) instead of silently emitting 1-byte WinAnsi codes
-/// against a 2-byte encoding, which would decode as garbage glyphs.
+/// closed with `Err(PdfError::Unsupported)` instead of silently emitting
+/// 1-byte WinAnsi codes against a 2-byte encoding, which would decode as
+/// garbage glyphs.
 #[test]
 fn type0_font_draw_text_fails_closed() {
     let mut doc = PdfDocument::new();
@@ -354,14 +355,22 @@ fn type0_font_draw_text_fails_closed() {
     canvas.set_font(font_idx);
     let paint = Paint::new();
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint);
-    }));
+    let result = canvas.draw_text("A", 10.0, 20.0, 12.0, &paint);
 
-    assert!(
-        result.is_err(),
-        "draw_text against a Type0/Identity-H font must fail closed, not emit 1-byte codes"
-    );
+    match result {
+        Err(skia_rs_pdf::PdfError::Unsupported(msg)) => {
+            assert!(
+                msg.contains("Type0"),
+                "expected message to mention Type0/CID font, got: {}",
+                msg
+            );
+        }
+        other => panic!(
+            "draw_text against a Type0/Identity-H font must fail closed with \
+             Err(PdfError::Unsupported), not emit 1-byte codes; got {:?}",
+            other
+        ),
+    }
 }
 
 /// PDF/A OutputIntents require a real, parseable ICC profile in

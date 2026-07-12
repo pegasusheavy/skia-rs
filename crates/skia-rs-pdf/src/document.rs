@@ -17,6 +17,9 @@ pub enum PdfError {
     /// PDF/A validation failure.
     #[error("PDF/A validation failed: {}", _0.join(", "))]
     Validation(Vec<String>),
+    /// A requested drawing operation is not yet supported by this backend.
+    #[error("unsupported: {0}")]
+    Unsupported(String),
 }
 
 /// PDF document metadata.
@@ -952,7 +955,9 @@ mod tests {
             let mut canvas: PdfCanvas = doc.begin_page(612.0, 792.0);
             canvas.use_standard_font(StandardFont::Helvetica);
             let paint = Paint::new();
-            canvas.draw_text("Hello, PDF", 72.0, 72.0, 12.0, &paint);
+            canvas
+                .draw_text("Hello, PDF", 72.0, 72.0, 12.0, &paint)
+                .expect("draw_text should succeed");
             let page = canvas.finish();
             doc.end_page(page);
         }
@@ -1045,6 +1050,9 @@ mod tests {
                 assert!(combined.contains("Transparency"), "unexpected error: {}", combined);
             }
             PdfError::Io(e) => panic!("expected validation error, got I/O error: {}", e),
+            PdfError::Unsupported(msg) => {
+                panic!("expected validation error, got unsupported error: {}", msg)
+            }
         }
     }
 }

@@ -1,5 +1,6 @@
 //! PDF canvas for drawing.
 
+use crate::document::PdfError;
 use crate::font::{PdfFontManager, PdfFontType, StandardFont};
 use crate::image::PdfImageManager;
 use crate::transparency::{PdfBlendMode, TransparencyManager};
@@ -403,8 +404,8 @@ impl<'a> PdfCanvas<'a> {
 
     /// Draw text using the currently selected font (see [`set_font`]).
     ///
-    /// Panics if no font is selected; use [`draw_text_with_font`] to provide
-    /// one explicitly.
+    /// Returns `Err(PdfError::Unsupported)` if no font is selected; use
+    /// [`draw_text_with_font`] to provide one explicitly.
     pub fn draw_text(
         &mut self,
         text: &str,
@@ -412,14 +413,27 @@ impl<'a> PdfCanvas<'a> {
         y: Scalar,
         font_size: Scalar,
         paint: &Paint,
-    ) {
-        let font_idx = self
-            .current_font
-            .expect("draw_text requires a font: call set_font or use_standard_font first");
-        self.draw_text_with_font(text, x, y, font_size, font_idx, paint);
+    ) -> Result<(), PdfError> {
+        let font_idx = self.current_font.ok_or_else(|| {
+            PdfError::Unsupported(
+                "draw_text requires a font: call set_font or use_standard_font first"
+                    .to_string(),
+            )
+        })?;
+        self.draw_text_with_font(text, x, y, font_size, font_idx, paint)
     }
 
     /// Draw text with an explicit font.
+    ///
+    /// Returns `Err(PdfError::Unsupported)` if `font_idx` names a Type0/CID
+    /// font (registered via [`PdfFontManager::register_truetype_cid`]);
+    /// live per-glyph CID text drawing is not yet implemented (see below).
+    ///
+    /// # Panics
+    ///
+    /// Panics (via `debug_assert!`, debug builds only) if `font_idx` is out
+    /// of range — that reflects a caller bug (an index not obtained from
+    /// this canvas's font manager), not a recoverable runtime condition.
     pub fn draw_text_with_font(
         &mut self,
         text: &str,
@@ -428,8 +442,8 @@ impl<'a> PdfCanvas<'a> {
         font_size: Scalar,
         font_idx: usize,
         paint: &Paint,
-    ) {
-        assert!(
+    ) -> Result<(), PdfError> {
+        debug_assert!(
             self.fonts.get(font_idx).is_some(),
             "font index {} out of range",
             font_idx
@@ -449,15 +463,17 @@ impl<'a> PdfCanvas<'a> {
         // `PdfDocument::write_to`) even though live text can't yet be
         // drawn through it.
         if let Some(font) = self.fonts.get(font_idx) {
-            assert!(
-                !matches!(font.font_type, PdfFontType::Type0 | PdfFontType::OpenTypeCff),
-                "draw_text_with_font: font {} is a Type0/CID font (registered via \
-                 register_truetype_cid, encoded /Identity-H); live per-glyph CID text drawing \
-                 is not yet implemented, so drawing through this font would silently emit \
-                 invalid 1-byte codes against a 2-byte CID encoding. Register the text as a \
-                 simple TrueType font (PdfFontManager::register_truetype) instead.",
-                font_idx
-            );
+            if matches!(font.font_type, PdfFontType::Type0 | PdfFontType::OpenTypeCff) {
+                return Err(PdfError::Unsupported(format!(
+                    "draw_text_with_font: font {} is a Type0/CID font (registered via \
+                     register_truetype_cid, encoded /Identity-H); live per-glyph CID text \
+                     drawing is not yet implemented, so drawing through this font would \
+                     silently emit invalid 1-byte codes against a 2-byte CID encoding. \
+                     Register the text as a simple TrueType font \
+                     (PdfFontManager::register_truetype) instead.",
+                    font_idx
+                )));
+            }
         }
 
         self.used_fonts.insert(font_idx);
@@ -504,6 +520,7 @@ impl<'a> PdfCanvas<'a> {
             self.write_op(" Tj\n");
         }
         self.write_op("ET\n");
+        Ok(())
     }
 
     /// Write a PDF literal string `(...)` from already-escaped raw bytes.
@@ -802,7 +819,7 @@ mod tests {
             assert_eq!(f, 0);
 
             let paint = Paint::new();
-            canvas.draw_text("Hello", 72.0, 72.0, 12.0, &paint);
+            canvas.draw_text("Hello", 72.0, 72.0, 12.0, &paint).expect("draw_text should succeed");
 
             canvas.finish()
         };
@@ -831,7 +848,7 @@ mod tests {
             canvas.use_standard_font(StandardFont::Helvetica);
 
             let paint = Paint::new();
-            canvas.draw_text("héllo", 72.0, 72.0, 12.0, &paint);
+            canvas.draw_text("héllo", 72.0, 72.0, 12.0, &paint).expect("draw_text should succeed");
             canvas.finish()
         };
 
@@ -864,7 +881,7 @@ mod tests {
             canvas.use_standard_font(StandardFont::Helvetica);
             let paint = Paint::new();
             // '中' is outside WinAnsiEncoding entirely.
-            canvas.draw_text("a中b", 72.0, 72.0, 12.0, &paint);
+            canvas.draw_text("a中b", 72.0, 72.0, 12.0, &paint).expect("draw_text should succeed");
             canvas.finish()
         };
 
