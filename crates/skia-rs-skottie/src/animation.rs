@@ -77,25 +77,38 @@ pub struct ImageAsset {
 
 impl Animation {
     /// Load an animation from a JSON string.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `json` is not valid Lottie/Bodymovin JSON.
     pub fn from_json(json: &str) -> Result<Self> {
         let model: LottieModel = serde_json::from_str(json)?;
-        Self::from_model(model)
+        Ok(Self::from_model(model))
     }
 
     /// Load an animation from a JSON byte slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `bytes` is not valid Lottie/Bodymovin JSON.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let model: LottieModel = serde_json::from_slice(bytes)?;
-        Self::from_model(model)
+        Ok(Self::from_model(model))
     }
 
     /// Load an animation from a file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `path` cannot be read or does not contain valid
+    /// Lottie/Bodymovin JSON.
     pub fn from_file(path: &std::path::Path) -> Result<Self> {
         let contents = std::fs::read_to_string(path)?;
         Self::from_json(&contents)
     }
 
     /// Build an animation from a parsed Lottie model.
-    fn from_model(model: LottieModel) -> Result<Self> {
+    fn from_model(model: LottieModel) -> Self {
         // Parse layers
         let layers: Vec<Layer> = model.layers.iter().map(Layer::from_lottie).collect();
 
@@ -129,7 +142,7 @@ impl Animation {
             }
         }
 
-        Ok(Self {
+        Self {
             name: model.name,
             version: model.version,
             width: model.width,
@@ -140,7 +153,7 @@ impl Animation {
             layers,
             assets,
             current_frame: model.in_point,
-        })
+        }
     }
 
     /// Get the animation name.
@@ -342,11 +355,12 @@ impl Animation {
         AnimationStats {
             name: self.name.clone(),
             version: self.version.clone(),
-            width: self.width as u32,
-            height: self.height as u32,
+            width: u32::try_from(skia_rs_core::cast::round_to_i32(self.width)).unwrap_or(0),
+            height: u32::try_from(skia_rs_core::cast::round_to_i32(self.height)).unwrap_or(0),
             frame_rate: self.frame_rate,
             duration_seconds: self.duration(),
-            total_frames: self.total_frames() as u32,
+            total_frames: u32::try_from(skia_rs_core::cast::round_to_i32(self.total_frames()))
+                .unwrap_or(0),
             layer_count: self.layers.len(),
             shape_layer_count,
             precomp_layer_count,
@@ -428,23 +442,34 @@ impl AnimationBuilder {
     }
 
     /// Set the resource provider for loading images.
+    #[must_use]
     pub fn with_resource_provider(mut self, provider: Arc<dyn ResourceProvider>) -> Self {
         self.resource_provider = Some(provider);
         self
     }
 
     /// Set the font provider for loading fonts.
+    #[must_use]
     pub fn with_font_provider(mut self, provider: Arc<dyn FontProvider>) -> Self {
         self.font_provider = Some(provider);
         self
     }
 
     /// Load an animation from JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `json` is not valid Lottie/Bodymovin JSON.
     pub fn load(self, json: &str) -> Result<Animation> {
         Animation::from_json(json)
     }
 
     /// Load an animation from a file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `path` cannot be read or does not contain valid
+    /// Lottie/Bodymovin JSON.
     pub fn load_file(self, path: &std::path::Path) -> Result<Animation> {
         Animation::from_file(path)
     }
@@ -463,6 +488,10 @@ pub trait FontProvider: Send + Sync + std::fmt::Debug {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "tests assert exact keyframe/interpolation output values, not tolerances"
+)]
 mod tests {
     use super::*;
 

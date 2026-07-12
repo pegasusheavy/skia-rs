@@ -78,6 +78,10 @@ impl From<i32> for LayerType {
 
 /// A layer in the animation.
 #[derive(Debug, Clone)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent Lottie/Bodymovin JSON field (ao/ddd/hd/td); grouping them into a bitset or sub-struct would diverge from the 1:1 schema mapping without adding clarity"
+)]
 pub struct Layer {
     /// Layer name.
     pub name: String,
@@ -260,6 +264,10 @@ impl From<i32> for MatteMode {
 
 impl Layer {
     /// Parse from Lottie layer model.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "mirrors upstream skottie layer-content dispatch across precomp/solid/shape/text/image/null kinds; splitting would fragment a single logical match"
+    )]
     pub fn from_lottie(model: &LayerModel) -> Self {
         let layer_type = LayerType::from(model.layer_type);
 
@@ -294,7 +302,7 @@ impl Layer {
                 LayerContent::Shape(ShapeContent { shapes })
             }
             LayerType::Text => {
-                let doc = if let Some(ref text_data) = model.text {
+                let doc = model.text.as_ref().map_or_else(TextDocument::default, |text_data| {
                     text_data
                         .document
                         .keyframes
@@ -305,16 +313,28 @@ impl Layer {
                             font_family: kf.data.font.clone(),
                             fill_color: kf.data.fill_color.as_ref().map(|c| {
                                 Color::from_rgb(
-                                    (c.first().copied().unwrap_or(0.0) * 255.0) as u8,
-                                    (c.get(1).copied().unwrap_or(0.0) * 255.0) as u8,
-                                    (c.get(2).copied().unwrap_or(0.0) * 255.0) as u8,
+                                    skia_rs_core::cast::f32_to_u8_sat(
+                                        c.first().copied().unwrap_or(0.0) * 255.0,
+                                    ),
+                                    skia_rs_core::cast::f32_to_u8_sat(
+                                        c.get(1).copied().unwrap_or(0.0) * 255.0,
+                                    ),
+                                    skia_rs_core::cast::f32_to_u8_sat(
+                                        c.get(2).copied().unwrap_or(0.0) * 255.0,
+                                    ),
                                 )
                             }),
                             stroke_color: kf.data.stroke_color.as_ref().map(|c| {
                                 Color::from_rgb(
-                                    (c.first().copied().unwrap_or(0.0) * 255.0) as u8,
-                                    (c.get(1).copied().unwrap_or(0.0) * 255.0) as u8,
-                                    (c.get(2).copied().unwrap_or(0.0) * 255.0) as u8,
+                                    skia_rs_core::cast::f32_to_u8_sat(
+                                        c.first().copied().unwrap_or(0.0) * 255.0,
+                                    ),
+                                    skia_rs_core::cast::f32_to_u8_sat(
+                                        c.get(1).copied().unwrap_or(0.0) * 255.0,
+                                    ),
+                                    skia_rs_core::cast::f32_to_u8_sat(
+                                        c.get(2).copied().unwrap_or(0.0) * 255.0,
+                                    ),
                                 )
                             }),
                             stroke_width: kf.data.stroke_width.unwrap_or(0.0),
@@ -323,9 +343,7 @@ impl Layer {
                             line_height: kf.data.line_height.unwrap_or(0.0),
                         })
                         .unwrap_or_default()
-                } else {
-                    TextDocument::default()
-                };
+                });
                 LayerContent::Text(TextContent {
                     document: doc,
                     path: None,
@@ -338,7 +356,6 @@ impl Layer {
         let masks = model.masks.iter().map(Mask::from_lottie).collect();
 
         let blend_mode = match model.blend_mode {
-            0 => BlendMode::SrcOver,
             1 => BlendMode::Multiply,
             2 => BlendMode::Screen,
             3 => BlendMode::Overlay,
@@ -398,17 +415,20 @@ impl Layer {
     /// `tm` (if present) overrides the linear `(t - st) / sr` mapping.
     #[must_use] 
     pub fn precomp_content_frame(&self, frame: Scalar, frame_rate: Scalar) -> Scalar {
-        if let Some(ref remap) = self.time_remap {
-            let seconds = remap.value_at(frame).as_scalar().unwrap_or(0.0);
-            seconds * frame_rate
-        } else {
-            let stretch = if self.time_stretch == 0.0 {
-                1.0
-            } else {
-                self.time_stretch
-            };
-            (frame - self.start_time) / stretch
-        }
+        self.time_remap.as_ref().map_or_else(
+            || {
+                let stretch = if self.time_stretch == 0.0 {
+                    1.0
+                } else {
+                    self.time_stretch
+                };
+                (frame - self.start_time) / stretch
+            },
+            |remap| {
+                let seconds = remap.value_at(frame).as_scalar().unwrap_or(0.0);
+                seconds * frame_rate
+            },
+        )
     }
 
     /// Get the opacity at a specific frame.
@@ -451,6 +471,10 @@ fn parse_color_string(s: &str) -> Color {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "tests assert exact keyframe/interpolation output values, not tolerances"
+)]
 mod tests {
     use super::*;
 

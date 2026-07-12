@@ -493,11 +493,7 @@ impl AnimatedProperty {
 
                 prop
             }
-            AnimatedValue::Static { value, .. } => {
-                let kf_value = parse_json_value(value);
-                Self::static_value(kf_value)
-            }
-            AnimatedValue::Direct(value) => {
+            AnimatedValue::Static { value, .. } | AnimatedValue::Direct(value) => {
                 let kf_value = parse_json_value(value);
                 Self::static_value(kf_value)
             }
@@ -520,6 +516,10 @@ impl Default for AnimatedProperty {
 ///
 /// Returns `None` when neither tangent is present (caller falls back to a
 /// plain linear lerp).
+#[allow(
+    clippy::float_cmp,
+    reason = "exact zero-tangent/coincident-endpoint detection mirrors upstream SkottieJson semantics; a tolerance would change which keyframes get spatial interpolation"
+)]
 fn spatial_bezier_at(
     v0: [Scalar; 2],
     to: Option<[Scalar; 2]>,
@@ -569,6 +569,19 @@ fn spatial_bezier_at(
     Some([point.x, point.y])
 }
 
+/// Narrow a JSON-sourced `f64` down to the crate's `f32` [`Scalar`].
+///
+/// Lottie/Bodymovin documents are parsed via `serde_json`, whose `Number`
+/// type is always `f64`; every animation value is ultimately stored as a
+/// `Scalar` (`f32`), so this narrowing is unavoidable at the JSON boundary.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "serde_json::Number is always f64; downcasting to the crate's f32 Scalar at the JSON boundary is unavoidable and matches Skia's f32 Scalar type"
+)]
+const fn scalar_from_f64(x: f64) -> Scalar {
+    x as Scalar
+}
+
 fn parse_keyframe_value(values: &[Scalar]) -> KeyframeValue {
     match values.len() {
         0 => KeyframeValue::Scalar(0.0),
@@ -584,7 +597,9 @@ fn parse_keyframe_value(values: &[Scalar]) -> KeyframeValue {
 
 fn parse_json_value(value: &serde_json::Value) -> KeyframeValue {
     match value {
-        serde_json::Value::Number(n) => KeyframeValue::Scalar(n.as_f64().unwrap_or(0.0) as Scalar),
+        serde_json::Value::Number(n) => {
+            KeyframeValue::Scalar(scalar_from_f64(n.as_f64().unwrap_or(0.0)))
+        }
         serde_json::Value::Object(_) => {
             // Static (non-animated) bezier path value: `"k": {"i","o","v","c"}`.
             parse_path_object(value)
@@ -600,7 +615,7 @@ fn parse_json_value(value: &serde_json::Value) -> KeyframeValue {
             }
             let values: Vec<Scalar> = arr
                 .iter()
-                .filter_map(|v| v.as_f64().map(|n| n as Scalar))
+                .filter_map(|v| v.as_f64().map(scalar_from_f64))
                 .collect();
             parse_keyframe_value(&values)
         }
@@ -621,8 +636,8 @@ fn parse_path_object(value: &serde_json::Value) -> Option<PathData> {
                 arr.iter()
                     .filter_map(|p| {
                         let pa = p.as_array()?;
-                        let x = pa.first()?.as_f64()? as Scalar;
-                        let y = pa.get(1)?.as_f64()? as Scalar;
+                        let x = scalar_from_f64(pa.first()?.as_f64()?);
+                        let y = scalar_from_f64(pa.get(1)?.as_f64()?);
                         Some([x, y])
                     })
                     .collect()
@@ -639,6 +654,10 @@ fn parse_path_object(value: &serde_json::Value) -> Option<PathData> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "tests assert exact keyframe/interpolation output values, not tolerances"
+)]
 mod tests {
     use super::*;
 

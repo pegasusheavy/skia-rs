@@ -86,7 +86,7 @@ impl<'a> RenderContext<'a> {
             current_transform: Matrix::IDENTITY,
             current_opacity: 1.0,
             frame_rate: 30.0,
-            bounds: Rect::from_xywh(0.0, 0.0, 100000.0, 100000.0),
+            bounds: Rect::from_xywh(0.0, 0.0, 100_000.0, 100_000.0),
             precomp_depth: 0,
         }
     }
@@ -335,6 +335,10 @@ impl<'a> RenderContext<'a> {
     }
 
     /// Render shapes.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "mirrors upstream skottie shape-group rendering (fills/strokes/gradients/trim collected per group before compositing); splitting would obscure the single-pass structure"
+    )]
     fn render_shapes(&mut self, shapes: &[Shape], frame: Scalar) {
         // Collect geometry and style
         let mut paths: Vec<Path> = Vec::new();
@@ -673,13 +677,13 @@ fn apply_dash(path: &Path, stroke: &StrokeShape, frame: Scalar) -> Path {
         return path.clone();
     };
     let phase = stroke.dash_offset_at(frame);
-    match skia_rs_path::DashEffect::new(intervals, phase) {
-        Some(dash) => {
+    skia_rs_path::DashEffect::new(intervals, phase).map_or_else(
+        || path.clone(),
+        |dash| {
             use skia_rs_path::PathEffect;
             dash.apply(path).unwrap_or_else(|| path.clone())
-        }
-        None => path.clone(),
-    }
+        },
+    )
 }
 
 /// Build a gradient shader from resolved Lottie gradient parameters.
@@ -805,6 +809,10 @@ impl Canvas for SkiaCanvas<'_, '_> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "tests assert exact keyframe/interpolation output values, not tolerances"
+)]
 mod tests {
     use super::*;
 

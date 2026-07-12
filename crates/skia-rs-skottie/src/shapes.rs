@@ -205,6 +205,11 @@ impl RectangleShape {
     /// Build a path at a specific frame.
     #[must_use] 
     pub fn to_path(&self, frame: Scalar) -> Option<Path> {
+        // Circular-arc corner constant (matches SkRRect's cubic-bezier
+        // approximation of a quarter circle), not the coarser quadratic
+        // approximation.
+        const KAPPA: Scalar = 0.552_284_8;
+
         let pos = self
             .position
             .value_at(frame)
@@ -231,13 +236,10 @@ impl RectangleShape {
 
         if roundness > 0.0 {
             let r = roundness.min(half_w).min(half_h);
-            // Circular-arc corners via cubic beziers (matches SkRRect's
-            // approximation), not the coarser quadratic approximation.
-            const KAPPA: Scalar = 0.552_284_8;
             let k = r * KAPPA;
 
+            builder.move_to(left + r, top);
             if ccw {
-                builder.move_to(left + r, top);
                 builder.cubic_to(left + r - k, top, left, top + r - k, left, top + r);
                 builder.line_to(left, bottom - r);
                 builder.cubic_to(left, bottom - r + k, left + r - k, bottom, left + r, bottom);
@@ -253,7 +255,6 @@ impl RectangleShape {
                 builder.line_to(right, top + r);
                 builder.cubic_to(right, top + r - k, right - r + k, top, right - r, top);
             } else {
-                builder.move_to(left + r, top);
                 builder.line_to(right - r, top);
                 builder.cubic_to(right - r + k, top, right, top + r - k, right, top + r);
                 builder.line_to(right, bottom - r);
@@ -270,16 +271,17 @@ impl RectangleShape {
                 builder.line_to(left, top + r);
                 builder.cubic_to(left, top + r - k, left + r - k, top, left + r, top);
             }
-        } else if !ccw {
-            builder.move_to(left, top);
-            builder.line_to(right, top);
-            builder.line_to(right, bottom);
-            builder.line_to(left, bottom);
         } else {
             builder.move_to(left, top);
-            builder.line_to(left, bottom);
-            builder.line_to(right, bottom);
-            builder.line_to(right, top);
+            if ccw {
+                builder.line_to(left, bottom);
+                builder.line_to(right, bottom);
+                builder.line_to(right, top);
+            } else {
+                builder.line_to(right, top);
+                builder.line_to(right, bottom);
+                builder.line_to(left, bottom);
+            }
         }
 
         builder.close();
@@ -447,9 +449,7 @@ fn path_data_to_path(data: &PathData) -> Path {
         ];
         let c2 = [data.vertices[0][0] + in_t[0], data.vertices[0][1] + in_t[1]];
 
-        if out_t == [0.0, 0.0] && in_t == [0.0, 0.0] {
-            builder.close();
-        } else {
+        if !(out_t == [0.0, 0.0] && in_t == [0.0, 0.0]) {
             builder.cubic_to(
                 c1[0],
                 c1[1],
@@ -458,8 +458,8 @@ fn path_data_to_path(data: &PathData) -> Path {
                 data.vertices[0][0],
                 data.vertices[0][1],
             );
-            builder.close();
         }
+        builder.close();
     }
 
     builder.build()
@@ -552,7 +552,7 @@ impl PolystarShape {
             .unwrap_or(50.0);
         let rotation = self.rotation.value_at(frame).as_scalar().unwrap_or(0.0);
 
-        let n = points.round() as i32;
+        let n = skia_rs_core::cast::round_to_i32(points);
         if n < 3 {
             return None;
         }
@@ -562,10 +562,11 @@ impl PolystarShape {
 
         let is_star = self.star_type == 1;
         let step_count = if is_star { n * 2 } else { n };
-        let angle_step = std::f32::consts::TAU / step_count as Scalar;
+        let angle_step =
+            std::f32::consts::TAU / skia_rs_core::cast::scalar_from_i32(step_count);
 
         for i in 0..step_count {
-            let angle = rot_rad + angle_step * i as Scalar;
+            let angle = rot_rad + angle_step * skia_rs_core::cast::scalar_from_i32(i);
             let radius = if is_star && i % 2 == 1 {
                 inner_r
             } else {
@@ -620,12 +621,12 @@ impl FillShape {
                 .as_ref()
                 .map(|v| AnimatedProperty::from_lottie(v).value_at(0.0))
                 .and_then(|v| v.as_scalar())
-                .map_or(1, |v| v.round() as i32),
+                .map_or(1, skia_rs_core::cast::round_to_i32),
         }
     }
 
     /// Get the color at a specific frame.
-    #[must_use] 
+    #[must_use]
     pub fn color_at(&self, frame: Scalar) -> Color4f {
         let c = self
             .color
@@ -675,14 +676,12 @@ impl StrokeShape {
     pub fn from_lottie(model: &ShapeModel) -> Self {
         let line_cap = match model.line_cap.unwrap_or(2) {
             1 => StrokeCap::Butt,
-            2 => StrokeCap::Round,
             3 => StrokeCap::Square,
             _ => StrokeCap::Round,
         };
 
         let line_join = match model.line_join.unwrap_or(2) {
             1 => StrokeJoin::Miter,
-            2 => StrokeJoin::Round,
             3 => StrokeJoin::Bevel,
             _ => StrokeJoin::Round,
         };
@@ -882,13 +881,11 @@ impl GradientStrokeShape {
     pub fn from_lottie(model: &ShapeModel) -> Self {
         let line_cap = match model.line_cap.unwrap_or(2) {
             1 => StrokeCap::Butt,
-            2 => StrokeCap::Round,
             3 => StrokeCap::Square,
             _ => StrokeCap::Round,
         };
         let line_join = match model.line_join.unwrap_or(2) {
             1 => StrokeJoin::Miter,
-            2 => StrokeJoin::Round,
             3 => StrokeJoin::Bevel,
             _ => StrokeJoin::Round,
         };
@@ -960,7 +957,7 @@ fn resolve_gradient_stops(
         .or_else(|| value.as_color().map(|c| c.to_vec()))
         .unwrap_or_default();
 
-    let c_count = color_count.max(0) as usize;
+    let c_count = usize::try_from(color_count).unwrap_or(0);
     let c_size = (c_count * 4).min(raw.len());
     let color_stops: Vec<(Scalar, [Scalar; 3])> = (0..c_count)
         .filter(|i| i * 4 + 3 < c_size)
@@ -1208,6 +1205,10 @@ impl ShapeTransform {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "tests assert exact keyframe/interpolation output values, not tolerances"
+)]
 mod tests {
     use super::*;
 

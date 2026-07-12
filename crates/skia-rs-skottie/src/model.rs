@@ -395,16 +395,16 @@ impl DirectionOrDash {
     pub const fn as_direction(&self) -> Option<i32> {
         match self {
             Self::Direction(d) => Some(*d),
-            _ => None,
+            Self::Dashes(_) => None,
         }
     }
 
     /// Get as a dash array, if this is a dash array.
-    #[must_use] 
+    #[must_use]
     pub fn as_dashes(&self) -> Option<&[DashElementModel]> {
         match self {
             Self::Dashes(d) => Some(d),
-            _ => None,
+            Self::Direction(_) => None,
         }
     }
 }
@@ -635,6 +635,10 @@ pub struct EffectValueModel {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "tests assert exact keyframe/interpolation output values, not tolerances"
+)]
 mod tests {
     use super::*;
 

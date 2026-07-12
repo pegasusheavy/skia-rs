@@ -153,12 +153,12 @@ impl ExpressionEvaluator {
         }
 
         // Check for math operations
-        if let Some(result) = self.evaluate_math(source, ctx) {
+        if let Some(result) = Self::evaluate_math(source, ctx) {
             return result;
         }
 
         // Check for function calls
-        if let Some(result) = self.evaluate_function(source, ctx) {
+        if let Some(result) = Self::evaluate_function(source, ctx) {
             return result;
         }
 
@@ -186,7 +186,7 @@ impl ExpressionEvaluator {
     }
 
     /// Evaluate math operations.
-    fn evaluate_math(&self, source: &str, ctx: &ExpressionContext) -> Option<Value> {
+    fn evaluate_math(source: &str, ctx: &ExpressionContext) -> Option<Value> {
         // Very simple math parsing
         // Format: "a + b", "a - b", "a * b", "a / b"
 
@@ -228,7 +228,7 @@ impl ExpressionEvaluator {
     }
 
     /// Evaluate function calls.
-    fn evaluate_function(&self, source: &str, ctx: &ExpressionContext) -> Option<Value> {
+    fn evaluate_function(source: &str, ctx: &ExpressionContext) -> Option<Value> {
         // Parse function call: name(args)
         if let Some(paren_pos) = source.find('(') {
             if source.ends_with(')') {
@@ -236,7 +236,7 @@ impl ExpressionEvaluator {
                 let args_str = &source[paren_pos + 1..source.len() - 1];
                 let args: Vec<&str> = args_str.split(',').map(str::trim).collect();
 
-                return self.call_function(name, &args, ctx);
+                return Self::call_function(name, &args, ctx);
             }
         }
 
@@ -244,7 +244,11 @@ impl ExpressionEvaluator {
     }
 
     /// Call a built-in function.
-    fn call_function(&self, name: &str, args: &[&str], ctx: &ExpressionContext) -> Option<Value> {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single dispatch table over AE expression built-in functions; splitting would fragment a single logical match mirroring upstream skottie expression evaluation"
+    )]
+    fn call_function(name: &str, args: &[&str], ctx: &ExpressionContext) -> Option<Value> {
         match name {
             // Math functions
             "Math.sin" | "sin" => {
@@ -422,26 +426,25 @@ impl ExpressionEvaluator {
             // Vector functions
             "length" => {
                 let arg = Self::new(args.first()?).evaluate(ctx);
-                if let Some(arr) = arg.as_array() {
-                    let sum: Scalar = arr.iter().map(|x| x * x).sum();
-                    Some(Value::Number(sum.sqrt()))
-                } else {
-                    arg.as_number().map(|n| Value::Number(n.abs()))
-                }
+                arg.as_array().map_or_else(
+                    || arg.as_number().map(|n| Value::Number(n.abs())),
+                    |arr| {
+                        let sum: Scalar = arr.iter().map(|x| x * x).sum();
+                        Some(Value::Number(sum.sqrt()))
+                    },
+                )
             }
             "normalize" => {
                 let arg = Self::new(args.first()?).evaluate(ctx);
-                if let Some(arr) = arg.as_array() {
+                arg.as_array().map_or(Some(Value::Number(1.0)), |arr| {
                     let len: Scalar = arr.iter().map(|x| x * x).sum::<Scalar>().sqrt();
                     if len > 0.0 {
                         let normalized: Vec<Scalar> = arr.iter().map(|x| x / len).collect();
                         Some(Value::Array(normalized))
                     } else {
-                        Some(arg)
+                        Some(arg.clone())
                     }
-                } else {
-                    Some(Value::Number(1.0))
-                }
+                })
             }
 
             _ => None,
@@ -471,11 +474,9 @@ impl ExpressionCompiler {
 
     /// Compile an expression.
     pub fn compile(&mut self, source: &str) -> &CompiledExpression {
-        if !self.cache.contains_key(source) {
-            let compiled = CompiledExpression::new(source);
-            self.cache.insert(source.to_string(), compiled);
-        }
-        self.cache.get(source).unwrap()
+        self.cache
+            .entry(source.to_string())
+            .or_insert_with(|| CompiledExpression::new(source))
     }
 
     /// Evaluate a cached expression.

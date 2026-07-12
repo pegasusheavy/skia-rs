@@ -34,7 +34,6 @@ impl From<&str> for MaskMode {
     fn from(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "n" | "none" => Self::None,
-            "a" | "add" => Self::Add,
             "s" | "subtract" => Self::Subtract,
             "i" | "intersect" => Self::Intersect,
             "l" | "lighten" => Self::Lighten,
@@ -195,9 +194,7 @@ fn path_data_to_path(data: &PathData) -> Path {
         ];
         let c2 = [data.vertices[0][0] + in_t[0], data.vertices[0][1] + in_t[1]];
 
-        if out_t == [0.0, 0.0] && in_t == [0.0, 0.0] {
-            builder.close();
-        } else {
+        if !(out_t == [0.0, 0.0] && in_t == [0.0, 0.0]) {
             builder.cubic_to(
                 c1[0],
                 c1[1],
@@ -206,8 +203,8 @@ fn path_data_to_path(data: &PathData) -> Path {
                 data.vertices[0][0],
                 data.vertices[0][1],
             );
-            builder.close();
         }
+        builder.close();
     }
 
     builder.build()
@@ -301,6 +298,10 @@ fn invert_path(path: &Path, bounds: Rect) -> Path {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "tests assert exact keyframe/interpolation output values, not tolerances"
+)]
 mod tests {
     use super::*;
 
