@@ -703,14 +703,14 @@ impl<'a> Canvas<'a> {
     }
 
     /// Draw a point.
-    pub fn draw_point(&mut self, point: Point, paint: &Paint) {
+    pub fn draw_point(&mut self, pt: Point, paint: &Paint) {
         match &mut self.backing {
             Backing::Raster(_) => {
-                self.with_rasterizer(|raster| raster.draw_point(point, paint));
+                self.with_rasterizer(|raster| raster.draw_point(pt, paint));
             }
             Backing::Recording(commands) => {
                 commands.push(DrawCommand::DrawPoint {
-                    point,
+                    point: pt,
                     paint: paint.clone(),
                 });
             }
