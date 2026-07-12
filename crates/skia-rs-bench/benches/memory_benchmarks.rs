@@ -1,6 +1,11 @@
 //! Memory usage benchmarks for skia-rs.
 //!
 //! These benchmarks measure memory allocation patterns rather than speed.
+#![allow(
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "benchmark dimensions/loop indices are always small positive literals; this is deliberate benchmark workload sizing, not general-purpose numeric code"
+)]
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
@@ -99,7 +104,7 @@ fn bench_path_memory(c: &mut Criterion) {
 fn bench_pathbuilder_growth(c: &mut Criterion) {
     let mut group = c.benchmark_group("memory/pathbuilder_growth");
 
-    let counts = [100, 1000, 10000, 100000];
+    let counts = [100, 1000, 10_000, 100_000];
 
     for &count in &counts {
         group.throughput(Throughput::Elements(count as u64));

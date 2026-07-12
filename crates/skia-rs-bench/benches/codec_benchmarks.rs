@@ -1,4 +1,10 @@
 //! Image codec benchmarks.
+#![allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "benchmark image dimensions/pixel indices are always small positive literals defined alongside each cast; this is deliberate benchmark workload sizing, not general-purpose numeric code"
+)]
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use skia_rs_codec::{
@@ -59,7 +65,7 @@ fn bench_image_creation(c: &mut Criterion) {
                     Image::from_color(
                         black_box(w),
                         black_box(h),
-                        black_box(0xFF804020u32), // ARGB color as u32
+                        black_box(0xFF80_4020u32), // ARGB color as u32
                     )
                 });
             },
@@ -134,13 +140,13 @@ fn bench_png_decode(c: &mut Criterion) {
         // Create and encode an image first
         let image = create_test_image(w, h);
         let encoder = PngEncoder::new();
-        let mut encoded = Vec::new();
-        encoder.encode(&image, &mut encoded).unwrap();
+        let mut encoded_bytes = Vec::new();
+        encoder.encode(&image, &mut encoded_bytes).unwrap();
 
         let decoder = PngDecoder::new();
 
-        group.throughput(Throughput::Bytes(encoded.len() as u64));
-        group.bench_with_input(BenchmarkId::new("decode", name), &encoded, |b, encoded| {
+        group.throughput(Throughput::Bytes(encoded_bytes.len() as u64));
+        group.bench_with_input(BenchmarkId::new("decode", name), &encoded_bytes, |b, encoded| {
             b.iter(|| decoder.decode_bytes(black_box(encoded)).unwrap());
         });
     }
@@ -191,13 +197,13 @@ fn bench_jpeg_decode(c: &mut Criterion) {
         // Create and encode an image first
         let image = create_test_image(w, h);
         let encoder = JpegEncoder::with_quality(EncoderQuality::new(90));
-        let mut encoded = Vec::new();
-        encoder.encode(&image, &mut encoded).unwrap();
+        let mut encoded_bytes = Vec::new();
+        encoder.encode(&image, &mut encoded_bytes).unwrap();
 
         let decoder = JpegDecoder::new();
 
-        group.throughput(Throughput::Bytes(encoded.len() as u64));
-        group.bench_with_input(BenchmarkId::new("decode", name), &encoded, |b, encoded| {
+        group.throughput(Throughput::Bytes(encoded_bytes.len() as u64));
+        group.bench_with_input(BenchmarkId::new("decode", name), &encoded_bytes, |b, encoded| {
             b.iter(|| decoder.decode_bytes(black_box(encoded)).unwrap());
         });
     }

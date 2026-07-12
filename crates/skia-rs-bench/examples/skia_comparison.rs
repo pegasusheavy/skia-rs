@@ -5,6 +5,10 @@
 //!
 //! Usage:
 //!   cargo run --example `skia_comparison` -p skia-rs-bench --release
+#![allow(
+    clippy::cast_precision_loss,
+    reason = "loop indices are bounded by small fixed ranges (5, 100); precision loss cannot occur in practice"
+)]
 
 use skia_rs_bench::skia_comparison::{
     BenchmarkRunner, ComparisonReport, ComparisonResult, reference_timings,
@@ -14,21 +18,7 @@ use skia_rs_core::{Color, Matrix, Point, Rect};
 use skia_rs_paint::Paint;
 use skia_rs_path::PathBuilder;
 
-fn main() {
-    println!("skia-rs vs Skia Performance Comparison");
-    println!("======================================\n");
-
-    let mut report = ComparisonReport::new();
-
-    // Add system info
-    report.set_metadata("platform", std::env::consts::OS);
-    report.set_metadata("arch", std::env::consts::ARCH);
-
-    let runner = BenchmarkRunner::new().iterations(1000).warmup(100);
-
-    // ==========================================================================
-    // Core Operations
-    // ==========================================================================
+fn run_core_benchmarks(report: &mut ComparisonReport, runner: &BenchmarkRunner) {
     println!("Running core benchmarks...");
 
     // Matrix multiply
@@ -74,10 +64,9 @@ fn main() {
         )
         .with_notes("Single point transform"),
     );
+}
 
-    // ==========================================================================
-    // Path Operations
-    // ==========================================================================
+fn run_path_benchmarks(report: &mut ComparisonReport, runner: &BenchmarkRunner) {
     println!("Running path benchmarks...");
 
     // Build a 100-line path
@@ -103,9 +92,9 @@ fn main() {
     );
 
     // Path contains
-    let point = Point::new(500.0, 25.0);
+    let query_point = Point::new(500.0, 25.0);
     let time = runner.run(|| {
-        std::hint::black_box(path.contains(point));
+        std::hint::black_box(path.contains(query_point));
     });
     report.add(
         ComparisonResult::compare(
@@ -134,10 +123,9 @@ fn main() {
         )
         .with_notes("Build 100-line path"),
     );
+}
 
-    // ==========================================================================
-    // Surface Operations
-    // ==========================================================================
+fn run_surface_benchmarks(report: &mut ComparisonReport, runner: &BenchmarkRunner) {
     println!("Running surface benchmarks...");
 
     // Surface creation - 256x256
@@ -181,20 +169,19 @@ fn main() {
         )
         .with_notes("1080p clear"),
     );
+}
 
-    // ==========================================================================
-    // Drawing Operations
-    // ==========================================================================
+fn run_drawing_benchmarks(report: &mut ComparisonReport, runner: &BenchmarkRunner) {
     println!("Running drawing benchmarks...");
 
     let mut surface = Surface::new_raster_n32_premul(1000, 1000).unwrap();
-    let paint = Paint::new();
+    let fill_paint = Paint::new();
     let rect = Rect::from_xywh(100.0, 100.0, 200.0, 200.0);
 
     // Draw rect
     let time = runner.run(|| {
         let mut canvas = surface.raster_canvas();
-        canvas.draw_rect(&rect, &paint);
+        canvas.draw_rect(&rect, &fill_paint);
     });
     report.add(
         ComparisonResult::compare(
@@ -208,7 +195,7 @@ fn main() {
     // Draw circle
     let time = runner.run(|| {
         let mut canvas = surface.raster_canvas();
-        canvas.draw_circle(Point::new(500.0, 500.0), 100.0, &paint);
+        canvas.draw_circle(Point::new(500.0, 500.0), 100.0, &fill_paint);
     });
     report.add(
         ComparisonResult::compare(
@@ -244,7 +231,7 @@ fn main() {
 
     let time = runner.run(|| {
         let mut canvas = surface.raster_canvas();
-        canvas.draw_path(&star, &paint);
+        canvas.draw_path(&star, &fill_paint);
     });
     report.add(
         ComparisonResult::compare(
@@ -254,6 +241,24 @@ fn main() {
         )
         .with_notes("10-vertex star"),
     );
+}
+
+fn main() {
+    println!("skia-rs vs Skia Performance Comparison");
+    println!("======================================\n");
+
+    let mut report = ComparisonReport::new();
+
+    // Add system info
+    report.set_metadata("platform", std::env::consts::OS);
+    report.set_metadata("arch", std::env::consts::ARCH);
+
+    let runner = BenchmarkRunner::new().iterations(1000).warmup(100);
+
+    run_core_benchmarks(&mut report, &runner);
+    run_path_benchmarks(&mut report, &runner);
+    run_surface_benchmarks(&mut report, &runner);
+    run_drawing_benchmarks(&mut report, &runner);
 
     // ==========================================================================
     // Generate Report

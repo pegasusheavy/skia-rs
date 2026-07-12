@@ -1,4 +1,8 @@
 //! Rasterization benchmarks.
+#![allow(
+    clippy::cast_sign_loss,
+    reason = "benchmark canvas dimensions are always small positive literals; this is deliberate benchmark workload sizing, not general-purpose numeric code"
+)]
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use skia_rs_bench::{
@@ -169,7 +173,7 @@ fn bench_raster_circles(c: &mut Criterion) {
     // Varying radius
     for radius in [10.0, 50.0, 100.0, 500.0] {
         group.bench_with_input(
-            BenchmarkId::new("fill/radius", radius as i32),
+            BenchmarkId::new("fill/radius", skia_rs_core::cast::round_to_i32(radius)),
             &radius,
             |b, &radius| {
                 b.iter(|| {

@@ -62,9 +62,13 @@ fn bench_font(c: &mut Criterion) {
 
     // Font creation
     for size in [12.0, 16.0, 24.0, 48.0, 72.0] {
-        group.bench_with_input(BenchmarkId::new("new", size as i32), &size, |b, &size| {
-            b.iter(|| Font::new(black_box(typeface.clone()), black_box(size)));
-        });
+        group.bench_with_input(
+            BenchmarkId::new("new", skia_rs_core::cast::round_to_i32(size)),
+            &size,
+            |b, &size| {
+                b.iter(|| Font::new(black_box(typeface.clone()), black_box(size)));
+            },
+        );
     }
 
     let font = Font::new(typeface.clone(), 16.0);
@@ -113,6 +117,10 @@ fn bench_font_style(c: &mut Criterion) {
     group.finish();
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "loop index is bounded by a fixed small run_count [2, 5, 10]; precision loss cannot occur in practice"
+)]
 fn bench_text_blob(c: &mut Criterion) {
     let mut group = c.benchmark_group("Text/text_blob");
 

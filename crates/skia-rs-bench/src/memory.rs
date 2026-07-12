@@ -4,6 +4,7 @@
 //! peak memory usage, and allocation counts for various operations.
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 // =============================================================================
@@ -23,9 +24,15 @@ pub struct TrackingAllocator {
     inner: System,
 }
 
+impl Default for TrackingAllocator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TrackingAllocator {
     /// Create a new tracking allocator.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self { inner: System }
     }
@@ -138,7 +145,11 @@ impl MemoryStats {
     }
 
     /// Get bytes per allocation (average).
-    #[must_use] 
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "benchmark byte/allocation counts stay far below 2^52; precision loss cannot occur in practice for reported averages"
+    )]
     pub fn bytes_per_alloc(&self) -> f64 {
         if self.alloc_count == 0 {
             0.0
@@ -167,7 +178,11 @@ impl std::fmt::Display for MemoryStats {
 }
 
 /// Format bytes as human-readable string.
-#[must_use] 
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "benchmark byte counts stay far below 2^52; precision loss cannot occur in practice for a human-readable size"
+)]
 pub fn format_bytes(bytes: usize) -> String {
     const KB: usize = 1024;
     const MB: usize = KB * 1024;
@@ -243,8 +258,14 @@ impl MemoryMeasurement {
         }
     }
 
+    /// Get the label for this measurement.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
     /// Get the current stats (delta from start).
-    #[must_use] 
+    #[must_use]
     pub fn current(&self) -> MemoryStats {
         let now = get_stats();
         MemoryStats {
@@ -323,22 +344,24 @@ impl MemoryProfile {
         let mut report = String::new();
         report.push_str("Memory Profile Report\n");
         report.push_str("=====================\n\n");
-        report.push_str(&format!(
-            "{:<40} {:>12} {:>12} {:>10} {:>12}\n",
+        let _ = writeln!(
+            report,
+            "{:<40} {:>12} {:>12} {:>10} {:>12}",
             "Operation", "Allocated", "Peak", "Allocs", "Bytes/Alloc"
-        ));
+        );
         report.push_str(&"-".repeat(90));
         report.push('\n');
 
         for (label, stats) in &self.measurements {
-            report.push_str(&format!(
-                "{:<40} {:>12} {:>12} {:>10} {:>12.1}\n",
+            let _ = writeln!(
+                report,
+                "{:<40} {:>12} {:>12} {:>10} {:>12.1}",
                 label,
                 format_bytes(stats.allocated),
                 format_bytes(stats.peak),
                 stats.alloc_count,
                 stats.bytes_per_alloc()
-            ));
+            );
         }
 
         report.push_str(&"-".repeat(90));
@@ -354,13 +377,14 @@ impl MemoryProfile {
             .max()
             .unwrap_or(0);
 
-        report.push_str(&format!(
-            "{:<40} {:>12} {:>12} {:>10}\n",
+        let _ = writeln!(
+            report,
+            "{:<40} {:>12} {:>12} {:>10}",
             "TOTAL",
             format_bytes(total_allocated),
             format_bytes(max_peak),
             total_allocs
-        ));
+        );
 
         report
     }
@@ -455,8 +479,8 @@ mod tests {
         assert_eq!(format_bytes(500), "500 B");
         assert_eq!(format_bytes(1024), "1.00 KB");
         assert_eq!(format_bytes(1536), "1.50 KB");
-        assert_eq!(format_bytes(1048576), "1.00 MB");
-        assert_eq!(format_bytes(1073741824), "1.00 GB");
+        assert_eq!(format_bytes(1_048_576), "1.00 MB");
+        assert_eq!(format_bytes(1_073_741_824), "1.00 GB");
     }
 
     #[test]
@@ -470,7 +494,7 @@ mod tests {
         };
 
         assert_eq!(stats.current(), 600);
-        assert_eq!(stats.bytes_per_alloc(), 100.0);
+        assert!((stats.bytes_per_alloc() - 100.0).abs() < f64::EPSILON);
     }
 
     #[test]

@@ -88,7 +88,11 @@ pub fn random_matrices(rng: &mut impl Rng, count: usize) -> Vec<Matrix> {
 }
 
 /// Generate a simple path with the given number of segments.
-#[must_use] 
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "loop index converted to Scalar for benchmark geometry generation; segment counts never approach 2^24 so precision loss cannot occur in practice"
+)]
 pub fn generate_simple_path(segment_count: usize) -> Path {
     let mut builder = PathBuilder::new();
     builder.move_to(0.0, 0.0);
@@ -104,7 +108,11 @@ pub fn generate_simple_path(segment_count: usize) -> Path {
 }
 
 /// Generate a path with mixed curve types.
-#[must_use] 
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "loop index converted to Scalar for benchmark geometry generation; segment counts never approach 2^24 so precision loss cannot occur in practice"
+)]
 pub fn generate_complex_path(segment_count: usize) -> Path {
     let mut builder = PathBuilder::new();
     let mut rng = create_rng();
@@ -128,7 +136,11 @@ pub fn generate_complex_path(segment_count: usize) -> Path {
 }
 
 /// Generate a path with multiple contours.
-#[must_use] 
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "loop index converted to Scalar for benchmark geometry generation; contour/segment counts never approach 2^24 so precision loss cannot occur in practice"
+)]
 pub fn generate_multi_contour_path(contour_count: usize, segments_per_contour: usize) -> Path {
     let mut builder = PathBuilder::new();
     let mut rng = create_rng();
@@ -152,7 +164,11 @@ pub fn generate_multi_contour_path(contour_count: usize, segments_per_contour: u
 }
 
 /// Generate nested rectangles path.
-#[must_use] 
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "loop index converted to Scalar for benchmark geometry generation; counts never approach 2^24 so precision loss cannot occur in practice"
+)]
 pub fn generate_nested_rects(count: usize, spacing: Scalar) -> Path {
     let mut builder = PathBuilder::new();
 
@@ -166,7 +182,11 @@ pub fn generate_nested_rects(count: usize, spacing: Scalar) -> Path {
 }
 
 /// Generate a star path.
-#[must_use] 
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "loop index converted to Scalar for benchmark geometry generation; point counts never approach 2^24 so precision loss cannot occur in practice"
+)]
 pub fn generate_star(points: usize, outer_radius: Scalar, inner_radius: Scalar) -> Path {
     let mut builder = PathBuilder::new();
 

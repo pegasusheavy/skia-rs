@@ -129,12 +129,16 @@ fn bench_rect_operations(c: &mut Criterion) {
     for size in [sizes::SMALL, sizes::MEDIUM, sizes::LARGE] {
         let mut rng = create_rng();
         let bounds = Rect::from_xywh(0.0, 0.0, 1000.0, 1000.0);
-        let rects = random_rects(&mut rng, size, &bounds, 100.0);
+        let rect_batch = random_rects(&mut rng, size, &bounds, 100.0);
 
         group.throughput(Throughput::Elements(size as u64));
-        group.bench_with_input(BenchmarkId::new("batch_union", size), &rects, |b, rects| {
-            b.iter(|| rects.iter().fold(Rect::EMPTY, |acc, r| acc.join(r)));
-        });
+        group.bench_with_input(
+            BenchmarkId::new("batch_union", size),
+            &rect_batch,
+            |b, rects| {
+                b.iter(|| rects.iter().fold(Rect::EMPTY, |acc, r| acc.join(r)));
+            },
+        );
     }
 
     group.finish();
@@ -247,6 +251,10 @@ fn bench_color4f_operations(c: &mut Criterion) {
     group.finish();
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "loop index is bounded by a fixed 1000-element range; precision loss cannot occur in practice"
+)]
 fn bench_scalar_operations(c: &mut Criterion) {
     let mut group = c.benchmark_group("Scalar");
 

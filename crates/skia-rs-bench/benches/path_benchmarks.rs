@@ -60,6 +60,12 @@ fn bench_path_builder(c: &mut Criterion) {
         );
     });
 
+    group.finish();
+}
+
+fn bench_path_builder_curves(c: &mut Criterion) {
+    let mut group = c.benchmark_group("PathBuilder/curves");
+
     group.bench_function("cubic_to", |b| {
         b.iter_batched(
             || {
@@ -337,6 +343,7 @@ fn bench_path_mutation(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_path_builder,
+    bench_path_builder_curves,
     bench_path_shapes,
     bench_path_construction,
     bench_path_queries,

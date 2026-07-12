@@ -4,6 +4,7 @@
 //! and output against the original Skia library.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -52,6 +53,7 @@ impl ComparisonResult {
     }
 
     /// Add notes to the result.
+    #[must_use]
     pub fn with_notes(mut self, notes: impl Into<String>) -> Self {
         self.notes = notes.into();
         self
@@ -105,6 +107,16 @@ impl ComparisonReport {
     }
 
     /// Generate a formatted report.
+    ///
+    /// # Panics
+    ///
+    /// Never panics in practice: the `unwrap()` calls on `r.ratio` only run over
+    /// `with_comparison`, which is pre-filtered to entries where `ratio.is_some()`.
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "result count is bounded by the number of benchmark operations; precision loss cannot occur in practice for a reported average"
+    )]
     pub fn format(&self) -> String {
         let mut output = String::new();
 
@@ -114,7 +126,7 @@ impl ComparisonReport {
         if !self.metadata.is_empty() {
             output.push_str("## Metadata\n\n");
             for (key, value) in &self.metadata {
-                output.push_str(&format!("- **{key}**: {value}\n"));
+                let _ = writeln!(output, "- **{key}**: {value}");
             }
             output.push('\n');
         }
@@ -130,10 +142,11 @@ impl ComparisonReport {
                 .skia_time.map_or_else(|| "-".to_string(), format_duration);
             let ratio = result.format_ratio();
 
-            output.push_str(&format!(
-                "| {} | {} | {} | {} | {} |\n",
+            let _ = writeln!(
+                output,
+                "| {} | {} | {} | {} | {} |",
                 result.name, skia_rs, skia, ratio, result.notes
-            ));
+            );
         }
 
         // Summary
@@ -160,20 +173,22 @@ impl ComparisonReport {
                 .sum::<f64>()
                 / with_comparison.len() as f64;
 
-            output.push_str(&format!("- **Faster**: {faster_count} operations\n"));
-            output.push_str(&format!("- **Slower**: {slower_count} operations\n"));
-            output.push_str(&format!("- **Same**: {same_count} operations\n"));
-            output.push_str(&format!("- **Average ratio**: {avg_ratio:.2}x\n"));
+            let _ = writeln!(output, "- **Faster**: {faster_count} operations");
+            let _ = writeln!(output, "- **Slower**: {slower_count} operations");
+            let _ = writeln!(output, "- **Same**: {same_count} operations");
+            let _ = writeln!(output, "- **Average ratio**: {avg_ratio:.2}x");
 
             if avg_ratio < 1.0 {
-                output.push_str(&format!(
-                    "\n**Overall: skia-rs is {:.1}x faster on average**\n",
+                let _ = writeln!(
+                    output,
+                    "\n**Overall: skia-rs is {:.1}x faster on average**",
                     1.0 / avg_ratio
-                ));
+                );
             } else if avg_ratio > 1.0 {
-                output.push_str(&format!(
-                    "\n**Overall: skia-rs is {avg_ratio:.1}x slower on average**\n"
-                ));
+                let _ = writeln!(
+                    output,
+                    "\n**Overall: skia-rs is {avg_ratio:.1}x slower on average**"
+                );
             }
         }
 
@@ -181,11 +196,19 @@ impl ComparisonReport {
     }
 
     /// Save report to a file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be written (see [`fs::write`]).
     pub fn save(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
         fs::write(path, self.format())
     }
 
     /// Save as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be written (see [`fs::write`]).
     pub fn save_json(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
         let json = self.to_json();
         fs::write(path, json)
@@ -237,9 +260,9 @@ fn format_duration(d: Duration) -> String {
     if nanos >= 1_000_000_000 {
         format!("{:.2}s", d.as_secs_f64())
     } else if nanos >= 1_000_000 {
-        format!("{:.2}ms", nanos as f64 / 1_000_000.0)
+        format!("{:.2}ms", d.as_secs_f64() * 1_000.0)
     } else if nanos >= 1_000 {
-        format!("{:.2}µs", nanos as f64 / 1_000.0)
+        format!("{:.2}µs", d.as_secs_f64() * 1_000_000.0)
     } else {
         format!("{nanos}ns")
     }
@@ -299,7 +322,7 @@ impl BenchmarkRunner {
         }
         let elapsed = start.elapsed();
 
-        elapsed / self.iterations as u32
+        elapsed / u32::try_from(self.iterations).unwrap_or(u32::MAX)
     }
 
     /// Run a benchmark with setup.
@@ -323,7 +346,7 @@ impl BenchmarkRunner {
             total += start.elapsed();
         }
 
-        total / self.iterations as u32
+        total / u32::try_from(self.iterations).unwrap_or(u32::MAX)
     }
 }
 
@@ -356,11 +379,10 @@ pub mod reference_timings {
             // Path operations
             "path_bounds" => Some(Duration::from_nanos(50)),
             "path_contains" => Some(Duration::from_nanos(200)),
-            "path_100_lines" => Some(Duration::from_nanos(500)),
 
             // Drawing operations (1000x1000 surface)
             "draw_rect" => Some(Duration::from_nanos(100)),
-            "draw_circle" => Some(Duration::from_nanos(500)),
+            "path_100_lines" | "draw_circle" => Some(Duration::from_nanos(500)),
             "draw_path_star" => Some(Duration::from_micros(5)),
 
             // Surface operations
@@ -373,6 +395,10 @@ pub mod reference_timings {
     }
 
     /// Load reference timings from a JSON file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read (see [`fs::read_to_string`]).
     pub fn load_from_file(path: impl AsRef<Path>) -> std::io::Result<HashMap<String, Duration>> {
         let content = fs::read_to_string(path)?;
         let mut timings = HashMap::new();

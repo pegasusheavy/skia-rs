@@ -59,6 +59,10 @@ pub trait Sink: Send + Sync {
     fn name(&self) -> &str;
 
     /// Process a test result
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SinkError`] if the sink fails to process the result (e.g. I/O failure).
     fn process(&self, result: &TestResult) -> Result<(), SinkError>;
 }
 
@@ -254,7 +258,11 @@ impl StandardGms {
     }
 
     /// Circles GM
-    #[must_use] 
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "loop index is bounded by a 3-element array; precision loss cannot occur in practice"
+    )]
     pub fn circles() -> Gm {
         Gm::new("circles", 300, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -274,7 +282,11 @@ impl StandardGms {
     }
 
     /// Paths GM
-    #[must_use] 
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "loop index is bounded by a fixed 5-point star; precision loss cannot occur in practice"
+    )]
     pub fn paths() -> Gm {
         Gm::new("paths", 200, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -316,7 +328,11 @@ impl StandardGms {
     }
 
     /// Gradients GM
-    #[must_use] 
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "loop index is bounded by small fixed ranges (100, 40); precision loss cannot occur in practice"
+    )]
     pub fn gradients() -> Gm {
         Gm::new("gradients", 300, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -328,8 +344,8 @@ impl StandardGms {
             // "Linear gradient" approximation
             for i in 0..100 {
                 let t = i as f32 / 100.0;
-                let r = (255.0 * (1.0 - t)) as u8;
-                let b = (255.0 * t) as u8;
+                let r = skia_rs_core::cast::f32_to_u8_sat(255.0 * (1.0 - t));
+                let b = skia_rs_core::cast::f32_to_u8_sat(255.0 * t);
                 paint.set_color32(Color::from_argb(255, r, 0, b));
                 canvas.draw_rect(
                     &Rect::from_xywh((i as f32).mul_add(1.3, 10.0), 20.0, 2.0, 60.0),
@@ -340,7 +356,7 @@ impl StandardGms {
             // "Radial gradient" approximation
             for i in (0..40).rev() {
                 let t = i as f32 / 40.0;
-                let g = (255.0 * t) as u8;
+                let g = skia_rs_core::cast::f32_to_u8_sat(255.0 * t);
                 paint.set_color32(Color::from_argb(255, 255, g, 0));
                 canvas.draw_circle(Point::new(200.0, 140.0), i as f32, &paint);
             }
@@ -414,7 +430,11 @@ impl StandardGms {
     }
 
     /// Stroke styles GM
-    #[must_use] 
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "loop index is bounded by a 4-element array; precision loss cannot occur in practice"
+    )]
     pub fn stroke_styles() -> Gm {
         Gm::new("stroke_styles", 300, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -467,7 +487,11 @@ impl StandardGms {
     }
 
     /// Alpha blending GM
-    #[must_use] 
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "loop index is bounded by a 5-element array; precision loss cannot occur in practice"
+    )]
     pub fn alpha_blending() -> Gm {
         Gm::new("alpha_blending", 200, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -570,6 +594,11 @@ impl ComparisonSink {
     }
 
     /// Get comparison results
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal results mutex is poisoned (i.e. a prior lock holder panicked).
+    #[must_use]
     pub fn results(&self) -> Vec<ComparisonResult> {
         self.results.lock().unwrap().clone()
     }
@@ -580,6 +609,13 @@ impl Sink for ComparisonSink {
         "comparison"
     }
 
+    /// # Errors
+    ///
+    /// This sink never returns an error; the signature matches [`Sink::process`].
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "pixel diff counts are bounded by benchmark image sizes; precision loss is immaterial for a reported ratio"
+    )]
     fn process(&self, result: &TestResult) -> Result<(), SinkError> {
         if result.outcome != TestOutcome::Pass {
             return Ok(());
@@ -595,35 +631,38 @@ impl Sink for ComparisonSink {
         // Load reference image
         let reference = std::fs::read(&ref_path).ok();
 
-        let comparison = if let Some(ref_pixels) = reference {
-            // Compare pixels
-            let mut diff_count = 0u32;
-            let total = pixels.len().min(ref_pixels.len());
+        let threshold = u32::from(skia_rs_core::cast::f32_to_u8_sat(self.tolerance * 255.0));
 
-            for i in 0..total {
-                let diff = (i32::from(pixels[i]) - i32::from(ref_pixels[i])).unsigned_abs();
-                if diff > (self.tolerance * 255.0) as u32 {
-                    diff_count += 1;
-                }
-            }
-
-            let diff_ratio = diff_count as f32 / total as f32;
-
-            ComparisonResult {
-                name: format!("{}_{}", result.source, result.renderer),
-                matches: diff_ratio <= self.tolerance,
-                difference: diff_ratio,
-                diff_pixels: diff_count,
-            }
-        } else {
-            // No reference - consider it a new test
-            ComparisonResult {
+        let comparison = reference.map_or_else(
+            || ComparisonResult {
+                // No reference - consider it a new test
                 name: format!("{}_{}", result.source, result.renderer),
                 matches: true, // New tests pass by default
                 difference: 0.0,
                 diff_pixels: 0,
-            }
-        };
+            },
+            |ref_pixels| {
+                // Compare pixels
+                let mut diff_count = 0u32;
+                let total = pixels.len().min(ref_pixels.len());
+
+                for i in 0..total {
+                    let diff = (i32::from(pixels[i]) - i32::from(ref_pixels[i])).unsigned_abs();
+                    if diff > threshold {
+                        diff_count += 1;
+                    }
+                }
+
+                let diff_ratio = diff_count as f32 / total as f32;
+
+                ComparisonResult {
+                    name: format!("{}_{}", result.source, result.renderer),
+                    matches: diff_ratio <= self.tolerance,
+                    difference: diff_ratio,
+                    diff_pixels: diff_count,
+                }
+            },
+        );
 
         self.results.lock().unwrap().push(comparison);
         Ok(())
@@ -707,7 +746,7 @@ impl DmRunner {
             }
 
             for renderer in &self.renderers {
-                let result = self.run_single(source.as_ref(), renderer.as_ref());
+                let result = Self::run_single(source.as_ref(), renderer.as_ref());
 
                 // Process through sinks
                 for sink in &self.sinks {
@@ -724,15 +763,22 @@ impl DmRunner {
         report
     }
 
-    fn run_single(&self, source: &dyn Source, renderer: &dyn Renderer) -> TestResult {
+    fn run_single(source: &dyn Source, renderer: &dyn Renderer) -> TestResult {
         let (width, height) = source.size();
         let start = Instant::now();
 
         // Create surface
         let surface = renderer.create_surface(width, height);
 
-        let (outcome, pixels, error) = match surface {
-            Some(mut surface) => {
+        let (outcome, pixels, error) = surface.map_or_else(
+            || {
+                (
+                    TestOutcome::Skip,
+                    None,
+                    Some("Could not create surface".to_string()),
+                )
+            },
+            |mut surface| {
                 // Catch panics
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     source.draw(&mut surface);
@@ -749,13 +795,8 @@ impl DmRunner {
                         Some("Panic during draw".to_string()),
                     ),
                 }
-            }
-            None => (
-                TestOutcome::Skip,
-                None,
-                Some("Could not create surface".to_string()),
-            ),
-        };
+            },
+        );
 
         TestResult {
             source: source.name().to_string(),

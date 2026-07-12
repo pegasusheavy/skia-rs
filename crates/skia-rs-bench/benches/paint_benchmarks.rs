@@ -4,9 +4,9 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use skia_rs_bench::{create_rng, random_colors4f, sizes};
 use skia_rs_core::{Color, Color4f, Point, Rect};
 use skia_rs_paint::{
-    BlendMode, BlurMaskFilter, BlurStyle, ColorMatrixFilter, ColorShader, DropShadowImageFilter,
-    LinearGradient, Paint, RadialGradient, Shader, StrokeCap, StrokeJoin, Style, SweepGradient,
-    TileMode,
+    BlendMode, BlurImageFilter, BlurMaskFilter, BlurStyle, ColorFilter, ColorMatrixFilter,
+    ColorShader, DropShadowImageFilter, ImageFilter, LinearGradient, MaskFilter, Paint,
+    RadialGradient, Shader, StrokeCap, StrokeJoin, Style, SweepGradient, TileMode,
 };
 use std::hint::black_box;
 
@@ -314,8 +314,6 @@ fn bench_color_filter(c: &mut Criterion) {
     let saturation = ColorMatrixFilter::saturation(0.5);
     let color = Color4f::new(0.8, 0.6, 0.4, 1.0);
 
-    use skia_rs_paint::ColorFilter;
-
     group.bench_function("identity_filter", |b| {
         b.iter(|| identity.filter_color(black_box(color)));
     });
@@ -360,7 +358,6 @@ fn bench_mask_filter(c: &mut Criterion) {
 
     group.bench_function("blur_sigma", |b| b.iter(|| black_box(&blur).sigma()));
 
-    use skia_rs_paint::MaskFilter;
     group.bench_function("blur_radius", |b| b.iter(|| black_box(&blur).blur_radius()));
 
     group.finish();
@@ -368,8 +365,6 @@ fn bench_mask_filter(c: &mut Criterion) {
 
 fn bench_image_filter(c: &mut Criterion) {
     let mut group = c.benchmark_group("ImageFilter");
-
-    use skia_rs_paint::{BlurImageFilter, ImageFilter};
 
     group.bench_function("blur_create", |b| {
         b.iter(|| BlurImageFilter::new(black_box(5.0), black_box(5.0), TileMode::Clamp));
