@@ -14,6 +14,7 @@
 //!   working. A six-letter subset prefix is prepended to the `BaseFont` name
 //!   per PDF convention.
 
+use skia_rs_core::cast::saturate_to_i32;
 use skia_rs_core::Scalar;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
@@ -325,14 +326,14 @@ impl PdfFont {
         let mut dict = format!("{id} 0 obj\n<<\n");
         dict.push_str("/Type /Font\n");
         dict.push_str("/Subtype /CIDFontType2\n");
-        let _ = write!(dict, "/BaseFont /{}\n", self.pdf_base_font());
+        let _ = writeln!(dict, "/BaseFont /{}", self.pdf_base_font());
         dict.push_str(
             "/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>\n",
         );
-        let _ = write!(dict, "/FontDescriptor {font_descriptor_id} 0 R\n");
+        let _ = writeln!(dict, "/FontDescriptor {font_descriptor_id} 0 R");
         dict.push_str("/CIDToGIDMap /Identity\n");
         dict.push_str("/DW 1000\n");
-        let _ = write!(dict, "/W {}\n", self.cid_width_array());
+        let _ = writeln!(dict, "/W {}", self.cid_width_array());
         dict.push_str(">>\nendobj\n");
         dict
     }
@@ -377,25 +378,29 @@ impl PdfFont {
     pub fn to_font_descriptor(&self, id: u32, font_file_id: Option<u32>) -> String {
         let mut dict = format!("{id} 0 obj\n<<\n");
         dict.push_str("/Type /FontDescriptor\n");
-        let _ = write!(dict, "/FontName /{}\n", self.pdf_base_font());
-        let _ = write!(dict, "/Flags {}\n", self.flags | 32); // Non-symbolic
-        let _ = write!(dict, 
-            "/FontBBox [{} {} {} {}]\n",
-            self.bbox[0] as i32, self.bbox[1] as i32, self.bbox[2] as i32, self.bbox[3] as i32
+        let _ = writeln!(dict, "/FontName /{}", self.pdf_base_font());
+        let _ = writeln!(dict, "/Flags {}", self.flags | 32); // Non-symbolic
+        let _ = writeln!(
+            dict,
+            "/FontBBox [{} {} {} {}]",
+            saturate_to_i32(self.bbox[0]),
+            saturate_to_i32(self.bbox[1]),
+            saturate_to_i32(self.bbox[2]),
+            saturate_to_i32(self.bbox[3])
         );
-        let _ = write!(dict, "/ItalicAngle {}\n", self.italic_angle as i32);
-        let _ = write!(dict, "/Ascent {}\n", self.ascender as i32);
-        let _ = write!(dict, "/Descent {}\n", self.descender as i32);
-        let _ = write!(dict, "/CapHeight {}\n", self.cap_height as i32);
-        let _ = write!(dict, "/StemV {}\n", self.stem_v as i32);
+        let _ = writeln!(dict, "/ItalicAngle {}", saturate_to_i32(self.italic_angle));
+        let _ = writeln!(dict, "/Ascent {}", saturate_to_i32(self.ascender));
+        let _ = writeln!(dict, "/Descent {}", saturate_to_i32(self.descender));
+        let _ = writeln!(dict, "/CapHeight {}", saturate_to_i32(self.cap_height));
+        let _ = writeln!(dict, "/StemV {}", saturate_to_i32(self.stem_v));
 
         if let Some(file_id) = font_file_id {
             match self.font_type {
                 PdfFontType::TrueType | PdfFontType::Type0 => {
-                    let _ = write!(dict, "/FontFile2 {file_id} 0 R\n");
+                    let _ = writeln!(dict, "/FontFile2 {file_id} 0 R");
                 }
                 PdfFontType::OpenTypeCff => {
-                    let _ = write!(dict, "/FontFile3 {file_id} 0 R\n");
+                    let _ = writeln!(dict, "/FontFile3 {file_id} 0 R");
                 }
                 _ => {}
             }
@@ -471,18 +476,18 @@ impl PdfFont {
         // CMap bfchar entries come in blocks of at most 100.
         if is_simple {
             for chunk in simple_entries.chunks(100) {
-                let _ = write!(cmap, "{} beginbfchar\n", chunk.len());
+                let _ = writeln!(cmap, "{} beginbfchar", chunk.len());
                 for &(code, ch) in chunk {
                     let mut buf = [0u16; 2];
                     let units = ch.encode_utf16(&mut buf);
                     let target: String = units.iter().map(|u| format!("{u:04X}")).collect();
-                    let _ = write!(cmap, "<{code:02X}> <{target}>\n");
+                    let _ = writeln!(cmap, "<{code:02X}> <{target}>");
                 }
                 cmap.push_str("endbfchar\n");
             }
         } else {
             for chunk in entries.chunks(100) {
-                let _ = write!(cmap, "{} beginbfchar\n", chunk.len());
+                let _ = writeln!(cmap, "{} beginbfchar", chunk.len());
                 for &(code, ch) in chunk {
                     let src_code = if code > 0xFFFF {
                         // Non-BMP — encode as surrogate pair in the source
@@ -498,7 +503,7 @@ impl PdfFont {
                     let units = ch.encode_utf16(&mut buf);
                     let target: String = units.iter().map(|u| format!("{u:04X}")).collect();
 
-                    let _ = write!(cmap, "<{src_code}> <{target}>\n");
+                    let _ = writeln!(cmap, "<{src_code}> <{target}>");
                 }
                 cmap.push_str("endbfchar\n");
             }
@@ -837,8 +842,8 @@ mod tests {
     fn test_truetype_invalid_data_defaults() {
         let font = PdfFont::truetype("Bogus", vec![0, 1, 2, 3]);
         // Defaults.
-        assert_eq!(font.ascender as i32, 750);
-        assert_eq!(font.descender as i32, -250);
+        assert_eq!(saturate_to_i32(font.ascender), 750);
+        assert_eq!(saturate_to_i32(font.descender), -250);
         // Subset tag is still assigned so the BaseFont name is consistent.
         assert!(font.subset_tag.is_some());
         assert!(font.pdf_base_font().contains('+'));

@@ -6,6 +6,7 @@
 //! - Soft masks
 //! - Blend modes
 
+use skia_rs_core::cast::saturate_to_i32;
 use skia_rs_core::Scalar;
 use skia_rs_paint::BlendMode;
 use std::collections::HashMap;
@@ -87,35 +88,35 @@ impl ExtGraphicsState {
         dict.push_str("/Type /ExtGState\n");
 
         if let Some(alpha) = self.stroke_alpha {
-            let _ = write!(dict, "/CA {alpha:.3}\n");
+            let _ = writeln!(dict, "/CA {alpha:.3}");
         }
 
         if let Some(alpha) = self.fill_alpha {
-            let _ = write!(dict, "/ca {alpha:.3}\n");
+            let _ = writeln!(dict, "/ca {alpha:.3}");
         }
 
         if let Some(mode) = &self.blend_mode {
-            let _ = write!(dict, "/BM /{}\n", mode.pdf_name());
+            let _ = writeln!(dict, "/BM /{}", mode.pdf_name());
         }
 
         if let Some(mask_id) = self.soft_mask {
-            let _ = write!(dict, "/SMask {mask_id} 0 R\n");
+            let _ = writeln!(dict, "/SMask {mask_id} 0 R");
         }
 
         if let Some(ais) = self.alpha_is_shape {
-            let _ = write!(dict, "/AIS {}\n", if ais { "true" } else { "false" });
+            let _ = writeln!(dict, "/AIS {}", if ais { "true" } else { "false" });
         }
 
         if let Some(tk) = self.text_knockout {
-            let _ = write!(dict, "/TK {}\n", if tk { "true" } else { "false" });
+            let _ = writeln!(dict, "/TK {}", if tk { "true" } else { "false" });
         }
 
         if let Some(op) = self.stroke_overprint {
-            let _ = write!(dict, "/OP {}\n", if op { "true" } else { "false" });
+            let _ = writeln!(dict, "/OP {}", if op { "true" } else { "false" });
         }
 
         if let Some(op) = self.fill_overprint {
-            let _ = write!(dict, "/op {}\n", if op { "true" } else { "false" });
+            let _ = writeln!(dict, "/op {}", if op { "true" } else { "false" });
         }
 
         dict.push_str(">>\nendobj\n");
@@ -133,8 +134,8 @@ impl ExtGraphicsState {
     #[must_use] 
     pub fn cache_key(&self) -> ExtGStateKey {
         ExtGStateKey {
-            stroke_alpha: self.stroke_alpha.map(|a| (a * 1000.0) as i32),
-            fill_alpha: self.fill_alpha.map(|a| (a * 1000.0) as i32),
+            stroke_alpha: self.stroke_alpha.map(|a| saturate_to_i32(a * 1000.0)),
+            fill_alpha: self.fill_alpha.map(|a| saturate_to_i32(a * 1000.0)),
             blend_mode: self.blend_mode,
             soft_mask: self.soft_mask,
             alpha_is_shape: self.alpha_is_shape,
@@ -308,7 +309,7 @@ impl SoftMask {
             SoftMaskSubtype::Luminosity => dict.push_str("/S /Luminosity\n"),
         }
 
-        let _ = write!(dict, "/G {} 0 R\n", self.group_ref);
+        let _ = writeln!(dict, "/G {} 0 R", self.group_ref);
 
         if let Some(ref backdrop) = self.backdrop {
             dict.push_str("/BC [");
@@ -319,7 +320,7 @@ impl SoftMask {
         }
 
         if let Some(transfer_ref) = self.transfer {
-            let _ = write!(dict, "/TR {transfer_ref} 0 R\n");
+            let _ = writeln!(dict, "/TR {transfer_ref} 0 R");
         }
 
         dict.push_str(">>\nendobj\n");
@@ -388,7 +389,7 @@ impl TransparencyGroup {
         let mut output = Vec::new();
 
         use std::io::Write;
-        write!(output, "{id} 0 obj\n<<\n").unwrap();
+        writeln!(output, "{id} 0 obj\n<<").unwrap();
         writeln!(output, "/Type /XObject").unwrap();
         writeln!(output, "/Subtype /Form").unwrap();
         writeln!(output, "/FormType 1").unwrap();
@@ -418,9 +419,9 @@ impl TransparencyGroup {
 
         writeln!(output, ">>").unwrap();
         writeln!(output, "/Length {}", self.content.len()).unwrap();
-        write!(output, ">>\nstream\n").unwrap();
+        writeln!(output, ">>\nstream").unwrap();
         output.extend_from_slice(&self.content);
-        write!(output, "\nendstream\nendobj\n").unwrap();
+        writeln!(output, "\nendstream\nendobj").unwrap();
 
         output
     }

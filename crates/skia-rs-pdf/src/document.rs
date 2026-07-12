@@ -815,17 +815,17 @@ impl<'a> WriteCtx<'a> {
             PdfFontType::Type1 => {
                 dict.push_str("/Type /Font\n");
                 dict.push_str("/Subtype /Type1\n");
-                let _ = write!(dict, "/BaseFont /{}\n", font.base_font);
+                let _ = writeln!(dict, "/BaseFont /{}", font.base_font);
                 if let Some(ref enc) = font.encoding {
-                    let _ = write!(dict, "/Encoding /{enc}\n");
+                    let _ = writeln!(dict, "/Encoding /{enc}");
                 }
             }
             PdfFontType::TrueType => {
                 dict.push_str("/Type /Font\n");
                 dict.push_str("/Subtype /TrueType\n");
-                let _ = write!(dict, "/BaseFont /{}\n", font.pdf_base_font());
-                let _ = write!(dict, "/FirstChar {}\n", font.first_char);
-                let _ = write!(dict, "/LastChar {}\n", font.last_char);
+                let _ = writeln!(dict, "/BaseFont /{}", font.pdf_base_font());
+                let _ = writeln!(dict, "/FirstChar {}", font.first_char);
+                let _ = writeln!(dict, "/LastChar {}", font.last_char);
 
                 dict.push_str("/Widths [");
                 for code in font.first_char..=font.last_char {
@@ -835,27 +835,27 @@ impl<'a> WriteCtx<'a> {
                 dict.push_str("]\n");
 
                 if let Some(desc_id) = self.font_desc_ids[i] {
-                    let _ = write!(dict, "/FontDescriptor {desc_id} 0 R\n");
+                    let _ = writeln!(dict, "/FontDescriptor {desc_id} 0 R");
                 }
                 if let Some(ref enc) = font.encoding {
-                    let _ = write!(dict, "/Encoding /{enc}\n");
+                    let _ = writeln!(dict, "/Encoding /{enc}");
                 }
             }
             PdfFontType::OpenTypeCff | PdfFontType::Type0 => {
                 dict.push_str("/Type /Font\n");
                 dict.push_str("/Subtype /Type0\n");
-                let _ = write!(dict, "/BaseFont /{}\n", font.pdf_base_font());
+                let _ = writeln!(dict, "/BaseFont /{}", font.pdf_base_font());
                 dict.push_str("/Encoding /Identity-H\n");
                 // PDF 32000-1 §9.7.3: a Type0 font's glyphs come entirely
                 // from its descendant CID font — without this array the
                 // font has no outlines at all.
                 if let Some(desc_id) = self.font_descendant_ids[i] {
-                    let _ = write!(dict, "/DescendantFonts [{desc_id} 0 R]\n");
+                    let _ = writeln!(dict, "/DescendantFonts [{desc_id} 0 R]");
                 }
             }
         }
 
-        let _ = write!(dict, "/ToUnicode {to_unicode_id} 0 R\n");
+        let _ = writeln!(dict, "/ToUnicode {to_unicode_id} 0 R");
         dict.push_str(">>\nendobj\n");
         dict
     }
