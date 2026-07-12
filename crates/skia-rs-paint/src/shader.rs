@@ -10,6 +10,7 @@
 //! - Blend shaders
 
 use bitflags::bitflags;
+use skia_rs_core::cast::{floor_to_i32, saturate_to_i32, scalar_from_i32};
 use skia_rs_core::{Color4f, Matrix, Point, Rect, Scalar};
 use std::sync::Arc;
 
@@ -40,7 +41,8 @@ pub(crate) const SHADER_KIND_EMPTY: u8 = 11;
 fn serialize_child_shader(buf: &mut Vec<u8>, shader: &ShaderRef) {
     if let Some(child_data) = shader.serialize() {
         buf.push(1);
-        buf.extend_from_slice(&(child_data.len() as u32).to_le_bytes());
+        let len = u32::try_from(child_data.len()).unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
         buf.extend_from_slice(&child_data);
     } else {
         buf.push(0);
@@ -63,7 +65,8 @@ fn serialize_gradient_common(
     buf.extend_from_slice(&flags.bits().to_le_bytes());
 
     // Colors count (4 bytes)
-    buf.extend_from_slice(&(colors.len() as u32).to_le_bytes());
+    let colors_len = u32::try_from(colors.len()).unwrap_or(u32::MAX);
+    buf.extend_from_slice(&colors_len.to_le_bytes());
     for color in colors {
         buf.extend_from_slice(&color.r.to_le_bytes());
         buf.extend_from_slice(&color.g.to_le_bytes());
@@ -170,9 +173,11 @@ fn interpolate_gradient_color(
     }
 
     // Uniform positions
-    let scaled = t * (colors.len() - 1) as Scalar;
-    let idx = scaled.floor() as usize;
-    let frac = scaled - idx as Scalar;
+    let stops = i32::try_from(colors.len() - 1).unwrap_or(i32::MAX);
+    let scaled = t * scalar_from_i32(stops);
+    let idx_i32 = saturate_to_i32(scaled.floor());
+    let idx = usize::try_from(idx_i32).unwrap_or(0);
+    let frac = scaled - scalar_from_i32(idx_i32);
 
     if idx >= colors.len() - 1 {
         colors[colors.len() - 1]
@@ -247,6 +252,10 @@ fn apply_image_tile(coord: Scalar, size: Scalar, mode: TileMode) -> Scalar {
 ///
 /// Returns premultiplied Color4f in [0, 1]. For non-RGBA8 color types,
 /// the read is simplified (baseline support).
+#[allow(
+    clippy::many_single_char_names,
+    reason = "r/g/b/a are the conventional names for color channel components"
+)]
 fn read_pixel_rgba8(
     pixels: &[u8],
     info: &skia_rs_core::pixel::ImageInfo,
@@ -256,7 +265,9 @@ fn read_pixel_rgba8(
     use skia_rs_core::color::ColorType;
     let bpp = info.bytes_per_pixel();
     let row_bytes = info.min_row_bytes();
-    let offset = (y as usize) * row_bytes + (x as usize) * bpp;
+    let x = usize::try_from(x).unwrap_or(usize::MAX);
+    let y = usize::try_from(y).unwrap_or(usize::MAX);
+    let offset = y * row_bytes + x * bpp;
     if offset + bpp > pixels.len() {
         return Color4f::new(0.0, 0.0, 0.0, 0.0);
     }
@@ -1062,6 +1073,10 @@ impl Shader for TwoPointConicalGradient {
         ShaderKind::TwoPointConicalGradient
     }
 
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "faithful port of Skia's two-point-conical quadratic solve; a/b/c/d/dr/e/t0/t1 mirror the derivation in the comment above"
+    )]
     fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
         // Two-point conical gradient: solve quadratic for parameter t.
         // Point P at (x, y). Circles C0 = start_center (radius r0) and
@@ -1124,9 +1139,8 @@ impl Shader for TwoPointConicalGradient {
             }
         };
 
-        let t = match t_opt {
-            Some(t) => t,
-            None => return Color4f::transparent(),
+        let Some(t) = t_opt else {
+            return Color4f::transparent();
         };
 
         // Apply tile mode to t, then interpolate colors (honoring flags,
@@ -1285,8 +1299,8 @@ impl ImageShader {
         let bounds = Rect::from_xywh(
             0.0,
             0.0,
-            image_info.width() as Scalar,
-            image_info.height() as Scalar,
+            scalar_from_i32(image_info.width()),
+            scalar_from_i32(image_info.height()),
         );
         Self {
             bounds,
@@ -1355,16 +1369,16 @@ impl Shader for ImageShader {
         match self.sampling.filter {
             FilterMode::Nearest => {
                 // Apply tile mode to map (x, y) into [0, width) x [0, height).
-                let sx = apply_image_tile(x, width as Scalar, self.tile_mode_x);
-                let sy = apply_image_tile(y, height as Scalar, self.tile_mode_y);
+                let sx = apply_image_tile(x, scalar_from_i32(width), self.tile_mode_x);
+                let sy = apply_image_tile(y, scalar_from_i32(height), self.tile_mode_y);
 
                 if !sx.is_finite() || !sy.is_finite() || sx < 0.0 || sy < 0.0 {
                     return Color4f::new(0.0, 0.0, 0.0, 0.0);
                 }
 
                 // Nearest-neighbor sampling: round down to integer pixel.
-                let ix = (sx as i32).clamp(0, width - 1);
-                let iy = (sy as i32).clamp(0, height - 1);
+                let ix = floor_to_i32(sx).clamp(0, width - 1);
+                let iy = floor_to_i32(sy).clamp(0, height - 1);
 
                 read_pixel_rgba8(pixels, info, ix, iy)
             }
@@ -1381,13 +1395,13 @@ impl Shader for ImageShader {
                 let wy = fy - y0;
 
                 let texel = |tx: Scalar, ty: Scalar| -> Color4f {
-                    let sx = apply_image_tile(tx, width as Scalar, self.tile_mode_x);
-                    let sy = apply_image_tile(ty, height as Scalar, self.tile_mode_y);
+                    let sx = apply_image_tile(tx, scalar_from_i32(width), self.tile_mode_x);
+                    let sy = apply_image_tile(ty, scalar_from_i32(height), self.tile_mode_y);
                     if !sx.is_finite() || !sy.is_finite() || sx < 0.0 || sy < 0.0 {
                         return Color4f::new(0.0, 0.0, 0.0, 0.0);
                     }
-                    let ix = (sx as i32).clamp(0, width - 1);
-                    let iy = (sy as i32).clamp(0, height - 1);
+                    let ix = floor_to_i32(sx).clamp(0, width - 1);
+                    let iy = floor_to_i32(sy).clamp(0, height - 1);
                     read_pixel_rgba8(pixels, info, ix, iy)
                 };
 
@@ -1453,13 +1467,16 @@ impl Shader for ImageShader {
             buf.push(1); // present
 
             // ImageInfo fields
-            buf.extend_from_slice(&(info.width() as u32).to_le_bytes());
-            buf.extend_from_slice(&(info.height() as u32).to_le_bytes());
+            let img_w = u32::try_from(info.width()).unwrap_or(0);
+            let img_h = u32::try_from(info.height()).unwrap_or(0);
+            buf.extend_from_slice(&img_w.to_le_bytes());
+            buf.extend_from_slice(&img_h.to_le_bytes());
             buf.push(info.color_type as u8);
             buf.push(info.alpha_type as u8);
 
             // Pixel data length + data
-            buf.extend_from_slice(&(pixels.len() as u32).to_le_bytes());
+            let pixels_len = u32::try_from(pixels.len()).unwrap_or(u32::MAX);
+            buf.extend_from_slice(&pixels_len.to_le_bytes());
             buf.extend_from_slice(pixels);
         } else {
             buf.push(0); // absent
@@ -1567,15 +1584,15 @@ struct PerlinNoiseGenerator {
 impl PerlinNoiseGenerator {
     fn new(seed: u32) -> Self {
         // Linear-congruential generator for reproducibility.
-        let mut state = if seed == 0 { 0xdeadbeef } else { seed };
+        let mut state = if seed == 0 { 0xdead_beef } else { seed };
         let mut rand_u8 = || -> u8 {
             state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
             ((state >> 16) & 0xff) as u8
         };
 
         let mut perm_table = [0u16; 256];
-        for i in 0..256 {
-            perm_table[i] = i as u16;
+        for (i, slot) in perm_table.iter_mut().enumerate() {
+            *slot = u16::try_from(i).unwrap_or(u16::MAX);
         }
         // Fisher-Yates shuffle
         for i in (1..256).rev() {
@@ -1591,10 +1608,10 @@ impl PerlinNoiseGenerator {
         // Gradient table: unit vectors at 8 directions
         let mut grad_x = [0.0f32; 256];
         let mut grad_y = [0.0f32; 256];
-        for i in 0..256 {
-            let angle = (i as f32) * std::f32::consts::TAU / 256.0;
-            grad_x[i] = angle.cos();
-            grad_y[i] = angle.sin();
+        for (i, (gx, gy)) in grad_x.iter_mut().zip(grad_y.iter_mut()).enumerate() {
+            let angle = scalar_from_i32(i32::try_from(i).unwrap_or(0)) * std::f32::consts::TAU / 256.0;
+            *gx = angle.cos();
+            *gy = angle.sin();
         }
 
         Self {
@@ -1606,18 +1623,18 @@ impl PerlinNoiseGenerator {
 
     /// Evaluate classic 2D Perlin noise at (x, y). Returns approximately [-1, 1].
     fn noise_2d(&self, x: f32, y: f32) -> f32 {
-        let xi = x.floor() as i32;
-        let yi = y.floor() as i32;
-        let xf = x - (xi as f32);
-        let yf = y - (yi as f32);
+        let xi = floor_to_i32(x);
+        let yi = floor_to_i32(y);
+        let xf = x - scalar_from_i32(xi);
+        let yf = y - scalar_from_i32(yi);
 
         let u = fade(xf);
         let v = fade(yf);
 
-        let xi0 = (xi & 255) as usize;
-        let yi0 = (yi & 255) as usize;
-        let xi1 = ((xi + 1) & 255) as usize;
-        let yi1 = ((yi + 1) & 255) as usize;
+        let xi0 = usize::try_from(xi & 255).unwrap_or(0);
+        let yi0 = usize::try_from(yi & 255).unwrap_or(0);
+        let xi1 = usize::try_from((xi + 1) & 255).unwrap_or(0);
+        let yi1 = usize::try_from((yi + 1) & 255).unwrap_or(0);
 
         let g00 = self.perm[(self.perm[xi0] as usize + yi0) & 511] as usize;
         let g10 = self.perm[(self.perm[xi1] as usize + yi0) & 511] as usize;
@@ -1744,6 +1761,7 @@ impl PerlinNoiseShader {
     }
 
     /// Set the tile size for seamless tiling.
+    #[must_use]
     pub const fn with_tile_size(mut self, width: i32, height: i32) -> Self {
         self.tile_size = Some((width, height));
         self
@@ -1793,13 +1811,18 @@ impl Shader for PerlinNoiseShader {
         ShaderKind::PerlinNoise
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "seed is only used to deterministically initialize the noise LCG; the float bit pattern is saturated into u32, no core cast helper covers f32->u32 and the exact numeric value carries no meaning beyond reproducibility"
+    )]
     fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
         let generator = self
             .generator
             .get_or_init(|| PerlinNoiseGenerator::new(self.seed as u32));
         let fx = x * self.base_frequency_x;
         let fy = y * self.base_frequency_y;
-        let octaves = self.num_octaves.max(1) as u32;
+        let octaves = u32::try_from(self.num_octaves.max(1)).unwrap_or(1);
 
         let value = match self.noise_type {
             NoiseType::FractalNoise => {
@@ -1900,13 +1923,10 @@ impl Shader for LocalMatrixShader {
         // not invertible, fall back to sampling the inner shader at the
         // untransformed coordinates.
         let inv = self.matrix.invert();
-        let (sx, sy) = match inv {
-            Some(m) => {
-                let p = m.map_point(Point::new(x, y));
-                (p.x, p.y)
-            }
-            None => (x, y),
-        };
+        let (sx, sy) = inv.map_or((x, y), |m| {
+            let p = m.map_point(Point::new(x, y));
+            (p.x, p.y)
+        });
         self.inner.sample(sx, sy)
     }
 
@@ -2100,16 +2120,21 @@ fn deserialize_child_shader(bytes: &[u8], offset: &mut usize) -> Option<ShaderRe
 }
 
 /// Helper to deserialize common gradient data.
-fn deserialize_gradient_common(
-    bytes: &[u8],
-    offset: &mut usize,
-) -> Option<(
+/// Colors, optional explicit positions, tile mode, flags, and optional
+/// local matrix, as decoded from common gradient serialization data.
+type GradientCommonData = (
     Vec<Color4f>,
     Option<Vec<Scalar>>,
     TileMode,
     GradientFlags,
     Option<Matrix>,
-)> {
+);
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "sequentially decodes each serialized gradient field in the same order serialize_gradient_common wrote them; splitting would obscure that pairing"
+)]
+fn deserialize_gradient_common(bytes: &[u8], offset: &mut usize) -> Option<GradientCommonData> {
     // Tile mode (1 byte)
     if *offset >= bytes.len() {
         return None;
@@ -2504,6 +2529,10 @@ fn deserialize_two_point_conical(bytes: &[u8], offset: &mut usize) -> Option<Sha
     Some(Arc::new(gradient))
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "sequentially decodes each serialized ImageShader field in wire order; splitting would obscure that pairing with serialize()"
+)]
 fn deserialize_image_shader(bytes: &[u8], offset: &mut usize) -> Option<ShaderRef> {
     // Bounds (16 bytes)
     if *offset + 16 > bytes.len() {
@@ -2983,6 +3012,10 @@ pub mod shaders {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "tests assert exact expected values (e.g. transparent alpha == 0.0), not tolerance comparisons"
+)]
 mod tests {
     use super::*;
 
@@ -3151,7 +3184,7 @@ mod tests {
         let shader = PerlinNoiseShader::fractal_noise(0.1, 0.1, 4, 42.0);
         for x in 0..10 {
             for y in 0..10 {
-                let c = shader.sample(x as f32, y as f32);
+                let c = shader.sample(scalar_from_i32(x), scalar_from_i32(y));
                 assert!(c.r >= 0.0 && c.r <= 1.0, "r out of range: {}", c.r);
                 assert!(c.a >= 0.99, "alpha should be 1: {}", c.a);
             }
@@ -3163,7 +3196,7 @@ mod tests {
         let shader = PerlinNoiseShader::turbulence(0.1, 0.1, 4, 42.0);
         for x in 0..10 {
             for y in 0..10 {
-                let c = shader.sample(x as f32, y as f32);
+                let c = shader.sample(scalar_from_i32(x), scalar_from_i32(y));
                 assert!(c.r >= 0.0 && c.r <= 1.0);
             }
         }
@@ -3176,8 +3209,8 @@ mod tests {
         // At least one of a few sample points should differ
         let mut differ = false;
         for k in 0..10 {
-            let ra = a.sample(k as f32, k as f32).r;
-            let rb = b.sample(k as f32, k as f32).r;
+            let ra = a.sample(scalar_from_i32(k), scalar_from_i32(k)).r;
+            let rb = b.sample(scalar_from_i32(k), scalar_from_i32(k)).r;
             if (ra - rb).abs() > 1e-4 {
                 differ = true;
                 break;

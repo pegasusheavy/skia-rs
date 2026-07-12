@@ -21,6 +21,7 @@
 
 use crate::shader::Shader;
 use crate::sksl::{BinaryOp, Expr, FnDecl, SkslType, Stmt, UnaryOp};
+use skia_rs_core::cast::{saturate_to_i32, scalar_from_i32};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -58,7 +59,7 @@ impl Value {
     pub fn as_f32(&self) -> f32 {
         match self {
             Self::Float(f) => *f,
-            Self::Int(i) => *i as f32,
+            Self::Int(i) => scalar_from_i32(*i),
             Self::Bool(b) => {
                 if *b {
                     1.0
@@ -79,7 +80,7 @@ impl Value {
     pub fn as_i32(&self) -> i32 {
         match self {
             Self::Int(i) => *i,
-            Self::Float(f) => *f as i32,
+            Self::Float(f) => saturate_to_i32(*f),
             Self::Bool(b) => {
                 i32::from(*b)
             }
@@ -100,7 +101,7 @@ impl Value {
             Self::Vec3(v) => [v[0], v[1]],
             Self::Vec4(v) => [v[0], v[1]],
             Self::Float(f) => [*f, *f],
-            Self::Int(i) => [*i as f32, *i as f32],
+            Self::Int(i) => [scalar_from_i32(*i), scalar_from_i32(*i)],
             _ => {
                 debug_assert!(
                     false,
@@ -118,7 +119,7 @@ impl Value {
             Self::Vec2(v) => [v[0], v[1], 0.0],
             Self::Float(f) => [*f, *f, *f],
             Self::Int(i) => {
-                let x = *i as f32;
+                let x = scalar_from_i32(*i);
                 [x, x, x]
             }
             _ => {
@@ -138,7 +139,7 @@ impl Value {
             Self::Vec2(v) => [v[0], v[1], 0.0, 1.0],
             Self::Float(f) => [*f, *f, *f, *f],
             Self::Int(i) => {
-                let x = *i as f32;
+                let x = scalar_from_i32(*i);
                 [x, x, x, x]
             }
             _ => {
@@ -172,8 +173,7 @@ impl Value {
             Self::Float(_) | Self::Int(_) | Self::Bool(_) => 1,
             Self::Vec2(_) => 2,
             Self::Vec3(_) => 3,
-            Self::Vec4(_) => 4,
-            Self::Mat2(_) => 4,
+            Self::Vec4(_) | Self::Mat2(_) => 4,
             Self::Mat3(_) => 9,
             Self::Mat4(_) => 16,
             Self::Void => 0,
@@ -192,7 +192,7 @@ impl Value {
             }
             Self::Int(v) => {
                 if i == 0 {
-                    *v as f32
+                    scalar_from_i32(*v)
                 } else {
                     0.0
                 }
@@ -218,7 +218,6 @@ impl Value {
     pub fn from_components(components: &[f32]) -> Self {
         match components.len() {
             0 => Self::Void,
-            1 => Self::Float(components[0]),
             2 => Self::Vec2([components[0], components[1]]),
             3 => Self::Vec3([components[0], components[1], components[2]]),
             4 => Self::Vec4([components[0], components[1], components[2], components[3]]),
@@ -321,6 +320,10 @@ impl Interp<'_> {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match arm per Stmt variant; splitting would obscure the 1:1 correspondence with the AST"
+    )]
     fn run_stmt(&mut self, stmt: &Stmt) -> ControlFlow {
         match stmt {
             Stmt::Block(stmts) => {
@@ -384,10 +387,7 @@ impl Interp<'_> {
                 }
                 let mut result = ControlFlow::Normal;
                 for _ in 0..LOOP_LIMIT {
-                    let cond_true = match cond {
-                        Some(c) => self.compute_expr(c).as_bool(),
-                        None => true,
-                    };
+                    let cond_true = cond.as_ref().is_none_or(|c| self.compute_expr(c).as_bool());
                     if !cond_true {
                         break;
                     }
@@ -443,6 +443,10 @@ impl Interp<'_> {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match arm per Expr variant; splitting would obscure the 1:1 correspondence with the AST"
+    )]
     fn compute_expr(&mut self, expr: &Expr) -> Value {
         match expr {
             Expr::IntLit(n) => Value::Int(*n),
@@ -601,7 +605,8 @@ impl Interp<'_> {
                 self.assign_to(expr, new);
             }
             Expr::Index { expr, index } => {
-                let idx = self.compute_expr(index).as_i32() as usize;
+                let idx_i32 = self.compute_expr(index).as_i32();
+                let idx = usize::try_from(idx_i32).unwrap_or(usize::MAX);
                 let base = self.compute_expr(expr);
                 let mut comps: Vec<f32> = (0..base.component_count())
                     .map(|i| base.component(i))
@@ -694,7 +699,15 @@ fn apply_binary(op: BinaryOp, l: &Value, r: &Value) -> Value {
             BinaryOp::BitAnd => Value::Int(a & b),
             BinaryOp::BitOr => Value::Int(a | b),
             BinaryOp::BitXor => Value::Int(a ^ b),
+            #[allow(
+                clippy::cast_sign_loss,
+                reason = "GLSL/SkSL shift-amount is taken mod the bit width of the operand; reinterpreting the i32 shift count as u32 bits and letting wrapping_shl/shr mask it matches that semantics"
+            )]
             BinaryOp::Shl => Value::Int(a.wrapping_shl(*b as u32)),
+            #[allow(
+                clippy::cast_sign_loss,
+                reason = "GLSL/SkSL shift-amount is taken mod the bit width of the operand; reinterpreting the i32 shift count as u32 bits and letting wrapping_shl/shr mask it matches that semantics"
+            )]
             BinaryOp::Shr => Value::Int(a.wrapping_shr(*b as u32)),
             _ => Value::Int(0),
         };
@@ -800,6 +813,10 @@ fn apply_cmp(op: BinaryOp, l: &Value, r: &Value) -> Value {
     Value::Bool(res)
 }
 
+#[allow(
+    clippy::float_cmp,
+    reason = "implements SkSL's `==` operator, which is exact equality on GLSL vector/scalar types, not a tolerance comparison"
+)]
 fn values_equal(l: &Value, r: &Value) -> bool {
     match (l, r) {
         (Value::Bool(a), Value::Bool(b)) => a == b,
@@ -846,6 +863,10 @@ fn mat_from_elems(dim: usize, elems: &[f32]) -> Value {
 /// GLSL), plus mat op scalar and scalar op mat for + - * /.
 /// Linear-algebra multiplication (mat·mat, mat·vec, vec·mat) lives in
 /// `mat_mul`.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "faithful linear-algebra code; l/r/a/b/n/m/s follow standard matrix-math notation"
+)]
 fn matrix_elementwise_op(op: BinaryOp, l: &Value, r: &Value) -> Option<Value> {
     if !matches!(
         op,
@@ -856,7 +877,7 @@ fn matrix_elementwise_op(op: BinaryOp, l: &Value, r: &Value) -> Option<Value> {
     let scalar_of = |v: &Value| -> Option<f32> {
         match v {
             Value::Float(f) => Some(*f),
-            Value::Int(i) => Some(*i as f32),
+            Value::Int(i) => Some(scalar_from_i32(*i)),
             _ => None,
         }
     };
@@ -893,6 +914,10 @@ fn matrix_elementwise_op(op: BinaryOp, l: &Value, r: &Value) -> Option<Value> {
 }
 
 /// Matrix multiplication: mat * mat, mat * vec, vec * mat.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "faithful linear-algebra code; l/r/v/m/a/b/x/y/z/w/s/j/k follow standard matrix-math notation"
+)]
 fn mat_mul(l: &Value, r: &Value) -> Option<Value> {
     match (l, r) {
         (Value::Vec2(v), Value::Mat2(m)) => {
@@ -977,7 +1002,7 @@ fn mat_mul(l: &Value, r: &Value) -> Option<Value> {
 }
 
 fn index_value(v: &Value, i: i32) -> Value {
-    let idx = i as usize;
+    let idx = usize::try_from(i).unwrap_or(usize::MAX);
     match v {
         Value::Vec2(a) => Value::Float(*a.get(idx).unwrap_or(&0.0)),
         Value::Vec3(a) => Value::Float(*a.get(idx).unwrap_or(&0.0)),
@@ -1047,8 +1072,7 @@ fn construct(ty: &SkslType, args: &[Value]) -> Value {
         SkslType::Bool => return Value::Bool(args.first().is_some_and(Value::as_bool)),
         SkslType::Vec2 | SkslType::Half2 => 2,
         SkslType::Vec3 | SkslType::Half3 => 3,
-        SkslType::Vec4 | SkslType::Half4 => 4,
-        SkslType::Mat2 => 4,
+        SkslType::Vec4 | SkslType::Half4 | SkslType::Mat2 => 4,
         SkslType::Mat3 => 9,
         SkslType::Mat4 => 16,
         _ => return args.first().cloned().unwrap_or(Value::Void),
@@ -1107,7 +1131,7 @@ fn construct(ty: &SkslType, args: &[Value]) -> Value {
 fn map1(v: &Value, f: impl Fn(f32) -> f32) -> Value {
     match v {
         Value::Float(x) => Value::Float(f(*x)),
-        Value::Int(i) => Value::Float(f(*i as f32)),
+        Value::Int(i) => Value::Float(f(scalar_from_i32(*i))),
         Value::Vec2(a) => Value::Vec2([f(a[0]), f(a[1])]),
         Value::Vec3(a) => Value::Vec3([f(a[0]), f(a[1]), f(a[2])]),
         Value::Vec4(a) => Value::Vec4([f(a[0]), f(a[1]), f(a[2]), f(a[3])]),
@@ -1158,6 +1182,11 @@ fn map3(a: &Value, b: &Value, c: &Value, f: impl Fn(f32, f32, f32) -> f32) -> Va
 
 /// Dispatch to a built-in function. Returns None if the name isn't a known
 /// builtin, allowing the caller to fall through to user-defined functions.
+#[allow(
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    reason = "one match arm per SkSL builtin function name; splitting would obscure the exhaustive builtin dispatch table. Bindings i/n/d/k/etc. follow GLSL's own builtin parameter names (e.g. reflect(I, N), refract(I, N, eta))"
+)]
 fn call_builtin(name: &str, args: &[Value]) -> Option<Value> {
     match name {
         "abs" => args.first().map(|v| map1(v, f32::abs)),
@@ -1402,6 +1431,10 @@ fn call_builtin(name: &str, args: &[Value]) -> Option<Value> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "tests assert exact expected interpreter output values, not tolerance comparisons"
+)]
 mod tests {
     use super::*;
     use crate::sksl::Parser;
