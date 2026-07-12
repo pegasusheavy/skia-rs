@@ -3230,17 +3230,17 @@ mod tests {
 
         let c = buffer.get_pixel(50, 50).unwrap();
         assert!(
-            (c.red() as i32 - 255).abs() < 10,
+            (i32::from(c.red()) - 255).abs() < 10,
             "Expected ~255 red, got {}",
             c.red()
         );
         assert!(
-            (c.green() as i32 - 128).abs() < 10,
+            (i32::from(c.green()) - 128).abs() < 10,
             "Expected ~128 green, got {}",
             c.green()
         );
         assert!(
-            (c.blue() as i32 - 64).abs() < 10,
+            (i32::from(c.blue()) - 64).abs() < 10,
             "Expected ~64 blue, got {}",
             c.blue()
         );
@@ -3362,7 +3362,7 @@ mod tests {
 
         // Center of the patch should be red
         let center = buffer.get_pixel(55, 55).unwrap();
-        assert!(center.red() > 200, "Center should be red, got {:?}", center);
+        assert!(center.red() > 200, "Center should be red, got {center:?}");
     }
 
     #[test]
@@ -3395,7 +3395,7 @@ mod tests {
             Color::from_rgb(255, 255, 0), // bottom-left: yellow
         ];
 
-        let mut paint = Paint::new();
+        let paint = Paint::new();
         canvas.draw_patch(
             &cubics,
             Some(&colors),
@@ -3409,8 +3409,7 @@ mod tests {
         let center = buffer.get_pixel(55, 55).unwrap();
         assert!(
             center.red() > 50 && center.green() > 50,
-            "Center should blend all colors, got {:?}",
-            center
+            "Center should blend all colors, got {center:?}"
         );
     }
 
@@ -3629,9 +3628,7 @@ mod tests {
             assert_eq!(
                 buffer.get_pixel(x, y).unwrap().green(),
                 255,
-                "({}, {}) must be filled regardless of the CTM",
-                x,
-                y
+                "({x}, {y}) must be filled regardless of the CTM"
             );
         }
     }
@@ -3829,8 +3826,7 @@ mod tests {
         assert_eq!(
             (c.red(), c.green(), c.blue()),
             (0, 0, 0),
-            "invert color filter must run at composite: {:?}",
-            c
+            "invert color filter must run at composite: {c:?}"
         );
         assert_eq!(c.alpha(), 255);
     }
@@ -3861,8 +3857,7 @@ mod tests {
         let inside = buffer.get_pixel(3, 3).unwrap();
         assert!(
             inside.alpha() > 120 && inside.alpha() < 136,
-            "paint alpha must modulate vertex colors, got {:?}",
-            inside
+            "paint alpha must modulate vertex colors, got {inside:?}"
         );
         assert_eq!(inside.red(), inside.alpha(), "premultiplied white");
         // Inside triangle but outside the clip: untouched.
@@ -3908,8 +3903,7 @@ mod tests {
         let c = buffer.get_pixel(5, 5).unwrap();
         assert!(
             c.alpha() > 120 && c.alpha() < 136,
-            "paint alpha must be applied exactly once, got {:?}",
-            c
+            "paint alpha must be applied exactly once, got {c:?}"
         );
         // Outside the clip: untouched.
         assert_eq!(buffer.get_pixel(12, 5).unwrap().alpha(), 0);
@@ -3960,6 +3954,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact test: identity-matrix mapping of (0,0) after undoing a translate is exactly 0.0"
+    )]
     fn test_save_returns_previous_save_count() {
         // SkCanvas::save returns getSaveCount() - 1, i.e. the count BEFORE
         // the save. Fresh canvas: getSaveCount() == 1, save() returns 1 and
@@ -4107,6 +4105,10 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact test: from_scale_translate(1.0, 0.0, 0.0) produces exact field values"
+    )]
     fn test_rsxform_identity() {
         let xform = RSXform::from_scale_translate(1.0, 0.0, 0.0);
         assert_eq!(xform.scos, 1.0);

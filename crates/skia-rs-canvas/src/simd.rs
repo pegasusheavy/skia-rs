@@ -476,7 +476,7 @@ mod tests {
     #[test]
     fn test_simd_capabilities_detection() {
         let caps = simd_capabilities();
-        println!("SIMD Capabilities: {:?}", caps);
+        println!("SIMD Capabilities: {caps:?}");
         println!("Best width: {} pixels", caps.best_width());
 
         // Should detect at least scalar (width 1)
@@ -575,9 +575,9 @@ mod tests {
         unpremultiply_span(&mut pixels);
 
         // Should recover original values (approximately)
-        assert!((pixels[0] as i32 - 200).abs() <= 2);
-        assert!((pixels[1] as i32 - 100).abs() <= 2);
-        assert!((pixels[2] as i32 - 50).abs() <= 2);
+        assert!((i32::from(pixels[0]) - 200).abs() <= 2);
+        assert!((i32::from(pixels[1]) - 100).abs() <= 2);
+        assert!((i32::from(pixels[2]) - 50).abs() <= 2);
         assert_eq!(pixels[3], 128);
     }
 
@@ -624,7 +624,7 @@ mod tests {
 
     /// Differential test: the SIMD `fill_span_solid`, the scalar
     /// `fill_span_blend_scalar`, and `raster::blend_colors(SrcOver)` must all
-    /// produce identical bytes for premultiplied SrcOver over arbitrary
+    /// produce identical bytes for premultiplied `SrcOver` over arbitrary
     /// destinations and span lengths.
     #[test]
     fn test_simd_scalar_blend_colors_agree_bit_exact() {
@@ -633,7 +633,7 @@ mod tests {
         // Deterministic pseudo-random destinations.
         let mut seed: u32 = 0x1234_5678;
         let mut rng = || {
-            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             (seed >> 24) as u8
         };
 

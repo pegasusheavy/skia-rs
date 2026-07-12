@@ -7,7 +7,7 @@
 //! For path filling, this module implements an optimized Active Edge Table (AET)
 //! scanline algorithm with the following characteristics:
 //!
-//! - **Global Edge Table (GET)**: Edges sorted by y_min for efficient activation
+//! - **Global Edge Table (GET)**: Edges sorted by `y_min` for efficient activation
 //! - **Active Edge Table (AET)**: Only edges intersecting the current scanline
 //! - **Winding Number Calculation**: Supports both non-zero and even-odd fill rules
 //! - **X-Intersection Sorting**: Uses insertion sort optimized for nearly-sorted data
@@ -323,7 +323,7 @@ pub struct Rasterizer<'a> {
 impl<'a> Rasterizer<'a> {
     /// Create a new rasterizer.
     #[must_use]
-    pub fn new(buffer: &'a mut PixelBuffer) -> Self {
+    pub const fn new(buffer: &'a mut PixelBuffer) -> Self {
         use skia_rs_core::cast::scalar_from_i32;
         let clip = Rect::from_xywh(
             0.0,
@@ -372,7 +372,7 @@ impl<'a> Rasterizer<'a> {
         self.use_advanced_clip = true;
     }
 
-    /// Get the device bounds as an IRect.
+    /// Get the device bounds as an `IRect`.
     const fn device_bounds(&self) -> IRect {
         IRect::new(0, 0, self.buffer.width, self.buffer.height)
     }
@@ -459,7 +459,7 @@ impl<'a> Rasterizer<'a> {
 
     /// Check if the current clip is anti-aliased.
     #[must_use]
-    pub fn is_clip_anti_aliased(&self) -> bool {
+    pub const fn is_clip_anti_aliased(&self) -> bool {
         self.use_advanced_clip && self.clip_stack.is_anti_aliased()
     }
 
@@ -468,21 +468,22 @@ impl<'a> Rasterizer<'a> {
     /// for local-space sampling (`Shader::sample` expects coordinates in the
     /// shader's own space; the caller applies the local matrix).
     fn make_source<'p>(&self, paint: &'p Paint) -> PixelSource<'p> {
-        if let Some(shader) = paint.shader() {
-            let total = match shader.local_matrix() {
-                Some(local) => self.matrix.concat(local),
-                None => self.matrix,
-            };
-            let inv = total.invert().unwrap_or(Matrix::IDENTITY);
-            let alpha = skia_rs_core::cast::f32_to_u8_sat(paint.alpha().clamp(0.0, 1.0) * 255.0);
-            PixelSource::Shader {
-                shader: shader.as_ref(),
-                inv,
-                alpha,
-            }
-        } else {
-            PixelSource::Solid(premultiply_color(paint.color32()))
-        }
+        paint.shader().map_or_else(
+            || PixelSource::Solid(premultiply_color(paint.color32())),
+            |shader| {
+                let total = shader
+                    .local_matrix()
+                    .map_or(self.matrix, |local| self.matrix.concat(local));
+                let inv = total.invert().unwrap_or(Matrix::IDENTITY);
+                let alpha =
+                    skia_rs_core::cast::f32_to_u8_sat(paint.alpha().clamp(0.0, 1.0) * 255.0);
+                PixelSource::Shader {
+                    shader: shader.as_ref(),
+                    inv,
+                    alpha,
+                }
+            },
+        )
     }
 
     /// Integer pixel bounds of the current clip, clamped to the buffer:
@@ -567,6 +568,10 @@ impl<'a> Rasterizer<'a> {
     }
 
     /// Draw a point.
+    #[allow(
+        clippy::similar_names,
+        reason = "point/paint mirrors SkCanvas::drawPoint's (SkPoint, SkPaint) parameter names"
+    )]
     pub fn draw_point(&mut self, point: Point, paint: &Paint) {
         use skia_rs_core::cast::round_to_i32;
         let transformed = self.matrix.map_point(point);
@@ -738,8 +743,8 @@ impl<'a> Rasterizer<'a> {
     /// Draw a horizontal line (fast path with SIMD optimization).
     ///
     /// Uses SIMD-accelerated blitting when available for:
-    /// - SSE4.2 on x86/x86_64 (4 pixels at a time)
-    /// - AVX2 on x86/x86_64 (8 pixels at a time)
+    /// - SSE4.2 on `x86/x86_64` (4 pixels at a time)
+    /// - AVX2 on `x86/x86_64` (8 pixels at a time)
     /// - NEON on ARM/AArch64 (4 pixels at a time)
     fn draw_hline(&mut self, x0: i32, x1: i32, y: i32, color: Color, blend_mode: BlendMode) {
         use skia_rs_core::cast::saturate_to_i32;
@@ -811,6 +816,7 @@ impl<'a> Rasterizer<'a> {
     /// scan-converted as the mapped quad; only the axis-aligned case may use
     /// `map_rect` (which would otherwise fill the quad's bounding box).
     pub fn fill_rect(&mut self, rect: &Rect, paint: &Paint) {
+        use skia_rs_core::cast::round_to_i32;
         if !self.matrix_is_axis_aligned() || paint.is_anti_alias() {
             let mut b = PathBuilder::new();
             b.add_rect(rect);
@@ -818,7 +824,6 @@ impl<'a> Rasterizer<'a> {
             return;
         }
 
-        use skia_rs_core::cast::round_to_i32;
         let transformed = self.matrix.map_rect(rect);
 
         let x0 = round_to_i32(transformed.left);
@@ -1087,8 +1092,8 @@ impl<'a> Rasterizer<'a> {
     /// Draw an oval (conic-based geometry via the path crate).
     pub fn draw_oval(&mut self, rect: &Rect, paint: &Paint) {
         let center = Point::new(
-            (rect.left + rect.right) / 2.0,
-            (rect.top + rect.bottom) / 2.0,
+            f32::midpoint(rect.left, rect.right),
+            f32::midpoint(rect.top, rect.bottom),
         );
         let rx = rect.width() / 2.0;
         let ry = rect.height() / 2.0;
@@ -1129,7 +1134,7 @@ impl<'a> Rasterizer<'a> {
         self.stroke_path_hairline(path, paint);
     }
 
-    /// StrokeAndFill: fill the union of the fill geometry and the stroke
+    /// `StrokeAndFill`: fill the union of the fill geometry and the stroke
     /// outline exactly once, so translucent paints don't double-blend the
     /// overlap (`SkStrokeRec::kStrokeAndFill_Style`).
     fn stroke_and_fill_path(&mut self, path: &Path, paint: &Paint) {
@@ -1140,13 +1145,12 @@ impl<'a> Rasterizer<'a> {
         }
         let combined = stroke_outline(path, paint)
             .and_then(|outline| skia_rs_path::op(path, &outline, skia_rs_path::PathOp::Union));
-        match combined {
-            Some(c) => self.fill_path(&c, paint),
+        if let Some(c) = combined {
+            self.fill_path(&c, paint);
+        } else {
             // Union unavailable (open/degenerate contours): fill then stroke.
-            None => {
-                self.fill_path(path, paint);
-                self.stroke_path(path, paint);
-            }
+            self.fill_path(path, paint);
+            self.stroke_path(path, paint);
         }
     }
 
@@ -1158,15 +1162,6 @@ impl<'a> Rasterizer<'a> {
     )]
     fn stroke_path_hairline(&mut self, path: &Path, paint: &Paint) {
         use skia_rs_core::cast::scalar_from_i32;
-
-        // Quadratic Bezier point at parameter `t` (`mt` = 1 - t), as
-        // separable mul_add chains: p0*mt^2 + 2*p1*mt*t + p2*t^2.
-        fn quad_point(t: Scalar, mt: Scalar, p0: Point, p1: Point, p2: Point) -> Point {
-            Point::new(
-                (t * t).mul_add(p2.x, (2.0 * mt * t).mul_add(p1.x, mt * mt * p0.x)),
-                (t * t).mul_add(p2.y, (2.0 * mt * t).mul_add(p1.y, mt * mt * p0.y)),
-            )
-        }
 
         let mut current = Point::zero();
         let mut contour_start = Point::zero();
@@ -1223,18 +1218,7 @@ impl<'a> Rasterizer<'a> {
                     for i in 1..=steps {
                         let t = scalar_from_i32(i) / scalar_from_i32(steps);
                         let mt = 1.0 - t;
-                        let mt2 = mt * mt;
-                        let t2 = t * t;
-                        let p = Point::new(
-                            (t2 * t).mul_add(
-                                end.x,
-                                (3.0 * mt * t2).mul_add(c2.x, (mt2 * mt).mul_add(current.x, 3.0 * mt2 * t * c1.x)),
-                            ),
-                            (t2 * t).mul_add(
-                                end.y,
-                                (3.0 * mt * t2).mul_add(c2.y, (mt2 * mt).mul_add(current.y, 3.0 * mt2 * t * c1.y)),
-                            ),
-                        );
+                        let p = cubic_point(t, mt, current, c1, c2, end);
                         self.draw_line(prev, p, paint);
                         prev = p;
                     }
@@ -1265,6 +1249,10 @@ impl<'a> Rasterizer<'a> {
     /// Scanline algorithm sampling pixel centers; supports all four fill
     /// types (the inverse types fill the complement of the path within the
     /// clip), shaders (sampled in local space), and the full clip stack.
+    #[allow(
+        clippy::similar_names,
+        reason = "clip_x0/clip_y0/clip_x1/clip_y1 are the natural names for a 2D clip-rect bound tuple"
+    )]
     fn fill_path_bw(&mut self, path: &Path, paint: &Paint) {
         use skia_rs_core::cast::{ceil_to_i32, floor_to_i32, round_to_i32, scalar_from_i32};
         let fill_type = path.fill_type();
@@ -1338,8 +1326,14 @@ impl<'a> Rasterizer<'a> {
     /// sample scanline), the clip is applied per pixel, shaders sample in
     /// local space, and inverse fill types fill the complement within the
     /// clip.
+    #[allow(
+        clippy::similar_names,
+        reason = "clip_x0/clip_y0/clip_x1/clip_y1 are the natural names for a 2D clip-rect bound tuple"
+    )]
     pub fn fill_path_aa(&mut self, path: &Path, paint: &Paint) {
         use skia_rs_core::cast::{ceil_to_i32, f32_to_u8_sat, floor_to_i32, scalar_from_i32};
+        const SAMPLE_OFFSETS: [f32; 4] = [0.125, 0.375, 0.625, 0.875];
+
         let fill_type = path.fill_type();
         let inverse = matches!(
             fill_type,
@@ -1372,7 +1366,6 @@ impl<'a> Rasterizer<'a> {
             )
         };
 
-        const SAMPLE_OFFSETS: [f32; 4] = [0.125, 0.375, 0.625, 0.875];
         let row_width = usize::try_from(clip_x1 - clip_x0).unwrap_or(0);
         let mut coverage = vec![0.0f32; row_width];
 
@@ -1494,7 +1487,7 @@ pub(crate) fn path_to_region(path: &Path, clip_bounds: &IRect) -> Region {
 
 /// An edge for scanline rasterization with winding direction.
 ///
-/// Edges are oriented from y_min to y_max, and the winding direction
+/// Edges are oriented from `y_min` to `y_max`, and the winding direction
 /// is used for non-zero fill rule calculation.
 #[derive(Debug, Clone)]
 struct Edge {
@@ -1502,7 +1495,7 @@ struct Edge {
     y_min: f32,
     /// Maximum y coordinate (bottom of edge).
     y_max: f32,
-    /// X coordinate at y_min.
+    /// X coordinate at `y_min`.
     x_at_y_min: f32,
     /// Inverse slope (dx/dy) for efficient x calculation.
     inv_slope: f32,
@@ -1595,9 +1588,9 @@ impl ActiveEdge {
     }
 }
 
-/// Global Edge Table - edges sorted by y_min for efficient scanline processing.
+/// Global Edge Table - edges sorted by `y_min` for efficient scanline processing.
 struct GlobalEdgeTable {
-    /// Edges sorted by y_min.
+    /// Edges sorted by `y_min`.
     edges: Vec<Edge>,
     /// Current index into the edge list.
     current_index: usize,
@@ -1655,7 +1648,7 @@ struct ActiveEdgeTable {
 
 impl ActiveEdgeTable {
     /// Create a new empty AET.
-    fn new() -> Self {
+    const fn new() -> Self {
         Self { edges: Vec::new() }
     }
 
@@ -1744,13 +1737,45 @@ impl ActiveEdgeTable {
     }
 }
 
+/// Quadratic Bezier point at parameter `t` (`mt` = 1 - t), as separable
+/// `mul_add` chains: `p0*mt^2 + 2*p1*mt*t + p2*t^2`.
+fn quad_point(t: Scalar, mt: Scalar, p0: Point, p1: Point, p2: Point) -> Point {
+    Point::new(
+        (t * t).mul_add(p2.x, (2.0 * mt * t).mul_add(p1.x, mt * mt * p0.x)),
+        (t * t).mul_add(p2.y, (2.0 * mt * t).mul_add(p1.y, mt * mt * p0.y)),
+    )
+}
+
+/// Cubic Bezier point at parameter `t` (`mt` = 1 - t), as separable `mul_add`
+/// chains: `p0*mt^3 + 3*p1*mt^2*t + 3*p2*mt*t^2 + p3*t^3`.
+fn cubic_point(t: Scalar, mt: Scalar, p0: Point, p1: Point, p2: Point, p3: Point) -> Point {
+    let mt2 = mt * mt;
+    let t2 = t * t;
+    Point::new(
+        (t2 * t).mul_add(
+            p3.x,
+            (3.0 * mt * t2).mul_add(p2.x, (mt2 * mt).mul_add(p0.x, 3.0 * mt2 * t * p1.x)),
+        ),
+        (t2 * t).mul_add(
+            p3.y,
+            (3.0 * mt * t2).mul_add(p2.y, (mt2 * mt).mul_add(p0.y, 3.0 * mt2 * t * p1.y)),
+        ),
+    )
+}
+
 /// Collect edges from a path.
+#[allow(
+    clippy::similar_names,
+    reason = "t/mt (Bezier parameter and its complement) is the standard flattening naming"
+)]
 fn collect_edges(path: &Path, matrix: &Matrix) -> Vec<Edge> {
+    use skia_rs_core::cast::scalar_from_i32;
+
     let mut edges = Vec::new();
     let mut current = Point::zero();
     let mut contour_start = Point::zero();
 
-    for element in path.iter() {
+    for element in path {
         match element {
             PathElement::Move(p) => {
                 current = matrix.map_point(p);
@@ -1770,12 +1795,9 @@ fn collect_edges(path: &Path, matrix: &Matrix) -> Vec<Edge> {
                 let steps = 8;
                 let start = current;
                 for i in 1..=steps {
-                    let t = i as f32 / steps as f32;
+                    let t = scalar_from_i32(i) / scalar_from_i32(steps);
                     let mt = 1.0 - t;
-                    let p = Point::new(
-                        mt * mt * start.x + 2.0 * mt * t * ctrl.x + t * t * end.x,
-                        mt * mt * start.y + 2.0 * mt * t * ctrl.y + t * t * end.y,
-                    );
+                    let p = quad_point(t, mt, start, ctrl, end);
                     if let Some(edge) = Edge::new(current, p) {
                         edges.push(edge);
                     }
@@ -1788,12 +1810,9 @@ fn collect_edges(path: &Path, matrix: &Matrix) -> Vec<Edge> {
                 let steps = 8;
                 let start = current;
                 for i in 1..=steps {
-                    let t = i as f32 / steps as f32;
+                    let t = scalar_from_i32(i) / scalar_from_i32(steps);
                     let mt = 1.0 - t;
-                    let p = Point::new(
-                        mt * mt * start.x + 2.0 * mt * t * ctrl.x + t * t * end.x,
-                        mt * mt * start.y + 2.0 * mt * t * ctrl.y + t * t * end.y,
-                    );
+                    let p = quad_point(t, mt, start, ctrl, end);
                     if let Some(edge) = Edge::new(current, p) {
                         edges.push(edge);
                     }
@@ -1807,20 +1826,9 @@ fn collect_edges(path: &Path, matrix: &Matrix) -> Vec<Edge> {
                 let steps = 12;
                 let start = current;
                 for i in 1..=steps {
-                    let t = i as f32 / steps as f32;
+                    let t = scalar_from_i32(i) / scalar_from_i32(steps);
                     let mt = 1.0 - t;
-                    let mt2 = mt * mt;
-                    let t2 = t * t;
-                    let p = Point::new(
-                        mt2 * mt * start.x
-                            + 3.0 * mt2 * t * c1.x
-                            + 3.0 * mt * t2 * c2.x
-                            + t2 * t * end.x,
-                        mt2 * mt * start.y
-                            + 3.0 * mt2 * t * c1.y
-                            + 3.0 * mt * t2 * c2.y
-                            + t2 * t * end.y,
-                    );
+                    let p = cubic_point(t, mt, start, c1, c2, end);
                     if let Some(edge) = Edge::new(current, p) {
                         edges.push(edge);
                     }
@@ -1918,7 +1926,7 @@ mod tests {
         paint.set_style(Style::Fill);
         rasterizer.fill_rect(&Rect::from_xywh(0.0, 0.0, 4.0, 4.0), &paint);
 
-        let offset = (1 * buffer.stride) + 1 * 4;
+        let offset = buffer.stride + 4;
         let r = buffer.pixels[offset];
         let a = buffer.pixels[offset + 3];
         assert_eq!(a, 128, "alpha stored");
@@ -1946,7 +1954,7 @@ mod tests {
             let d = skia_rs_core::Color4f::from_color(dst);
             let expected = mode.apply(s, d).to_color();
             let got = blend_colors(src, dst, mode);
-            assert_eq!(got, expected, "mode {:?} must match paint apply", mode);
+            assert_eq!(got, expected, "mode {mode:?} must match paint apply");
         }
     }
 
@@ -1963,6 +1971,10 @@ mod tests {
     // ============ Active Edge Table Tests ============
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact test: edge endpoints are exact literals copied straight through Edge::new"
+    )]
     fn test_edge_creation() {
         // Horizontal edge should return None
         let p0 = Point::new(0.0, 10.0);
@@ -2012,6 +2024,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact test: y_min values are exact literals copied straight through Edge::new"
+    )]
     fn test_global_edge_table_ordering() {
         let edges = vec![
             Edge::new(Point::new(0.0, 50.0), Point::new(10.0, 100.0)).unwrap(),
@@ -2226,15 +2242,13 @@ mod tests {
         let dark = buffer.get_pixel(50, 2).unwrap();
         assert!(
             dark.red() < 40,
-            "local-space start should be dark: {:?}",
-            dark
+            "local-space start should be dark: {dark:?}"
         );
         // Local x=9.5 at device x=59 -> near-white.
         let bright = buffer.get_pixel(59, 2).unwrap();
         assert!(
             bright.red() > 215,
-            "local-space end should be bright: {:?}",
-            bright
+            "local-space end should be bright: {bright:?}"
         );
         // The clip must be respected by the shader fill.
         assert_eq!(
@@ -2281,8 +2295,7 @@ mod tests {
             assert_eq!(
                 buffer.get_pixel(11, y).unwrap().alpha(),
                 0,
-                "AA fill must respect the clip at y={}",
-                y
+                "AA fill must respect the clip at y={y}"
             );
         }
         // Beyond the path bottom (y >= 50): nothing (no stale edges).
@@ -2331,16 +2344,14 @@ mod tests {
         // Sample many interior pixels: all identical (no double-blended rows).
         for y in 15..45 {
             for x in 15..45 {
-                let dx = x as f32 - 30.0;
-                let dy = y as f32 - 30.0;
-                if (dx * dx + dy * dy).sqrt() < 18.0 {
+                let dx = skia_rs_core::cast::scalar_from_i32(x) - 30.0;
+                let dy = skia_rs_core::cast::scalar_from_i32(y) - 30.0;
+                if dx.hypot(dy) < 18.0 {
                     let p = buffer.get_pixel(x, y).unwrap();
                     assert_eq!(
                         (p.red(), p.alpha()),
                         (128, 128),
-                        "double-blended pixel at ({}, {})",
-                        x,
-                        y
+                        "double-blended pixel at ({x}, {y})"
                     );
                 }
             }
@@ -2390,10 +2401,7 @@ mod tests {
             assert_eq!(
                 (p.blue(), p.alpha()),
                 (128, 128),
-                "double blend at ({}, {}): {:?}",
-                x,
-                y,
-                p
+                "double blend at ({x}, {y}): {p:?}"
             );
         }
         // Outside the outset band: untouched.
