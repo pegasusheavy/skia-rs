@@ -593,23 +593,27 @@ fn decode_color_type(v: u32) -> Option<ColorType> {
     }
 }
 
-fn decode_alpha_type(v: u32) -> AlphaType {
+/// Decode a raw alpha type value into [`AlphaType`]. Returns `None` for any
+/// out-of-range value instead of silently coercing it.
+fn decode_alpha_type(v: u32) -> Option<AlphaType> {
     match v {
-        0 => AlphaType::Unknown,
-        1 => AlphaType::Opaque,
-        2 => AlphaType::Premul,
-        3 => AlphaType::Unpremul,
-        _ => AlphaType::Premul,
+        0 => Some(AlphaType::Unknown),
+        1 => Some(AlphaType::Opaque),
+        2 => Some(AlphaType::Premul),
+        3 => Some(AlphaType::Unpremul),
+        _ => None,
     }
 }
 
-fn decode_tile_mode(v: u32) -> TileMode {
+/// Decode a raw tile mode value into [`TileMode`]. Returns `None` for any
+/// out-of-range value instead of silently coercing it.
+fn decode_tile_mode(v: u32) -> Option<TileMode> {
     match v {
-        0 => TileMode::Clamp,
-        1 => TileMode::Repeat,
-        2 => TileMode::Mirror,
-        3 => TileMode::Decal,
-        _ => TileMode::Clamp,
+        0 => Some(TileMode::Clamp),
+        1 => Some(TileMode::Repeat),
+        2 => Some(TileMode::Mirror),
+        3 => Some(TileMode::Decal),
+        _ => None,
     }
 }
 
@@ -677,12 +681,10 @@ pub unsafe extern "C" fn sk_surface_new_raster_with_info(
         let Some(color_type) = decode_color_type(info.color_type) else {
             return ptr::null_mut();
         };
-        let img_info = match ImageInfo::new(
-            info.width,
-            info.height,
-            color_type,
-            decode_alpha_type(info.alpha_type),
-        ) {
+        let Some(alpha_type) = decode_alpha_type(info.alpha_type) else {
+            return ptr::null_mut();
+        };
+        let img_info = match ImageInfo::new(info.width, info.height, color_type, alpha_type) {
             Ok(i) => i,
             Err(_) => return ptr::null_mut(),
         };
@@ -740,6 +742,14 @@ pub unsafe extern "C" fn sk_surface_get_height(surface: *const sk_surface_t) -> 
 
 /// Get the pixel data from a surface (unsynchronized borrow).
 ///
+/// The bytes are always **premultiplied**, regardless of the surface's
+/// declared alpha type — the underlying buffer physically stores premul
+/// pixels, and a borrowed pointer cannot be converted in place without
+/// mutating the surface's own storage. Surfaces created with
+/// `alpha_type = Unpremul` are rejected (returns `false`); use
+/// [`sk_surface_read_pixels`] instead, which copies out and unpremultiplies
+/// as needed.
+///
 /// **Lifetime:** the pointer returned via `out_pixels` is only valid for as
 /// long as `surface` remains allocated AND is not mutated. Any subsequent
 /// drawing call on this surface (e.g. [`sk_surface_draw_rect`]) may move
@@ -757,6 +767,11 @@ pub unsafe extern "C" fn sk_surface_peek_pixels(
         }
 
         if let Some(s) = RefCounted::get_ref(surface) {
+            if s.info().alpha_type == AlphaType::Unpremul {
+                // The borrowed buffer is physically premultiplied; we
+                // cannot hand back unpremultiplied bytes without copying.
+                return false;
+            }
             *out_pixels = s.pixels().as_ptr();
             *out_row_bytes = s.row_bytes();
             true
@@ -770,6 +785,11 @@ pub unsafe extern "C" fn sk_surface_peek_pixels(
 ///
 /// Safer than [`sk_surface_peek_pixels`] — the caller owns the destination
 /// buffer and does not need to track the surface's lifetime.
+///
+/// The bytes are converted to match the surface's declared alpha type: for
+/// surfaces created with `alpha_type = Unpremul`, the copied pixels are
+/// unpremultiplied before being written to `dst`; otherwise the raw
+/// premultiplied bytes are copied as-is.
 ///
 /// Returns the number of bytes written, or 0 on failure (null surface,
 /// null/undersized destination buffer).
@@ -791,6 +811,10 @@ pub unsafe extern "C" fn sk_surface_read_pixels(
             return 0;
         }
         ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len());
+        if s.info().alpha_type == AlphaType::Unpremul {
+            let dst_slice = slice::from_raw_parts_mut(dst, src.len());
+            skia_rs_core::unpremultiply_in_place(dst_slice);
+        }
         src.len()
     })
 }
@@ -924,57 +948,24 @@ pub unsafe extern "C" fn sk_paint_is_antialias(paint: *const sk_paint_t) -> bool
     catch_panic(|| RefCounted::get_ref(paint).is_some_and(|p| p.is_anti_alias()))
 }
 
-/// Set the paint's blend mode (matches [`abi::SkBlendModeABI`]).
-#[unsafe(no_mangle)]
-/// Decode a raw `sk_blend_mode_t` into [`BlendMode`], matching upstream
+/// C ABI type for the paint's blend mode. Values follow upstream
 /// `SkBlendMode` numbering (`include/core/SkBlendMode.h`), all 29 modes
-/// (`kClear = 0` .. `kLuminosity = 28`). Returns `None` for any
-/// out-of-range value.
-fn decode_blend_mode(v: u32) -> Option<BlendMode> {
-    match v {
-        0 => Some(BlendMode::Clear),
-        1 => Some(BlendMode::Src),
-        2 => Some(BlendMode::Dst),
-        3 => Some(BlendMode::SrcOver),
-        4 => Some(BlendMode::DstOver),
-        5 => Some(BlendMode::SrcIn),
-        6 => Some(BlendMode::DstIn),
-        7 => Some(BlendMode::SrcOut),
-        8 => Some(BlendMode::DstOut),
-        9 => Some(BlendMode::SrcATop),
-        10 => Some(BlendMode::DstATop),
-        11 => Some(BlendMode::Xor),
-        12 => Some(BlendMode::Plus),
-        13 => Some(BlendMode::Modulate),
-        14 => Some(BlendMode::Screen),
-        15 => Some(BlendMode::Overlay),
-        16 => Some(BlendMode::Darken),
-        17 => Some(BlendMode::Lighten),
-        18 => Some(BlendMode::ColorDodge),
-        19 => Some(BlendMode::ColorBurn),
-        20 => Some(BlendMode::HardLight),
-        21 => Some(BlendMode::SoftLight),
-        22 => Some(BlendMode::Difference),
-        23 => Some(BlendMode::Exclusion),
-        24 => Some(BlendMode::Multiply),
-        25 => Some(BlendMode::Hue),
-        26 => Some(BlendMode::Saturation),
-        27 => Some(BlendMode::Color),
-        28 => Some(BlendMode::Luminosity),
-        _ => None,
-    }
-}
+/// (`kClear = 0` .. `kLuminosity = 28`); see [`BlendMode::from_u8`].
+pub type sk_blend_mode_t = u32;
 
 /// Set the paint's blend mode. `mode` follows upstream `SkBlendMode`
-/// (0-28); see [`decode_blend_mode`]. Returns false (leaving the paint's
+/// (0-28); see [`BlendMode::from_u8`]. Returns false (leaving the paint's
 /// blend mode unchanged) if `paint` is null or `mode` is out of range.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_paint_set_blend_mode(paint: *mut sk_paint_t, mode: u32) -> bool {
+pub unsafe extern "C" fn sk_paint_set_blend_mode(
+    paint: *mut sk_paint_t,
+    mode: sk_blend_mode_t,
+) -> bool {
     catch_panic(|| {
         let Some(p) = RefCounted::get_mut(paint) else {
             return false;
         };
-        let Some(mode) = decode_blend_mode(mode) else {
+        let Some(mode) = u8::try_from(mode).ok().and_then(BlendMode::from_u8) else {
             return false;
         };
         p.set_blend_mode(mode);
@@ -986,7 +977,7 @@ pub unsafe extern "C" fn sk_paint_set_blend_mode(paint: *mut sk_paint_t, mode: u
 /// `SkBlendMode` numbering, 0-28). Returns `SrcOver` (3) if `paint` is null,
 /// matching `SkPaint`'s default blend mode.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_paint_get_blend_mode(paint: *const sk_paint_t) -> u32 {
+pub unsafe extern "C" fn sk_paint_get_blend_mode(paint: *const sk_paint_t) -> sk_blend_mode_t {
     catch_panic(|| {
         RefCounted::get_ref(paint)
             .map(|p| p.blend_mode() as u32)
@@ -2457,13 +2448,10 @@ pub unsafe extern "C" fn sk_shader_new_linear_gradient(
         } else {
             Some(slice::from_raw_parts(positions, count).to_vec())
         };
-        let grad = LinearGradient::new(
-            start.into(),
-            end.into(),
-            colors_vec,
-            positions_vec,
-            decode_tile_mode(tile_mode),
-        );
+        let Some(tile_mode) = decode_tile_mode(tile_mode) else {
+            return ptr::null_mut();
+        };
+        let grad = LinearGradient::new(start.into(), end.into(), colors_vec, positions_vec, tile_mode);
         let shader: ShaderRef = Arc::new(grad);
         RefCounted::new(shader)
     })
@@ -2490,13 +2478,10 @@ pub unsafe extern "C" fn sk_shader_new_radial_gradient(
         } else {
             Some(slice::from_raw_parts(positions, count).to_vec())
         };
-        let grad = RadialGradient::new(
-            center.into(),
-            radius,
-            colors_vec,
-            positions_vec,
-            decode_tile_mode(tile_mode),
-        );
+        let Some(tile_mode) = decode_tile_mode(tile_mode) else {
+            return ptr::null_mut();
+        };
+        let grad = RadialGradient::new(center.into(), radius, colors_vec, positions_vec, tile_mode);
         let shader: ShaderRef = Arc::new(grad);
         RefCounted::new(shader)
     })
@@ -2662,8 +2647,10 @@ pub unsafe extern "C" fn sk_imagefilter_new_blur(
     tile_mode: u32,
 ) -> *mut sk_imagefilter_t {
     catch_panic(|| {
-        let filter =
-            skia_rs_paint::BlurImageFilter::new(sigma_x, sigma_y, decode_tile_mode(tile_mode));
+        let Some(tile_mode) = decode_tile_mode(tile_mode) else {
+            return ptr::null_mut();
+        };
+        let filter = skia_rs_paint::BlurImageFilter::new(sigma_x, sigma_y, tile_mode);
         let ifref: ImageFilterRef = Arc::new(filter);
         RefCounted::new(ifref)
     })
@@ -3977,6 +3964,46 @@ mod tests {
     }
 
     #[test]
+    fn test_surface_read_pixels_unpremultiplies_for_unpremul_surface() {
+        unsafe {
+            // RGBA8888, Unpremul.
+            let info = sk_imageinfo_t {
+                width: 2,
+                height: 2,
+                color_type: 4,
+                alpha_type: 3,
+            };
+            let surface = sk_surface_new_raster_with_info(&info);
+            assert!(!surface.is_null());
+
+            // Half-transparent red — the surface's internal buffer stores
+            // this premultiplied (~128,0,0,128), but a caller reading an
+            // Unpremul-typed surface should see it unpremultiplied back to
+            // ~255,0,0,128.
+            sk_surface_clear(surface, 0x80FF0000);
+
+            // `peek_pixels` cannot convert a borrowed buffer — must reject
+            // Unpremul surfaces.
+            let mut px: *const u8 = ptr::null();
+            let mut row_bytes: usize = 0;
+            assert!(!sk_surface_peek_pixels(surface, &mut px, &mut row_bytes));
+
+            let mut buf = vec![0u8; 2 * 2 * 4];
+            let wrote = sk_surface_read_pixels(surface, buf.as_mut_ptr(), buf.len());
+            assert_eq!(wrote, buf.len());
+
+            // Pixel 0: R close to 255 (unpremultiplied), A close to 128.
+            assert!(buf[0] > 250, "expected unpremultiplied red, got {}", buf[0]);
+            assert_eq!(buf[1], 0);
+            assert_eq!(buf[2], 0);
+            assert!((120..=136).contains(&buf[3]), "unexpected alpha {}", buf[3]);
+
+            sk_surface_unref(surface);
+            assert!(!sk_last_call_panicked());
+        }
+    }
+
+    #[test]
     fn test_null_inputs_dont_crash() {
         unsafe {
             // Each of these must either no-op or return a default, never
@@ -4046,6 +4073,45 @@ mod tests {
             // Pixel at (0,0) — outside clip — should remain black.
             let idx_outside = 0;
             assert!(buf[idx_outside] < 40);
+
+            sk_surface_unref(surface);
+            assert!(!sk_last_call_panicked());
+        }
+    }
+
+    #[test]
+    fn test_sk_canvas_clear_respects_clip() {
+        unsafe {
+            let surface = sk_surface_new_raster(10, 10);
+            let canvas = sk_surface_lock_canvas(surface);
+            // Known background color (opaque blue).
+            sk_canvas_clear(canvas, 0xFF0000FF);
+
+            // Intersect with a 4x4 inner square.
+            let clip_rect = sk_rect_t {
+                left: 3.0,
+                top: 3.0,
+                right: 7.0,
+                bottom: 7.0,
+            };
+            assert!(sk_canvas_clip_rect(canvas, &clip_rect, SkClipOp::Intersect as u32, false));
+
+            // `clear` must respect the current clip: only the inner box
+            // should turn red.
+            sk_canvas_clear(canvas, 0xFFFF0000);
+
+            sk_canvas_release(canvas);
+
+            let mut buf = vec![0u8; 10 * 10 * 4];
+            sk_surface_read_pixels(surface, buf.as_mut_ptr(), buf.len());
+            // Pixel at (5,5) — inside clip — should be red.
+            let idx_inside = (5 * 10 + 5) * 4;
+            assert!(buf[idx_inside] > 200); // R
+            assert!(buf[idx_inside + 2] < 40); // B
+            // Pixel at (0,0) — outside clip — should remain blue.
+            let idx_outside = 0;
+            assert!(buf[idx_outside] < 40); // R
+            assert!(buf[idx_outside + 2] > 200); // B
 
             sk_surface_unref(surface);
             assert!(!sk_last_call_panicked());
@@ -4569,11 +4635,12 @@ mod tests {
 
     #[test]
     fn test_blend_mode_decodes_all_29_modes() {
+        let decode = |v: u32| u8::try_from(v).ok().and_then(BlendMode::from_u8);
         for v in 0..=28u32 {
-            assert!(decode_blend_mode(v).is_some(), "mode {v} should decode");
+            assert!(decode(v).is_some(), "mode {v} should decode");
         }
-        assert_eq!(decode_blend_mode(29), None);
-        assert_eq!(decode_blend_mode(u32::MAX), None);
+        assert_eq!(decode(29), None);
+        assert_eq!(decode(u32::MAX), None);
     }
 
     #[test]

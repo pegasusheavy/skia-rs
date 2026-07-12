@@ -89,8 +89,13 @@ impl WasmSurface {
     }
 
     /// Get pixel data as a Uint8ClampedArray for ImageData.
+    ///
+    /// The surface stores premultiplied RGBA8888 pixels internally; this
+    /// converts to unpremultiplied (straight-alpha) RGBA8888 bytes, matching
+    /// `ImageData`'s expected format (same conversion as
+    /// [`WasmSurface::get_image_data`]).
     pub fn get_pixels(&self) -> Vec<u8> {
-        self.inner.pixels().to_vec()
+        crate::pixel_convert::premul_rgba_to_image_data(self.inner.pixels())
     }
 
     /// Get as ImageData for direct canvas rendering.

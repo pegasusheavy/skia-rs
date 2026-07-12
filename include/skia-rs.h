@@ -73,21 +73,6 @@
 // Perspective 2 index.
 #define Matrix_PERSP_2 8
 
-// Filter mode for image sampling.
-enum FilterMode
-#ifdef __cplusplus
-  : uint8_t
-#endif // __cplusplus
- {
-    // Nearest neighbor sampling.
-    FilterMode_Nearest = 0,
-    // Bilinear interpolation.
-    FilterMode_Linear,
-};
-#ifndef __cplusplus
-typedef uint8_t FilterMode;
-#endif // __cplusplus
-
 // Mipmap mode for image sampling.
 enum MipmapMode
 #ifdef __cplusplus
@@ -103,6 +88,21 @@ enum MipmapMode
 };
 #ifndef __cplusplus
 typedef uint8_t MipmapMode;
+#endif // __cplusplus
+
+// Filter mode for image sampling.
+enum FilterMode
+#ifdef __cplusplus
+  : uint8_t
+#endif // __cplusplus
+ {
+    // Nearest neighbor sampling.
+    FilterMode_Nearest = 0,
+    // Bilinear interpolation.
+    FilterMode_Linear,
+};
+#ifndef __cplusplus
+typedef uint8_t FilterMode;
 #endif // __cplusplus
 
 // Describes the color space for interpreting colors.
@@ -187,6 +187,11 @@ typedef struct sk_color4f_t {
     // Alpha.
     float a;
 } sk_color4f_t;
+
+// C ABI type for the paint's blend mode. Values follow upstream
+// `SkBlendMode` numbering (`include/core/SkBlendMode.h`), all 29 modes
+// (`kClear = 0` .. `kLuminosity = 28`); see [`BlendMode::from_u8`].
+typedef uint32_t sk_blend_mode_t;
 
 // Reference counted shader type.
 typedef struct sk_shader_t sk_shader_t;
@@ -450,6 +455,14 @@ int32_t sk_surface_get_height(const sk_surface_t *surface);
 
 // Get the pixel data from a surface (unsynchronized borrow).
 //
+// The bytes are always **premultiplied**, regardless of the surface's
+// declared alpha type — the underlying buffer physically stores premul
+// pixels, and a borrowed pointer cannot be converted in place without
+// mutating the surface's own storage. Surfaces created with
+// `alpha_type = Unpremul` are rejected (returns `false`); use
+// [`sk_surface_read_pixels`] instead, which copies out and unpremultiplies
+// as needed.
+//
 // **Lifetime:** the pointer returned via `out_pixels` is only valid for as
 // long as `surface` remains allocated AND is not mutated. Any subsequent
 // drawing call on this surface (e.g. [`sk_surface_draw_rect`]) may move
@@ -463,6 +476,11 @@ bool sk_surface_peek_pixels(const sk_surface_t *surface,
 //
 // Safer than [`sk_surface_peek_pixels`] — the caller owns the destination
 // buffer and does not need to track the surface's lifetime.
+//
+// The bytes are converted to match the surface's declared alpha type: for
+// surfaces created with `alpha_type = Unpremul`, the copied pixels are
+// unpremultiplied before being written to `dst`; otherwise the raw
+// premultiplied bytes are copied as-is.
 //
 // Returns the number of bytes written, or 0 on failure (null surface,
 // null/undersized destination buffer).
@@ -521,15 +539,15 @@ void sk_paint_set_antialias(sk_paint_t *paint,
 bool sk_paint_is_antialias(const sk_paint_t *paint);
 
 // Set the paint's blend mode. `mode` follows upstream `SkBlendMode`
-// (0-28); see [`decode_blend_mode`]. Returns false (leaving the paint's
+// (0-28); see [`BlendMode::from_u8`]. Returns false (leaving the paint's
 // blend mode unchanged) if `paint` is null or `mode` is out of range.
 bool sk_paint_set_blend_mode(sk_paint_t *paint,
-                             uint32_t mode);
+                             sk_blend_mode_t mode);
 
 // Get the paint's blend mode as a raw `sk_blend_mode_t` (upstream
 // `SkBlendMode` numbering, 0-28). Returns `SrcOver` (3) if `paint` is null,
 // matching `SkPaint`'s default blend mode.
-uint32_t sk_paint_get_blend_mode(const sk_paint_t *paint);
+sk_blend_mode_t sk_paint_get_blend_mode(const sk_paint_t *paint);
 
 // Attach a shader to the paint. Passing null clears it.
 //
