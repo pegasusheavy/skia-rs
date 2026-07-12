@@ -145,6 +145,12 @@ pub trait ImageGenerator: Send + Sync {
     ///
     /// # Returns
     /// `Ok(())` on success, `Err` on failure.
+    ///
+    /// # Errors
+    /// Returns [`GeneratorError::GenerateFailed`] if `pixels` is too small
+    /// for `info`, or if the requested `info` is not directly generatable
+    /// and not reachable via [`ImageGenerator::query_supports_info`]'s
+    /// conversion path.
     fn get_pixels(
         &self,
         info: &ImageInfo,
@@ -183,11 +189,18 @@ pub trait ImageGenerator: Send + Sync {
     ///
     /// This method should be implemented by concrete generators.
     /// The default implementation fails.
+    ///
+    /// # Errors
+    /// Returns [`GeneratorError`] if pixel generation fails.
     fn on_get_pixels(&self, pixels: &mut [u8], row_bytes: usize) -> GeneratorResult<()>;
 
     /// Generate pixels with format conversion.
     ///
     /// Default implementation generates native format then converts.
+    ///
+    /// # Errors
+    /// Returns [`GeneratorError`] if native generation or the subsequent
+    /// format conversion fails.
     fn on_get_pixels_with_conversion(
         &self,
         info: &ImageInfo,
@@ -231,6 +244,11 @@ pub type SharedImageGenerator = Arc<dyn ImageGenerator>;
 /// color-type translation (RGBA<->BGRA, Gray8<->RGBA, Alpha8<->RGBA,
 /// RGB888<->RGBA, RGB565<->RGBA) and alpha-type translation
 /// (Premul<->Unpremul) in a single row-by-row pass.
+///
+/// # Errors
+/// Returns [`GeneratorError::GenerateFailed`] on a dimension mismatch or
+/// invalid `ImageInfo`, and [`GeneratorError::UnsupportedColorType`] if
+/// the underlying conversion doesn't support the requested color types.
 pub fn convert_pixels(
     src_info: &ImageInfo,
     src_pixels: &[u8],
@@ -304,8 +322,10 @@ impl ImageGenerator for SolidColorGenerator {
     }
 
     fn on_get_pixels(&self, pixels: &mut [u8], row_bytes: usize) -> GeneratorResult<()> {
-        for y in 0..self.info.height as usize {
-            for x in 0..self.info.width as usize {
+        let height = usize::try_from(self.info.height).unwrap_or(0);
+        let width = usize::try_from(self.info.width).unwrap_or(0);
+        for y in 0..height {
+            for x in 0..width {
                 let offset = y * row_bytes + x * 4;
                 pixels[offset..offset + 4].copy_from_slice(&self.color);
             }
@@ -385,23 +405,22 @@ impl ImageGenerator for EncodedImageGenerator {
         let info = self.decoded.info();
         let src_row_bytes = self.decoded.row_bytes();
         let bytes_per_pixel = info.bytes_per_pixel();
-        let width = info.width as usize;
-        let height = info.height as usize;
+        let width = usize::try_from(info.width).unwrap_or(0);
+        let height = usize::try_from(info.height).unwrap_or(0);
 
-        if let Some(src_pixels) = self.decoded.peek_pixels() {
-            for y in 0..height {
-                let src_offset = y * src_row_bytes;
-                let dst_offset = y * row_bytes;
-                let copy_len = width * bytes_per_pixel;
-                pixels[dst_offset..dst_offset + copy_len]
-                    .copy_from_slice(&src_pixels[src_offset..src_offset + copy_len]);
-            }
-            Ok(())
-        } else {
-            Err(GeneratorError::GenerateFailed(
+        let Some(src_pixels) = self.decoded.peek_pixels() else {
+            return Err(GeneratorError::GenerateFailed(
                 "Failed to access decoded pixels".into(),
-            ))
+            ));
+        };
+        for y in 0..height {
+            let src_offset = y * src_row_bytes;
+            let dst_offset = y * row_bytes;
+            let copy_len = width * bytes_per_pixel;
+            pixels[dst_offset..dst_offset + copy_len]
+                .copy_from_slice(&src_pixels[src_offset..src_offset + copy_len]);
         }
+        Ok(())
     }
 
     fn on_get_pixels_with_conversion(
@@ -562,7 +581,7 @@ mod tests {
         // reads from the generator all produce the exact same bytes even
         // after we drop and recreate the destination buffer.
         let info = ImageInfo::new(4, 4, ColorType::Rgba8888, AlphaType::Unpremul);
-        let src_pixels: Vec<u8> = (0..(4 * 4 * 4)).map(|i| (i % 256) as u8).collect();
+        let src_pixels: Vec<u8> = (0..(4 * 4 * 4)).map(|i| u8::try_from(i % 256).unwrap()).collect();
         let src_image =
             crate::Image::from_raster_data(&info, &src_pixels, 16).expect("raster image");
         let encoded = crate::PngEncoder::new()
