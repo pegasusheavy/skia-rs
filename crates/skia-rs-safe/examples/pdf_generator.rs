@@ -19,6 +19,10 @@ fn main() {
 }
 
 #[cfg(feature = "pdf")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "linear demo walkthrough; splitting into helpers would obscure the example"
+)]
 fn pdf_generator_main() {
     use skia_rs_core::{Color, Point, Rect};
     use skia_rs_paint::{Paint, Style};
@@ -47,10 +51,7 @@ fn pdf_generator_main() {
     let page_width = 612.0;
     let page_height = 792.0;
 
-    println!(
-        "\nBeginning page 1 ({}x{} points)...",
-        page_width, page_height
-    );
+    println!("\nBeginning page 1 ({page_width}x{page_height} points)...");
 
     let mut canvas = doc.begin_page(page_width, page_height);
     canvas.use_standard_font(skia_rs_pdf::StandardFont::Helvetica);
@@ -246,7 +247,7 @@ fn pdf_generator_main() {
         ];
 
         let mut y = 120.0;
-        for (name, color) in colors.iter() {
+        for (name, color) in &colors {
             let mut paint = Paint::new();
             paint.set_color32(*color);
             paint.set_style(Style::Fill);
@@ -274,7 +275,7 @@ fn pdf_generator_main() {
     let mut writer = BufWriter::new(file);
 
     doc.write_to(&mut writer).expect("Failed to write PDF");
-    println!("\nPDF saved to: {}", output_path);
+    println!("\nPDF saved to: {output_path}");
     println!("Total pages: {}", doc.page_count());
 
     println!("\nExample complete!");

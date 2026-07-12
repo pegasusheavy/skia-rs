@@ -18,6 +18,10 @@ fn main() {
 }
 
 #[cfg(all(feature = "text", feature = "codec"))]
+#[allow(
+    clippy::too_many_lines,
+    reason = "linear demo walkthrough; splitting into helpers would obscure the example"
+)]
 fn text_rendering_main() {
     use skia_rs_canvas::Surface;
     use skia_rs_codec::{ImageEncoder, PngEncoder};
@@ -47,7 +51,7 @@ fn text_rendering_main() {
 
     // Title
     {
-        let font = Font::new(typeface.clone(), 48.0);
+        let font = Font::new(typeface, 48.0);
         let mut paint = Paint::new();
         paint.set_anti_alias(true);
         paint.set_color32(Color::from_rgb(30, 30, 50));
@@ -85,7 +89,7 @@ fn text_rendering_main() {
             let font = Font::from_size(size);
             paint.set_color32(Color::from_rgb(50, 50, 70));
 
-            let text = format!("Font size: {:.0}pt - The quick brown fox jumps", size);
+            let text = format!("Font size: {size:.0}pt - The quick brown fox jumps");
             let blob = TextBlob::from_text(&text, &font, Point::zero());
             canvas.draw_text_blob(&blob, 50.0, y, &paint);
 
@@ -204,12 +208,12 @@ fn text_rendering_main() {
 
     // Save to file
     let pixels = surface.pixels();
-    let stride = width as usize * 4;
+    let stride = usize::try_from(width).expect("width is non-negative") * 4;
 
     // Save using codec
     let output_path = "text_rendering_output.png";
     let file = File::create(output_path).expect("Failed to create output file");
-    let ref mut writer = BufWriter::new(file);
+    let mut writer = BufWriter::new(file);
 
     // Create image info and encode
     let img_info =
@@ -218,15 +222,12 @@ fn text_rendering_main() {
     if let Some(image) = skia_rs_codec::Image::from_raster_data(&img_info, pixels, stride) {
         let encoder = PngEncoder::new();
         encoder
-            .encode(&image, writer)
+            .encode(&image, &mut writer)
             .expect("Failed to encode PNG");
-        println!("\nSaved output to: {}", output_path);
+        println!("\nSaved output to: {output_path}");
     } else {
         eprintln!("Failed to create image from surface pixels");
     }
 
     println!("\nExample complete!");
 }
-
-#[cfg(all(feature = "text", feature = "codec"))]
-use skia_rs_canvas::Canvas;
