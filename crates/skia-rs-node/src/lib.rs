@@ -230,6 +230,12 @@ pub struct Matrix {
     inner: RsMatrix,
 }
 
+impl Default for Matrix {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[napi]
 impl Matrix {
     /// Create an identity matrix.
@@ -311,6 +317,12 @@ pub struct Paint {
     inner: RsPaint,
 }
 
+impl Default for Paint {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[napi]
 impl Paint {
     /// Create a new paint with default settings.
@@ -388,13 +400,13 @@ impl Paint {
     /// Get alpha (0-255).
     #[napi]
     pub fn get_alpha(&self) -> u32 {
-        self.inner.alpha() as u32
+        (self.inner.alpha() * 255.0).round() as u32
     }
 
     /// Set alpha (0-255).
     #[napi]
     pub fn set_alpha(&mut self, alpha: u32) {
-        self.inner.set_alpha(alpha as u8);
+        self.inner.set_alpha(alpha as f32 / 255.0);
     }
 }
 
@@ -406,6 +418,12 @@ impl Paint {
 #[napi]
 pub struct PathBuilder {
     inner: RsPathBuilder,
+}
+
+impl Default for PathBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[napi]
@@ -541,6 +559,12 @@ impl PathBuilder {
 #[napi]
 pub struct Path {
     inner: RsPath,
+}
+
+impl Default for Path {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[napi]

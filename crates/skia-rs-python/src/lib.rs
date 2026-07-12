@@ -202,8 +202,9 @@ impl Rect {
 
     /// Expand the rectangle to include a point.
     fn join(&self, x: f32, y: f32) -> Self {
+        let point_rect = RsRect::new(x, y, x, y);
         Self {
-            inner: self.inner.join(RsPoint::new(x, y)),
+            inner: self.inner.join(&point_rect),
         }
     }
 
@@ -375,12 +376,12 @@ impl Paint {
     /// Alpha (0-255).
     #[getter]
     fn alpha(&self) -> u8 {
-        self.inner.alpha()
+        (self.inner.alpha() * 255.0).round() as u8
     }
 
     #[setter]
     fn set_alpha(&mut self, alpha: u8) {
-        self.inner.set_alpha(alpha);
+        self.inner.set_alpha(alpha as f32 / 255.0);
     }
 
     fn __repr__(&self) -> String {
@@ -414,74 +415,102 @@ impl PathBuilder {
     }
 
     /// Move to a point.
-    fn move_to(&mut self, x: f32, y: f32) -> PyRef<'_, Self> {
-        self.inner.move_to(x, y);
-        PyRef::from(self)
+    fn move_to(mut self_: PyRefMut<'_, Self>, x: f32, y: f32) -> PyRefMut<'_, Self> {
+        self_.inner.move_to(x, y);
+        self_
     }
 
     /// Line to a point.
-    fn line_to(&mut self, x: f32, y: f32) -> PyRef<'_, Self> {
-        self.inner.line_to(x, y);
-        PyRef::from(self)
+    fn line_to(mut self_: PyRefMut<'_, Self>, x: f32, y: f32) -> PyRefMut<'_, Self> {
+        self_.inner.line_to(x, y);
+        self_
     }
 
     /// Quadratic bezier curve.
-    fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) -> PyRef<'_, Self> {
-        self.inner.quad_to(cx, cy, x, y);
-        PyRef::from(self)
+    fn quad_to(
+        mut self_: PyRefMut<'_, Self>,
+        cx: f32,
+        cy: f32,
+        x: f32,
+        y: f32,
+    ) -> PyRefMut<'_, Self> {
+        self_.inner.quad_to(cx, cy, x, y);
+        self_
     }
 
     /// Cubic bezier curve.
     fn cubic_to(
-        &mut self,
+        mut self_: PyRefMut<'_, Self>,
         c1x: f32,
         c1y: f32,
         c2x: f32,
         c2y: f32,
         x: f32,
         y: f32,
-    ) -> PyRef<'_, Self> {
-        self.inner.cubic_to(c1x, c1y, c2x, c2y, x, y);
-        PyRef::from(self)
+    ) -> PyRefMut<'_, Self> {
+        self_.inner.cubic_to(c1x, c1y, c2x, c2y, x, y);
+        self_
     }
 
     /// Close the current contour.
-    fn close(&mut self) -> PyRef<'_, Self> {
-        self.inner.close();
-        PyRef::from(self)
+    fn close(mut self_: PyRefMut<'_, Self>) -> PyRefMut<'_, Self> {
+        self_.inner.close();
+        self_
     }
 
     /// Add a rectangle.
-    fn add_rect(&mut self, left: f32, top: f32, right: f32, bottom: f32) -> PyRef<'_, Self> {
-        self.inner.add_rect(&RsRect::new(left, top, right, bottom));
-        PyRef::from(self)
+    fn add_rect(
+        mut self_: PyRefMut<'_, Self>,
+        left: f32,
+        top: f32,
+        right: f32,
+        bottom: f32,
+    ) -> PyRefMut<'_, Self> {
+        self_
+            .inner
+            .add_rect(&RsRect::new(left, top, right, bottom));
+        self_
     }
 
     /// Add an oval inscribed in a rectangle.
-    fn add_oval(&mut self, left: f32, top: f32, right: f32, bottom: f32) -> PyRef<'_, Self> {
-        self.inner.add_oval(&RsRect::new(left, top, right, bottom));
-        PyRef::from(self)
+    fn add_oval(
+        mut self_: PyRefMut<'_, Self>,
+        left: f32,
+        top: f32,
+        right: f32,
+        bottom: f32,
+    ) -> PyRefMut<'_, Self> {
+        self_
+            .inner
+            .add_oval(&RsRect::new(left, top, right, bottom));
+        self_
     }
 
     /// Add a circle.
-    fn add_circle(&mut self, cx: f32, cy: f32, radius: f32) -> PyRef<'_, Self> {
-        self.inner.add_circle(cx, cy, radius);
-        PyRef::from(self)
+    fn add_circle(
+        mut self_: PyRefMut<'_, Self>,
+        cx: f32,
+        cy: f32,
+        radius: f32,
+    ) -> PyRefMut<'_, Self> {
+        self_.inner.add_circle(cx, cy, radius);
+        self_
     }
 
     /// Add a rounded rectangle.
     fn add_round_rect(
-        &mut self,
+        mut self_: PyRefMut<'_, Self>,
         left: f32,
         top: f32,
         right: f32,
         bottom: f32,
         rx: f32,
         ry: f32,
-    ) -> PyRef<'_, Self> {
-        self.inner
+    ) -> PyRefMut<'_, Self> {
+        self_
+            .inner
             .add_round_rect(&RsRect::new(left, top, right, bottom), rx, ry);
-        PyRef::from(self)
+        self_
     }
 
     /// Build the path.
