@@ -22,6 +22,12 @@ members = [
 # Binding crates (node/python) require external toolchains (napi/pyo3) and
 # build cdylibs; keep them out of the default `cargo build` set so a plain
 # workspace build stays lean, while `cargo build --workspace` still covers them.
+#
+# INVARIANT: this list must equal `members` above MINUS the binding crates
+# (skia-rs-node, skia-rs-python). When you add a new non-binding crate to
+# `members`, add it here too — otherwise it is silently dropped from the
+# default `cargo build`/`test`/`clippy` runs (CI uses `--workspace`, which
+# overrides default-members, so CI would not catch the omission).
 default-members = [
     "crates/skia-rs-core",
     "crates/skia-rs-path",
