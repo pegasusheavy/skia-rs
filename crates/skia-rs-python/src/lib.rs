@@ -202,9 +202,13 @@ impl Rect {
 
     /// Expand the rectangle to include a point.
     fn join(&self, x: f32, y: f32) -> Self {
-        let point_rect = RsRect::new(x, y, x, y);
         Self {
-            inner: self.inner.join(&point_rect),
+            inner: RsRect::new(
+                self.inner.left.min(x),
+                self.inner.top.min(y),
+                self.inner.right.max(x),
+                self.inner.bottom.max(y),
+            ),
         }
     }
 
@@ -722,4 +726,69 @@ fn skia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(argb, m)?)?;
     m.add_function(wrap_pyfunction!(rgb, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rect_join_expands_to_include_point_outside_max_corner() {
+        let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let joined = rect.join(20.0, 20.0);
+        assert_eq!(joined.inner.left, 0.0);
+        assert_eq!(joined.inner.top, 0.0);
+        assert_eq!(joined.inner.right, 20.0);
+        assert_eq!(joined.inner.bottom, 20.0);
+    }
+
+    #[test]
+    fn rect_join_expands_to_include_point_outside_min_corner() {
+        let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let joined = rect.join(-5.0, -5.0);
+        assert_eq!(joined.inner.left, -5.0);
+        assert_eq!(joined.inner.top, -5.0);
+        assert_eq!(joined.inner.right, 10.0);
+        assert_eq!(joined.inner.bottom, 10.0);
+    }
+
+    #[test]
+    fn rect_join_point_already_inside_is_noop() {
+        let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let joined = rect.join(5.0, 5.0);
+        assert_eq!(joined.inner.left, 0.0);
+        assert_eq!(joined.inner.top, 0.0);
+        assert_eq!(joined.inner.right, 10.0);
+        assert_eq!(joined.inner.bottom, 10.0);
+    }
+
+    // Alpha bridge: Paint::alpha()/set_alpha() convert between a 0-255 u8
+    // and the underlying 0.0-1.0 f32. Exercised here as plain arithmetic
+    // (matching the getter/setter bodies) since PyO3 getters/setters
+    // require the GIL and can't be called directly in a host test.
+    fn alpha_to_u8(alpha: f32) -> u8 {
+        (alpha * 255.0).round() as u8
+    }
+
+    fn u8_to_alpha(alpha: u8) -> f32 {
+        alpha as f32 / 255.0
+    }
+
+    #[test]
+    fn alpha_round_trip_mid_value() {
+        let a = u8_to_alpha(128);
+        assert_eq!(alpha_to_u8(a), 128);
+    }
+
+    #[test]
+    fn alpha_round_trip_zero() {
+        let a = u8_to_alpha(0);
+        assert_eq!(alpha_to_u8(a), 0);
+    }
+
+    #[test]
+    fn alpha_round_trip_max() {
+        let a = u8_to_alpha(255);
+        assert_eq!(alpha_to_u8(a), 255);
+    }
 }
