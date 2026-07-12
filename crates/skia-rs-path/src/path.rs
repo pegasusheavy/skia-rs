@@ -170,11 +170,19 @@ fn record_axis_bound(
     max_y: &mut Scalar,
 ) {
     if axis == 0 {
-        if val < *min_x { *min_x = val; }
-        if val > *max_x { *max_x = val; }
+        if val < *min_x {
+            *min_x = val;
+        }
+        if val > *max_x {
+            *max_x = val;
+        }
     } else {
-        if val < *min_y { *min_y = val; }
-        if val > *max_y { *max_y = val; }
+        if val < *min_y {
+            *min_y = val;
+        }
+        if val > *max_y {
+            *max_y = val;
+        }
     }
 }
 
@@ -651,7 +659,8 @@ impl Path {
         self.points = np;
         self.conic_weights = nw;
         self.bounds = None;
-        self.convexity.store(PathConvexity::Unknown as u8, Ordering::Relaxed);
+        self.convexity
+            .store(PathConvexity::Unknown as u8, Ordering::Relaxed);
     }
 
     /// Transform the path by a matrix.
@@ -660,7 +669,8 @@ impl Path {
             *point = matrix.map_point(*point);
         }
         self.bounds = None;
-        self.convexity.store(PathConvexity::Unknown as u8, Ordering::Relaxed);
+        self.convexity
+            .store(PathConvexity::Unknown as u8, Ordering::Relaxed);
     }
 
     /// Create a transformed copy of the path.
@@ -692,7 +702,9 @@ impl Path {
     /// `SkPathEdgeIter`), uses inclusive bounds for the early-out, and XORs the
     /// result with the inverse-fill flag.
     pub fn contains(&self, point: Point) -> bool {
-        use crate::flatten::{flatten_conic_adaptive, flatten_cubic_adaptive, flatten_quad_adaptive};
+        use crate::flatten::{
+            flatten_conic_adaptive, flatten_cubic_adaptive, flatten_quad_adaptive,
+        };
 
         let is_inverse = self.fill_type.is_inverse();
         if self.is_empty() {
@@ -815,11 +827,23 @@ impl Path {
         let mut max_x = Scalar::NEG_INFINITY;
         let mut max_y = Scalar::NEG_INFINITY;
 
-        let include = |p: Point, min_x: &mut Scalar, min_y: &mut Scalar, max_x: &mut Scalar, max_y: &mut Scalar| {
-            if p.x < *min_x { *min_x = p.x; }
-            if p.y < *min_y { *min_y = p.y; }
-            if p.x > *max_x { *max_x = p.x; }
-            if p.y > *max_y { *max_y = p.y; }
+        let include = |p: Point,
+                       min_x: &mut Scalar,
+                       min_y: &mut Scalar,
+                       max_x: &mut Scalar,
+                       max_y: &mut Scalar| {
+            if p.x < *min_x {
+                *min_x = p.x;
+            }
+            if p.y < *min_y {
+                *min_y = p.y;
+            }
+            if p.x > *max_x {
+                *max_x = p.x;
+            }
+            if p.y > *max_y {
+                *max_y = p.y;
+            }
         };
 
         let mut current = Point::new(0.0, 0.0);
@@ -844,7 +868,9 @@ impl Path {
                             if t > 0.0 && t < 1.0 {
                                 let mt = 1.0 - t;
                                 let val = mt * mt * s + 2.0 * mt * t * cv + t * t * e;
-                                record_axis_bound(axis, val, &mut min_x, &mut max_x, &mut min_y, &mut max_y);
+                                record_axis_bound(
+                                    axis, val, &mut min_x, &mut max_x, &mut min_y, &mut max_y,
+                                );
                             }
                         }
                     }
@@ -893,7 +919,9 @@ impl Path {
                                     + 3.0 * mt * mt * t * c1v
                                     + 3.0 * mt * t * t * c2v
                                     + t * t * t * e;
-                                record_axis_bound(axis, val, &mut min_x, &mut max_x, &mut min_y, &mut max_y);
+                                record_axis_bound(
+                                    axis, val, &mut min_x, &mut max_x, &mut min_y, &mut max_y,
+                                );
                             }
                         }
                     }
@@ -919,7 +947,9 @@ impl Path {
 
     /// Get the total length of the path.
     pub fn length(&self) -> Scalar {
-        use crate::flatten::{flatten_cubic_adaptive, flatten_conic_adaptive, flatten_quad_adaptive};
+        use crate::flatten::{
+            flatten_conic_adaptive, flatten_cubic_adaptive, flatten_quad_adaptive,
+        };
 
         let mut total = 0.0;
         let mut current = Point::zero();
@@ -1088,9 +1118,11 @@ fn trivial_rect(pts: &[Point], vbs: &[Verb]) -> Option<Rect> {
 
     // One vector axis-aligned, and each following vector orthogonal to the last.
     let axis_aligned = |a: &Point| (a.x == 0.0) ^ (a.y == 0.0);
-    let orthogonal = |a: &Point, b: &Point| ((a.x == 0.0) ^ (b.x == 0.0)) && ((a.y == 0.0) ^ (b.y == 0.0));
+    let orthogonal =
+        |a: &Point, b: &Point| ((a.x == 0.0) ^ (b.x == 0.0)) && ((a.y == 0.0) ^ (b.y == 0.0));
 
-    if !(axis_aligned(&v0) && orthogonal(&v0, &v1) && orthogonal(&v1, &v2) && orthogonal(&v2, &v3)) {
+    if !(axis_aligned(&v0) && orthogonal(&v0, &v1) && orthogonal(&v1, &v2) && orthogonal(&v2, &v3))
+    {
         return None;
     }
     Some(rect_from_corners(pts[0], pts[2]))
@@ -1325,11 +1357,11 @@ mod convex {
         let mut last_sy = 2i32;
 
         let process = |next: Point,
-                           curr: &mut Point,
-                           dxes: &mut i32,
-                           dyes: &mut i32,
-                           last_sx: &mut i32,
-                           last_sy: &mut i32|
+                       curr: &mut Point,
+                       dxes: &mut i32,
+                       dyes: &mut i32,
+                       last_sx: &mut i32,
+                       last_sy: &mut i32|
          -> Option<bool> {
             let vx = next.x - curr.x;
             let vy = next.y - curr.y;
@@ -1352,12 +1384,26 @@ mod convex {
         };
 
         for &p in &pts[1..count] {
-            if let Some(r) = process(p, &mut curr_pt, &mut dxes, &mut dyes, &mut last_sx, &mut last_sy) {
+            if let Some(r) = process(
+                p,
+                &mut curr_pt,
+                &mut dxes,
+                &mut dyes,
+                &mut last_sx,
+                &mut last_sy,
+            ) {
                 return r;
             }
         }
         // closing edge back to the first point
-        if let Some(r) = process(first_pt, &mut curr_pt, &mut dxes, &mut dyes, &mut last_sx, &mut last_sy) {
+        if let Some(r) = process(
+            first_pt,
+            &mut curr_pt,
+            &mut dxes,
+            &mut dyes,
+            &mut last_sx,
+            &mut last_sy,
+        ) {
             return r;
         }
         false
@@ -1577,7 +1623,10 @@ mod tests {
         builder.cubic_to(95.0, 45.0, 100.0, 47.0, 0.0, 0.0);
         builder.close();
         let path = builder.build();
-        assert!(!path.is_oval(), "Random 4-cubic path should not be detected as oval");
+        assert!(
+            !path.is_oval(),
+            "Random 4-cubic path should not be detected as oval"
+        );
     }
 
     #[test]
@@ -1611,7 +1660,8 @@ mod tests {
         assert!(
             loose.top <= -99.0 || loose.bottom >= 99.0,
             "Loose bounds should include control points (top={}, bottom={})",
-            loose.top, loose.bottom
+            loose.top,
+            loose.bottom
         );
 
         // Tight bounds should be strictly tighter on at least one of top/bottom
@@ -1624,7 +1674,8 @@ mod tests {
         assert!(
             tight.bottom < 30.0 && tight.top > -30.0,
             "Tight bounds should reflect actual curve range (got top={}, bottom={})",
-            tight.top, tight.bottom
+            tight.top,
+            tight.bottom
         );
     }
 
@@ -1671,11 +1722,7 @@ mod tests {
         builder.cubic_to(1.0, 0.0, 2.0, 0.0, 3.0, 0.0);
         let path = builder.build();
         let len = path.length();
-        assert!(
-            (len - 3.0).abs() < 0.1,
-            "expected 3.0, got {}",
-            len
-        );
+        assert!((len - 3.0).abs() < 0.1, "expected 3.0, got {}", len);
     }
 
     #[test]
@@ -1693,7 +1740,9 @@ mod tests {
         let mut b = PathBuilder::new();
         b.add_rect(&Rect::new(1.0, 2.0, 5.0, 8.0));
         let path = b.build();
-        let r = path.is_rect().expect("add_rect output must be recognized as a rect");
+        let r = path
+            .is_rect()
+            .expect("add_rect output must be recognized as a rect");
         assert!((r.left - 1.0).abs() < 1e-4 && (r.top - 2.0).abs() < 1e-4);
         assert!((r.right - 5.0).abs() < 1e-4 && (r.bottom - 8.0).abs() < 1e-4);
     }
@@ -1772,7 +1821,11 @@ mod tests {
         b.move_to(0.0, 0.0);
         b.line_to(Scalar::INFINITY, 10.0);
         let path = b.build();
-        assert_eq!(path.bounds(), Rect::EMPTY, "non-finite path has empty bounds");
+        assert_eq!(
+            path.bounds(),
+            Rect::EMPTY,
+            "non-finite path has empty bounds"
+        );
     }
 
     #[test]
@@ -1822,7 +1875,10 @@ mod tests {
         b.line_to(5.0, 10.0);
         // no close()
         let path = b.build();
-        assert!(path.contains(Point::new(5.0, 3.0)), "implicit closing edge fills the triangle");
+        assert!(
+            path.contains(Point::new(5.0, 3.0)),
+            "implicit closing edge fills the triangle"
+        );
     }
 
     #[test]

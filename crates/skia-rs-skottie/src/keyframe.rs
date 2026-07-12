@@ -247,9 +247,7 @@ impl KeyframeValue {
                 a[3] + (b[3] - a[3]) * t,
             ]),
             (KeyframeValue::Path(a), KeyframeValue::Path(b)) => KeyframeValue::Path(a.lerp(b, t)),
-            (KeyframeValue::FloatArray(a), KeyframeValue::FloatArray(b))
-                if a.len() == b.len() =>
-            {
+            (KeyframeValue::FloatArray(a), KeyframeValue::FloatArray(b)) if a.len() == b.len() => {
                 KeyframeValue::FloatArray(
                     a.iter()
                         .zip(b.iter())
@@ -364,8 +362,7 @@ impl AnimatedProperty {
     /// Add a keyframe.
     pub fn add_keyframe(&mut self, keyframe: Keyframe) {
         self.keyframes.push(keyframe);
-        self.keyframes
-            .sort_by(|a, b| a.time.total_cmp(&b.time));
+        self.keyframes.sort_by(|a, b| a.time.total_cmp(&b.time));
     }
 
     /// Check if this property is animated.
@@ -702,7 +699,8 @@ mod tests {
     fn test_static_bezier_path_value_parses_geometry() {
         use crate::model::AnimatedValue;
 
-        let json = r#"{"a":0,"k":{"i":[[0,0],[0,0]],"o":[[0,0],[0,0]],"v":[[0,0],[10,10]],"c":false}}"#;
+        let json =
+            r#"{"a":0,"k":{"i":[[0,0],[0,0]],"o":[[0,0],[0,0]],"v":[[0,0],[10,10]],"c":false}}"#;
         let av: AnimatedValue = serde_json::from_str(json).unwrap();
         let prop = AnimatedProperty::from_lottie(&av);
         match prop.value_at(0.0) {

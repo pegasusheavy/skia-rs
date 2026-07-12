@@ -411,7 +411,10 @@ impl PdfFont {
     /// falls back to the printable-ASCII range so the font is still
     /// searchable.
     pub fn generate_to_unicode(&self) -> String {
-        let is_simple = !matches!(self.font_type, PdfFontType::OpenTypeCff | PdfFontType::Type0);
+        let is_simple = !matches!(
+            self.font_type,
+            PdfFontType::OpenTypeCff | PdfFontType::Type0
+        );
 
         let mut cmap = String::new();
         cmap.push_str("/CIDInit /ProcSet findresource begin\n");
@@ -430,7 +433,9 @@ impl PdfFont {
 
         // Walk the used-char set. If empty, fall back to printable ASCII.
         let mut entries: Vec<(u32, char)> = if self.used_chars.is_empty() {
-            (32u32..127).map(|c| (c, char::from_u32(c).unwrap())).collect()
+            (32u32..127)
+                .map(|c| (c, char::from_u32(c).unwrap()))
+                .collect()
         } else {
             self.used_chars
                 .iter()

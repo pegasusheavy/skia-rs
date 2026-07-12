@@ -73,11 +73,7 @@ fn crate_local_header_is_up_to_date() {
     let committed = std::fs::read_to_string(crate_dir.join("include/skia_rs.h"))
         .expect("crates/skia-rs-ffi/include/skia_rs.h must exist");
     let fresh = generate_header();
-    assert_same_declarations(
-        &committed,
-        &fresh,
-        "crates/skia-rs-ffi/include/skia_rs.h",
-    );
+    assert_same_declarations(&committed, &fresh, "crates/skia-rs-ffi/include/skia_rs.h");
 }
 
 #[test]

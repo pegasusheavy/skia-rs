@@ -2201,7 +2201,11 @@ mod tests {
 
         // Local x=0.5 at device x=50 -> near-black.
         let dark = buffer.get_pixel(50, 2).unwrap();
-        assert!(dark.red() < 40, "local-space start should be dark: {:?}", dark);
+        assert!(
+            dark.red() < 40,
+            "local-space start should be dark: {:?}",
+            dark
+        );
         // Local x=9.5 at device x=59 -> near-white.
         let bright = buffer.get_pixel(59, 2).unwrap();
         assert!(
@@ -2233,7 +2237,10 @@ mod tests {
         paint.set_anti_alias(true);
         // Triangle with a diagonal edge.
         let mut b = PathBuilder::new();
-        b.move_to(10.0, 10.0).line_to(50.0, 10.0).line_to(10.0, 50.0).close();
+        b.move_to(10.0, 10.0)
+            .line_to(50.0, 10.0)
+            .line_to(10.0, 50.0)
+            .close();
         let path = b.build();
         r.draw_path(&path, &paint);
 

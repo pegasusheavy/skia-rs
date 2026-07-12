@@ -31,8 +31,8 @@
 //! surface.save_png("output.png")
 //! ```
 
-use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
 
 use skia_rs_canvas::Surface as RsSurface;
 use skia_rs_core::{Color, Matrix as RsMatrix, Point as RsPoint, Rect as RsRect};
@@ -466,9 +466,7 @@ impl PathBuilder {
         right: f32,
         bottom: f32,
     ) -> PyRefMut<'_, Self> {
-        self_
-            .inner
-            .add_rect(&RsRect::new(left, top, right, bottom));
+        self_.inner.add_rect(&RsRect::new(left, top, right, bottom));
         self_
     }
 
@@ -480,9 +478,7 @@ impl PathBuilder {
         right: f32,
         bottom: f32,
     ) -> PyRefMut<'_, Self> {
-        self_
-            .inner
-            .add_oval(&RsRect::new(left, top, right, bottom));
+        self_.inner.add_oval(&RsRect::new(left, top, right, bottom));
         self_
     }
 

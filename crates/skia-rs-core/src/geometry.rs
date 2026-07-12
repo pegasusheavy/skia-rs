@@ -1014,8 +1014,8 @@ impl RRect {
         let h = rect.height();
         if w < x_rad + x_rad || h < y_rad + y_rad {
             // At most one divide is by zero, and neither numerator is zero.
-            let scale = ieee_float_divide(w, x_rad + x_rad)
-                .min(ieee_float_divide(h, y_rad + y_rad));
+            let scale =
+                ieee_float_divide(w, x_rad + x_rad).min(ieee_float_divide(h, y_rad + y_rad));
             x_rad *= scale;
             y_rad *= scale;
         }
@@ -1310,7 +1310,10 @@ impl Matrix {
                 Point { x: 0.0, y: 0.0 }
             } else {
                 let w_inv = 1.0 / w;
-                Point { x: x * w_inv, y: y * w_inv }
+                Point {
+                    x: x * w_inv,
+                    y: y * w_inv,
+                }
             }
         } else {
             Point { x, y }
@@ -1450,11 +1453,7 @@ mod tests {
         // Matrix that produces w=0 for the origin point.
         // perspective row: w = x + y + 0 = 0 at (0, 0).
         let matrix = Matrix {
-            values: [
-                1.0, 0.0, 0.0,
-                0.0, 1.0, 0.0,
-                1.0, 1.0, 0.0,
-            ],
+            values: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0],
         };
         let point = matrix.map_point(Point::new(0.0, 0.0));
         // Should return (0, 0) instead of NaN/inf
@@ -1470,8 +1469,16 @@ mod tests {
         // a point (0, 1) maps to (0.5, 1) - x is shifted by 0.5*y
         let matrix = Matrix::skew(0.5, 0.0);
         let point = matrix.map_point(Point::new(0.0, 1.0));
-        assert!((point.x - 0.5).abs() < 1e-6, "Expected x=0.5, got {}", point.x);
-        assert!((point.y - 1.0).abs() < 1e-6, "Expected y=1.0, got {}", point.y);
+        assert!(
+            (point.x - 0.5).abs() < 1e-6,
+            "Expected x=0.5, got {}",
+            point.x
+        );
+        assert!(
+            (point.y - 1.0).abs() < 1e-6,
+            "Expected y=1.0, got {}",
+            point.y
+        );
 
         // Skew matrix values should match: [1, 0.5, 0, 0, 1, 0, 0, 0, 1]
         let m = matrix.values;
@@ -1488,11 +1495,7 @@ mod tests {
         // Verify normal perspective division still works.
         // w = 2 for all points (persp_2 = 2, persp_0/1 = 0).
         let matrix = Matrix {
-            values: [
-                1.0, 0.0, 0.0,
-                0.0, 1.0, 0.0,
-                0.0, 0.0, 2.0,
-            ],
+            values: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 2.0],
         };
         let point = matrix.map_point(Point::new(4.0, 6.0));
         // x/w = 4/2 = 2, y/w = 6/2 = 3
@@ -1535,8 +1538,7 @@ mod tests {
         // of EPSILON*256 wrongly rejected it).
         let small = Matrix {
             values: [
-                1e-3, 0.0, 0.0,
-                0.0, 1e-3, 0.0,  // det = 1e-6
+                1e-3, 0.0, 0.0, 0.0, 1e-3, 0.0, // det = 1e-6
                 0.0, 0.0, 1.0,
             ],
         };
@@ -1546,24 +1548,26 @@ mod tests {
         // A determinant below the cubed nearly-zero constant is singular.
         let singular = Matrix {
             values: [
-                1e-5, 0.0, 0.0,
-                0.0, 1e-7, 0.0,  // det = 1e-12 < 1.45e-11
+                1e-5, 0.0, 0.0, 0.0, 1e-7, 0.0, // det = 1e-12 < 1.45e-11
                 0.0, 0.0, 1.0,
             ],
         };
-        assert!(singular.invert().is_none(),
-                "det 1e-12 is below Skia's (1/4096)^3 threshold");
+        assert!(
+            singular.invert().is_none(),
+            "det 1e-12 is below Skia's (1/4096)^3 threshold"
+        );
 
         // Well above threshold - should invert successfully.
         let invertible = Matrix {
             values: [
-                0.1, 0.0, 0.0,
-                0.0, 0.1, 0.0,  // det = 0.01
+                0.1, 0.0, 0.0, 0.0, 0.1, 0.0, // det = 0.01
                 0.0, 0.0, 1.0,
             ],
         };
-        assert!(invertible.invert().is_some(),
-                "Matrix with determinant 0.01 should be invertible");
+        assert!(
+            invertible.invert().is_some(),
+            "Matrix with determinant 0.01 should be invertible"
+        );
     }
 
     // --- Conformance regression tests (Task 1) ---
@@ -1630,7 +1634,10 @@ mod tests {
     #[test]
     fn test_size_to_isize_round_saturates() {
         assert_eq!(Size::new(2.5, 3.5).to_isize_round(), ISize::new(3, 4));
-        assert_eq!(Size::new(Scalar::NAN, 1.0).to_isize_round().width, 2_147_483_520);
+        assert_eq!(
+            Size::new(Scalar::NAN, 1.0).to_isize_round().width,
+            2_147_483_520
+        );
     }
 
     #[test]

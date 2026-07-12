@@ -201,12 +201,9 @@ impl BlendMode {
                 let a = (src.a + dst.a).min(1.0);
                 Color4f::new(r, g, b, a)
             }
-            BlendMode::Modulate => Color4f::new(
-                src.r * dst.r,
-                src.g * dst.g,
-                src.b * dst.b,
-                src.a * dst.a,
-            ),
+            BlendMode::Modulate => {
+                Color4f::new(src.r * dst.r, src.g * dst.g, src.b * dst.b, src.a * dst.a)
+            }
 
             // --- Separable blend modes (RGB via f, alpha via src-over) ---
             BlendMode::Screen => separable_blend(src, dst, |s, d| s + d - s * d),
@@ -268,13 +265,13 @@ impl BlendMode {
                         src.a * dst.a - 2.0 * (src.a - s) * (dst.a - d)
                     }
             }),
-            BlendMode::SoftLight => separable_blend(src, dst, |s, d| soft_light_channel(s, d, src.a, dst.a)),
-            BlendMode::Difference => separable_blend(src, dst, |s, d| {
-                s + d - 2.0 * (s * dst.a).min(d * src.a)
-            }),
-            BlendMode::Exclusion => separable_blend(src, dst, |s, d| {
-                s + d - 2.0 * s * d
-            }),
+            BlendMode::SoftLight => {
+                separable_blend(src, dst, |s, d| soft_light_channel(s, d, src.a, dst.a))
+            }
+            BlendMode::Difference => {
+                separable_blend(src, dst, |s, d| s + d - 2.0 * (s * dst.a).min(d * src.a))
+            }
+            BlendMode::Exclusion => separable_blend(src, dst, |s, d| s + d - 2.0 * s * d),
             BlendMode::Multiply => separable_blend(src, dst, |s, d| {
                 s * (1.0 - dst.a) + d * (1.0 - src.a) + s * d
             }),
@@ -330,9 +327,7 @@ fn soft_light_channel(s: f32, d: f32, sa: f32, da: f32) -> f32 {
     let dark_src = d * (sa + (s2 - sa) * (1.0 - m));
     let dark_dst = (m4 * m4 + m4) * (m - 1.0) + 7.0 * m;
     let lite_dst = m.sqrt() - m;
-    let lite_src = d * sa
-        + da * (s2 - sa)
-            * if 4.0 * d <= da { dark_dst } else { lite_dst };
+    let lite_src = d * sa + da * (s2 - sa) * if 4.0 * d <= da { dark_dst } else { lite_dst };
 
     s * (1.0 - da) + d * (1.0 - sa) + if s2 <= sa { dark_src } else { lite_src }
 }
@@ -372,7 +367,12 @@ fn non_separable_blend(src: Color4f, dst: Color4f, mode: NonSepMode) -> Color4f 
     let r = blended[0] * src.a * dst.a + src.r * (1.0 - dst.a) + dst.r * (1.0 - src.a);
     let g = blended[1] * src.a * dst.a + src.g * (1.0 - dst.a) + dst.g * (1.0 - src.a);
     let b = blended[2] * src.a * dst.a + src.b * (1.0 - dst.a) + dst.b * (1.0 - src.a);
-    Color4f::new(r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0), a.clamp(0.0, 1.0))
+    Color4f::new(
+        r.clamp(0.0, 1.0),
+        g.clamp(0.0, 1.0),
+        b.clamp(0.0, 1.0),
+        a.clamp(0.0, 1.0),
+    )
 }
 
 // W3C-compatible HSL helpers for non-separable blend modes.
@@ -450,7 +450,10 @@ mod tests {
     fn test_blend_clear() {
         let src = c(1.0, 0.5, 0.25, 0.8);
         let dst = c(0.2, 0.3, 0.4, 1.0);
-        assert!(colors_close(BlendMode::Clear.apply(src, dst), c(0.0, 0.0, 0.0, 0.0)));
+        assert!(colors_close(
+            BlendMode::Clear.apply(src, dst),
+            c(0.0, 0.0, 0.0, 0.0)
+        ));
     }
 
     #[test]

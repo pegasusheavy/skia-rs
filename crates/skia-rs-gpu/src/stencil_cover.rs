@@ -650,18 +650,32 @@ mod tests {
         let path = builder.build();
 
         let clip = Rect::new(0.0, 0.0, 200.0, 200.0);
-        let config =
-            StencilCoverConfig::from_fill_type(FillType::InverseWinding, Some(clip));
+        let config = StencilCoverConfig::from_fill_type(FillType::InverseWinding, Some(clip));
         assert!(config.inverse);
 
         let result = prepare_stencil_cover(&path, &config);
-        assert_eq!(result.cover_pass.stencil_state.front_func, StencilFunc::Equal);
-        assert_eq!(result.cover_pass.stencil_state.back_func, StencilFunc::Equal);
+        assert_eq!(
+            result.cover_pass.stencil_state.front_func,
+            StencilFunc::Equal
+        );
+        assert_eq!(
+            result.cover_pass.stencil_state.back_func,
+            StencilFunc::Equal
+        );
 
         // Cover mesh must span the clip bounds, not the tiny path bounds.
-        let xs: Vec<f32> = result.cover_pass.mesh.vertices.iter().map(|v| v.position[0]).collect();
+        let xs: Vec<f32> = result
+            .cover_pass
+            .mesh
+            .vertices
+            .iter()
+            .map(|v| v.position[0])
+            .collect();
         let max_x = xs.iter().cloned().fold(f32::MIN, f32::max);
-        assert!(max_x >= 200.0, "inverse cover must span clip bounds, got max_x={max_x}");
+        assert!(
+            max_x >= 200.0,
+            "inverse cover must span clip bounds, got max_x={max_x}"
+        );
     }
 
     #[test]

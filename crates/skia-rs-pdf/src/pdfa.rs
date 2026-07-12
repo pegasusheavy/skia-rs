@@ -1004,7 +1004,10 @@ mod tests {
 
         let mut v = PdfAValidator::new(PdfALevel::A1b);
         let errs = v.validate(&doc).unwrap_err();
-        assert!(errs.iter().any(|e| e.code == PdfAErrorCode::MissingDocumentId));
+        assert!(
+            errs.iter()
+                .any(|e| e.code == PdfAErrorCode::MissingDocumentId)
+        );
     }
 
     #[test]
@@ -1032,7 +1035,10 @@ mod tests {
         );
         let mut v = PdfAValidator::new(PdfALevel::A1b);
         let errs = v.validate(&doc).unwrap_err();
-        assert!(errs.iter().any(|e| e.code == PdfAErrorCode::FontMissingCmap));
+        assert!(
+            errs.iter()
+                .any(|e| e.code == PdfAErrorCode::FontMissingCmap)
+        );
     }
 
     #[test]
@@ -1070,8 +1076,7 @@ mod tests {
     #[test]
     fn test_validator_uncalibrated_color_space() {
         let mut doc = base_pdfa_doc(PdfALevel::A1b);
-        doc.uncalibrated_colors
-            .insert("DeviceN-Foo".to_string());
+        doc.uncalibrated_colors.insert("DeviceN-Foo".to_string());
         let mut v = PdfAValidator::new(PdfALevel::A1b);
         let errs = v.validate(&doc).unwrap_err();
         assert!(

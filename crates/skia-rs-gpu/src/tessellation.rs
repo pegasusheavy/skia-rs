@@ -784,7 +784,14 @@ fn emit_tri(mesh: &mut TessMesh, a: Point, b: Point, c: Point) {
 }
 
 /// Fill the join at vertex `v` between two segment directions.
-fn emit_join(mesh: &mut TessMesh, v: Point, d_in: Point, d_out: Point, hw: Scalar, style: &StrokeStyle) {
+fn emit_join(
+    mesh: &mut TessMesh,
+    v: Point,
+    d_in: Point,
+    d_out: Point,
+    hw: Scalar,
+    style: &StrokeStyle,
+) {
     let n0 = left_normal(d_in);
     let n1 = left_normal(d_out);
     let turn = d_in.x * d_out.y - d_in.y * d_out.x; // z of cross(d_in, d_out)
@@ -1377,7 +1384,8 @@ mod tests {
         // Regression: device-space tolerance. Magnifying the view matrix must
         // yield finer curve flattening (more vertices), not a fixed cap.
         let mut b = PathBuilder::new();
-        b.move_to(0.0, 0.0).cubic_to(0.0, 100.0, 100.0, 100.0, 100.0, 0.0);
+        b.move_to(0.0, 0.0)
+            .cubic_to(0.0, 100.0, 100.0, 100.0, 100.0, 0.0);
         let path = b.build();
 
         let mut t1 = PathTessellator::new();
@@ -1426,9 +1434,11 @@ mod tests {
         let path = b.build();
 
         let mut t = PathTessellator::new();
-        let miter = t.tessellate_stroke_styled(&path, &StrokeStyle::new(4.0).with_join(StrokeJoin::Miter));
+        let miter =
+            t.tessellate_stroke_styled(&path, &StrokeStyle::new(4.0).with_join(StrokeJoin::Miter));
         let mut t2 = PathTessellator::new();
-        let bevel = t2.tessellate_stroke_styled(&path, &StrokeStyle::new(4.0).with_join(StrokeJoin::Bevel));
+        let bevel =
+            t2.tessellate_stroke_styled(&path, &StrokeStyle::new(4.0).with_join(StrokeJoin::Bevel));
 
         // Measure how far the outer corner extends along the join's outer
         // bisector ((1,1)/sqrt2) from the corner (10,10). Segment endpoints
@@ -1457,14 +1467,23 @@ mod tests {
         let path = b.build();
 
         let mut t = PathTessellator::new();
-        let butt = t.tessellate_stroke_styled(&path, &StrokeStyle::new(4.0).with_cap(StrokeCap::Butt));
+        let butt =
+            t.tessellate_stroke_styled(&path, &StrokeStyle::new(4.0).with_cap(StrokeCap::Butt));
         let mut t2 = PathTessellator::new();
-        let square = t2.tessellate_stroke_styled(&path, &StrokeStyle::new(4.0).with_cap(StrokeCap::Square));
+        let square =
+            t2.tessellate_stroke_styled(&path, &StrokeStyle::new(4.0).with_cap(StrokeCap::Square));
         assert!(square.triangle_count() > butt.triangle_count());
 
         // Square cap reaches at least half_width beyond the end (x = 12).
-        let max_x = square.vertices.iter().map(|v| v.position[0]).fold(0.0f32, f32::max);
-        assert!(max_x >= 11.9, "square cap should extend past endpoint, got {max_x}");
+        let max_x = square
+            .vertices
+            .iter()
+            .map(|v| v.position[0])
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_x >= 11.9,
+            "square cap should extend past endpoint, got {max_x}"
+        );
     }
 
     #[test]

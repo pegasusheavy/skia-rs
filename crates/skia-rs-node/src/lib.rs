@@ -459,22 +459,9 @@ impl PathBuilder {
 
     /// Cubic bezier curve.
     #[napi]
-    pub fn cubic_to(
-        &mut self,
-        c1x: f64,
-        c1y: f64,
-        c2x: f64,
-        c2y: f64,
-        x: f64,
-        y: f64,
-    ) -> &Self {
+    pub fn cubic_to(&mut self, c1x: f64, c1y: f64, c2x: f64, c2y: f64, x: f64, y: f64) -> &Self {
         self.inner.cubic_to(
-            c1x as f32,
-            c1y as f32,
-            c2x as f32,
-            c2y as f32,
-            x as f32,
-            y as f32,
+            c1x as f32, c1y as f32, c2x as f32, c2y as f32, x as f32, y as f32,
         );
         self
     }
@@ -650,7 +637,11 @@ impl Surface {
     #[napi]
     pub fn draw_circle(&mut self, cx: f64, cy: f64, radius: f64, paint: &Paint) {
         let mut canvas = self.inner.raster_canvas();
-        canvas.draw_circle(RsPoint::new(cx as f32, cy as f32), radius as f32, &paint.inner);
+        canvas.draw_circle(
+            RsPoint::new(cx as f32, cy as f32),
+            radius as f32,
+            &paint.inner,
+        );
     }
 
     /// Draw an oval inscribed in a rectangle.

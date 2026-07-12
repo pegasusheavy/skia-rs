@@ -216,8 +216,20 @@ impl Color {
     fn parse_hsl_inner(inner: &str, with_alpha: bool) -> Option<Self> {
         let mut it = inner.split(',');
         let h: f32 = it.next()?.trim().trim_end_matches("deg").parse().ok()?;
-        let s: f32 = it.next()?.trim().trim_end_matches('%').parse::<f32>().ok()? / 100.0;
-        let l: f32 = it.next()?.trim().trim_end_matches('%').parse::<f32>().ok()? / 100.0;
+        let s: f32 = it
+            .next()?
+            .trim()
+            .trim_end_matches('%')
+            .parse::<f32>()
+            .ok()?
+            / 100.0;
+        let l: f32 = it
+            .next()?
+            .trim()
+            .trim_end_matches('%')
+            .parse::<f32>()
+            .ok()?
+            / 100.0;
         let a: f32 = if with_alpha {
             it.next()?.trim().parse().ok()?
         } else {
@@ -287,10 +299,7 @@ impl Color {
     /// Shared plumbing for CSS Color Level 4 functional notations.
     /// Takes linear RGB components and optional alpha string, converts to
     /// sRGB u8, and assembles the final Color.
-    fn compose_level4(
-        linear_rgb: (f32, f32, f32),
-        alpha: Option<&str>,
-    ) -> Option<Self> {
+    fn compose_level4(linear_rgb: (f32, f32, f32), alpha: Option<&str>) -> Option<Self> {
         let alpha_u8 = alpha.and_then(Self::parse_alpha).unwrap_or(255);
         let r = Self::linear_to_srgb_u8(linear_rgb.0);
         let g = Self::linear_to_srgb_u8(linear_rgb.1);
@@ -1509,11 +1518,7 @@ mod icc {
     }
 
     /// Read an `XYZ ` tag and return its three s15.16 components.
-    pub(super) fn read_xyz_tag(
-        tags: &[IccTag],
-        bytes: &[u8],
-        sig: &[u8; 4],
-    ) -> Option<[f32; 3]> {
+    pub(super) fn read_xyz_tag(tags: &[IccTag], bytes: &[u8], sig: &[u8; 4]) -> Option<[f32; 3]> {
         let tag = find_tag(tags, sig)?;
         let start = tag.offset as usize;
         let end = start.checked_add(tag.size as usize)?;
@@ -2135,10 +2140,7 @@ mod tests {
     #[test]
     fn test_color_from_css_hex() {
         assert_eq!(Color::from_css("#f00"), Some(Color::from_rgb(255, 0, 0)));
-        assert_eq!(
-            Color::from_css("#ff0000"),
-            Some(Color::from_rgb(255, 0, 0))
-        );
+        assert_eq!(Color::from_css("#ff0000"), Some(Color::from_rgb(255, 0, 0)));
         assert_eq!(
             Color::from_css("#ff0000ff"),
             Some(Color::from_argb(255, 255, 0, 0))
@@ -2212,7 +2214,10 @@ mod tests {
         assert_eq!(Color::from_css("RED"), Color::from_css("red"));
         assert_eq!(Color::from_css("Red"), Color::from_css("red"));
         assert_eq!(Color::from_css("AliceBlue"), Color::from_css("aliceblue"));
-        assert_eq!(Color::from_css("TRANSPARENT"), Color::from_css("transparent"));
+        assert_eq!(
+            Color::from_css("TRANSPARENT"),
+            Color::from_css("transparent")
+        );
         assert_eq!(Color::from_css("WHITE"), Color::from_css("white"));
         assert_eq!(Color::from_css("BLACK"), Color::from_css("black"));
     }

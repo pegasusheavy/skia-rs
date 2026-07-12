@@ -377,11 +377,10 @@ mod tests {
         // Gap N-1: `make_from_file` must use std::fs::read and delegate to
         // Typeface::from_data.
         let mgr = DefaultFontMgr::new();
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/demo.ttf"
-        );
-        let tf = mgr.make_from_file(path, 0).expect("load demo.ttf from disk");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/demo.ttf");
+        let tf = mgr
+            .make_from_file(path, 0)
+            .expect("load demo.ttf from disk");
         assert_eq!(tf.units_per_em(), 1000);
     }
 
@@ -394,8 +393,7 @@ mod tests {
 
         // Register demo.ttf (covers 'A' only) under family "Emoji" to
         // simulate a fallback path.
-        let covering =
-            Arc::new(Typeface::from_data(DEMO_TTF.to_vec()).expect("parse demo.ttf"));
+        let covering = Arc::new(Typeface::from_data(DEMO_TTF.to_vec()).expect("parse demo.ttf"));
         mgr.register_typeface("Emoji", covering, "Regular", FontStyle::default());
 
         // Asking for family "Default" + character 'A': the default family
@@ -403,12 +401,7 @@ mod tests {
         // ASCII codepoint as a fallback, so it *does* return non-zero for
         // 'A'). That means the default family wins for 'A'. Verify that
         // much: the returned typeface is non-None.
-        let tf = mgr.match_family_style_character(
-            "Default",
-            FontStyle::default(),
-            &[],
-            'A',
-        );
+        let tf = mgr.match_family_style_character("Default", FontStyle::default(), &[], 'A');
         assert!(tf.is_some());
 
         // For a character no typeface in any family covers, we must still

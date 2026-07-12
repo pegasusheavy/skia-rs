@@ -8,7 +8,7 @@
 //! - Text alignment and justification
 
 use crate::font::Font;
-use crate::shaper::{Shaper, ShapedGlyph};
+use crate::shaper::{ShapedGlyph, Shaper};
 use crate::text_blob::{TextBlob, TextBlobBuilder};
 use skia_rs_core::{Point, Rect, Scalar};
 
@@ -168,10 +168,7 @@ impl ParagraphBuilder {
     /// The style currently in effect: the top of the stack, or the default
     /// text style when the stack is empty.
     fn current_style(&self) -> TextStyle {
-        self.style_stack
-            .last()
-            .cloned()
-            .unwrap_or_default()
+        self.style_stack.last().cloned().unwrap_or_default()
     }
 
     /// Push a style onto the style stack. It becomes the current style
@@ -318,11 +315,7 @@ impl Paragraph {
         self.pack_clusters_into_lines(clusters, width);
 
         // Compute final height from the last line's extent.
-        self.height = self
-            .lines
-            .last()
-            .map(|l| l.bounds.bottom)
-            .unwrap_or(0.0);
+        self.height = self.lines.last().map(|l| l.bounds.bottom).unwrap_or(0.0);
         self.laid_out = true;
     }
 
@@ -439,8 +432,7 @@ impl Paragraph {
             if line_clusters.is_empty() && !forced_break {
                 return false;
             }
-            let line =
-                this.build_line(std::mem::take(line_clusters), *content_width, *y);
+            let line = this.build_line(std::mem::take(line_clusters), *content_width, *y);
             let line_height = line.bounds.height();
             this.lines.push(line);
             *content_width = 0.0;
@@ -458,8 +450,7 @@ impl Paragraph {
 
             match cluster.kind {
                 ClusterKind::Newline => {
-                    reached_max =
-                        flush(self, &mut pending, &mut pending_advance, &mut y, true);
+                    reached_max = flush(self, &mut pending, &mut pending_advance, &mut y, true);
                 }
                 ClusterKind::Space => {
                     // Try to add this space cluster to the current line. If
@@ -470,13 +461,8 @@ impl Paragraph {
                         // cluster (trailing on the wrapped line; never
                         // "starts" the next line — matches standard
                         // soft-wrap behaviour).
-                        reached_max = flush(
-                            self,
-                            &mut pending,
-                            &mut pending_advance,
-                            &mut y,
-                            false,
-                        );
+                        reached_max =
+                            flush(self, &mut pending, &mut pending_advance, &mut y, false);
                         // The space itself is consumed.
                     } else {
                         pending_advance += cluster.advance;
@@ -490,9 +476,9 @@ impl Paragraph {
                         // this word is longer than the line so we ship the
                         // current line as-is and start fresh with this
                         // cluster (matches prior behaviour).
-                        let last_space_ix = pending.iter().rposition(|c| {
-                            matches!(c.kind, ClusterKind::Space)
-                        });
+                        let last_space_ix = pending
+                            .iter()
+                            .rposition(|c| matches!(c.kind, ClusterKind::Space));
                         if let Some(ix) = last_space_ix {
                             // Split: everything up to `ix` stays on this line,
                             // the space at `ix` is dropped, everything after
@@ -500,16 +486,9 @@ impl Paragraph {
                             let after = pending.split_off(ix + 1);
                             // Remove the space at `ix`.
                             pending.pop();
-                            let line_width_before: Scalar =
-                                pending.iter().map(|c| c.advance).sum();
+                            let line_width_before: Scalar = pending.iter().map(|c| c.advance).sum();
                             let mut before_adv = line_width_before;
-                            reached_max = flush(
-                                self,
-                                &mut pending,
-                                &mut before_adv,
-                                &mut y,
-                                false,
-                            );
+                            reached_max = flush(self, &mut pending, &mut before_adv, &mut y, false);
                             // Now start the next line with `after` + cluster.
                             pending = after;
                             pending_advance = pending.iter().map(|c| c.advance).sum();
@@ -520,13 +499,8 @@ impl Paragraph {
                         } else {
                             // No space to break at; ship the current line
                             // and start a new one with this cluster.
-                            reached_max = flush(
-                                self,
-                                &mut pending,
-                                &mut pending_advance,
-                                &mut y,
-                                false,
-                            );
+                            reached_max =
+                                flush(self, &mut pending, &mut pending_advance, &mut y, false);
                             if !reached_max {
                                 pending_advance = cluster.advance;
                                 pending.push(cluster);
@@ -582,12 +556,7 @@ impl Paragraph {
         }
     }
 
-    fn build_line(
-        &self,
-        clusters: Vec<Cluster>,
-        content_width: Scalar,
-        y: Scalar,
-    ) -> TextLine {
+    fn build_line(&self, clusters: Vec<Cluster>, content_width: Scalar, y: Scalar) -> TextLine {
         // Derive per-line ascent/descent by taking the max over each
         // cluster's font metrics (mixed-style lines use the tallest
         // fragment's metrics as the line height).

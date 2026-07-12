@@ -255,22 +255,21 @@ impl LazyImage {
                     // `Generating` — parking_lot mutexes do not poison, so
                     // condvar waiters would block forever. Catch the unwind,
                     // publish `Failed` + notify, then resume the panic.
-                    let result = match std::panic::catch_unwind(
-                        std::panic::AssertUnwindSafe(|| {
+                    let result =
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             self.inner
                                 .generator
                                 .get_pixels(info, &mut pixels, row_bytes)
-                        }),
-                    ) {
-                        Ok(result) => result,
-                        Err(payload) => {
-                            let mut guard = self.inner.gen_state.lock();
-                            guard.state = LazyImageState::Failed;
-                            drop(guard);
-                            self.inner.cv.notify_all();
-                            std::panic::resume_unwind(payload);
-                        }
-                    };
+                        })) {
+                            Ok(result) => result,
+                            Err(payload) => {
+                                let mut guard = self.inner.gen_state.lock();
+                                guard.state = LazyImageState::Failed;
+                                drop(guard);
+                                self.inner.cv.notify_all();
+                                std::panic::resume_unwind(payload);
+                            }
+                        };
 
                     let mut guard = self.inner.gen_state.lock();
                     let ret = match result {
@@ -618,8 +617,7 @@ mod tests {
             &self.info
         }
         fn on_get_pixels(&self, pixels: &mut [u8], _row_bytes: usize) -> GeneratorResult<()> {
-            self.calls
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             std::thread::sleep(std::time::Duration::from_millis(50));
             for b in pixels.iter_mut() {
                 *b = 77;
@@ -647,7 +645,8 @@ mod tests {
                 let lazy = Arc::clone(&lazy);
                 thread::spawn(move || {
                     // Every caller must observe success, never an error.
-                    lazy.ensure_pixels_generated().expect("waiters must not error");
+                    lazy.ensure_pixels_generated()
+                        .expect("waiters must not error");
                     assert!(lazy.is_generated());
                 })
             })
@@ -675,7 +674,9 @@ mod tests {
         assert_eq!(lazy.state(), LazyImageState::NotGenerated);
 
         lazy.ensure_pixels_generated().unwrap();
-        let px = lazy.peek_pixels().expect("pixels available after generation");
+        let px = lazy
+            .peek_pixels()
+            .expect("pixels available after generation");
         assert_eq!(&px[0..4], &[9, 8, 7, 255]);
     }
 

@@ -717,7 +717,11 @@ mod tests {
         }
 
         let rects = region.rects();
-        assert_eq!(rects.len(), 1, "Repeated union with same rect should stay at 1");
+        assert_eq!(
+            rects.len(),
+            1,
+            "Repeated union with same rect should stay at 1"
+        );
     }
 
     #[test]

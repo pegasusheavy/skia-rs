@@ -8,7 +8,7 @@
 use crate::keyframe::{AnimatedProperty, KeyframeValue, PathData};
 use crate::model::MaskModel;
 use skia_rs_core::{Rect, Scalar};
-use skia_rs_path::ops::{op, PathOp};
+use skia_rs_path::ops::{PathOp, op};
 use skia_rs_path::{FillType, Path, PathBuilder};
 
 /// Mask mode (boolean operation).
@@ -232,7 +232,6 @@ impl MaskGroup {
     pub fn has_active_masks(&self, frame: Scalar) -> bool {
         self.masks.iter().any(|m| m.is_active(frame))
     }
-
 }
 
 /// Build the combined clip path for a set of masks at a frame.
@@ -245,11 +244,7 @@ impl MaskGroup {
 pub fn build_clip(masks: &[Mask], frame: Scalar, bounds: Rect) -> Option<Path> {
     let mut result: Option<Path> = None;
 
-    for (i, mask) in masks
-        .iter()
-        .filter(|m| m.is_active(frame))
-        .enumerate()
-    {
+    for (i, mask) in masks.iter().filter(|m| m.is_active(frame)).enumerate() {
         let Some(path) = mask.path_at(frame) else {
             continue;
         };

@@ -678,7 +678,9 @@ impl PipelineKey {
         // Multisample fields beyond the count.
         let mut ms_hasher = std::collections::hash_map::DefaultHasher::new();
         desc.multisample.mask.hash(&mut ms_hasher);
-        desc.multisample.alpha_to_coverage_enabled.hash(&mut ms_hasher);
+        desc.multisample
+            .alpha_to_coverage_enabled
+            .hash(&mut ms_hasher);
         let multisample_hash = ms_hasher.finish();
 
         // Blend: both color *and* alpha components (factors + operation) plus
@@ -845,7 +847,9 @@ mod tests {
         });
         assert_changes(&|d| d.depth_stencil.as_mut().unwrap().stencil_write_mask = 0x0F);
         assert_changes(&|d| d.depth_stencil.as_mut().unwrap().depth_write_enabled = false);
-        assert_changes(&|d| d.depth_stencil.as_mut().unwrap().depth_compare = CompareFunction::Always);
+        assert_changes(&|d| {
+            d.depth_stencil.as_mut().unwrap().depth_compare = CompareFunction::Always
+        });
         // Blend operation and alpha component (not just color src/dst).
         assert_changes(&|d| {
             d.color_targets[0].blend.as_mut().unwrap().color.operation =

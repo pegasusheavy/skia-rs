@@ -545,8 +545,7 @@ impl Image {
                 let y_scale = self.height() as f32 / height as f32;
 
                 for dst_y in 0..height as usize {
-                    let src_y =
-                        (((dst_y as f32 + 0.5) * y_scale).floor() as usize).min(src_h - 1);
+                    let src_y = (((dst_y as f32 + 0.5) * y_scale).floor() as usize).min(src_h - 1);
                     for dst_x in 0..width as usize {
                         let src_x =
                             (((dst_x as f32 + 0.5) * x_scale).floor() as usize).min(src_w - 1);
@@ -554,9 +553,8 @@ impl Image {
                         let src_offset = src_y * src_row_bytes + src_x * bytes_per_pixel;
                         let dst_offset = dst_y * new_row_bytes + dst_x * bytes_per_pixel;
 
-                        new_pixels[dst_offset..dst_offset + bytes_per_pixel].copy_from_slice(
-                            &src_pixels[src_offset..src_offset + bytes_per_pixel],
-                        );
+                        new_pixels[dst_offset..dst_offset + bytes_per_pixel]
+                            .copy_from_slice(&src_pixels[src_offset..src_offset + bytes_per_pixel]);
                     }
                 }
             }
@@ -602,9 +600,7 @@ impl Image {
                     }
                 }
             }
-            SamplingOptions::Mitchell
-            | SamplingOptions::CatmullRom
-            | SamplingOptions::Lanczos3 => {
+            SamplingOptions::Mitchell | SamplingOptions::CatmullRom | SamplingOptions::Lanczos3 => {
                 resample_separable(
                     src_pixels,
                     src_w,
@@ -644,10 +640,7 @@ impl Image {
     /// multi-input API lands.
     ///
     /// Returns `None` if pixel extraction or conversion fails.
-    pub fn make_with_filter(
-        &self,
-        filter: &dyn skia_rs_paint::ImageFilter,
-    ) -> Option<Self> {
+    pub fn make_with_filter(&self, filter: &dyn skia_rs_paint::ImageFilter) -> Option<Self> {
         let width = self.width();
         let height = self.height();
         if width <= 0 || height <= 0 {
@@ -688,9 +681,7 @@ fn cubic_bc(t: f32, b: f32, c: f32) -> f32 {
     if t < 1.0 {
         let t2 = t * t;
         let t3 = t2 * t;
-        ((12.0 - 9.0 * b - 6.0 * c) * t3
-            + (-18.0 + 12.0 * b + 6.0 * c) * t2
-            + (6.0 - 2.0 * b))
+        ((12.0 - 9.0 * b - 6.0 * c) * t3 + (-18.0 + 12.0 * b + 6.0 * c) * t2 + (6.0 - 2.0 * b))
             / 6.0
     } else if t < 2.0 {
         let t2 = t * t;
@@ -756,11 +747,7 @@ struct Taps {
     tap_count: usize,
 }
 
-fn build_taps(
-    src_len: usize,
-    dst_len: usize,
-    sampling: SamplingOptions,
-) -> Taps {
+fn build_taps(src_len: usize, dst_len: usize, sampling: SamplingOptions) -> Taps {
     let scale = src_len as f32 / dst_len as f32;
     // When downscaling, stretch the kernel by `scale` so the anti-aliasing
     // footprint matches the reduction ratio. When upscaling, leave it alone.
@@ -793,7 +780,11 @@ fn build_taps(
         }
     }
 
-    Taps { indices, weights, tap_count }
+    Taps {
+        indices,
+        weights,
+        tap_count,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -907,7 +898,9 @@ mod tests {
         ];
         let image = Image::from_raster_data(&info, &src, 8).unwrap();
 
-        let up = image.make_scaled_with(4, 1, SamplingOptions::Linear).unwrap();
+        let up = image
+            .make_scaled_with(4, 1, SamplingOptions::Linear)
+            .unwrap();
         assert_eq!(up.dimensions(), (4, 1));
 
         // Nearest sampling would produce [black, black, white, white].
@@ -935,7 +928,9 @@ mod tests {
         let src = vec![0, 0, 0, 255, 255, 255, 255, 255];
         let image = Image::from_raster_data(&info, &src, 8).unwrap();
 
-        let up = image.make_scaled_with(4, 1, SamplingOptions::Nearest).unwrap();
+        let up = image
+            .make_scaled_with(4, 1, SamplingOptions::Nearest)
+            .unwrap();
         let p0 = up.read_pixel(0, 0).unwrap();
         let p1 = up.read_pixel(1, 0).unwrap();
         let p2 = up.read_pixel(2, 0).unwrap();
@@ -954,7 +949,9 @@ mod tests {
             src.extend_from_slice(&[g, g, g, 255]);
         }
         let image = Image::from_raster_data(&info, &src, 16).unwrap();
-        let up = image.make_scaled_with(16, 1, SamplingOptions::Mitchell).unwrap();
+        let up = image
+            .make_scaled_with(16, 1, SamplingOptions::Mitchell)
+            .unwrap();
         assert_eq!(up.dimensions(), (16, 1));
 
         let mut last = -1.0f32;
@@ -968,7 +965,11 @@ mod tests {
             last = p.r;
         }
         // Mitchell rings mildly; require at least mostly-increasing behavior.
-        assert!(strictly_increasing >= 13, "got {} monotone steps", strictly_increasing);
+        assert!(
+            strictly_increasing >= 13,
+            "got {} monotone steps",
+            strictly_increasing
+        );
     }
 
     #[test]
@@ -1001,7 +1002,9 @@ mod tests {
             src.extend_from_slice(&[g, g, g, 255]);
         }
         let image = Image::from_raster_data(&info, &src, 64).unwrap();
-        let down = image.make_scaled_with(4, 1, SamplingOptions::Lanczos3).unwrap();
+        let down = image
+            .make_scaled_with(4, 1, SamplingOptions::Lanczos3)
+            .unwrap();
         // Each 4-pixel group contains 2 black + 2 white so the average is 127.5.
         // Lanczos should land near grey (with some kernel asymmetry tolerance).
         for x in 0..4 {
@@ -1163,7 +1166,9 @@ mod tests {
             40, 40, 40, 255,
         ];
         let src = Image::from_raster_data_owned(info, pixels, 16).unwrap();
-        let scaled = src.make_scaled_with(2, 1, SamplingOptions::Nearest).unwrap();
+        let scaled = src
+            .make_scaled_with(2, 1, SamplingOptions::Nearest)
+            .unwrap();
         let px = scaled.peek_pixels().unwrap();
         assert_eq!(px[0], 20, "col 0 -> src index 1");
         assert_eq!(px[4], 40, "col 1 -> src index 3");

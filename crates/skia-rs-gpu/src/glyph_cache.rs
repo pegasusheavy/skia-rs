@@ -570,7 +570,10 @@ mod tests {
             assert!(r.is_some(), "insert {i} failed to place a fitting glyph");
         }
         // The cache is bounded by atlas capacity via eviction, not unbounded.
-        assert!(cache.len() <= 32, "cache should be bounded by atlas capacity");
+        assert!(
+            cache.len() <= 32,
+            "cache should be bounded by atlas capacity"
+        );
         assert!(cache.stats().evictions > 0);
     }
 
@@ -590,9 +593,18 @@ mod tests {
     fn test_reset_bumps_atlas_generation() {
         let mut cache = GlyphCache::default();
         let g0 = cache.atlas_generation();
-        cache.insert(GlyphKey::new(1, 1, 16.0, Point::zero()), 16, 16, Point::zero(), 10.0);
+        cache.insert(
+            GlyphKey::new(1, 1, 16.0, Point::zero()),
+            16,
+            16,
+            Point::zero(),
+            10.0,
+        );
         cache.reset();
-        assert!(cache.atlas_generation() > g0, "reset must bump atlas generation");
+        assert!(
+            cache.atlas_generation() > g0,
+            "reset must bump atlas generation"
+        );
     }
 
     #[test]

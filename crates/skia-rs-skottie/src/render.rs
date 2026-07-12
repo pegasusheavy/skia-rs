@@ -440,11 +440,20 @@ impl<'a> RenderContext<'a> {
 
             if let Some(shader) = build_gradient_shader(
                 gf.gradient_type,
-                gf.start_point.value_at(frame).as_vec2().unwrap_or([0.0, 0.0]),
+                gf.start_point
+                    .value_at(frame)
+                    .as_vec2()
+                    .unwrap_or([0.0, 0.0]),
                 gf.end_point.value_at(frame).as_vec2().unwrap_or([0.0, 0.0]),
                 &gf.stops_at(frame),
-                gf.highlight_length.value_at(frame).as_scalar().unwrap_or(0.0),
-                gf.highlight_angle.value_at(frame).as_scalar().unwrap_or(0.0),
+                gf.highlight_length
+                    .value_at(frame)
+                    .as_scalar()
+                    .unwrap_or(0.0),
+                gf.highlight_angle
+                    .value_at(frame)
+                    .as_scalar()
+                    .unwrap_or(0.0),
             ) {
                 paint.set_shader(Some(shader));
             }
@@ -489,11 +498,20 @@ impl<'a> RenderContext<'a> {
 
             if let Some(shader) = build_gradient_shader(
                 gs.gradient_type,
-                gs.start_point.value_at(frame).as_vec2().unwrap_or([0.0, 0.0]),
+                gs.start_point
+                    .value_at(frame)
+                    .as_vec2()
+                    .unwrap_or([0.0, 0.0]),
                 gs.end_point.value_at(frame).as_vec2().unwrap_or([0.0, 0.0]),
                 &gs.stops_at(frame),
-                gs.highlight_length.value_at(frame).as_scalar().unwrap_or(0.0),
-                gs.highlight_angle.value_at(frame).as_scalar().unwrap_or(0.0),
+                gs.highlight_length
+                    .value_at(frame)
+                    .as_scalar()
+                    .unwrap_or(0.0),
+                gs.highlight_angle
+                    .value_at(frame)
+                    .as_scalar()
+                    .unwrap_or(0.0),
             ) {
                 paint.set_shader(Some(shader));
             }
@@ -592,11 +610,7 @@ fn luma_color_filter() -> skia_rs_paint::ColorMatrixFilter {
 ///   across the combined length (`SkTrimPE` parameterizes by total length
 ///   across contours, which [`PathMeasure::get_segment`] matches, so the
 ///   trim span crosses path boundaries).
-fn apply_trim(
-    paths: Vec<Path>,
-    trim: &TrimPathShape,
-    frame: Scalar,
-) -> Vec<Path> {
+fn apply_trim(paths: Vec<Path>, trim: &TrimPathShape, frame: Scalar) -> Vec<Path> {
     let (start_t, stop_t, inverted) = trim.resolved_at(frame);
 
     if trim.mode == 2 && paths.len() > 1 {
@@ -973,9 +987,8 @@ mod tests {
         use crate::model::LayerModel;
 
         let mk = |ind: i32, extra: &str| -> Layer {
-            let json = format!(
-                r#"{{"ty":4,"nm":"l","ind":{ind},"ip":0,"op":100,"shapes":[]{extra}}}"#
-            );
+            let json =
+                format!(r#"{{"ty":4,"nm":"l","ind":{ind},"ip":0,"op":100,"shapes":[]{extra}}}"#);
             let model: LayerModel = serde_json::from_str(&json).unwrap();
             Layer::from_lottie(&model)
         };
@@ -986,7 +999,10 @@ mod tests {
         let siblings = vec![a.clone(), b, consumer.clone()];
 
         let source = resolve_matte_source(&consumer, &siblings).unwrap();
-        assert_eq!(source.index, 1, "explicit tp should win over array position");
+        assert_eq!(
+            source.index, 1,
+            "explicit tp should win over array position"
+        );
     }
 
     #[test]
@@ -994,9 +1010,8 @@ mod tests {
         use crate::model::LayerModel;
 
         let mk = |ind: i32, extra: &str| -> Layer {
-            let json = format!(
-                r#"{{"ty":4,"nm":"l","ind":{ind},"ip":0,"op":100,"shapes":[]{extra}}}"#
-            );
+            let json =
+                format!(r#"{{"ty":4,"nm":"l","ind":{ind},"ip":0,"op":100,"shapes":[]{extra}}}"#);
             let model: LayerModel = serde_json::from_str(&json).unwrap();
             Layer::from_lottie(&model)
         };
@@ -1046,8 +1061,14 @@ mod tests {
 
         // Under the matte (left half): red, fully opaque.
         let inside = buffer.get_pixel(10, 50).unwrap();
-        assert!(inside.alpha() > 200, "expected opaque pixel under the matte, got {inside:?}");
-        assert!(inside.red() > 200, "expected red under the matte, got {inside:?}");
+        assert!(
+            inside.alpha() > 200,
+            "expected opaque pixel under the matte, got {inside:?}"
+        );
+        assert!(
+            inside.red() > 200,
+            "expected red under the matte, got {inside:?}"
+        );
 
         // Outside the matte (right half): fully masked out (transparent).
         let outside = buffer.get_pixel(75, 50).unwrap();

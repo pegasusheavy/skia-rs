@@ -162,8 +162,28 @@ fn flatten_conic_recursive(
         return;
     }
 
-    flatten_conic_recursive(output, start, ctrl, end, weight, t0, tm, tolerance, depth + 1);
-    flatten_conic_recursive(output, start, ctrl, end, weight, tm, t1, tolerance, depth + 1);
+    flatten_conic_recursive(
+        output,
+        start,
+        ctrl,
+        end,
+        weight,
+        t0,
+        tm,
+        tolerance,
+        depth + 1,
+    );
+    flatten_conic_recursive(
+        output,
+        start,
+        ctrl,
+        end,
+        weight,
+        tm,
+        t1,
+        tolerance,
+        depth + 1,
+    );
 }
 
 #[cfg(test)]
@@ -194,7 +214,11 @@ mod tests {
             Point::new(100.0, 0.0),
             0.5,
         );
-        assert_eq!(output.len(), 1, "Straight line should produce only endpoint");
+        assert_eq!(
+            output.len(),
+            1,
+            "Straight line should produce only endpoint"
+        );
     }
 
     #[test]
@@ -225,8 +249,17 @@ mod tests {
         );
         for p in &output {
             let r = (p.x * p.x + p.y * p.y).sqrt();
-            assert!((r - 1.0).abs() < 0.05, "Point not on unit circle: ({}, {})", p.x, p.y);
+            assert!(
+                (r - 1.0).abs() < 0.05,
+                "Point not on unit circle: ({}, {})",
+                p.x,
+                p.y
+            );
         }
-        assert!(output.len() >= 4, "Expected subdivision, got {} points", output.len());
+        assert!(
+            output.len() >= 4,
+            "Expected subdivision, got {} points",
+            output.len()
+        );
     }
 }

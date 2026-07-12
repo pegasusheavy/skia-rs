@@ -626,7 +626,9 @@ mod tests {
             assert!(
                 (dist_sq - 1.0).abs() < 0.05,
                 "Point ({}, {}) should be near unit circle (dist² = {})",
-                p.x, p.y, dist_sq
+                p.x,
+                p.y,
+                dist_sq
             );
         }
         // Verify we actually got subdivided arc points, not just endpoints.
@@ -653,9 +655,7 @@ mod tests {
     /// lies inside any of them (ignoring holes). Used by the
     /// correctness tests below to check the output of a boolean op.
     fn polys_contain_probe(polys: &[Polygon], probe: Point) -> bool {
-        polys
-            .iter()
-            .any(|p| !p.is_hole && p.contains_point(probe))
+        polys.iter().any(|p| !p.is_hole && p.contains_point(probe))
     }
 
     /// Build a square subpath from top-left corner + side length.

@@ -103,8 +103,16 @@ pub fn generate_tiles(
     for ys in &y_slots {
         for xs in &x_slots {
             // Mirror flips swap the UV endpoints on the affected axis.
-            let (u0, u1) = if xs.flip { (xs.uv1, xs.uv0) } else { (xs.uv0, xs.uv1) };
-            let (v0, v1) = if ys.flip { (ys.uv1, ys.uv0) } else { (ys.uv0, ys.uv1) };
+            let (u0, u1) = if xs.flip {
+                (xs.uv1, xs.uv0)
+            } else {
+                (xs.uv0, xs.uv1)
+            };
+            let (v0, v1) = if ys.flip {
+                (ys.uv1, ys.uv0)
+            } else {
+                (ys.uv0, ys.uv1)
+            };
 
             tiles.push(TileInstance {
                 position: Point::new(xs.pos, ys.pos),
@@ -392,12 +400,17 @@ mod tests {
         let tiles = generate_tiles(64, 64, &config);
         assert!(tiles.len() > 1, "X should tile");
         // Exactly one distinct y position, spanning the full dest height.
-        let ys: std::collections::BTreeSet<i64> =
-            tiles.iter().map(|t| t.position.y.to_bits() as i64).collect();
+        let ys: std::collections::BTreeSet<i64> = tiles
+            .iter()
+            .map(|t| t.position.y.to_bits() as i64)
+            .collect();
         assert_eq!(ys.len(), 1, "Clamp Y must not tile (single row)");
         for t in &tiles {
             assert_eq!(t.position.y, 0.0);
-            assert!((t.size[1] - 100.0).abs() < 1e-3, "clamp Y spans full dest height");
+            assert!(
+                (t.size[1] - 100.0).abs() < 1e-3,
+                "clamp Y spans full dest height"
+            );
         }
     }
 
@@ -412,11 +425,16 @@ mod tests {
         };
         let tiles = generate_tiles(64, 64, &config);
         // One column: single distinct x position, full dest width.
-        let xs: std::collections::BTreeSet<i64> =
-            tiles.iter().map(|t| t.position.x.to_bits() as i64).collect();
+        let xs: std::collections::BTreeSet<i64> = tiles
+            .iter()
+            .map(|t| t.position.x.to_bits() as i64)
+            .collect();
         assert_eq!(xs.len(), 1, "Clamp X must not tile (single column)");
         for t in &tiles {
-            assert!((t.size[0] - 100.0).abs() < 1e-3, "clamp X spans full dest width");
+            assert!(
+                (t.size[0] - 100.0).abs() < 1e-3,
+                "clamp X spans full dest width"
+            );
         }
     }
 

@@ -257,8 +257,7 @@ impl PdfDocument {
                 is_embedded: matches!(font.font_type, PdfFontType::Type1)
                     || font.font_data.is_some(),
                 has_cmap: true, // We always emit a ToUnicode CMap.
-                has_widths: !font.widths.is_empty()
-                    || matches!(font.font_type, PdfFontType::Type1),
+                has_widths: !font.widths.is_empty() || matches!(font.font_type, PdfFontType::Type1),
             };
             state.doc.register_font(&font.base_font, info);
         }
@@ -277,9 +276,8 @@ impl PdfDocument {
 
         // Transparency: any ExtGState with alpha < 1 or non-Normal blend.
         for gs in self.transparency.ext_gstates() {
-            let has_alpha =
-                gs.fill_alpha.map(|a| a < 1.0).unwrap_or(false) ||
-                gs.stroke_alpha.map(|a| a < 1.0).unwrap_or(false);
+            let has_alpha = gs.fill_alpha.map(|a| a < 1.0).unwrap_or(false)
+                || gs.stroke_alpha.map(|a| a < 1.0).unwrap_or(false);
             let has_blend = gs
                 .blend_mode
                 .map(|m| m != crate::transparency::PdfBlendMode::Normal)
@@ -734,7 +732,12 @@ impl<'a> WriteCtx<'a> {
         }
 
         // ---- Trailer ----
-        let id_hex = match self.doc.pdfa.as_ref().and_then(|s| s.doc.document_id.as_ref()) {
+        let id_hex = match self
+            .doc
+            .pdfa
+            .as_ref()
+            .and_then(|s| s.doc.document_id.as_ref())
+        {
             Some(s) => s.clone(),
             None => generate_doc_id(),
         };
@@ -863,8 +866,7 @@ impl<'a> WriteCtx<'a> {
 /// fails (malformed data, unsupported layout), so embedding always
 /// succeeds even with exotic fonts.
 fn subset_font_bytes(font: &PdfFont, data: &[u8]) -> Vec<u8> {
-    let glyphs: std::collections::BTreeSet<u16> =
-        font.used_glyphs.iter().copied().collect();
+    let glyphs: std::collections::BTreeSet<u16> = font.used_glyphs.iter().copied().collect();
     match crate::font::subset::subset_truetype(data, &glyphs) {
         Ok(bytes) => bytes,
         Err(_) => data.to_vec(),
@@ -874,8 +876,8 @@ fn subset_font_bytes(font: &PdfFont, data: &[u8]) -> Vec<u8> {
 /// Flate-compress the given bytes. Used for stream-level compression of
 /// TrueType font data and ICC profiles inside PDF streams.
 fn flate_compress(data: &[u8]) -> Vec<u8> {
-    use flate2::write::ZlibEncoder;
     use flate2::Compression;
+    use flate2::write::ZlibEncoder;
     use std::io::Write as _;
 
     let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
@@ -900,7 +902,9 @@ const SRGB_ICC_V2_PROFILE: &[u8] = include_bytes!("../assets/srgb-v2.icc");
 /// viewers detect concatenated PDFs.
 fn generate_doc_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let secs = now.as_secs();
     let nanos = now.subsec_nanos();
     format!("{:016x}{:016x}", secs, nanos as u64)
@@ -965,7 +969,11 @@ mod tests {
         let bytes = doc.to_bytes().unwrap();
         let s = String::from_utf8_lossy(&bytes);
         // The page's /Resources dict must reference the font.
-        assert!(s.contains("/Font << /F1"), "missing /Font in Resources: {}", s);
+        assert!(
+            s.contains("/Font << /F1"),
+            "missing /Font in Resources: {}",
+            s
+        );
         // The font dict itself must be emitted somewhere in the file.
         assert!(s.contains("/BaseFont /Helvetica"));
         // ToUnicode stream is written.
@@ -979,7 +987,9 @@ mod tests {
 
         let mut doc = PdfDocument::new();
         // Register an image on the document.
-        let img_idx = doc.images_mut().add_rgb(2, 2, &[0, 0, 0, 255, 255, 255, 128, 128, 128, 64, 64, 64]);
+        let img_idx =
+            doc.images_mut()
+                .add_rgb(2, 2, &[0, 0, 0, 255, 255, 255, 128, 128, 128, 64, 64, 64]);
         {
             let mut canvas = doc.begin_page(200.0, 200.0);
             canvas.draw_image(img_idx, 10.0, 10.0, 50.0, 50.0);
@@ -995,8 +1005,16 @@ mod tests {
 
         let bytes = doc.to_bytes().unwrap();
         let s = String::from_utf8_lossy(&bytes);
-        assert!(s.contains("/XObject << /Im1"), "missing /XObject in Resources: {}", s);
-        assert!(s.contains("/ExtGState << /GS1"), "missing /ExtGState: {}", s);
+        assert!(
+            s.contains("/XObject << /Im1"),
+            "missing /XObject in Resources: {}",
+            s
+        );
+        assert!(
+            s.contains("/ExtGState << /GS1"),
+            "missing /ExtGState: {}",
+            s
+        );
         assert!(s.contains("/Subtype /Image"));
         assert!(s.contains("/Type /ExtGState"));
     }
@@ -1043,11 +1061,17 @@ mod tests {
         }
 
         let mut buf = Vec::new();
-        let err = doc.write_to(&mut buf).expect_err("A1b with transparency must fail");
+        let err = doc
+            .write_to(&mut buf)
+            .expect_err("A1b with transparency must fail");
         match err {
             PdfError::Validation(msgs) => {
                 let combined = msgs.join(" ");
-                assert!(combined.contains("Transparency"), "unexpected error: {}", combined);
+                assert!(
+                    combined.contains("Transparency"),
+                    "unexpected error: {}",
+                    combined
+                );
             }
             PdfError::Io(e) => panic!("expected validation error, got I/O error: {}", e),
             PdfError::Unsupported(msg) => {

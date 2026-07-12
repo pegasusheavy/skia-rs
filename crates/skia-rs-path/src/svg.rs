@@ -44,7 +44,9 @@ impl std::fmt::Display for SvgPathError {
             SvgPathError::UnknownCommand(c) => write!(f, "unknown command: {}", c),
             SvgPathError::ExpectedNumber => write!(f, "expected a number"),
             SvgPathError::MissingMoveTo => write!(f, "path must start with moveto"),
-            SvgPathError::UnexpectedNumber => write!(f, "unexpected number where a command was expected"),
+            SvgPathError::UnexpectedNumber => {
+                write!(f, "unexpected number where a command was expected")
+            }
         }
     }
 }
@@ -336,7 +338,11 @@ impl<'a> SvgPathParser<'a> {
         Ok(())
     }
 
-    fn parse_smooth_curveto(&mut self, is_relative: bool, prev_op: char) -> Result<(), SvgPathError> {
+    fn parse_smooth_curveto(
+        &mut self,
+        is_relative: bool,
+        prev_op: char,
+    ) -> Result<(), SvgPathError> {
         let mut iteration = 0;
         loop {
             self.skip_whitespace();
@@ -398,7 +404,11 @@ impl<'a> SvgPathParser<'a> {
         Ok(())
     }
 
-    fn parse_smooth_quadto(&mut self, is_relative: bool, prev_op: char) -> Result<(), SvgPathError> {
+    fn parse_smooth_quadto(
+        &mut self,
+        is_relative: bool,
+        prev_op: char,
+    ) -> Result<(), SvgPathError> {
         let mut iteration = 0;
         loop {
             self.skip_whitespace();

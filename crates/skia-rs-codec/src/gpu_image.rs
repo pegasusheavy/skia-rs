@@ -784,7 +784,9 @@ mod tests {
     #[test]
     fn test_backend_upload_and_readback_roundtrip() {
         let info = ImageInfo::new(2, 2, ColorType::Rgba8888, AlphaType::Premul);
-        let src_pixels = vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160];
+        let src_pixels = vec![
+            10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160,
+        ];
         let image = GpuImage::from_raster_data(&info, &src_pixels, 8).unwrap();
 
         let backend: Arc<MockBackend> = Arc::new(MockBackend::new());

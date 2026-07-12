@@ -115,9 +115,7 @@ impl PathMeasure {
         let tangent = self.get_tangent_at(distance)?;
         Some(Matrix {
             values: [
-                tangent.x, -tangent.y, position.x,
-                tangent.y,  tangent.x, position.y,
-                0.0,        0.0,       1.0,
+                tangent.x, -tangent.y, position.x, tangent.y, tangent.x, position.y, 0.0, 0.0, 1.0,
             ],
         })
     }
@@ -204,10 +202,11 @@ impl PathMeasure {
 
     /// Find the segment within a contour that contains the given offset.
     fn segment_at(contour: &Contour, offset: Scalar) -> &Segment {
-        let idx = match contour
-            .segments
-            .binary_search_by(|s| s.cumulative.partial_cmp(&offset).unwrap_or(std::cmp::Ordering::Equal))
-        {
+        let idx = match contour.segments.binary_search_by(|s| {
+            s.cumulative
+                .partial_cmp(&offset)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) {
             Ok(i) => i,
             Err(i) => i.min(contour.segments.len().saturating_sub(1)),
         };
@@ -261,7 +260,13 @@ impl PathMeasure {
                 PathElement::Quad(ctrl, end) => {
                     if let Some(c) = current_contour.as_mut() {
                         points.clear();
-                        flatten_quad_adaptive(&mut points, current_pt, ctrl, end, FLATTEN_TOLERANCE);
+                        flatten_quad_adaptive(
+                            &mut points,
+                            current_pt,
+                            ctrl,
+                            end,
+                            FLATTEN_TOLERANCE,
+                        );
                         let mut prev = current_pt;
                         for p in &points {
                             push_segment(c, prev, *p);
@@ -273,7 +278,14 @@ impl PathMeasure {
                 PathElement::Cubic(c1, c2, end) => {
                     if let Some(c) = current_contour.as_mut() {
                         points.clear();
-                        flatten_cubic_adaptive(&mut points, current_pt, c1, c2, end, FLATTEN_TOLERANCE);
+                        flatten_cubic_adaptive(
+                            &mut points,
+                            current_pt,
+                            c1,
+                            c2,
+                            end,
+                            FLATTEN_TOLERANCE,
+                        );
                         let mut prev = current_pt;
                         for p in &points {
                             push_segment(c, prev, *p);
@@ -285,7 +297,14 @@ impl PathMeasure {
                 PathElement::Conic(ctrl, end, w) => {
                     if let Some(c) = current_contour.as_mut() {
                         points.clear();
-                        flatten_conic_adaptive(&mut points, current_pt, ctrl, end, w, FLATTEN_TOLERANCE);
+                        flatten_conic_adaptive(
+                            &mut points,
+                            current_pt,
+                            ctrl,
+                            end,
+                            w,
+                            FLATTEN_TOLERANCE,
+                        );
                         let mut prev = current_pt;
                         for p in &points {
                             push_segment(c, prev, *p);

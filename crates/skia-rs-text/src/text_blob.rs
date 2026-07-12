@@ -4,8 +4,8 @@
 
 use crate::font::Font;
 use skia_rs_core::{Point, Rect, Scalar};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Monotonic source of `TextBlob` unique ids, mirroring Skia's
 /// `SkTextBlob::fUniqueID` (a process-wide atomic counter). Ids start at 1

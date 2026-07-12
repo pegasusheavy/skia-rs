@@ -4,8 +4,8 @@
 //! to create dashed lines, rounded corners, jittery edges, and more.
 
 use crate::{
-    flatten::{flatten_conic_adaptive, flatten_cubic_adaptive, flatten_quad_adaptive},
     Path, PathBuilder, PathElement,
+    flatten::{flatten_conic_adaptive, flatten_cubic_adaptive, flatten_quad_adaptive},
 };
 use skia_rs_core::{Point, Scalar};
 use std::sync::Arc;
@@ -1381,7 +1381,10 @@ mod tests {
 
         // Each dash starts with a Move. On a curved path with length ~140,
         // we should get multiple dashes (not just one at start and one at end).
-        let moves = result.iter().filter(|e| matches!(e, PathElement::Move(_))).count();
+        let moves = result
+            .iter()
+            .filter(|e| matches!(e, PathElement::Move(_)))
+            .count();
         assert!(
             moves >= 3,
             "Expected at least 3 dashes on curved path (curve length ~140, dash period 20), got {}",
@@ -1414,7 +1417,10 @@ mod tests {
             .iter()
             .filter(|e| matches!(e, PathElement::Quad(_, _)))
             .count();
-        assert_eq!(quads, 4, "all four corners of a closed contour must be rounded");
+        assert_eq!(
+            quads, 4,
+            "all four corners of a closed contour must be rounded"
+        );
         assert!(rounded.is_closed(), "rounded closed contour stays closed");
     }
 

@@ -28,7 +28,8 @@ fn simple_pdf_has_valid_structure() {
         c.use_standard_font(StandardFont::Helvetica);
         let mut p = Paint::new();
         p.set_color32(Color::from_rgb(0, 0, 0));
-        c.draw_text("Hello, World!", 72.0, 72.0, 14.0, &p).expect("draw_text should succeed");
+        c.draw_text("Hello, World!", 72.0, 72.0, 14.0, &p)
+            .expect("draw_text should succeed");
         let page = c.finish();
         doc.end_page(page);
     }
@@ -59,7 +60,9 @@ fn end_to_end_pdf_with_text_image_transparency_pdfa() {
 
         let mut paint = Paint::new();
         paint.set_color32(Color::from_rgb(0, 0, 0));
-        canvas.draw_text("Hello, PDF!", 72.0, 100.0, 14.0, &paint).expect("draw_text should succeed");
+        canvas
+            .draw_text("Hello, PDF!", 72.0, 100.0, 14.0, &paint)
+            .expect("draw_text should succeed");
 
         // Translucent rect — should register an ExtGState.
         let mut translucent = Paint::new();
@@ -73,21 +76,28 @@ fn end_to_end_pdf_with_text_image_transparency_pdfa() {
     }
 
     let mut buf = Vec::new();
-    doc.write_to(&mut buf).expect("write should succeed for A2b");
+    doc.write_to(&mut buf)
+        .expect("write should succeed for A2b");
 
     // `PdfDocument::write_to` emits a binary marker (4 high bits) after the
     // header; cope with non-UTF-8 bytes by using `from_utf8_lossy`.
     let s_cow = String::from_utf8_lossy(&buf);
     let s = &*s_cow;
     // Structural sanity checks.
-    assert!(buf.starts_with(b"%PDF-1.7"), "expected PDF-1.7 header for A2b");
+    assert!(
+        buf.starts_with(b"%PDF-1.7"),
+        "expected PDF-1.7 header for A2b"
+    );
     assert!(s.contains("xref"));
     assert!(s.contains("startxref"));
     assert!(s.contains("%%EOF"));
 
     // Resources dict populated.
     assert!(s.contains("/Font << /F1"), "font missing from resources");
-    assert!(s.contains("/XObject << /Im"), "image missing from resources");
+    assert!(
+        s.contains("/XObject << /Im"),
+        "image missing from resources"
+    );
     assert!(s.contains("/ExtGState << /GS"), "extgstate missing");
 
     // XMP metadata + output intent from PDF/A wiring.
@@ -108,15 +118,15 @@ fn end_to_end_pdf_with_text_image_transparency_pdfa() {
 fn truetype_embedding_emits_fontfile2_and_widths() {
     let mut doc = PdfDocument::new();
 
-    let font_idx = doc
-        .fonts_mut()
-        .register_truetype("Demo", DEMO_TTF.to_vec());
+    let font_idx = doc.fonts_mut().register_truetype("Demo", DEMO_TTF.to_vec());
 
     {
         let mut canvas = doc.begin_page(200.0, 200.0);
         canvas.set_font(font_idx);
         let paint = Paint::new();
-        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint).expect("draw_text should succeed");
+        canvas
+            .draw_text("A", 10.0, 20.0, 12.0, &paint)
+            .expect("draw_text should succeed");
         let page = canvas.finish();
         doc.end_page(page);
     }
@@ -129,10 +139,7 @@ fn truetype_embedding_emits_fontfile2_and_widths() {
     // The TTF is compressed (flate) inside a FontFile2 stream. We detect it
     // via the object header marker.
     assert!(s.contains("/FontFile2"), "no FontFile2 stream: {}", s);
-    assert!(
-        s.contains("/FontDescriptor"),
-        "no FontDescriptor reference"
-    );
+    assert!(s.contains("/FontDescriptor"), "no FontDescriptor reference");
     assert!(s.contains("/Subtype /TrueType"));
     // Subset prefix on the BaseFont (six uppercase letters + '+').
     let subset_re = regex_lite(&s, "/BaseFont /", "+Demo");
@@ -145,8 +152,10 @@ fn truetype_embedding_emits_fontfile2_and_widths() {
     // Widths array: the demo.ttf has only 'A' mapped, so widths for 'A'
     // (ASCII 0x41 = 65) must be nonzero. The font's FirstChar/LastChar
     // should include 65.
-    assert!(s.contains("/FirstChar 65") || s.contains("/FirstChar 33"),
-        "unexpected FirstChar range");
+    assert!(
+        s.contains("/FirstChar 65") || s.contains("/FirstChar 33"),
+        "unexpected FirstChar range"
+    );
 }
 
 /// The byte-level subsetter must produce a FontFile2 stream whose
@@ -160,15 +169,15 @@ fn truetype_embedding_emits_fontfile2_and_widths() {
 fn truetype_subset_length1_matches_stream_length() {
     let mut doc = PdfDocument::new();
 
-    let font_idx = doc
-        .fonts_mut()
-        .register_truetype("Demo", DEMO_TTF.to_vec());
+    let font_idx = doc.fonts_mut().register_truetype("Demo", DEMO_TTF.to_vec());
 
     {
         let mut canvas = doc.begin_page(200.0, 200.0);
         canvas.set_font(font_idx);
         let paint = Paint::new();
-        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint).expect("draw_text should succeed");
+        canvas
+            .draw_text("A", 10.0, 20.0, 12.0, &paint)
+            .expect("draw_text should succeed");
         let page = canvas.finish();
         doc.end_page(page);
     }
@@ -180,7 +189,9 @@ fn truetype_subset_length1_matches_stream_length() {
 
     // Parse /Length1 from the FontFile2 stream header. We look for the
     // "/Length1 " literal and read the unsigned integer that follows.
-    let l1_pos = s.find("/Length1 ").expect("FontFile2 must declare /Length1");
+    let l1_pos = s
+        .find("/Length1 ")
+        .expect("FontFile2 must declare /Length1");
     let after = &s[l1_pos + "/Length1 ".len()..];
     let end = after
         .find(|c: char| !c.is_ascii_digit())
@@ -214,8 +225,8 @@ fn truetype_subset_actually_prunes_large_glyf() {
 
     let mut keep = std::collections::BTreeSet::new();
     keep.insert(2);
-    let subset = skia_rs_pdf::subset_truetype_for_tests(&full, &keep)
-        .expect("subset of synthetic ttf");
+    let subset =
+        skia_rs_pdf::subset_truetype_for_tests(&full, &keep).expect("subset of synthetic ttf");
 
     assert!(
         subset.len() < full_len - 6_000,
@@ -267,9 +278,9 @@ fn type0_font_emits_descendant_fonts_array() {
     );
     assert!(s.contains("/Subtype /CIDFontType2"));
     assert!(s.contains("/CIDToGIDMap /Identity"));
-    assert!(s.contains(
-        "/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>"
-    ));
+    assert!(
+        s.contains("/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>")
+    );
     assert!(s.contains("/W ["));
     // Embedded outlines are shared with the simple-TrueType path.
     assert!(s.contains("/FontFile2"));
@@ -288,7 +299,9 @@ fn standard_font_encoding_is_omitted_only_for_symbolic_fonts() {
     {
         let mut canvas = doc.begin_page(200.0, 200.0);
         canvas.use_standard_font(StandardFont::Symbol);
-        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint).expect("draw_text should succeed");
+        canvas
+            .draw_text("A", 10.0, 20.0, 12.0, &paint)
+            .expect("draw_text should succeed");
         let page = canvas.finish();
         doc.end_page(page);
     }
@@ -305,7 +318,9 @@ fn standard_font_encoding_is_omitted_only_for_symbolic_fonts() {
     {
         let mut canvas = doc.begin_page(200.0, 200.0);
         canvas.use_standard_font(StandardFont::ZapfDingbats);
-        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint).expect("draw_text should succeed");
+        canvas
+            .draw_text("A", 10.0, 20.0, 12.0, &paint)
+            .expect("draw_text should succeed");
         let page = canvas.finish();
         doc.end_page(page);
     }
@@ -322,7 +337,9 @@ fn standard_font_encoding_is_omitted_only_for_symbolic_fonts() {
     {
         let mut canvas = doc.begin_page(200.0, 200.0);
         canvas.use_standard_font(StandardFont::Helvetica);
-        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint).expect("draw_text should succeed");
+        canvas
+            .draw_text("A", 10.0, 20.0, 12.0, &paint)
+            .expect("draw_text should succeed");
         let page = canvas.finish();
         doc.end_page(page);
     }
@@ -415,7 +432,11 @@ fn pdfa_output_intent_embeds_real_icc_profile() {
         .read_to_end(&mut icc)
         .expect("ICC stream must be valid FlateDecode data");
 
-    assert!(icc.len() > 500, "ICC profile too small: {} bytes", icc.len());
+    assert!(
+        icc.len() > 500,
+        "ICC profile too small: {} bytes",
+        icc.len()
+    );
     assert_eq!(
         &icc[36..40],
         b"acsp",

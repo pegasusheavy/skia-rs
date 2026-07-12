@@ -227,19 +227,11 @@ fn apply_image_tile(coord: Scalar, size: Scalar, mode: TileMode) -> Scalar {
         TileMode::Clamp => coord.clamp(0.0, size - 1e-4),
         TileMode::Repeat => {
             let m = coord.rem_euclid(size);
-            if m < 0.0 {
-                m + size
-            } else {
-                m
-            }
+            if m < 0.0 { m + size } else { m }
         }
         TileMode::Mirror => {
             let n = coord.rem_euclid(2.0 * size);
-            if n < size {
-                n
-            } else {
-                2.0 * size - n - 1e-4
-            }
+            if n < size { n } else { 2.0 * size - n - 1e-4 }
         }
         TileMode::Decal => {
             if coord < 0.0 || coord >= size {
@@ -1068,11 +1060,7 @@ impl Shader for TwoPointConicalGradient {
 
         let t_opt = if a.abs() < 1e-7 {
             // Linear case (d.d == dr^2): B*t + C = 0
-            if b.abs() < 1e-7 {
-                None
-            } else {
-                Some(-c / b)
-            }
+            if b.abs() < 1e-7 { None } else { Some(-c / b) }
         } else {
             let disc = b * b - 4.0 * a * c;
             if disc < 0.0 {
@@ -1561,7 +1549,11 @@ impl PerlinNoiseGenerator {
             grad_y[i] = angle.sin();
         }
 
-        Self { perm, grad_x, grad_y }
+        Self {
+            perm,
+            grad_x,
+            grad_y,
+        }
     }
 
     /// Evaluate classic 2D Perlin noise at (x, y). Returns approximately [-1, 1].
@@ -1606,11 +1598,7 @@ impl PerlinNoiseGenerator {
             freq *= 2.0;
             amp *= 0.5;
         }
-        if max_val > 0.0 {
-            total / max_val
-        } else {
-            0.0
-        }
+        if max_val > 0.0 { total / max_val } else { 0.0 }
     }
 
     /// Turbulence (absolute value of octave sum).
@@ -1756,7 +1744,9 @@ impl Shader for PerlinNoiseShader {
     }
 
     fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
-        let generator = self.generator.get_or_init(|| PerlinNoiseGenerator::new(self.seed as u32));
+        let generator = self
+            .generator
+            .get_or_init(|| PerlinNoiseGenerator::new(self.seed as u32));
         let fx = x * self.base_frequency_x;
         let fy = y * self.base_frequency_y;
         let octaves = self.num_octaves.max(1) as u32;
@@ -2057,7 +2047,13 @@ fn deserialize_child_shader(bytes: &[u8], offset: &mut usize) -> Option<ShaderRe
 fn deserialize_gradient_common(
     bytes: &[u8],
     offset: &mut usize,
-) -> Option<(Vec<Color4f>, Option<Vec<Scalar>>, TileMode, GradientFlags, Option<Matrix>)> {
+) -> Option<(
+    Vec<Color4f>,
+    Option<Vec<Scalar>>,
+    TileMode,
+    GradientFlags,
+    Option<Matrix>,
+)> {
     // Tile mode (1 byte)
     if *offset >= bytes.len() {
         return None;
@@ -2622,12 +2618,8 @@ fn deserialize_image_shader(bytes: &[u8], offset: &mut usize) -> Option<ShaderRe
         let pixel_data = bytes[*offset..*offset + pixel_len].to_vec();
         *offset += pixel_len;
 
-        let info = skia_rs_core::pixel::ImageInfo::new(
-            width,
-            height,
-            color_type,
-            alpha_type,
-        ).ok()?;
+        let info =
+            skia_rs_core::pixel::ImageInfo::new(width, height, color_type, alpha_type).ok()?;
 
         (Some(Arc::new(pixel_data)), Some(info))
     } else {
@@ -3015,7 +3007,10 @@ mod tests {
         // ComposeShader(outer, inner, mode) blends them
         let compose = ComposeShader::new(solid.clone(), half.clone(), crate::BlendMode::SrcOver);
         let c = compose.sample(0.0, 0.0);
-        assert!(c.a > 0.5, "ComposeShader should not produce transparent output");
+        assert!(
+            c.a > 0.5,
+            "ComposeShader should not produce transparent output"
+        );
     }
 
     #[test]
@@ -3049,12 +3044,20 @@ mod tests {
         // A point on the outer circle (at end_center + end_radius in x direction)
         // should be blue (t=1).
         let c_outer = gradient.sample(130.0, 0.0);
-        assert!(c_outer.b > 0.9, "outer circle point should be blue, got b={}", c_outer.b);
+        assert!(
+            c_outer.b > 0.9,
+            "outer circle point should be blue, got b={}",
+            c_outer.b
+        );
 
         // Midpoint should show a mix (purple-ish)
         let c_mid = gradient.sample(50.0, 0.0);
-        assert!(c_mid.r > 0.1 && c_mid.b > 0.1,
-                "midpoint should mix red and blue, got r={} b={}", c_mid.r, c_mid.b);
+        assert!(
+            c_mid.r > 0.1 && c_mid.b > 0.1,
+            "midpoint should mix red and blue, got r={} b={}",
+            c_mid.r,
+            c_mid.b
+        );
     }
 
     #[test]
@@ -3134,9 +3137,9 @@ mod tests {
         use skia_rs_core::pixel::ImageInfo;
         // 2x2 image: red, green, blue, white
         let pixels: Arc<Vec<u8>> = Arc::new(vec![
-            255, 0, 0, 255,    // (0,0) red
-            0, 255, 0, 255,    // (1,0) green
-            0, 0, 255, 255,    // (0,1) blue
+            255, 0, 0, 255, // (0,0) red
+            0, 255, 0, 255, // (1,0) green
+            0, 0, 255, 255, // (0,1) blue
             255, 255, 255, 255, // (1,1) white
         ]);
         let info = ImageInfo::new(2, 2, ColorType::Rgba8888, AlphaType::Premul).unwrap();
@@ -3150,10 +3153,18 @@ mod tests {
 
         // Sample exact pixel positions
         let c_00 = shader.sample(0.5, 0.5);
-        assert!((c_00.r - 1.0).abs() < 1e-3, "expected red at (0.5, 0.5), got {:?}", c_00);
+        assert!(
+            (c_00.r - 1.0).abs() < 1e-3,
+            "expected red at (0.5, 0.5), got {:?}",
+            c_00
+        );
 
         let c_11 = shader.sample(1.5, 1.5);
-        assert!((c_11.r - 1.0).abs() < 1e-3 && (c_11.g - 1.0).abs() < 1e-3, "expected white at (1.5, 1.5), got {:?}", c_11);
+        assert!(
+            (c_11.r - 1.0).abs() < 1e-3 && (c_11.g - 1.0).abs() < 1e-3,
+            "expected white at (1.5, 1.5), got {:?}",
+            c_11
+        );
     }
 
     #[test]
@@ -3174,10 +3185,7 @@ mod tests {
         use skia_rs_core::color::AlphaType;
         use skia_rs_core::color::ColorType;
         use skia_rs_core::pixel::ImageInfo;
-        let pixels: Arc<Vec<u8>> = Arc::new(vec![
-            0, 0, 0, 255,
-            255, 255, 255, 255,
-        ]);
+        let pixels: Arc<Vec<u8>> = Arc::new(vec![0, 0, 0, 255, 255, 255, 255, 255]);
         let info = ImageInfo::new(2, 1, ColorType::Rgba8888, AlphaType::Premul).unwrap();
         let shader = ImageShader::with_pixels(
             pixels,
@@ -3189,7 +3197,11 @@ mod tests {
 
         // Sampling far outside should clamp to nearest edge pixel
         let c_right = shader.sample(100.0, 0.5);
-        assert!((c_right.r - 1.0).abs() < 1e-3, "clamp should return white from right edge, got {:?}", c_right);
+        assert!(
+            (c_right.r - 1.0).abs() < 1e-3,
+            "clamp should return white from right edge, got {:?}",
+            c_right
+        );
     }
 
     #[test]
@@ -3198,8 +3210,8 @@ mod tests {
         use skia_rs_core::color::ColorType;
         use skia_rs_core::pixel::ImageInfo;
         let pixels: Arc<Vec<u8>> = Arc::new(vec![
-            255, 0, 0, 255,    // red
-            0, 255, 0, 255,    // green
+            255, 0, 0, 255, // red
+            0, 255, 0, 255, // green
         ]);
         let info = ImageInfo::new(2, 1, ColorType::Rgba8888, AlphaType::Premul).unwrap();
         let shader = ImageShader::with_pixels(
@@ -3212,7 +3224,11 @@ mod tests {
 
         // Sampling beyond width should wrap
         let c = shader.sample(2.5, 0.5); // Should wrap to 0.5
-        assert!((c.r - 1.0).abs() < 1e-3, "repeat should wrap to red pixel, got {:?}", c);
+        assert!(
+            (c.r - 1.0).abs() < 1e-3,
+            "repeat should wrap to red pixel, got {:?}",
+            c
+        );
     }
 
     #[test]
@@ -3220,9 +3236,7 @@ mod tests {
         use skia_rs_core::color::AlphaType;
         use skia_rs_core::color::ColorType;
         use skia_rs_core::pixel::ImageInfo;
-        let pixels: Arc<Vec<u8>> = Arc::new(vec![
-            255, 0, 0, 255,
-        ]);
+        let pixels: Arc<Vec<u8>> = Arc::new(vec![255, 0, 0, 255]);
         let info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Premul).unwrap();
         let shader = ImageShader::with_pixels(
             pixels,

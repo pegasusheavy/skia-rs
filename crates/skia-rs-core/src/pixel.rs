@@ -1410,7 +1410,11 @@ mod tests {
         //           b' = 32 * 255 / 128 = 63
         //           a' = 128 (unchanged)
         assert_eq!(dst[0], 255);
-        assert!((dst[1] as i32 - 127).abs() <= 1, "green ~127, got {}", dst[1]);
+        assert!(
+            (dst[1] as i32 - 127).abs() <= 1,
+            "green ~127, got {}",
+            dst[1]
+        );
         assert!((dst[2] as i32 - 63).abs() <= 1, "blue ~63, got {}", dst[2]);
         assert_eq!(dst[3], 128);
     }
@@ -1504,7 +1508,12 @@ mod tests {
         convert_pixels(&src, &src_info, 4, &mut mid, &mid_info, 8).unwrap();
         convert_pixels(&mid, &mid_info, 8, &mut dst, &dst_info, 4).unwrap();
         for (a, b) in src.iter().zip(dst.iter()) {
-            assert!((*a as i32 - *b as i32).abs() <= 1, "mismatch {} vs {}", a, b);
+            assert!(
+                (*a as i32 - *b as i32).abs() <= 1,
+                "mismatch {} vs {}",
+                a,
+                b
+            );
         }
     }
 
@@ -1618,7 +1627,12 @@ mod tests {
         // keep alpha unchanged.
         let px = 0x8888u16.to_le_bytes(); // R=8 G=8 B=8 A=8
         let mut buf = px.to_vec();
-        apply_alpha_conversion(&mut buf, ColorType::Argb4444, 1, AlphaConversion::Premultiply);
+        apply_alpha_conversion(
+            &mut buf,
+            ColorType::Argb4444,
+            1,
+            AlphaConversion::Premultiply,
+        );
         let v = u16::from_le_bytes([buf[0], buf[1]]);
         assert_eq!(v & 0xF, 0x8, "alpha nibble must be unchanged");
         // Premul color = round(8/15 * 8/15 * 15) = round(4.27) = 4.
@@ -1628,8 +1642,8 @@ mod tests {
     #[test]
     fn test_apply_alpha_conversion_1010102_no_corruption() {
         // Opaque RGBA1010102 pixel: max color, alpha=3.
-        let opaque = (0x3FFu32 | (0x3FFu32 << 10) | (0x3FFu32 << 20) | (0x3u32 << 30))
-            .to_le_bytes();
+        let opaque =
+            (0x3FFu32 | (0x3FFu32 << 10) | (0x3FFu32 << 20) | (0x3u32 << 30)).to_le_bytes();
         assert_same_type_opaque_roundtrip(ColorType::Rgba1010102, &opaque);
         assert_same_type_opaque_roundtrip(ColorType::Bgra1010102, &opaque);
     }
@@ -1652,7 +1666,12 @@ mod tests {
         assert_eq!(a8, [10, 128, 200, 255]);
 
         let mut a16 = 30000u16.to_le_bytes();
-        apply_alpha_conversion(&mut a16, ColorType::A16Unorm, 1, AlphaConversion::Unpremultiply);
+        apply_alpha_conversion(
+            &mut a16,
+            ColorType::A16Unorm,
+            1,
+            AlphaConversion::Unpremultiply,
+        );
         assert_eq!(u16::from_le_bytes(a16), 30000);
     }
 }

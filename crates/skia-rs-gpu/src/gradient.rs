@@ -499,8 +499,16 @@ mod tests {
         let px = generate_sweep_gradient_texture(&stops, GradientTileMode::Repeat, &config);
         // Pixel to the right of center (+x axis): row 32, col 63.
         let idx = (32 * 64 + 63) * 4;
-        assert!(px[idx] > 200, "+x should be near first stop (red), R={}", px[idx]);
-        assert!(px[idx + 1] < 60, "+x should not be green, G={}", px[idx + 1]);
+        assert!(
+            px[idx] > 200,
+            "+x should be near first stop (red), R={}",
+            px[idx]
+        );
+        assert!(
+            px[idx + 1] < 60,
+            "+x should not be green, G={}",
+            px[idx + 1]
+        );
     }
 
     #[test]
@@ -521,8 +529,16 @@ mod tests {
         let px = generate_gradient_texture_1d(&stops, GradientTileMode::Repeat, &config);
         let last = (63 * 4) as usize;
         // Last texel should be near the last stop (blue), not the first (red).
-        assert!(px[last + 2] > 200, "last texel B should be high, got {}", px[last + 2]);
-        assert!(px[last] < 60, "last texel R should be low (no seam), got {}", px[last]);
+        assert!(
+            px[last + 2] > 200,
+            "last texel B should be high, got {}",
+            px[last + 2]
+        );
+        assert!(
+            px[last] < 60,
+            "last texel R should be low (no seam), got {}",
+            px[last]
+        );
     }
 
     #[test]

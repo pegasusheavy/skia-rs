@@ -345,9 +345,7 @@ impl Typeface {
     /// Reads the `post` table's `isFixedPitch` flag via `ttf_parser`. Returns
     /// `false` for dataless typefaces (no `post` table is loaded).
     pub fn is_fixed_pitch(&self) -> bool {
-        self.parsed()
-            .map(|p| p.is_monospaced)
-            .unwrap_or(false)
+        self.parsed().map(|p| p.is_monospaced).unwrap_or(false)
     }
 
     /// Get cached parsed metadata if font data is available.
@@ -410,11 +408,7 @@ impl Typeface {
         // Fallback for the dataless default typeface — just use the codepoint
         // for ASCII so existing non-data tests continue to produce non-zero
         // glyph IDs.
-        if c.is_ascii() {
-            c as u16
-        } else {
-            0
-        }
+        if c.is_ascii() { c as u16 } else { 0 }
     }
 
     /// Get glyph IDs for a string.

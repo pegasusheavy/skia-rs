@@ -47,7 +47,6 @@ pub enum RuntimeEffectError {
     ValidationFailed(String),
 }
 
-
 /// Uniform metadata.
 #[derive(Debug, Clone)]
 pub struct Uniform {
@@ -767,10 +766,7 @@ impl RuntimeEffect {
         // validates the module.
         let mut uniform_binds = String::new();
         for u in &scalar_uniforms {
-            uniform_binds.push_str(&format!(
-                "    let {} = uniforms.{};\n",
-                u.name, u.name
-            ));
+            uniform_binds.push_str(&format!("    let {} = uniforms.{};\n", u.name, u.name));
         }
 
         // Emit user functions with f16 rewritten to f32 and the
@@ -813,9 +809,7 @@ impl RuntimeEffect {
                 .iter()
                 .map(|p| match p.ty {
                     SkslType::Vec2 | SkslType::Half2 => "_pos".to_string(),
-                    SkslType::Vec4 | SkslType::Half4 => {
-                        "vec4<f32>(0.0, 0.0, 0.0, 1.0)".to_string()
-                    }
+                    SkslType::Vec4 | SkslType::Half4 => "vec4<f32>(0.0, 0.0, 0.0, 1.0)".to_string(),
                     SkslType::Float | SkslType::Half => "0.0".to_string(),
                     SkslType::Int => "0".to_string(),
                     SkslType::Bool => "false".to_string(),
@@ -832,10 +826,7 @@ impl RuntimeEffect {
                     call_args.join(", ")
                 ));
             } else {
-                output.push_str(&format!(
-                    "    return main({});\n",
-                    call_args.join(", ")
-                ));
+                output.push_str(&format!("    return main({});\n", call_args.join(", ")));
             }
             output.push_str("}\n");
         }
@@ -1033,11 +1024,7 @@ impl RuntimeEffect {
                 format!("{}.{}", self.expr_to_wgsl(expr), field)
             }
             Expr::Index { expr, index } => {
-                format!(
-                    "{}[{}]",
-                    self.expr_to_wgsl(expr),
-                    self.expr_to_wgsl(index)
-                )
+                format!("{}[{}]", self.expr_to_wgsl(expr), self.expr_to_wgsl(index))
             }
             Expr::Ternary {
                 cond,
@@ -1375,9 +1362,7 @@ impl RuntimeEffect {
         match uniform.ty {
             UniformType::Float => SkslValue::Float(read_f32(o)),
             UniformType::Float2 => SkslValue::Vec2([read_f32(o), read_f32(o + 4)]),
-            UniformType::Float3 => {
-                SkslValue::Vec3([read_f32(o), read_f32(o + 4), read_f32(o + 8)])
-            }
+            UniformType::Float3 => SkslValue::Vec3([read_f32(o), read_f32(o + 4), read_f32(o + 8)]),
             UniformType::Float4 => SkslValue::Vec4([
                 read_f32(o),
                 read_f32(o + 4),
@@ -1967,7 +1952,11 @@ mod tests {
 
         assert!(wgsl.contains("if ("), "WGSL should contain if statement");
         assert!(wgsl.contains("else"), "WGSL should contain else branch");
-        assert!(!wgsl.contains("Unsupported"), "WGSL should not contain unsupported stubs: {}", wgsl);
+        assert!(
+            !wgsl.contains("Unsupported"),
+            "WGSL should not contain unsupported stubs: {}",
+            wgsl
+        );
     }
 
     #[test]
@@ -1985,7 +1974,11 @@ mod tests {
         let wgsl = effect.compile_to(ShaderTarget::Wgsl).unwrap();
 
         assert!(wgsl.contains("for ("), "WGSL should contain for loop");
-        assert!(!wgsl.contains("Unsupported"), "WGSL for loop should compile: {}", wgsl);
+        assert!(
+            !wgsl.contains("Unsupported"),
+            "WGSL for loop should compile: {}",
+            wgsl
+        );
     }
 
     #[test]
@@ -2002,9 +1995,16 @@ mod tests {
         let effect = RuntimeEffect::make_for_shader(src).unwrap();
         let wgsl = effect.compile_to(ShaderTarget::Wgsl).unwrap();
 
-        assert!(wgsl.contains("loop {"), "WGSL should translate while to loop");
+        assert!(
+            wgsl.contains("loop {"),
+            "WGSL should translate while to loop"
+        );
         assert!(wgsl.contains("break;"), "WGSL loop should contain break");
-        assert!(!wgsl.contains("Unsupported"), "WGSL while should compile: {}", wgsl);
+        assert!(
+            !wgsl.contains("Unsupported"),
+            "WGSL while should compile: {}",
+            wgsl
+        );
     }
 
     #[test]
@@ -2018,9 +2018,16 @@ mod tests {
         let effect = RuntimeEffect::make_for_shader(src).unwrap();
         let wgsl = effect.compile_to(ShaderTarget::Wgsl).unwrap();
 
-        assert!(wgsl.contains("select("), "WGSL should translate ternary to select()");
+        assert!(
+            wgsl.contains("select("),
+            "WGSL should translate ternary to select()"
+        );
         assert!(!wgsl.contains("?"), "WGSL should not use ternary operator");
-        assert!(!wgsl.contains("unsupported"), "WGSL ternary should compile: {}", wgsl);
+        assert!(
+            !wgsl.contains("unsupported"),
+            "WGSL ternary should compile: {}",
+            wgsl
+        );
     }
 
     #[test]
@@ -2033,8 +2040,16 @@ mod tests {
         let effect = RuntimeEffect::make_for_shader(src).unwrap();
         let msl = effect.compile_to(ShaderTarget::Msl).unwrap();
 
-        assert!(msl.contains("float4"), "MSL should use float4 instead of vec4: {}", msl);
-        assert!(!msl.contains("vec4"), "MSL should not contain vec4: {}", msl);
+        assert!(
+            msl.contains("float4"),
+            "MSL should use float4 instead of vec4: {}",
+            msl
+        );
+        assert!(
+            !msl.contains("vec4"),
+            "MSL should not contain vec4: {}",
+            msl
+        );
     }
 
     #[test]
@@ -2051,7 +2066,10 @@ mod tests {
         let msl = effect.compile_to(ShaderTarget::Msl).unwrap();
 
         assert!(msl.contains("if ("), "MSL should contain if statement");
-        assert!(msl.contains("return"), "MSL should contain return statements");
+        assert!(
+            msl.contains("return"),
+            "MSL should contain return statements"
+        );
     }
 
     #[test]
@@ -2125,7 +2143,11 @@ mod tests {
         data.set_float(u.offset, 2.0);
         let shader = effect.make_shader(&data, &[]).unwrap();
         let c = shader.sample(0.5, 0.0);
-        assert!((c.r - 1.0).abs() < 1e-3, "expected scale * x = 1.0, got {}", c.r);
+        assert!(
+            (c.r - 1.0).abs() < 1e-3,
+            "expected scale * x = 1.0, got {}",
+            c.r
+        );
     }
 
     #[test]
@@ -2158,8 +2180,15 @@ mod tests {
         let effect = RuntimeEffect::make_for_shader(src).unwrap();
         let msl = effect.compile_to(ShaderTarget::Msl).unwrap();
 
-        assert!(msl.contains("discard_fragment()"), "MSL should translate discard to discard_fragment(): {}", msl);
-        assert!(!msl.contains("discard;"), "MSL should not use GLSL discard syntax");
+        assert!(
+            msl.contains("discard_fragment()"),
+            "MSL should translate discard to discard_fragment(): {}",
+            msl
+        );
+        assert!(
+            !msl.contains("discard;"),
+            "MSL should not use GLSL discard syntax"
+        );
     }
 
     #[test]
@@ -2340,7 +2369,11 @@ mod tests {
     fn test_parse_accepts_layout_qualifier() {
         let src = "layout(color) uniform half4 tint;\nhalf4 main(float2 p) { return tint; }";
         let result = RuntimeEffect::make_for_shader(src);
-        assert!(result.is_ok(), "layout(color) should parse, got {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "layout(color) should parse, got {:?}",
+            result.err()
+        );
     }
 
     #[test]

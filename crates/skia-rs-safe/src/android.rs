@@ -940,30 +940,36 @@ mod tests {
         // platform (it's checked before the `#[cfg(target_os = "android")]`
         // split), so pin it with a host-runnable test that isn't gated
         // behind `target_os = "android"`.
-        assert!(HardwareBuffer::new(
-            0,
-            64,
-            HardwareBufferFormat::R8G8B8A8_UNORM,
-            1,
-            HardwareBufferUsage::GPU_SAMPLED_IMAGE,
-        )
-        .is_none());
-        assert!(HardwareBuffer::new(
-            64,
-            0,
-            HardwareBufferFormat::R8G8B8A8_UNORM,
-            1,
-            HardwareBufferUsage::GPU_SAMPLED_IMAGE,
-        )
-        .is_none());
-        assert!(HardwareBuffer::new(
-            64,
-            64,
-            HardwareBufferFormat::R8G8B8A8_UNORM,
-            0,
-            HardwareBufferUsage::GPU_SAMPLED_IMAGE,
-        )
-        .is_none());
+        assert!(
+            HardwareBuffer::new(
+                0,
+                64,
+                HardwareBufferFormat::R8G8B8A8_UNORM,
+                1,
+                HardwareBufferUsage::GPU_SAMPLED_IMAGE,
+            )
+            .is_none()
+        );
+        assert!(
+            HardwareBuffer::new(
+                64,
+                0,
+                HardwareBufferFormat::R8G8B8A8_UNORM,
+                1,
+                HardwareBufferUsage::GPU_SAMPLED_IMAGE,
+            )
+            .is_none()
+        );
+        assert!(
+            HardwareBuffer::new(
+                64,
+                64,
+                HardwareBufferFormat::R8G8B8A8_UNORM,
+                0,
+                HardwareBufferUsage::GPU_SAMPLED_IMAGE,
+            )
+            .is_none()
+        );
     }
 
     #[test]

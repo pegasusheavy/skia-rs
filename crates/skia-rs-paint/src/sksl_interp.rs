@@ -67,7 +67,11 @@ impl Value {
                 }
             }
             _ => {
-                debug_assert!(false, "cannot coerce {:?} to f32 — validator should have caught this", self);
+                debug_assert!(
+                    false,
+                    "cannot coerce {:?} to f32 — validator should have caught this",
+                    self
+                );
                 0.0
             }
         }
@@ -85,7 +89,11 @@ impl Value {
                 }
             }
             _ => {
-                debug_assert!(false, "cannot coerce {:?} to i32 — validator should have caught this", self);
+                debug_assert!(
+                    false,
+                    "cannot coerce {:?} to i32 — validator should have caught this",
+                    self
+                );
                 0
             }
         }
@@ -100,7 +108,11 @@ impl Value {
             Value::Float(f) => [*f, *f],
             Value::Int(i) => [*i as f32, *i as f32],
             _ => {
-                debug_assert!(false, "cannot coerce {:?} to vec2 — validator should have caught this", self);
+                debug_assert!(
+                    false,
+                    "cannot coerce {:?} to vec2 — validator should have caught this",
+                    self
+                );
                 [0.0, 0.0]
             }
         }
@@ -117,7 +129,11 @@ impl Value {
                 [x, x, x]
             }
             _ => {
-                debug_assert!(false, "cannot coerce {:?} to vec3 — validator should have caught this", self);
+                debug_assert!(
+                    false,
+                    "cannot coerce {:?} to vec3 — validator should have caught this",
+                    self
+                );
                 [0.0, 0.0, 0.0]
             }
         }
@@ -134,7 +150,11 @@ impl Value {
                 [x, x, x, x]
             }
             _ => {
-                debug_assert!(false, "cannot coerce {:?} to vec4 — validator should have caught this", self);
+                debug_assert!(
+                    false,
+                    "cannot coerce {:?} to vec4 — validator should have caught this",
+                    self
+                );
                 [0.0, 0.0, 0.0, 0.0]
             }
         }
@@ -146,7 +166,11 @@ impl Value {
             Value::Int(i) => *i != 0,
             Value::Float(f) => *f != 0.0,
             _ => {
-                debug_assert!(false, "cannot coerce {:?} to bool — validator should have caught this", self);
+                debug_assert!(
+                    false,
+                    "cannot coerce {:?} to bool — validator should have caught this",
+                    self
+                );
                 false
             }
         }
@@ -185,11 +209,7 @@ impl Value {
             }
             Value::Bool(b) => {
                 if i == 0 {
-                    if *b {
-                        1.0
-                    } else {
-                        0.0
-                    }
+                    if *b { 1.0 } else { 0.0 }
                 } else {
                     0.0
                 }
@@ -466,8 +486,7 @@ impl<'a> Interp<'a> {
                 apply_unary(*op, &v)
             }
             Expr::Call { name, args } => {
-                let arg_vals: Vec<Value> =
-                    args.iter().map(|a| self.compute_expr(a)).collect();
+                let arg_vals: Vec<Value> = args.iter().map(|a| self.compute_expr(a)).collect();
                 // Built-ins first (matches SkSL semantics).
                 if let Some(v) = call_builtin(name, &arg_vals) {
                     return v;
@@ -995,12 +1014,7 @@ fn index_value(v: &Value, i: i32) -> Value {
         }
         Value::Mat4(m) => {
             if idx < 4 {
-                Value::Vec4([
-                    m[idx * 4],
-                    m[idx * 4 + 1],
-                    m[idx * 4 + 2],
-                    m[idx * 4 + 3],
-                ])
+                Value::Vec4([m[idx * 4], m[idx * 4 + 1], m[idx * 4 + 2], m[idx * 4 + 3]])
             } else {
                 Value::Vec4([0.0, 0.0, 0.0, 0.0])
             }
@@ -1046,9 +1060,7 @@ fn construct(ty: &SkslType, args: &[Value]) -> Value {
     let want = match ty {
         SkslType::Float | SkslType::Half => 1,
         SkslType::Int => return Value::Int(args.first().map(|v| v.as_i32()).unwrap_or(0)),
-        SkslType::Bool => {
-            return Value::Bool(args.first().map(|v| v.as_bool()).unwrap_or(false))
-        }
+        SkslType::Bool => return Value::Bool(args.first().map(|v| v.as_bool()).unwrap_or(false)),
         SkslType::Vec2 | SkslType::Half2 => 2,
         SkslType::Vec3 | SkslType::Half3 => 3,
         SkslType::Vec4 | SkslType::Half4 => 4,
@@ -1087,9 +1099,7 @@ fn construct(ty: &SkslType, args: &[Value]) -> Value {
         SkslType::Float | SkslType::Half => Value::Float(comps[0]),
         SkslType::Vec2 | SkslType::Half2 => Value::Vec2([comps[0], comps[1]]),
         SkslType::Vec3 | SkslType::Half3 => Value::Vec3([comps[0], comps[1], comps[2]]),
-        SkslType::Vec4 | SkslType::Half4 => {
-            Value::Vec4([comps[0], comps[1], comps[2], comps[3]])
-        }
+        SkslType::Vec4 | SkslType::Half4 => Value::Vec4([comps[0], comps[1], comps[2], comps[3]]),
         SkslType::Mat2 => {
             let mut out = [0.0f32; 4];
             out.copy_from_slice(&comps[..4]);
@@ -1142,12 +1152,7 @@ fn map2(a: &Value, b: &Value, f: impl Fn(f32, f32) -> f32) -> Value {
 }
 
 /// Apply a ternary function per component with scalar broadcast.
-fn map3(
-    a: &Value,
-    b: &Value,
-    c: &Value,
-    f: impl Fn(f32, f32, f32) -> f32,
-) -> Value {
+fn map3(a: &Value, b: &Value, c: &Value, f: impl Fn(f32, f32, f32) -> f32) -> Value {
     let width = vec_width(a).max(vec_width(b)).max(vec_width(c));
     if width == 0 {
         return Value::Float(f(a.as_f32(), b.as_f32(), c.as_f32()));
@@ -1265,13 +1270,13 @@ fn call_builtin(name: &str, args: &[Value]) -> Option<Value> {
         }
         "step" => {
             if args.len() == 2 {
-                Some(map2(&args[0], &args[1], |edge, x| {
-                    if x < edge {
-                        0.0
-                    } else {
-                        1.0
-                    }
-                }))
+                Some(map2(
+                    &args[0],
+                    &args[1],
+                    |edge, x| {
+                        if x < edge { 0.0 } else { 1.0 }
+                    },
+                ))
             } else {
                 None
             }
@@ -1567,8 +1572,16 @@ mod tests {
             Value::Vec2([0.0, 0.0]),
         );
         let out = v.as_vec4();
-        assert!(out[0].is_infinite() && out[0] > 0.0, "1/0 = +inf, got {}", out[0]);
-        assert!(out[1].is_infinite() && out[1] < 0.0, "-1/0 = -inf, got {}", out[1]);
+        assert!(
+            out[0].is_infinite() && out[0] > 0.0,
+            "1/0 = +inf, got {}",
+            out[0]
+        );
+        assert!(
+            out[1].is_infinite() && out[1] < 0.0,
+            "-1/0 = -inf, got {}",
+            out[1]
+        );
         assert!(out[2].is_nan(), "0/0 = NaN, got {}", out[2]);
     }
 

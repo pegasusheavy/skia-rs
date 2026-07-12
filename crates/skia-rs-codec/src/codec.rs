@@ -662,9 +662,7 @@ impl GifDecoder {
                 skia_rs_core::AlphaType::Unpremul,
             );
             let image = Image::from_raster_data(&info, &frame.buffer, width as usize * 4)
-                .ok_or_else(|| {
-                    CodecError::DecodingError("Failed to build frame image".into())
-                })?;
+                .ok_or_else(|| CodecError::DecodingError("Failed to build frame image".into()))?;
 
             frames.push(crate::AnimationFrame {
                 image,
@@ -1164,9 +1162,7 @@ fn decode_bmp(data: &[u8]) -> CodecResult<Image> {
         .checked_mul(height)
         .ok_or_else(|| CodecError::InvalidData("BMP pixel array too large".into()))?;
     if pixel_data.len() < required {
-        return Err(CodecError::InvalidData(
-            "BMP pixel data truncated".into(),
-        ));
+        return Err(CodecError::InvalidData("BMP pixel data truncated".into()));
     }
 
     // BI_BITFIELDS: channel masks live either inside a V4+ header or in the
@@ -1236,7 +1232,8 @@ fn decode_bmp(data: &[u8]) -> CodecResult<Image> {
                     let src = src_row + x * 2;
                     let dst = dst_row + x * 4;
                     if src + 1 < pixel_data.len() {
-                        let value = u16::from_le_bytes([pixel_data[src], pixel_data[src + 1]]) as u32;
+                        let value =
+                            u16::from_le_bytes([pixel_data[src], pixel_data[src + 1]]) as u32;
                         rgba[dst] = m.sample(value, m.red);
                         rgba[dst + 1] = m.sample(value, m.green);
                         rgba[dst + 2] = m.sample(value, m.blue);
@@ -1422,8 +1419,8 @@ fn decode_ico(data: &[u8]) -> CodecResult<Image> {
 
     // Get the best entry. If no complete entry was found the directory is
     // truncated.
-    let best_index = best_index
-        .ok_or_else(|| CodecError::InvalidData("ICO directory truncated".into()))?;
+    let best_index =
+        best_index.ok_or_else(|| CodecError::InvalidData("ICO directory truncated".into()))?;
     let entry_offset = 6 + best_index * 16;
     let image_offset = u32::from_le_bytes([
         data[entry_offset + 12],
@@ -2127,12 +2124,7 @@ pub enum BayerPattern {
 /// Returns an empty vector if the input length does not match
 /// `width * height` — this keeps the helper safe to call without
 /// propagating `Result` through every RAW pipeline.
-pub fn demosaic_bayer(
-    raw: &[u16],
-    width: usize,
-    height: usize,
-    pattern: BayerPattern,
-) -> Vec<u8> {
+pub fn demosaic_bayer(raw: &[u16], width: usize, height: usize, pattern: BayerPattern) -> Vec<u8> {
     if width == 0 || height == 0 || raw.len() != width * height {
         return Vec::new();
     }
@@ -2351,7 +2343,11 @@ fn demosaic_raw(raw: &rawloader::RawImage) -> CodecResult<Vec<u8>> {
         // native bit depth.
         let black = raw.blacklevels[0] as f32;
         let white = raw.whitelevels[0] as f32;
-        let range = if white > black { white - black } else { 65535.0 };
+        let range = if white > black {
+            white - black
+        } else {
+            65535.0
+        };
         let normalized: Vec<u16> = data
             .iter()
             .map(|&v| (((v as f32 - black) / range * 65535.0).clamp(0.0, 65535.0)) as u16)
@@ -3148,7 +3144,11 @@ mod tests {
         let decoded = PngDecoder::new().decode_bytes(&encoded).unwrap();
         let px = decoded.peek_pixels().unwrap();
         // Unpremultiplying 128 with alpha 128 restores ~255.
-        assert!(px[0] >= 253, "R should unpremultiply back to ~255, got {}", px[0]);
+        assert!(
+            px[0] >= 253,
+            "R should unpremultiply back to ~255, got {}",
+            px[0]
+        );
         assert_eq!(px[3], 128, "alpha preserved");
     }
 
@@ -3175,7 +3175,11 @@ mod tests {
 
         let decoded = decode_bmp(&bmp).unwrap();
         let px = decoded.peek_pixels().unwrap();
-        assert_eq!(&px[0..4], &[30, 20, 10, 255], "BI_RGB 4th byte ignored -> opaque");
+        assert_eq!(
+            &px[0..4],
+            &[30, 20, 10, 255],
+            "BI_RGB 4th byte ignored -> opaque"
+        );
     }
 
     /// A 32-bit BI_BITFIELDS BMP with explicit RGBA masks must honor them.
@@ -3383,7 +3387,11 @@ mod tests {
         assert_eq!(&px[0..4], &[0, 0, 0, 0], "corner is transparent");
         // Pixel (1,1) is the frame's top-left -> white opaque.
         let off = (1 * 4 + 1) * 4;
-        assert_eq!(&px[off..off + 4], &[255, 255, 255, 255], "frame composited at offset");
+        assert_eq!(
+            &px[off..off + 4],
+            &[255, 255, 255, 255],
+            "frame composited at offset"
+        );
     }
 
     /// `decode_animated` must report the logical-screen canvas dimensions.

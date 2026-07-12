@@ -415,14 +415,7 @@ impl ImageGenerator for EncodedImageGenerator {
             GeneratorError::GenerateFailed("Failed to access decoded pixels".into())
         })?;
 
-        convert_pixels(
-            src_info,
-            src_pixels,
-            src_row_bytes,
-            info,
-            pixels,
-            row_bytes,
-        )
+        convert_pixels(src_info, src_pixels, src_row_bytes, info, pixels, row_bytes)
     }
 
     fn query_supports_info(&self, info: &ImageInfo) -> bool {

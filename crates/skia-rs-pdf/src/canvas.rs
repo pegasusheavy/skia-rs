@@ -416,8 +416,7 @@ impl<'a> PdfCanvas<'a> {
     ) -> Result<(), PdfError> {
         let font_idx = self.current_font.ok_or_else(|| {
             PdfError::Unsupported(
-                "draw_text requires a font: call set_font or use_standard_font first"
-                    .to_string(),
+                "draw_text requires a font: call set_font or use_standard_font first".to_string(),
             )
         })?;
         self.draw_text_with_font(text, x, y, font_size, font_idx, paint)
@@ -463,7 +462,10 @@ impl<'a> PdfCanvas<'a> {
         // `PdfDocument::write_to`) even though live text can't yet be
         // drawn through it.
         if let Some(font) = self.fonts.get(font_idx) {
-            if matches!(font.font_type, PdfFontType::Type0 | PdfFontType::OpenTypeCff) {
+            if matches!(
+                font.font_type,
+                PdfFontType::Type0 | PdfFontType::OpenTypeCff
+            ) {
                 return Err(PdfError::Unsupported(format!(
                     "draw_text_with_font: font {} is a Type0/CID font (registered via \
                      register_truetype_cid, encoded /Identity-H); live per-glyph CID text \
@@ -819,7 +821,9 @@ mod tests {
             assert_eq!(f, 0);
 
             let paint = Paint::new();
-            canvas.draw_text("Hello", 72.0, 72.0, 12.0, &paint).expect("draw_text should succeed");
+            canvas
+                .draw_text("Hello", 72.0, 72.0, 12.0, &paint)
+                .expect("draw_text should succeed");
 
             canvas.finish()
         };
@@ -848,7 +852,9 @@ mod tests {
             canvas.use_standard_font(StandardFont::Helvetica);
 
             let paint = Paint::new();
-            canvas.draw_text("héllo", 72.0, 72.0, 12.0, &paint).expect("draw_text should succeed");
+            canvas
+                .draw_text("héllo", 72.0, 72.0, 12.0, &paint)
+                .expect("draw_text should succeed");
             canvas.finish()
         };
 
@@ -858,9 +864,7 @@ mod tests {
         // Type0/CID font's CMap encoding.
         let expected: &[u8] = b"(h\xE9llo) Tj";
         assert!(
-            page.content
-                .windows(expected.len())
-                .any(|w| w == expected),
+            page.content.windows(expected.len()).any(|w| w == expected),
             "content missing WinAnsi-encoded literal: {:?}",
             String::from_utf8_lossy(&page.content)
         );
@@ -881,7 +885,9 @@ mod tests {
             canvas.use_standard_font(StandardFont::Helvetica);
             let paint = Paint::new();
             // '中' is outside WinAnsiEncoding entirely.
-            canvas.draw_text("a中b", 72.0, 72.0, 12.0, &paint).expect("draw_text should succeed");
+            canvas
+                .draw_text("a中b", 72.0, 72.0, 12.0, &paint)
+                .expect("draw_text should succeed");
             canvas.finish()
         };
 

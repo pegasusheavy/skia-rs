@@ -348,12 +348,7 @@ impl Font {
                 let (underline_position, underline_thickness) = raw
                     .underline_position
                     .map(|pos| {
-                        underline_metrics_from_post(
-                            pos,
-                            raw.underline_thickness,
-                            scale,
-                            self.size,
-                        )
+                        underline_metrics_from_post(pos, raw.underline_thickness, scale, self.size)
                     })
                     .unwrap_or((0.1 * self.size, 0.05 * self.size));
 
@@ -511,12 +506,7 @@ impl Font {
                         let right = bbox.x_max as Scalar * scale * self.scale_x;
                         let top = -(bbox.y_max as Scalar) * scale;
                         let bottom = -(bbox.y_min as Scalar) * scale;
-                        skia_rs_core::Rect::new(
-                            x_offset + left,
-                            top,
-                            x_offset + right,
-                            bottom,
-                        )
+                        skia_rs_core::Rect::new(x_offset + left, top, x_offset + right, bottom)
                     } else {
                         // Glyph has no outline (e.g. space). Zero-sized box.
                         skia_rs_core::Rect::from_xywh(x_offset, 0.0, 0.0, 0.0)
@@ -1022,11 +1012,7 @@ impl Font {
 /// whichever is larger). For typical font sizes this produces 4-16
 /// segments per curve, which is plenty for decoration gap rendering
 /// without being wasteful.
-fn path_band_intercepts(
-    path: &skia_rs_path::Path,
-    y_top: Scalar,
-    y_bottom: Scalar,
-) -> Vec<Scalar> {
+fn path_band_intercepts(path: &skia_rs_path::Path, y_top: Scalar, y_bottom: Scalar) -> Vec<Scalar> {
     use skia_rs_core::Point;
     use skia_rs_path::PathElement;
 
@@ -1639,10 +1625,7 @@ fn ttf_rgba_from_argb(argb: u32) -> ttf_parser::RgbaColor {
 
 /// Pack a ttf_parser `RgbaColor` back into an ARGB u32.
 fn argb_from_ttf_rgba(c: ttf_parser::RgbaColor) -> u32 {
-    ((c.alpha as u32) << 24)
-        | ((c.red as u32) << 16)
-        | ((c.green as u32) << 8)
-        | (c.blue as u32)
+    ((c.alpha as u32) << 24) | ((c.red as u32) << 16) | ((c.green as u32) << 8) | (c.blue as u32)
 }
 
 /// Convert a ttf-parser affine (`a b c d e f` column vectors in y-up
@@ -1806,9 +1789,7 @@ impl ColorLayerWalker {
     fn convert_paint(&self, paint: ttf_parser::colr::Paint<'_>) -> GlyphPaint {
         let palette = self.palette;
         match paint {
-            ttf_parser::colr::Paint::Solid(color) => {
-                GlyphPaint::Solid(argb_from_ttf_rgba(color))
-            }
+            ttf_parser::colr::Paint::Solid(color) => GlyphPaint::Solid(argb_from_ttf_rgba(color)),
             ttf_parser::colr::Paint::LinearGradient(g) => {
                 // Font space is y-up; our glyph paths live in y-down
                 // screen space, already scaled by size/upem and sheared by
@@ -2126,9 +2107,15 @@ mod tests {
         // is machine-checked by `From::from` exhaustiveness.
         use ttf_parser::colr::CompositeMode as M;
         assert_eq!(CompositeMode::from(M::Clear), CompositeMode::Clear);
-        assert_eq!(CompositeMode::from(M::SourceOver), CompositeMode::SourceOver);
+        assert_eq!(
+            CompositeMode::from(M::SourceOver),
+            CompositeMode::SourceOver
+        );
         assert_eq!(CompositeMode::from(M::Multiply), CompositeMode::Multiply);
-        assert_eq!(CompositeMode::from(M::Luminosity), CompositeMode::Luminosity);
+        assert_eq!(
+            CompositeMode::from(M::Luminosity),
+            CompositeMode::Luminosity
+        );
     }
 
     #[test]

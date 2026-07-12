@@ -375,7 +375,9 @@ impl TextureAtlas {
         for (id, old_region) in sorted {
             let mut placed = false;
             for (layer_idx, layer) in self.layers.iter_mut().enumerate() {
-                if let Some((x, y)) = layer.allocate(old_region.width, old_region.height, self.config.padding) {
+                if let Some((x, y)) =
+                    layer.allocate(old_region.width, old_region.height, self.config.padding)
+                {
                     let new_region = AtlasRegion {
                         x,
                         y,
@@ -396,7 +398,9 @@ impl TextureAtlas {
 
             if !placed && self.layers.len() < self.config.max_layers as usize {
                 let mut new_layer = AtlasLayer::new(self.config.width, self.config.height);
-                if let Some((x, y)) = new_layer.allocate(old_region.width, old_region.height, self.config.padding) {
+                if let Some((x, y)) =
+                    new_layer.allocate(old_region.width, old_region.height, self.config.padding)
+                {
                     let layer_idx = self.layers.len();
                     self.layers.push(new_layer);
                     let new_region = AtlasRegion {
@@ -613,7 +617,10 @@ mod tests {
                     || b.x + b.width <= a.x
                     || a.y + a.height <= b.y
                     || b.y + b.height <= a.y;
-                assert!(disjoint, "compact produced overlapping regions {a:?} / {b:?}");
+                assert!(
+                    disjoint,
+                    "compact produced overlapping regions {a:?} / {b:?}"
+                );
             }
         }
     }

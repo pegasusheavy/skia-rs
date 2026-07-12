@@ -561,8 +561,16 @@ mod tests {
         {
             #[allow(deprecated)]
             let mut canvas: RasterCanvas = surface.canvas();
-            canvas.clip_rect(&Rect::from_xywh(0.0, 0.0, 5.0, 5.0), ClipOp::Intersect, false);
-            canvas.clip_rect(&Rect::from_xywh(2.0, 2.0, 8.0, 8.0), ClipOp::Intersect, true);
+            canvas.clip_rect(
+                &Rect::from_xywh(0.0, 0.0, 5.0, 5.0),
+                ClipOp::Intersect,
+                false,
+            );
+            canvas.clip_rect(
+                &Rect::from_xywh(2.0, 2.0, 8.0, 8.0),
+                ClipOp::Intersect,
+                true,
+            );
         }
         // If this compiles and runs without error, the signature is correct
     }

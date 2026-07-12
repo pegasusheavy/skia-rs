@@ -287,7 +287,8 @@ impl StandardGms {
             let inner = 30.0;
 
             for i in 0..5 {
-                let angle_outer = std::f32::consts::PI * 2.0 * i as f32 / 5.0 - std::f32::consts::PI / 2.0;
+                let angle_outer =
+                    std::f32::consts::PI * 2.0 * i as f32 / 5.0 - std::f32::consts::PI / 2.0;
                 let angle_inner = angle_outer + std::f32::consts::PI / 5.0;
 
                 let px = cx + outer * angle_outer.cos();
@@ -324,7 +325,10 @@ impl StandardGms {
                 let r = (255.0 * (1.0 - t)) as u8;
                 let b = (255.0 * t) as u8;
                 paint.set_color32(Color::from_argb(255, r, 0, b));
-                canvas.draw_rect(&Rect::from_xywh(10.0 + i as f32 * 1.3, 20.0, 2.0, 60.0), &paint);
+                canvas.draw_rect(
+                    &Rect::from_xywh(10.0 + i as f32 * 1.3, 20.0, 2.0, 60.0),
+                    &paint,
+                );
             }
 
             // "Radial gradient" approximation
@@ -464,7 +468,10 @@ impl StandardGms {
             for (i, alpha) in alphas.iter().enumerate() {
                 paint.set_color32(Color::from_argb(*alpha, 100, 100, 200));
                 let offset = i as f32 * 25.0;
-                canvas.draw_rect(&Rect::from_xywh(20.0 + offset, 20.0 + offset, 100.0, 100.0), &paint);
+                canvas.draw_rect(
+                    &Rect::from_xywh(20.0 + offset, 20.0 + offset, 100.0, 100.0),
+                    &paint,
+                );
             }
         })
         .with_tag("alpha")
@@ -722,7 +729,11 @@ impl DmRunner {
                         let pixels = surface.pixels().to_vec();
                         (TestOutcome::Pass, Some(pixels), None)
                     }
-                    Err(_) => (TestOutcome::Crash, None, Some("Panic during draw".to_string())),
+                    Err(_) => (
+                        TestOutcome::Crash,
+                        None,
+                        Some("Panic during draw".to_string()),
+                    ),
                 }
             }
             None => (

@@ -245,28 +245,14 @@ impl RectangleShape {
                     bottom,
                 );
                 builder.line_to(left + r, bottom);
-                builder.cubic_to(
-                    left + r - k,
-                    bottom,
-                    left,
-                    bottom - r + k,
-                    left,
-                    bottom - r,
-                );
+                builder.cubic_to(left + r - k, bottom, left, bottom - r + k, left, bottom - r);
                 builder.line_to(left, top + r);
                 builder.cubic_to(left, top + r - k, left + r - k, top, left + r, top);
             } else {
                 builder.move_to(left + r, top);
                 builder.cubic_to(left + r - k, top, left, top + r - k, left, top + r);
                 builder.line_to(left, bottom - r);
-                builder.cubic_to(
-                    left,
-                    bottom - r + k,
-                    left + r - k,
-                    bottom,
-                    left + r,
-                    bottom,
-                );
+                builder.cubic_to(left, bottom - r + k, left + r - k, bottom, left + r, bottom);
                 builder.line_to(right - r, bottom);
                 builder.cubic_to(
                     right - r + k,
@@ -985,8 +971,9 @@ fn resolve_gradient_stops(
 
     let opacity_raw = &raw[c_size..];
     let o_count = opacity_raw.len() / 2;
-    let opacity_stops: Vec<(Scalar, Scalar)> =
-        (0..o_count).map(|i| (opacity_raw[i * 2], opacity_raw[i * 2 + 1])).collect();
+    let opacity_stops: Vec<(Scalar, Scalar)> = (0..o_count)
+        .map(|i| (opacity_raw[i * 2], opacity_raw[i * 2 + 1]))
+        .collect();
 
     if color_stops.is_empty() && opacity_stops.is_empty() {
         return Vec::new();
@@ -1129,7 +1116,6 @@ impl TrimPathShape {
 
         (start_t, stop_t, inverted)
     }
-
 }
 
 /// Merge paths shape.

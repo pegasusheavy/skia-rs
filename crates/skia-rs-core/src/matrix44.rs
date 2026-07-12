@@ -499,8 +499,7 @@ impl Matrix44 {
         let mut b10 = a21 * a33 - a23 * a31;
         let mut b11 = a22 * a33 - a23 * a32;
 
-        let determinant =
-            b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+        let determinant = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
         if determinant == 0.0 {
             return None;
         }
@@ -765,7 +764,10 @@ mod tests {
         let t = Matrix44::translate(10.0, 0.0, 0.0);
         // preScale: self * S. Scaling then applying t's translation leaves the
         // translation column untouched (S doesn't move the origin).
-        assert_eq!(t.pre_scale(2.0, 2.0, 2.0), t.concat(&Matrix44::scale(2.0, 2.0, 2.0)));
+        assert_eq!(
+            t.pre_scale(2.0, 2.0, 2.0),
+            t.concat(&Matrix44::scale(2.0, 2.0, 2.0))
+        );
         // postScale: S * self. The translation column gets scaled by 2.
         let post = t.post_scale(2.0, 2.0, 2.0);
         assert_eq!(post, Matrix44::scale(2.0, 2.0, 2.0).concat(&t));

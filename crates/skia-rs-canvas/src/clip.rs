@@ -1002,12 +1002,21 @@ mod tests {
 
         // Test points that should be clipped based on the region intersection
         // Point outside the AA rect but inside the mask should be clipped
-        assert!(!stack.contains(5, 5), "Point outside AA rect should be clipped");
+        assert!(
+            !stack.contains(5, 5),
+            "Point outside AA rect should be clipped"
+        );
 
         // Point inside the AA rect intersection should be included
-        assert!(stack.contains(25, 25), "Point inside intersection should be included");
+        assert!(
+            stack.contains(25, 25),
+            "Point inside intersection should be included"
+        );
 
         // Point outside the AA rect should be clipped even if mask would include it
-        assert!(!stack.contains(55, 55), "Point outside AA rect should be clipped");
+        assert!(
+            !stack.contains(55, 55),
+            "Point outside AA rect should be clipped"
+        );
     }
 }

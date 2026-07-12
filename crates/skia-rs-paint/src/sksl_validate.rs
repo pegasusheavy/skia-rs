@@ -406,12 +406,10 @@ impl<'a> Validator<'a> {
 
             Expr::Unary { op, expr } => {
                 let t = self.validate_expr(expr)?;
-                result_type_for_unop(*op, &t).ok_or_else(|| {
-                    ValidationError::InvalidOperator {
-                        op: op.glsl_str().to_string(),
-                        lhs: t.to_string(),
-                        rhs: String::new(),
-                    }
+                result_type_for_unop(*op, &t).ok_or_else(|| ValidationError::InvalidOperator {
+                    op: op.glsl_str().to_string(),
+                    lhs: t.to_string(),
+                    rhs: String::new(),
                 })
             }
 
@@ -561,11 +559,7 @@ impl<'a> Validator<'a> {
         }
     }
 
-    fn validate_call(
-        &mut self,
-        name: &str,
-        args: &[Expr],
-    ) -> Result<SkslType, ValidationError> {
+    fn validate_call(&mut self, name: &str, args: &[Expr]) -> Result<SkslType, ValidationError> {
         // User-declared functions are looked up first so users can
         // shadow built-ins (matches SkSL semantics).
         if let Some((params, ret)) = self.functions.get(name).cloned() {
@@ -630,13 +624,13 @@ impl<'a> Validator<'a> {
             for a in args {
                 arg_types.push(self.validate_expr(a)?);
             }
-            return return_rule.apply(&arg_types).ok_or_else(|| {
-                ValidationError::InvalidOperator {
+            return return_rule
+                .apply(&arg_types)
+                .ok_or_else(|| ValidationError::InvalidOperator {
                     op: name.to_string(),
                     lhs: arg_types.first().map(|t| t.to_string()).unwrap_or_default(),
                     rhs: arg_types.get(1).map(|t| t.to_string()).unwrap_or_default(),
-                }
-            });
+                });
         }
 
         // `sample(child, coord)` style calls on child shaders.
@@ -692,7 +686,6 @@ fn is_assignable(expr: &Expr) -> bool {
         _ => false,
     }
 }
-
 
 /// Our "compatibility" predicate. Strict equality with a couple of
 /// equivalences: `float`/`half` and their matching vectors are
@@ -827,10 +820,7 @@ fn result_type_for_unop(op: UnaryOp, t: &SkslType) -> Option<SkslType> {
 }
 
 fn is_scalar_numeric(ty: &SkslType) -> bool {
-    matches!(
-        ty,
-        SkslType::Int | SkslType::Float | SkslType::Half
-    )
+    matches!(ty, SkslType::Int | SkslType::Float | SkslType::Half)
 }
 
 fn is_vector_or_matrix(ty: &SkslType) -> bool {
@@ -904,13 +894,10 @@ impl BuiltinReturn {
     fn apply(self, args: &[SkslType]) -> Option<SkslType> {
         match self {
             BuiltinReturn::Fixed(tag) => Some(tag_to_type(tag)),
-            BuiltinReturn::SameAsFirst => args.first().cloned().map(|t| {
-                if is_numeric(&t) {
-                    t
-                } else {
-                    SkslType::Float
-                }
-            }),
+            BuiltinReturn::SameAsFirst => args
+                .first()
+                .cloned()
+                .map(|t| if is_numeric(&t) { t } else { SkslType::Float }),
             BuiltinReturn::ScalarFromVec => {
                 let first = args.first()?;
                 if is_numeric(first) {
@@ -941,9 +928,10 @@ fn builtin_signature(name: &str) -> Option<(BuiltinArity, BuiltinReturn)> {
     use BuiltinReturn::*;
     Some(match name {
         // Component-wise scalar/vector ops: result shape == arg shape.
-        "abs" | "sign" | "floor" | "ceil" | "fract" | "sin" | "cos" | "tan" | "asin"
-        | "acos" | "exp" | "exp2" | "log" | "log2" | "sqrt" | "inversesqrt" | "radians"
-        | "degrees" => (Exact(1), SameAsFirst),
+        "abs" | "sign" | "floor" | "ceil" | "fract" | "sin" | "cos" | "tan" | "asin" | "acos"
+        | "exp" | "exp2" | "log" | "log2" | "sqrt" | "inversesqrt" | "radians" | "degrees" => {
+            (Exact(1), SameAsFirst)
+        }
         "atan" => (Range(1, 2), SameAsFirst),
         "atan2" => (Exact(2), SameAsFirst),
         "pow" | "mod" | "min" | "max" | "step" => (Exact(2), SameAsFirst),
@@ -1047,9 +1035,7 @@ mod tests {
 
     #[test]
     fn validates_simple_shader() {
-        let p = parse(
-            "vec4 main(vec2 coord) { return vec4(coord.x, coord.y, 0.0, 1.0); }",
-        );
+        let p = parse("vec4 main(vec2 coord) { return vec4(coord.x, coord.y, 0.0, 1.0); }");
         validate_program(&p).unwrap();
     }
 
@@ -1127,9 +1113,7 @@ mod tests {
 
     #[test]
     fn rejects_out_of_bounds_swizzle() {
-        let p = parse(
-            "vec4 main(vec2 coord) { return vec4(coord.z, 0.0, 0.0, 1.0); }",
-        );
+        let p = parse("vec4 main(vec2 coord) { return vec4(coord.z, 0.0, 0.0, 1.0); }");
         let err = validate_program(&p).unwrap_err();
         assert!(matches!(err, ValidationError::InvalidSwizzle { .. }));
     }

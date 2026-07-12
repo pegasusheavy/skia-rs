@@ -687,7 +687,11 @@ mod tests {
     fn test_paint_defaults_match_skpaint() {
         // SkPaint.cpp: fWidth{0} (hairline) and fAntiAlias false by default.
         let paint = Paint::new();
-        assert_eq!(paint.stroke_width(), 0.0, "default stroke width is hairline (0)");
+        assert_eq!(
+            paint.stroke_width(),
+            0.0,
+            "default stroke width is hairline (0)"
+        );
         assert!(!paint.is_anti_alias(), "anti-aliasing is off by default");
     }
 
@@ -983,14 +987,7 @@ mod tests {
     #[test]
     fn test_paint_serialize_extreme_stroke_widths() {
         let mut paint = Paint::new();
-        for w in &[
-            0.0,
-            0.001,
-            100.0,
-            10_000.0,
-            f32::MIN_POSITIVE,
-            f32::EPSILON,
-        ] {
+        for w in &[0.0, 0.001, 100.0, 10_000.0, f32::MIN_POSITIVE, f32::EPSILON] {
             paint.set_stroke_width(*w);
             let bytes = paint.serialize();
             let restored = Paint::deserialize(&bytes).unwrap();

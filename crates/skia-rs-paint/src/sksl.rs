@@ -2059,8 +2059,7 @@ mod tests {
 
     #[test]
     fn test_parse_multiple_functions() {
-        let src =
-            "float square(float x) { return x * x; }\nhalf4 main(float2 p) { return half4(square(p.x), 0.0, 0.0, 1.0); }";
+        let src = "float square(float x) { return x * x; }\nhalf4 main(float2 p) { return half4(square(p.x), 0.0, 0.0, 1.0); }";
         let mut parser = Parser::new(src);
         let program = parser.parse_program();
         assert!(
@@ -2112,10 +2111,6 @@ mod tests {
         let src = "half4 main(float2 p) { float x = p.x > 0.0 ? 1.0 : 0.0; return half4(x, 0.0, 0.0, 1.0); }";
         let mut parser = Parser::new(src);
         let program = parser.parse_program();
-        assert!(
-            program.is_ok(),
-            "ternary should parse: {:?}",
-            program.err()
-        );
+        assert!(program.is_ok(), "ternary should parse: {:?}", program.err());
     }
 }

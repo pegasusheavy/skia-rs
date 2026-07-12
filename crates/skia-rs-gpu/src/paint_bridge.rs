@@ -32,15 +32,15 @@
 //! ```
 
 use crate::pipeline::{
-    BlendComponent, BlendFactor, BlendOperation, BlendState, ColorTargetState,
-    PipelineKey, RenderPipelineDescriptor, VertexAttribute, VertexBufferLayout, VertexFormat,
+    BlendComponent, BlendFactor, BlendOperation, BlendState, ColorTargetState, PipelineKey,
+    RenderPipelineDescriptor, VertexAttribute, VertexBufferLayout, VertexFormat,
 };
 use crate::shader::builtin;
 use crate::texture::TextureFormat;
-use skia_rs_paint::{BlendMode, Paint, Style};
 use skia_rs_paint::shader::{
     LinearGradient, RadialGradient, Shader, ShaderKind, ShaderRef, SweepGradient,
 };
+use skia_rs_paint::{BlendMode, Paint, Style};
 
 /// Which built-in GPU shader a paint maps to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -582,7 +582,12 @@ fn sample_linear_endpoints(shader: &dyn Shader) -> ([f32; 2], [f32; 2], [f32; 4]
         let colors = g.colors();
         let c0 = colors.first().copied().unwrap_or_default();
         let c1 = colors.last().copied().unwrap_or_default();
-        return (start, end, [c0.r, c0.g, c0.b, c0.a], [c1.r, c1.g, c1.b, c1.a]);
+        return (
+            start,
+            end,
+            [c0.r, c0.g, c0.b, c0.a],
+            [c1.r, c1.g, c1.b, c1.a],
+        );
     }
 
     // Fallback path: sample the shader at a unit segment to recover
@@ -604,7 +609,12 @@ fn sample_radial_endpoints(shader: &dyn Shader) -> ([f32; 2], f32, [f32; 4], [f3
         let colors = g.colors();
         let c0 = colors.first().copied().unwrap_or_default();
         let c1 = colors.last().copied().unwrap_or_default();
-        return (center, radius, [c0.r, c0.g, c0.b, c0.a], [c1.r, c1.g, c1.b, c1.a]);
+        return (
+            center,
+            radius,
+            [c0.r, c0.g, c0.b, c0.a],
+            [c1.r, c1.g, c1.b, c1.a],
+        );
     }
 
     let s = shader.sample(0.0, 0.0);
@@ -619,7 +629,12 @@ fn sample_sweep_as_linear(shader: &dyn Shader) -> ([f32; 2], [f32; 2], [f32; 4],
         let colors = g.colors();
         let c0 = colors.first().copied().unwrap_or_default();
         let c1 = colors.last().copied().unwrap_or_default();
-        return (center, end, [c0.r, c0.g, c0.b, c0.a], [c1.r, c1.g, c1.b, c1.a]);
+        return (
+            center,
+            end,
+            [c0.r, c0.g, c0.b, c0.a],
+            [c1.r, c1.g, c1.b, c1.a],
+        );
     }
 
     let s = shader.sample(0.0, 0.0);
@@ -665,9 +680,11 @@ fn as_sweep_gradient(shader: &dyn Shader) -> Option<&SweepGradient> {
 mod tests {
     use super::*;
     use skia_rs_core::Color4f;
-    use skia_rs_paint::shader::{ColorShader, LinearGradient as LG, RadialGradient as RG, TileMode};
-    use skia_rs_paint::Paint;
     use skia_rs_core::Point;
+    use skia_rs_paint::Paint;
+    use skia_rs_paint::shader::{
+        ColorShader, LinearGradient as LG, RadialGradient as RG, TileMode,
+    };
     use std::sync::Arc;
 
     #[test]
@@ -814,7 +831,10 @@ mod tests {
         assert!((f(4) - 3.0).abs() < 1e-6, "start.y from geometry");
         assert!((f(8) - 7.0).abs() < 1e-6, "end.x from geometry");
         // color0 at offset 16: straight red 1.0, not premultiplied 0.5.
-        assert!((f(16) - 1.0).abs() < 1e-6, "color0.r must be straight (1.0)");
+        assert!(
+            (f(16) - 1.0).abs() < 1e-6,
+            "color0.r must be straight (1.0)"
+        );
         assert!((f(28) - 0.5).abs() < 1e-6, "color0.a preserved");
     }
 
@@ -823,7 +843,10 @@ mod tests {
         let gradient = RG::new(
             Point::new(4.0, 5.0),
             9.0,
-            vec![Color4f::new(1.0, 1.0, 1.0, 1.0), Color4f::new(0.0, 0.0, 0.0, 1.0)],
+            vec![
+                Color4f::new(1.0, 1.0, 1.0, 1.0),
+                Color4f::new(0.0, 0.0, 0.0, 1.0),
+            ],
             None,
             TileMode::Clamp,
         );
@@ -844,7 +867,10 @@ mod tests {
 
         let a = paint_to_pipeline(&paint).pipeline_key;
         let b = paint_to_pipeline(&paint).pipeline_key;
-        assert_eq!(a, b, "identical paints must produce identical pipeline keys");
+        assert_eq!(
+            a, b,
+            "identical paints must produce identical pipeline keys"
+        );
     }
 
     #[test]
@@ -858,7 +884,10 @@ mod tests {
         let gradient = LG::new(
             Point::new(0.0, 0.0),
             Point::new(1.0, 0.0),
-            vec![Color4f::new(1.0, 0.0, 0.0, 1.0), Color4f::new(0.0, 0.0, 1.0, 1.0)],
+            vec![
+                Color4f::new(1.0, 0.0, 0.0, 1.0),
+                Color4f::new(0.0, 0.0, 1.0, 1.0),
+            ],
             None,
             TileMode::Clamp,
         );
@@ -901,7 +930,10 @@ mod tests {
         let gradient = LG::new(
             Point::new(0.0, 0.0),
             Point::new(1.0, 0.0),
-            vec![Color4f::new(1.0, 1.0, 1.0, 1.0), Color4f::new(1.0, 1.0, 1.0, 1.0)],
+            vec![
+                Color4f::new(1.0, 1.0, 1.0, 1.0),
+                Color4f::new(1.0, 1.0, 1.0, 1.0),
+            ],
             None,
             TileMode::Clamp,
         );
@@ -913,7 +945,10 @@ mod tests {
         // color0.a is at byte offset 16 + 12 = 28 (vec2 start + vec2 end + r,g,b)
         let alpha_bytes = &plan.uniforms.bytes[28..32];
         let alpha = f32::from_le_bytes(alpha_bytes.try_into().unwrap());
-        assert!((alpha - 0.5).abs() < 1e-6, "paint alpha should fold into uniform color");
+        assert!(
+            (alpha - 0.5).abs() < 1e-6,
+            "paint alpha should fold into uniform color"
+        );
     }
 
     #[test]

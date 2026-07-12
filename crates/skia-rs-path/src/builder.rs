@@ -622,7 +622,10 @@ mod tests {
         b.close();
         b.close();
         let path = b.build();
-        assert_eq!(path.verbs().iter().filter(|v| **v == Verb::Close).count(), 1);
+        assert_eq!(
+            path.verbs().iter().filter(|v| **v == Verb::Close).count(),
+            1
+        );
     }
 
     #[test]
@@ -652,7 +655,14 @@ mod tests {
         let path = b.build();
         assert_eq!(
             path.verbs(),
-            &[Verb::Move, Verb::Conic, Verb::Conic, Verb::Conic, Verb::Conic, Verb::Close]
+            &[
+                Verb::Move,
+                Verb::Conic,
+                Verb::Conic,
+                Verb::Conic,
+                Verb::Conic,
+                Verb::Close
+            ]
         );
         assert!(path.is_oval());
     }
@@ -664,7 +674,10 @@ mod tests {
         let path = b.build();
         // Zero sweep must not produce NaN control points.
         for p in path.points() {
-            assert!(p.x.is_finite() && p.y.is_finite(), "arc produced non-finite point");
+            assert!(
+                p.x.is_finite() && p.y.is_finite(),
+                "arc produced non-finite point"
+            );
         }
     }
 

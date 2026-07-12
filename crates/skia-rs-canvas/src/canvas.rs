@@ -298,10 +298,7 @@ impl<'a> Canvas<'a> {
                 .map(|r| r.round())
                 .unwrap_or(IRect::new(0, 0, 0, 0));
 
-            let (w, h) = (
-                device_rect.width().max(0),
-                device_rect.height().max(0),
-            );
+            let (w, h) = (device_rect.width().max(0), device_rect.height().max(0));
             let buffer = PixelBuffer::new(w, h);
             // INIT_WITH_PREVIOUS is left unimplemented here — the buffer is
             // left fully transparent. Pre-seeding from the parent is left
@@ -435,12 +432,8 @@ impl<'a> Canvas<'a> {
                 // the clip coverage.
                 let scale = layer_alpha * (clip_cov as f32 / 255.0);
                 let s = |v: u8| (v as f32 * scale).round().clamp(0.0, 255.0) as u8;
-                let src = Color::from_argb(
-                    s(src.alpha()),
-                    s(src.red()),
-                    s(src.green()),
-                    s(src.blue()),
-                );
+                let src =
+                    Color::from_argb(s(src.alpha()), s(src.red()), s(src.green()), s(src.blue()));
                 target.blend_pixel(dx - tox, dy - toy, src, blend_mode);
             }
         }
@@ -1463,9 +1456,7 @@ impl<'a> Canvas<'a> {
         // Clip the outline by clip_glyph's outline if set.
         if let Some(clip_id) = layer.clip_glyph {
             if let Some(clip_path) = font.glyph_path(clip_id) {
-                let clip = clip_path
-                    .transformed(&layer.transform)
-                    .transformed(&place);
+                let clip = clip_path.transformed(&layer.transform).transformed(&place);
                 self.save();
                 self.clip_path(&clip, ClipOp::Intersect, base_paint.is_anti_alias());
                 self.fill_colr_layer(&outline, &layer.paint, layer.composite_mode, base_paint);
@@ -1500,7 +1491,11 @@ impl<'a> Canvas<'a> {
                 p.set_shader(None);
             }
             GlyphPaint::LinearGradient {
-                p0, p1, stops, extend, ..
+                p0,
+                p1,
+                stops,
+                extend,
+                ..
             } => {
                 let (colors, positions) = stops_to_color4f(stops);
                 let tile = extend_to_tile(*extend);
@@ -1508,7 +1503,12 @@ impl<'a> Canvas<'a> {
                 p.set_shader(Some(Arc::new(g) as _));
             }
             GlyphPaint::RadialGradient {
-                c0, r0, c1, r1, stops, extend,
+                c0,
+                r0,
+                c1,
+                r1,
+                stops,
+                extend,
             } => {
                 let (colors, positions) = stops_to_color4f(stops);
                 let tile = extend_to_tile(*extend);
@@ -1523,7 +1523,11 @@ impl<'a> Canvas<'a> {
                 p.set_shader(Some(Arc::new(g) as _));
             }
             GlyphPaint::SweepGradient {
-                center, start_angle, end_angle, stops, extend,
+                center,
+                start_angle,
+                end_angle,
+                stops,
+                extend,
             } => {
                 let (colors, positions) = stops_to_color4f(stops);
                 let tile = extend_to_tile(*extend);
@@ -1684,8 +1688,7 @@ impl<'a> Canvas<'a> {
                     // Apply paint alpha once and the clip coverage, both on
                     // the premultiplied color.
                     let scale = alpha * (clip_cov as f32 / 255.0);
-                    let to_byte =
-                        |v: f32| (v * scale * 255.0).round().clamp(0.0, 255.0) as u8;
+                    let to_byte = |v: f32| (v * scale * 255.0).round().clamp(0.0, 255.0) as u8;
                     let color = Color::from_argb(
                         to_byte(premul4.a),
                         to_byte(premul4.r),
@@ -1743,7 +1746,12 @@ impl<'a> Canvas<'a> {
         );
         self.draw_image_rect(
             image,
-            Some(&skia_rs_core::IRect::new(center.right, 0, img_w, center.top)),
+            Some(&skia_rs_core::IRect::new(
+                center.right,
+                0,
+                img_w,
+                center.top,
+            )),
             &Rect::from_xywh(dst.right - right_w, dst.top, right_w, top_h),
             paint,
         );
@@ -1950,9 +1958,8 @@ impl<'a> Canvas<'a> {
 
         // Vertex colors (or the paint color), modulated by paint alpha.
         let default_color = paint.color32().to_color4f();
-        let modulate = |c: skia_rs_core::Color4f| {
-            skia_rs_core::Color4f::new(c.r, c.g, c.b, c.a * paint_alpha)
-        };
+        let modulate =
+            |c: skia_rs_core::Color4f| skia_rs_core::Color4f::new(c.r, c.g, c.b, c.a * paint_alpha);
         let col0 = modulate(c0.map(|c| c.to_color4f()).unwrap_or(default_color));
         let col1 = modulate(c1.map(|c| c.to_color4f()).unwrap_or(default_color));
         let col2 = modulate(c2.map(|c| c.to_color4f()).unwrap_or(default_color));
@@ -2008,9 +2015,7 @@ impl<'a> Canvas<'a> {
                 };
 
                 if clip_cov < 255 {
-                    let s = |v: u8| {
-                        ((v as u32 * clip_cov as u32 + 128) * 257 >> 16) as u8
-                    };
+                    let s = |v: u8| ((v as u32 * clip_cov as u32 + 128) * 257 >> 16) as u8;
                     color = Color::from_argb(
                         s(color.alpha()),
                         s(color.red()),
@@ -2112,12 +2117,7 @@ fn build_round_rect_path(rect: &Rect, rx: Scalar, ry: Scalar) -> Path {
     builder.build()
 }
 
-fn build_arc_path(
-    oval: &Rect,
-    start_angle: Scalar,
-    sweep_angle: Scalar,
-    use_center: bool,
-) -> Path {
+fn build_arc_path(oval: &Rect, start_angle: Scalar, sweep_angle: Scalar, use_center: bool) -> Path {
     use skia_rs_path::{PathBuilder, PathElement};
 
     let mut builder = PathBuilder::new();
@@ -2494,13 +2494,19 @@ mod tests {
         // Pixel at (50, 50) should be unchanged (black/transparent, initial state)
         // because it's in the difference-clipped hole
         let center_pixel = buffer.get_pixel(50, 50).unwrap_or(Color::TRANSPARENT);
-        assert_ne!(center_pixel, Color::WHITE,
-            "Center pixel should not be white due to difference clip");
+        assert_ne!(
+            center_pixel,
+            Color::WHITE,
+            "Center pixel should not be white due to difference clip"
+        );
 
         // Pixel at (10, 10) should be white (outside the hole)
         let corner_pixel = buffer.get_pixel(10, 10).unwrap_or(Color::TRANSPARENT);
-        assert_eq!(corner_pixel, Color::WHITE,
-            "Corner pixel should be white (outside difference clip)");
+        assert_eq!(
+            corner_pixel,
+            Color::WHITE,
+            "Corner pixel should be white (outside difference clip)"
+        );
     }
 
     #[test]
@@ -2552,7 +2558,11 @@ mod tests {
         let initial_bounds = c.clip_bounds();
 
         c.save();
-        c.clip_rect(&Rect::from_xywh(10.0, 10.0, 50.0, 50.0), ClipOp::Intersect, false);
+        c.clip_rect(
+            &Rect::from_xywh(10.0, 10.0, 50.0, 50.0),
+            ClipOp::Intersect,
+            false,
+        );
         let clipped_bounds = c.clip_bounds();
         assert!(clipped_bounds.width() < initial_bounds.width());
 
@@ -2568,16 +2578,29 @@ mod tests {
         let mut paint = Paint::new();
         paint.set_color32(Color::WHITE);
         paint.set_stroke_width(3.0);
-        canvas.draw_points(PointMode::Points, &[
-            Point::new(10.0, 10.0),
-            Point::new(50.0, 50.0),
-            Point::new(90.0, 90.0),
-        ], &paint);
+        canvas.draw_points(
+            PointMode::Points,
+            &[
+                Point::new(10.0, 10.0),
+                Point::new(50.0, 50.0),
+                Point::new(90.0, 90.0),
+            ],
+            &paint,
+        );
         // Three distinct bright pixels should exist
         drop(canvas);
-        assert_ne!(buffer.get_pixel(10, 10).unwrap_or(Color::TRANSPARENT), Color::TRANSPARENT);
-        assert_ne!(buffer.get_pixel(50, 50).unwrap_or(Color::TRANSPARENT), Color::TRANSPARENT);
-        assert_ne!(buffer.get_pixel(90, 90).unwrap_or(Color::TRANSPARENT), Color::TRANSPARENT);
+        assert_ne!(
+            buffer.get_pixel(10, 10).unwrap_or(Color::TRANSPARENT),
+            Color::TRANSPARENT
+        );
+        assert_ne!(
+            buffer.get_pixel(50, 50).unwrap_or(Color::TRANSPARENT),
+            Color::TRANSPARENT
+        );
+        assert_ne!(
+            buffer.get_pixel(90, 90).unwrap_or(Color::TRANSPARENT),
+            Color::TRANSPARENT
+        );
     }
 
     #[test]
@@ -2587,15 +2610,22 @@ mod tests {
         let mut paint = Paint::new();
         paint.set_color32(Color::WHITE);
         // Two pairs: horizontal and vertical line
-        canvas.draw_points(PointMode::Lines, &[
-            Point::new(0.0, 50.0),
-            Point::new(100.0, 50.0),   // pair 1: horizontal line
-            Point::new(50.0, 0.0),
-            Point::new(50.0, 100.0),   // pair 2: vertical line
-        ], &paint);
+        canvas.draw_points(
+            PointMode::Lines,
+            &[
+                Point::new(0.0, 50.0),
+                Point::new(100.0, 50.0), // pair 1: horizontal line
+                Point::new(50.0, 0.0),
+                Point::new(50.0, 100.0), // pair 2: vertical line
+            ],
+            &paint,
+        );
         // Verify by sampling midpoints of both lines
         drop(canvas);
-        assert_ne!(buffer.get_pixel(50, 50).unwrap_or(Color::TRANSPARENT), Color::TRANSPARENT);
+        assert_ne!(
+            buffer.get_pixel(50, 50).unwrap_or(Color::TRANSPARENT),
+            Color::TRANSPARENT
+        );
     }
 
     #[test]
@@ -2605,15 +2635,22 @@ mod tests {
         let mut paint = Paint::new();
         paint.set_color32(Color::WHITE);
         // Triangle perimeter: three lines should be drawn
-        canvas.draw_points(PointMode::Polygon, &[
-            Point::new(50.0, 10.0),
-            Point::new(90.0, 90.0),
-            Point::new(10.0, 90.0),
-        ], &paint);
+        canvas.draw_points(
+            PointMode::Polygon,
+            &[
+                Point::new(50.0, 10.0),
+                Point::new(90.0, 90.0),
+                Point::new(10.0, 90.0),
+            ],
+            &paint,
+        );
         drop(canvas);
         // Lines connect 50,10->90,90 and 90,90->10,90
         // Sample a point on the second line
-        assert_ne!(buffer.get_pixel(50, 90).unwrap_or(Color::TRANSPARENT), Color::TRANSPARENT);
+        assert_ne!(
+            buffer.get_pixel(50, 90).unwrap_or(Color::TRANSPARENT),
+            Color::TRANSPARENT
+        );
     }
 
     #[test]
@@ -2621,10 +2658,13 @@ mod tests {
         let mut buffer = PixelBuffer::new(10, 10);
         let mut canvas = Canvas::new_raster(&mut buffer);
         let paint = Paint::new();
-        canvas.draw_points(PointMode::Points, &[], &paint);  // should not panic
+        canvas.draw_points(PointMode::Points, &[], &paint); // should not panic
         // Verify no pixels were drawn (buffer should be all transparent)
         drop(canvas);
-        assert_eq!(buffer.get_pixel(5, 5).unwrap_or(Color::TRANSPARENT), Color::TRANSPARENT);
+        assert_eq!(
+            buffer.get_pixel(5, 5).unwrap_or(Color::TRANSPARENT),
+            Color::TRANSPARENT
+        );
     }
 
     #[test]
@@ -2634,14 +2674,21 @@ mod tests {
         let mut canvas = Canvas::new_raster(&mut buffer);
         let mut paint = Paint::new();
         paint.set_color32(Color::WHITE);
-        canvas.draw_points(PointMode::Lines, &[
-            Point::new(0.0, 50.0),
-            Point::new(100.0, 50.0),
-            Point::new(50.0, 50.0),  // orphan, should be ignored
-        ], &paint);
+        canvas.draw_points(
+            PointMode::Lines,
+            &[
+                Point::new(0.0, 50.0),
+                Point::new(100.0, 50.0),
+                Point::new(50.0, 50.0), // orphan, should be ignored
+            ],
+            &paint,
+        );
         // Should not panic; one line should be drawn
         drop(canvas);
-        assert_ne!(buffer.get_pixel(50, 50).unwrap_or(Color::TRANSPARENT), Color::TRANSPARENT);
+        assert_ne!(
+            buffer.get_pixel(50, 50).unwrap_or(Color::TRANSPARENT),
+            Color::TRANSPARENT
+        );
     }
 
     #[test]
@@ -2651,40 +2698,64 @@ mod tests {
         {
             let mut c = Canvas::new_recording(&mut cmds, 100, 100);
             let paint = Paint::new();
-            c.draw_points(PointMode::Points, &[
-                Point::new(10.0, 10.0),
-                Point::new(20.0, 20.0),
-            ], &paint);
+            c.draw_points(
+                PointMode::Points,
+                &[Point::new(10.0, 10.0), Point::new(20.0, 20.0)],
+                &paint,
+            );
         }
         // Two DrawPoint commands should be recorded
-        assert_eq!(cmds.iter().filter(|cmd| matches!(cmd, DrawCommand::DrawPoint { .. })).count(), 2);
+        assert_eq!(
+            cmds.iter()
+                .filter(|cmd| matches!(cmd, DrawCommand::DrawPoint { .. }))
+                .count(),
+            2
+        );
 
         let mut cmds = Vec::new();
         {
             let mut c = Canvas::new_recording(&mut cmds, 100, 100);
             let paint = Paint::new();
-            c.draw_points(PointMode::Lines, &[
-                Point::new(0.0, 0.0),
-                Point::new(10.0, 10.0),
-                Point::new(20.0, 20.0),
-                Point::new(30.0, 30.0),
-            ], &paint);
+            c.draw_points(
+                PointMode::Lines,
+                &[
+                    Point::new(0.0, 0.0),
+                    Point::new(10.0, 10.0),
+                    Point::new(20.0, 20.0),
+                    Point::new(30.0, 30.0),
+                ],
+                &paint,
+            );
         }
         // Two DrawLine commands should be recorded (one per pair)
-        assert_eq!(cmds.iter().filter(|cmd| matches!(cmd, DrawCommand::DrawLine { .. })).count(), 2);
+        assert_eq!(
+            cmds.iter()
+                .filter(|cmd| matches!(cmd, DrawCommand::DrawLine { .. }))
+                .count(),
+            2
+        );
 
         let mut cmds = Vec::new();
         {
             let mut c = Canvas::new_recording(&mut cmds, 100, 100);
             let paint = Paint::new();
-            c.draw_points(PointMode::Polygon, &[
-                Point::new(0.0, 0.0),
-                Point::new(10.0, 10.0),
-                Point::new(20.0, 0.0),
-            ], &paint);
+            c.draw_points(
+                PointMode::Polygon,
+                &[
+                    Point::new(0.0, 0.0),
+                    Point::new(10.0, 10.0),
+                    Point::new(20.0, 0.0),
+                ],
+                &paint,
+            );
         }
         // Two DrawLine commands should be recorded (n-1 for polygon)
-        assert_eq!(cmds.iter().filter(|cmd| matches!(cmd, DrawCommand::DrawLine { .. })).count(), 2);
+        assert_eq!(
+            cmds.iter()
+                .filter(|cmd| matches!(cmd, DrawCommand::DrawLine { .. }))
+                .count(),
+            2
+        );
     }
 
     // =========================================================================
@@ -2952,9 +3023,9 @@ mod tests {
                 Point::new(10.0, 90.0),
             ],
             Some(&[
-                Color::from_rgb(255, 0, 0),    // red at top
-                Color::from_rgb(0, 255, 0),    // green at bottom-right
-                Color::from_rgb(0, 0, 255),    // blue at bottom-left
+                Color::from_rgb(255, 0, 0), // red at top
+                Color::from_rgb(0, 255, 0), // green at bottom-right
+                Color::from_rgb(0, 0, 255), // blue at bottom-left
             ]),
             &paint,
         );
@@ -3053,7 +3124,10 @@ mod tests {
 
         // First triangle (0,1,2): red, green, blue
         let c0 = buffer.get_pixel(15, 15).unwrap();
-        assert!(c0.red() > 100, "Expected red contribution in first triangle");
+        assert!(
+            c0.red() > 100,
+            "Expected red contribution in first triangle"
+        );
 
         // Second triangle (1,2,3): green, blue, yellow
         let c1 = buffer.get_pixel(45, 45).unwrap();
@@ -3126,7 +3200,13 @@ mod tests {
         let mut paint = Paint::new();
         paint.set_color32(Color::from_rgb(255, 0, 0));
 
-        canvas.draw_patch(&cubics, None, None, skia_rs_paint::BlendMode::SrcOver, &paint);
+        canvas.draw_patch(
+            &cubics,
+            None,
+            None,
+            skia_rs_paint::BlendMode::SrcOver,
+            &paint,
+        );
         drop(canvas);
 
         // Center of the patch should be red
@@ -3252,7 +3332,15 @@ mod tests {
         let mut canvas = Canvas::new_raster(&mut buffer);
 
         let image = skia_rs_codec::Image::from_color(100, 100, 0xFF_0000FF).unwrap();
-        canvas.draw_atlas(&image, &[], &[], None, skia_rs_paint::BlendMode::SrcOver, FilterMode::Nearest, None);
+        canvas.draw_atlas(
+            &image,
+            &[],
+            &[],
+            None,
+            skia_rs_paint::BlendMode::SrcOver,
+            FilterMode::Nearest,
+            None,
+        );
 
         // Should not panic
     }
@@ -3268,7 +3356,15 @@ mod tests {
         let xforms = [RSXform::from_scale_translate(1.0, 10.0, 10.0)];
         let sprites = [Rect::from_xywh(0.0, 0.0, 10.0, 10.0)];
 
-        canvas.draw_atlas(&image, &xforms, &sprites, None, skia_rs_paint::BlendMode::SrcOver, FilterMode::Nearest, None);
+        canvas.draw_atlas(
+            &image,
+            &xforms,
+            &sprites,
+            None,
+            skia_rs_paint::BlendMode::SrcOver,
+            FilterMode::Nearest,
+            None,
+        );
 
         // Should draw sprite at (10, 10) without panicking
     }
@@ -3751,7 +3847,10 @@ mod tests {
         canvas.translate(10.0, 10.0);
         canvas.restore();
         let p = canvas.total_matrix().map_point(Point::new(0.0, 0.0));
-        assert!(p.x.abs() < 1e-4 && p.y.abs() < 1e-4, "restore should undo translate");
+        assert!(
+            p.x.abs() < 1e-4 && p.y.abs() < 1e-4,
+            "restore should undo translate"
+        );
     }
 
     #[test]

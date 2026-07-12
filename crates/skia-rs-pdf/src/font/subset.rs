@@ -209,16 +209,27 @@ fn read_face(data: &[u8]) -> Result<Face, SubsetError> {
         if (offset as usize) + (length as usize) > data.len() {
             return Err(SubsetError::Malformed("table body truncated"));
         }
-        records.push(TableRecord { tag, offset, length });
+        records.push(TableRecord {
+            tag,
+            offset,
+            length,
+        });
     }
 
     let mut sfnt_version = [0u8; 4];
     sfnt_version.copy_from_slice(sfnt);
-    Ok(Face { sfnt_version, records })
+    Ok(Face {
+        sfnt_version,
+        records,
+    })
 }
 
 fn parse_loca(loca: &[u8], long: bool, num_glyphs: usize) -> Result<Vec<u32>, SubsetError> {
-    let expected = if long { (num_glyphs + 1) * 4 } else { (num_glyphs + 1) * 2 };
+    let expected = if long {
+        (num_glyphs + 1) * 4
+    } else {
+        (num_glyphs + 1) * 2
+    };
     if loca.len() < expected {
         return Err(SubsetError::Malformed("loca too short"));
     }
@@ -245,12 +256,7 @@ const WE_HAVE_A_TWO_BY_TWO: u16 = 0x0080;
 /// Walk the `keep` set and add component glyphs that any composite glyph
 /// in the set references. Iterates to a fixed point so that composite
 /// chains (glyph A refs B which refs C) are fully captured.
-fn expand_composites(
-    glyf: &[u8],
-    offsets: &[u32],
-    keep: &mut BTreeSet<u16>,
-    num_glyphs: u16,
-) {
+fn expand_composites(glyf: &[u8], offsets: &[u32], keep: &mut BTreeSet<u16>, num_glyphs: u16) {
     let mut changed = true;
     while changed {
         changed = false;
@@ -288,7 +294,11 @@ fn expand_composites(
                 }
 
                 // Skip over argument payload.
-                cursor += if flags & ARG_1_AND_2_ARE_WORDS != 0 { 4 } else { 2 };
+                cursor += if flags & ARG_1_AND_2_ARE_WORDS != 0 {
+                    4
+                } else {
+                    2
+                };
                 if flags & WE_HAVE_A_SCALE != 0 {
                     cursor += 2;
                 } else if flags & WE_HAVE_AN_X_AND_Y_SCALE != 0 {
@@ -334,7 +344,8 @@ fn rebuild_glyf_and_loca(
     }
 
     // Emit loca in the same format as the source.
-    let mut new_loca: Vec<u8> = Vec::with_capacity(new_offsets.len() * if long_loca { 4 } else { 2 });
+    let mut new_loca: Vec<u8> =
+        Vec::with_capacity(new_offsets.len() * if long_loca { 4 } else { 2 });
     if long_loca {
         for o in &new_offsets {
             new_loca.extend_from_slice(&o.to_be_bytes());
@@ -460,7 +471,9 @@ mod tests {
         assert!(face.tables().glyf.is_some());
         // numGlyphs preserved.
         assert_eq!(face.number_of_glyphs(), {
-            ttf_parser::Face::parse(DEMO_TTF, 0).unwrap().number_of_glyphs()
+            ttf_parser::Face::parse(DEMO_TTF, 0)
+                .unwrap()
+                .number_of_glyphs()
         });
     }
 
@@ -512,7 +525,8 @@ mod tests {
     fn table_checksum_pads_tail() {
         // 5 bytes → first word = [1,2,3,4], second = [5,0,0,0].
         let body = [1u8, 2, 3, 4, 5];
-        let expected = u32::from_be_bytes([1, 2, 3, 4]).wrapping_add(u32::from_be_bytes([5, 0, 0, 0]));
+        let expected =
+            u32::from_be_bytes([1, 2, 3, 4]).wrapping_add(u32::from_be_bytes([5, 0, 0, 0]));
         assert_eq!(table_checksum(&body), expected);
     }
 }

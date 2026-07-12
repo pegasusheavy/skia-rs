@@ -650,7 +650,13 @@ mod tests {
         distance_transform_1d(&mut f);
         for i in 0..7 {
             let expected = ((i as i32 - 3) * (i as i32 - 3)) as f32;
-            assert!((f[i] - expected).abs() < 1e-4, "idx {}: {} vs {}", i, f[i], expected);
+            assert!(
+                (f[i] - expected).abs() < 1e-4,
+                "idx {}: {} vs {}",
+                i,
+                f[i],
+                expected
+            );
         }
     }
 
@@ -694,7 +700,11 @@ mod tests {
         );
         // A pixel three away (outside): distance-to-inside 3 -> 3 - 0.5 = 2.5.
         let three_away = sdf[16 * w + 19];
-        assert!((three_away - 2.5).abs() < 1e-4, "expected ~2.5, got {}", three_away);
+        assert!(
+            (three_away - 2.5).abs() < 1e-4,
+            "expected ~2.5, got {}",
+            three_away
+        );
     }
 
     #[test]
@@ -714,8 +724,14 @@ mod tests {
         // Column 4 is the first inside column; column 3 is the last outside.
         let inside_edge = sdf[3 * w + 4];
         let outside_edge = sdf[3 * w + 3];
-        assert!((inside_edge + 0.5).abs() < 1e-4, "inside edge ~ -0.5, got {inside_edge}");
-        assert!((outside_edge - 0.5).abs() < 1e-4, "outside edge ~ +0.5, got {outside_edge}");
+        assert!(
+            (inside_edge + 0.5).abs() < 1e-4,
+            "inside edge ~ -0.5, got {inside_edge}"
+        );
+        assert!(
+            (outside_edge - 0.5).abs() < 1e-4,
+            "outside edge ~ +0.5, got {outside_edge}"
+        );
     }
 
     #[test]

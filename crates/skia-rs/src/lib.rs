@@ -85,10 +85,10 @@
 #![allow(clippy::module_inception)]
 
 // Re-export core crates
-pub use skia_rs_core as core;
-pub use skia_rs_path as path;
-pub use skia_rs_paint as paint;
 pub use skia_rs_canvas as canvas;
+pub use skia_rs_core as core;
+pub use skia_rs_paint as paint;
+pub use skia_rs_path as path;
 pub use skia_rs_safe as safe;
 
 // Optional crate re-exports
@@ -221,10 +221,7 @@ mod tests {
             .split('.')
             .map(|p| p.parse().unwrap())
             .collect();
-        assert_eq!(
-            version::as_tuple(),
-            (parts[0], parts[1], parts[2])
-        );
+        assert_eq!(version::as_tuple(), (parts[0], parts[1], parts[2]));
     }
 
     #[test]

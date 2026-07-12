@@ -264,7 +264,11 @@ pub struct ShaderWarning {
 impl fmt::Display for ShaderWarning {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.line > 0 {
-            write!(f, "{}:{}: warning: {}", self.line, self.column, self.message)
+            write!(
+                f,
+                "{}:{}: warning: {}",
+                self.line, self.column, self.message
+            )
         } else {
             write!(f, "warning: {}", self.message)
         }
@@ -489,7 +493,9 @@ impl ShaderDebugger {
         let after_var = &line[var_idx..];
         let name_start = after_var.find(' ')? + 1;
         let name_end = after_var[name_start..].find(':')?;
-        let name = after_var[name_start..name_start + name_end].trim().to_string();
+        let name = after_var[name_start..name_start + name_end]
+            .trim()
+            .to_string();
 
         let binding_type = if line.contains("sampler") {
             BindingType::Sampler

@@ -211,8 +211,14 @@ fn add_join(
 
     if avg_len <= 0.001 {
         // Nearly opposite normals (180-degree turn): use the incoming normal.
-        left.push(Point::new(vertex.x + n1.x * half_width, vertex.y + n1.y * half_width));
-        right.push(Point::new(vertex.x - n1.x * half_width, vertex.y - n1.y * half_width));
+        left.push(Point::new(
+            vertex.x + n1.x * half_width,
+            vertex.y + n1.y * half_width,
+        ));
+        right.push(Point::new(
+            vertex.x - n1.x * half_width,
+            vertex.y - n1.y * half_width,
+        ));
         return;
     }
 
@@ -233,17 +239,41 @@ fn add_join(
                 ));
             } else {
                 // Fall back to bevel.
-                left.push(Point::new(vertex.x + n1.x * half_width, vertex.y + n1.y * half_width));
-                left.push(Point::new(vertex.x + n2.x * half_width, vertex.y + n2.y * half_width));
-                right.push(Point::new(vertex.x - n1.x * half_width, vertex.y - n1.y * half_width));
-                right.push(Point::new(vertex.x - n2.x * half_width, vertex.y - n2.y * half_width));
+                left.push(Point::new(
+                    vertex.x + n1.x * half_width,
+                    vertex.y + n1.y * half_width,
+                ));
+                left.push(Point::new(
+                    vertex.x + n2.x * half_width,
+                    vertex.y + n2.y * half_width,
+                ));
+                right.push(Point::new(
+                    vertex.x - n1.x * half_width,
+                    vertex.y - n1.y * half_width,
+                ));
+                right.push(Point::new(
+                    vertex.x - n2.x * half_width,
+                    vertex.y - n2.y * half_width,
+                ));
             }
         }
         StrokeJoin::Bevel => {
-            left.push(Point::new(vertex.x + n1.x * half_width, vertex.y + n1.y * half_width));
-            left.push(Point::new(vertex.x + n2.x * half_width, vertex.y + n2.y * half_width));
-            right.push(Point::new(vertex.x - n1.x * half_width, vertex.y - n1.y * half_width));
-            right.push(Point::new(vertex.x - n2.x * half_width, vertex.y - n2.y * half_width));
+            left.push(Point::new(
+                vertex.x + n1.x * half_width,
+                vertex.y + n1.y * half_width,
+            ));
+            left.push(Point::new(
+                vertex.x + n2.x * half_width,
+                vertex.y + n2.y * half_width,
+            ));
+            right.push(Point::new(
+                vertex.x - n1.x * half_width,
+                vertex.y - n1.y * half_width,
+            ));
+            right.push(Point::new(
+                vertex.x - n2.x * half_width,
+                vertex.y - n2.y * half_width,
+            ));
         }
         StrokeJoin::Round => {
             let start_angle = (n1.y * half_width).atan2(n1.x * half_width);
@@ -321,14 +351,21 @@ fn stroke_contour(
 /// joins at every vertex (including the start/end vertex), and emits the outer
 /// ring forward and the inner ring reversed so winding cancels and the result
 /// renders as a frame. Mirrors `SkPathStroker::close` + `reversePathTo`.
-fn stroke_closed(builder: &mut PathBuilder, pts: &[Point], half_width: Scalar, params: &StrokeParams) {
+fn stroke_closed(
+    builder: &mut PathBuilder,
+    pts: &[Point],
+    half_width: Scalar,
+    params: &StrokeParams,
+) {
     let n = pts.len();
     if n < 2 {
         return;
     }
 
     // Segment normals, including the closing segment pts[n-1] -> pts[0].
-    let normals: Vec<Point> = (0..n).map(|i| seg_normal(pts[i], pts[(i + 1) % n])).collect();
+    let normals: Vec<Point> = (0..n)
+        .map(|i| seg_normal(pts[i], pts[(i + 1) % n]))
+        .collect();
 
     let mut left: Vec<Point> = Vec::with_capacity(n);
     let mut right: Vec<Point> = Vec::with_capacity(n);
@@ -345,7 +382,12 @@ fn stroke_closed(builder: &mut PathBuilder, pts: &[Point], half_width: Scalar, p
 }
 
 /// Stroke an open contour into a single filled outline with end caps.
-fn stroke_open(builder: &mut PathBuilder, pts: &[Point], half_width: Scalar, params: &StrokeParams) {
+fn stroke_open(
+    builder: &mut PathBuilder,
+    pts: &[Point],
+    half_width: Scalar,
+    params: &StrokeParams,
+) {
     let n = pts.len();
     if n < 2 {
         // Zero-length contour: round/square caps still paint a dot.
@@ -372,7 +414,15 @@ fn stroke_open(builder: &mut PathBuilder, pts: &[Point], half_width: Scalar, par
     ));
 
     for i in 1..n - 1 {
-        add_join(&mut left, &mut right, pts[i], normals[i - 1], normals[i], half_width, params);
+        add_join(
+            &mut left,
+            &mut right,
+            pts[i],
+            normals[i - 1],
+            normals[i],
+            half_width,
+            params,
+        );
     }
 
     // Last point.
@@ -391,7 +441,14 @@ fn stroke_open(builder: &mut PathBuilder, pts: &[Point], half_width: Scalar, par
     for p in &left {
         builder.line_to(p.x, p.y);
     }
-    add_cap(builder, pts[n - 1], last_normal, half_width, params.cap, false);
+    add_cap(
+        builder,
+        pts[n - 1],
+        last_normal,
+        half_width,
+        params.cap,
+        false,
+    );
     for p in right.iter().rev() {
         builder.line_to(p.x, p.y);
     }
@@ -415,7 +472,10 @@ fn emit_cap_dot(builder: &mut PathBuilder, center: Point, half_width: Scalar, ca
             builder.move_to(center.x + half_width, center.y);
             for i in 1..steps {
                 let a = (i as Scalar / steps as Scalar) * std::f32::consts::TAU;
-                builder.line_to(center.x + a.cos() * half_width, center.y + a.sin() * half_width);
+                builder.line_to(
+                    center.x + a.cos() * half_width,
+                    center.y + a.sin() * half_width,
+                );
             }
             builder.close();
         }
@@ -570,9 +630,15 @@ mod tests {
 
         let params = StrokeParams::new(2.0);
         let result = stroke_to_fill(&path, &params);
-        assert!(result.is_some(), "stroke_to_fill should succeed for valid input");
+        assert!(
+            result.is_some(),
+            "stroke_to_fill should succeed for valid input"
+        );
         let stroked = result.unwrap();
-        assert!(stroked.iter().count() > 0, "stroked path should not be empty");
+        assert!(
+            stroked.iter().count() > 0,
+            "stroked path should not be empty"
+        );
     }
 
     #[test]

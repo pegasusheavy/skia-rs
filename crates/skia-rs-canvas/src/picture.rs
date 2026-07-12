@@ -766,8 +766,8 @@ mod tests {
         // pixels. This test pins the new end-to-end behavior: record a clear
         // + filled rect, replay to a raster surface, and verify the pixels.
         use crate::Surface;
-        use skia_rs_paint::Style;
         use skia_rs_core::Color;
+        use skia_rs_paint::Style;
 
         let mut recorder = PictureRecorder::new();
         let rc = recorder.begin_recording(Rect::from_xywh(0.0, 0.0, 20.0, 20.0));
@@ -887,7 +887,10 @@ mod tests {
 
         // Verify center pixel has green contribution
         let pixel = surface.pixel_buffer().get_pixel(50, 50).unwrap();
-        assert!(pixel.green() > 100, "center should have green from triangle");
+        assert!(
+            pixel.green() > 100,
+            "center should have green from triangle"
+        );
     }
 
     #[test]
@@ -915,11 +918,18 @@ mod tests {
 
         // Pixel at (30, 30) should be yellow (inside translated rect)
         let pixel = surface.pixel_buffer().get_pixel(30, 30).unwrap();
-        assert!(pixel.red() > 200 && pixel.green() > 200, "pixel should be yellow");
+        assert!(
+            pixel.red() > 200 && pixel.green() > 200,
+            "pixel should be yellow"
+        );
 
         // Pixel at (5, 5) should be background (not in translated rect)
         let bg = surface.pixel_buffer().get_pixel(5, 5).unwrap();
-        assert_eq!(bg, Color::TRANSPARENT, "pixel outside rect should be transparent");
+        assert_eq!(
+            bg,
+            Color::TRANSPARENT,
+            "pixel outside rect should be transparent"
+        );
     }
 
     #[test]
@@ -956,7 +966,13 @@ mod tests {
         let rc = recorder.begin_recording(Rect::from_xywh(0.0, 0.0, 100.0, 100.0));
         let mut paint = Paint::new();
         paint.set_color32(Color::from_rgb(128, 0, 128));
-        rc.draw_arc(&Rect::from_xywh(10.0, 10.0, 80.0, 80.0), 0.0, 90.0, true, &paint);
+        rc.draw_arc(
+            &Rect::from_xywh(10.0, 10.0, 80.0, 80.0),
+            0.0,
+            90.0,
+            true,
+            &paint,
+        );
         let picture = recorder.finish_recording().unwrap();
 
         let mut surface = Surface::new_raster_n32_premul(100, 100).unwrap();
@@ -992,7 +1008,10 @@ mod tests {
 
         // Center should be orange
         let pixel = surface.pixel_buffer().get_pixel(50, 50).unwrap();
-        assert!(pixel.red() > 200 && pixel.green() > 50, "round rect center should be orange");
+        assert!(
+            pixel.red() > 200 && pixel.green() > 50,
+            "round rect center should be orange"
+        );
     }
 
     #[test]
@@ -1046,7 +1065,11 @@ mod tests {
 
         // Pixel at (10, 10) outside clip should be transparent
         let outside = surface.pixel_buffer().get_pixel(10, 10).unwrap();
-        assert_eq!(outside, Color::TRANSPARENT, "outside clip should not be drawn");
+        assert_eq!(
+            outside,
+            Color::TRANSPARENT,
+            "outside clip should not be drawn"
+        );
     }
 
     #[test]
@@ -1071,6 +1094,9 @@ mod tests {
 
         // With scale(2, 2), rect at (10, 10) size 10x10 → (20, 20) size 20x20
         let pixel = surface.pixel_buffer().get_pixel(30, 30).unwrap();
-        assert!(pixel.blue() > 200, "scaled rect should draw at scaled position");
+        assert!(
+            pixel.blue() > 200,
+            "scaled rect should draw at scaled position"
+        );
     }
 }

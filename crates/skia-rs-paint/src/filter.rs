@@ -163,8 +163,8 @@ impl ColorMatrixFilter {
     /// Create a color matrix filter that inverts RGB channels.
     pub fn invert() -> Self {
         let m = [
-            -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 1.0, 0.0,
-            0.0, 0.0, 1.0, 0.0,
+            -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
         ];
         Self::new(m)
     }
@@ -172,8 +172,8 @@ impl ColorMatrixFilter {
     /// Create a color matrix filter that applies a sepia tone.
     pub fn sepia() -> Self {
         let m = [
-            0.393, 0.769, 0.189, 0.0, 0.0, 0.349, 0.686, 0.168, 0.0, 0.0, 0.272, 0.534, 0.131,
-            0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+            0.393, 0.769, 0.189, 0.0, 0.0, 0.349, 0.686, 0.168, 0.0, 0.0, 0.272, 0.534, 0.131, 0.0,
+            0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
         ];
         Self::new(m)
     }
@@ -529,18 +529,14 @@ impl ImageFilter for DropShadowImageFilter {
                     // Composite source over shadow
                     let src_a = original[idx + 3] as f32 / 255.0;
                     let inv_a = 1.0 - src_a;
-                    pixels[idx] =
-                        (original[idx] as f32 + shadow_rgba[0] as f32 * inv_a).clamp(0.0, 255.0)
-                            as u8;
+                    pixels[idx] = (original[idx] as f32 + shadow_rgba[0] as f32 * inv_a)
+                        .clamp(0.0, 255.0) as u8;
                     pixels[idx + 1] = (original[idx + 1] as f32 + shadow_rgba[1] as f32 * inv_a)
-                        .clamp(0.0, 255.0)
-                        as u8;
+                        .clamp(0.0, 255.0) as u8;
                     pixels[idx + 2] = (original[idx + 2] as f32 + shadow_rgba[2] as f32 * inv_a)
-                        .clamp(0.0, 255.0)
-                        as u8;
+                        .clamp(0.0, 255.0) as u8;
                     pixels[idx + 3] = (original[idx + 3] as f32 + shadow_rgba[3] as f32 * inv_a)
-                        .clamp(0.0, 255.0)
-                        as u8;
+                        .clamp(0.0, 255.0) as u8;
                 }
             }
         }
@@ -1141,15 +1137,27 @@ impl ImageFilter for LightingImageFilter {
         }
         buf.extend_from_slice(&self.surface_scale.to_le_bytes());
         // Serialize optional diffuse/specular constants
-        buf.push(if self.diffuse_constant.is_some() { 1 } else { 0 });
+        buf.push(if self.diffuse_constant.is_some() {
+            1
+        } else {
+            0
+        });
         if let Some(kd) = self.diffuse_constant {
             buf.extend_from_slice(&kd.to_le_bytes());
         }
-        buf.push(if self.specular_constant.is_some() { 1 } else { 0 });
+        buf.push(if self.specular_constant.is_some() {
+            1
+        } else {
+            0
+        });
         if let Some(ks) = self.specular_constant {
             buf.extend_from_slice(&ks.to_le_bytes());
         }
-        buf.push(if self.specular_exponent.is_some() { 1 } else { 0 });
+        buf.push(if self.specular_exponent.is_some() {
+            1
+        } else {
+            0
+        });
         if let Some(exp) = self.specular_exponent {
             buf.extend_from_slice(&exp.to_le_bytes());
         }
@@ -1895,11 +1903,7 @@ fn rgba_box_blur_horizontal(pixels: &mut [u8], width: usize, height: usize, radi
 
         for x in 1..width {
             let right_idx = (x + radius).min(width - 1) * 4;
-            let left_idx = if x > radius {
-                (x - radius - 1) * 4
-            } else {
-                0
-            };
+            let left_idx = if x > radius { (x - radius - 1) * 4 } else { 0 };
             for c in 0..4 {
                 sums[c] = sums[c].saturating_add(row_copy[right_idx + c] as u32);
                 sums[c] = sums[c].saturating_sub(row_copy[left_idx + c] as u32);
@@ -2006,10 +2010,7 @@ pub(crate) fn deserialize_mask_filter(bytes: &[u8], offset: &mut usize) -> Optio
 }
 
 /// Deserialize a ColorFilter from bytes.
-pub(crate) fn deserialize_color_filter(
-    bytes: &[u8],
-    offset: &mut usize,
-) -> Option<ColorFilterRef> {
+pub(crate) fn deserialize_color_filter(bytes: &[u8], offset: &mut usize) -> Option<ColorFilterRef> {
     if *offset >= bytes.len() {
         return None;
     }
@@ -2033,10 +2034,7 @@ pub(crate) fn deserialize_color_filter(
 }
 
 /// Deserialize an ImageFilter from bytes.
-pub(crate) fn deserialize_image_filter(
-    bytes: &[u8],
-    offset: &mut usize,
-) -> Option<ImageFilterRef> {
+pub(crate) fn deserialize_image_filter(bytes: &[u8], offset: &mut usize) -> Option<ImageFilterRef> {
     if *offset >= bytes.len() {
         return None;
     }
@@ -2281,7 +2279,11 @@ mod tests {
         let mut mask = vec![0u8; 25];
         mask[12] = 255;
         filter.apply_mask(&mut mask, 5, 5);
-        assert!(mask[12] < 255, "sigma 0.9 must blur, center still {}", mask[12]);
+        assert!(
+            mask[12] < 255,
+            "sigma 0.9 must blur, center still {}",
+            mask[12]
+        );
         assert!(mask[11] > 0, "sigma 0.9 must spread to neighbors");
     }
 
@@ -2494,8 +2496,11 @@ mod tests {
 
     #[test]
     fn test_compose_image_filter() {
-        let inner = Arc::new(BlurImageFilter::new(2.0, 2.0, crate::shader::TileMode::Clamp))
-            as ImageFilterRef;
+        let inner = Arc::new(BlurImageFilter::new(
+            2.0,
+            2.0,
+            crate::shader::TileMode::Clamp,
+        )) as ImageFilterRef;
         let outer_color = Arc::new(ColorMatrixFilter::saturation(0.0)) as ColorFilterRef;
         let outer = Arc::new(ColorFilterImageFilter::new(outer_color, None)) as ImageFilterRef;
         let compose = ComposeImageFilter::new(outer, inner);
@@ -2524,14 +2529,8 @@ mod tests {
 
     #[test]
     fn test_drop_shadow_image_filter_applies_shadow() {
-        let filter = DropShadowImageFilter::new(
-            2.0,
-            2.0,
-            1.0,
-            1.0,
-            Color4f::new(0.0, 0.0, 0.0, 1.0),
-            false,
-        );
+        let filter =
+            DropShadowImageFilter::new(2.0, 2.0, 1.0, 1.0, Color4f::new(0.0, 0.0, 0.0, 1.0), false);
         // 5x5 image with single white pixel at center
         let mut pixels = vec![0u8; 25 * 4];
         pixels[12 * 4] = 255;
@@ -2616,7 +2615,11 @@ mod tests {
             ColorChannel::R,
             ColorChannel::G,
             10.0,
-            Arc::new(BlurImageFilter::new(0.0, 0.0, crate::shader::TileMode::Clamp)),
+            Arc::new(BlurImageFilter::new(
+                0.0,
+                0.0,
+                crate::shader::TileMode::Clamp,
+            )),
             None,
         );
         // Create a gradient image for displacement
@@ -2652,13 +2655,8 @@ mod tests {
         let light = LightType::Distant {
             direction: (0.0, 0.0, 1.0),
         };
-        let filter = LightingImageFilter::diffuse(
-            light,
-            1.0,
-            1.0,
-            Color4f::new(1.0, 1.0, 1.0, 1.0),
-            None,
-        );
+        let filter =
+            LightingImageFilter::diffuse(light, 1.0, 1.0, Color4f::new(1.0, 1.0, 1.0, 1.0), None);
         let mut pixels = vec![128u8; 25 * 4]; // gray image
         filter.apply(&mut pixels, 5, 5);
         // Lighting should modulate the image (may brighten based on implementation)
@@ -2669,9 +2667,7 @@ mod tests {
     #[test]
     fn test_matrix_convolution_identity() {
         // Identity kernel: center=1, rest=0
-        let kernel = vec![
-            0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
-        ];
+        let kernel = vec![0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
         let filter = MatrixConvolutionImageFilter::new(
             (3, 3),
             kernel,
@@ -2707,7 +2703,7 @@ mod tests {
             None,
         );
         let mut pixels = vec![0u8; 16 * 4]; // 4x4
-                                            // Set top-left 2x2 to distinct colors
+        // Set top-left 2x2 to distinct colors
         pixels[0] = 255; // (0,0) red
         pixels[4] = 0;
         pixels[4 + 1] = 255; // (1,0) green
