@@ -50,6 +50,10 @@ pub const extern "C" fn sk_abi_get_version() -> u32 {
 
 /// Check if the ABI version is compatible
 #[unsafe(no_mangle)]
+#[allow(
+    clippy::absurd_extreme_comparisons,
+    reason = "minor <= SK_ABI_VERSION_MINOR is intentional forward-compatible semver logic; it only looks absurd because SK_ABI_VERSION_MINOR is currently 0, and will behave correctly once the constant is bumped"
+)]
 pub const extern "C" fn sk_abi_is_compatible(major: u32, minor: u32) -> bool {
     major == SK_ABI_VERSION_MAJOR && minor <= SK_ABI_VERSION_MINOR
 }
@@ -62,7 +66,9 @@ pub const extern "C" fn sk_abi_is_compatible(major: u32, minor: u32) -> bool {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct SkPointABI {
+    /// X coordinate.
     pub x: f32,
+    /// Y coordinate.
     pub y: f32,
 }
 
@@ -73,7 +79,9 @@ const _: () = assert!(std::mem::align_of::<SkPointABI>() == 4);
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SkIPointABI {
+    /// X coordinate.
     pub x: i32,
+    /// Y coordinate.
     pub y: i32,
 }
 
@@ -84,7 +92,9 @@ const _: () = assert!(std::mem::align_of::<SkIPointABI>() == 4);
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct SkSizeABI {
+    /// Width.
     pub width: f32,
+    /// Height.
     pub height: f32,
 }
 
@@ -95,7 +105,9 @@ const _: () = assert!(std::mem::align_of::<SkSizeABI>() == 4);
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SkISizeABI {
+    /// Width.
     pub width: i32,
+    /// Height.
     pub height: i32,
 }
 
@@ -106,9 +118,13 @@ const _: () = assert!(std::mem::align_of::<SkISizeABI>() == 4);
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct SkRectABI {
+    /// Left edge.
     pub left: f32,
+    /// Top edge.
     pub top: f32,
+    /// Right edge.
     pub right: f32,
+    /// Bottom edge.
     pub bottom: f32,
 }
 
@@ -119,9 +135,13 @@ const _: () = assert!(std::mem::align_of::<SkRectABI>() == 4);
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SkIRectABI {
+    /// Left edge.
     pub left: i32,
+    /// Top edge.
     pub top: i32,
+    /// Right edge.
     pub right: i32,
+    /// Bottom edge.
     pub bottom: i32,
 }
 
@@ -134,6 +154,7 @@ const _: () = assert!(std::mem::align_of::<SkIRectABI>() == 4);
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SkMatrixABI {
+    /// Row-major 3x3 matrix values.
     pub values: [f32; 9],
 }
 
@@ -160,6 +181,7 @@ impl SkMatrixABI {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SkMatrix44ABI {
+    /// Row-major 4x4 matrix values.
     pub values: [f32; 16],
 }
 
@@ -194,9 +216,13 @@ pub type SkPMColorABI = u32;
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct SkColor4fABI {
+    /// Red channel, 0.0-1.0.
     pub r: f32,
+    /// Green channel, 0.0-1.0.
     pub g: f32,
+    /// Blue channel, 0.0-1.0.
     pub b: f32,
+    /// Alpha channel, 0.0-1.0.
     pub a: f32,
 }
 
@@ -211,29 +237,52 @@ const _: () = assert!(std::mem::align_of::<SkColor4fABI>() == 4);
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SkColorTypeABI {
+    /// Unknown color type.
     #[default]
     Unknown = 0,
+    /// 8-bit alpha only.
     Alpha8 = 1,
+    /// 5-6-5 RGB, 16 bits per pixel.
     Rgb565 = 2,
+    /// 4-4-4-4 ARGB, 16 bits per pixel.
     Argb4444 = 3,
+    /// 8-8-8-8 RGBA, 32 bits per pixel.
     Rgba8888 = 4,
+    /// 8-8-8-8 RGB (X unused), 32 bits per pixel.
     Rgb888x = 5,
+    /// 8-8-8-8 BGRA, 32 bits per pixel.
     Bgra8888 = 6,
+    /// 10-10-10-2 RGBA, 32 bits per pixel.
     Rgba1010102 = 7,
+    /// 10-10-10-2 BGRA, 32 bits per pixel.
     Bgra1010102 = 8,
+    /// 10-10-10-x RGB, 32 bits per pixel.
     Rgb101010x = 9,
+    /// 10-10-10-x BGR, 32 bits per pixel.
     Bgr101010x = 10,
+    /// 8-bit grayscale.
     Gray8 = 11,
+    /// Half-float RGBA, normalized (0.0-1.0).
     RgbaF16Norm = 12,
+    /// Half-float RGBA, linear space.
     RgbaF16 = 13,
+    /// Full-float RGBA.
     RgbaF32 = 14,
+    /// 8-8 two-channel unorm.
     R8g8Unorm = 15,
+    /// 16-bit float alpha only.
     A16Float = 16,
+    /// 16-16 two-channel float.
     R16g16Float = 17,
+    /// 16-bit unorm alpha only.
     A16Unorm = 18,
+    /// 16-16 two-channel unorm.
     R16g16Unorm = 19,
+    /// 16-16-16-16 RGBA unorm.
     R16g16b16a16Unorm = 20,
+    /// 8-8-8-8 sRGB-encoded RGBA.
     Srgba8888 = 21,
+    /// 8-bit single-channel unorm.
     R8Unorm = 22,
 }
 
@@ -241,10 +290,14 @@ pub enum SkColorTypeABI {
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SkAlphaTypeABI {
+    /// Unknown alpha type.
     #[default]
     Unknown = 0,
+    /// Pixels are fully opaque.
     Opaque = 1,
+    /// Alpha is premultiplied into color channels.
     Premul = 2,
+    /// Alpha is not premultiplied into color channels.
     Unpremul = 3,
 }
 
@@ -262,11 +315,16 @@ pub enum SkAlphaTypeABI {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SkImageInfoABI {
+    /// Pixel width.
     pub width: i32,
+    /// Pixel height.
     pub height: i32,
+    /// Pixel color type.
     pub color_type: SkColorTypeABI,
+    /// Pixel alpha type.
     pub alpha_type: SkAlphaTypeABI,
-    pub color_space: *const c_void, // SkColorSpace*
+    /// Opaque `SkColorSpace*` handle (see struct docs); may be null.
+    pub color_space: *const c_void,
 }
 
 // Size depends on the target's pointer width (`color_space` is a raw
@@ -298,9 +356,12 @@ impl Default for SkImageInfoABI {
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SkPaintStyleABI {
+    /// Fill the geometry.
     #[default]
     Fill = 0,
+    /// Stroke the geometry's outline.
     Stroke = 1,
+    /// Stroke and fill the geometry.
     StrokeAndFill = 2,
 }
 
@@ -308,9 +369,12 @@ pub enum SkPaintStyleABI {
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SkStrokeCapABI {
+    /// No stroke extension past the endpoint.
     #[default]
     Butt = 0,
+    /// Adds a round cap past the endpoint.
     Round = 1,
+    /// Adds a square cap past the endpoint.
     Square = 2,
 }
 
@@ -318,9 +382,12 @@ pub enum SkStrokeCapABI {
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SkStrokeJoinABI {
+    /// Extends the outer edges to a sharp point.
     #[default]
     Miter = 0,
+    /// Rounds the outer join corner.
     Round = 1,
+    /// Flattens the outer join corner.
     Bevel = 2,
 }
 
@@ -328,35 +395,64 @@ pub enum SkStrokeJoinABI {
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SkBlendModeABI {
+    /// Replaces destination with transparent black.
     Clear = 0,
+    /// Replaces destination with source.
     Src = 1,
+    /// Keeps destination, ignores source.
     Dst = 2,
+    /// Source over destination (the default/normal mode).
     #[default]
     SrcOver = 3,
+    /// Destination over source.
     DstOver = 4,
+    /// Source, restricted to destination's alpha.
     SrcIn = 5,
+    /// Destination, restricted to source's alpha.
     DstIn = 6,
+    /// Source, excluded from destination's alpha.
     SrcOut = 7,
+    /// Destination, excluded from source's alpha.
     DstOut = 8,
+    /// Source over destination, restricted to destination's alpha.
     SrcATop = 9,
+    /// Destination over source, restricted to source's alpha.
     DstATop = 10,
+    /// Source and destination, excluding their overlap.
     Xor = 11,
+    /// Sums source and destination.
     Plus = 12,
+    /// Multiplies source and destination.
     Modulate = 13,
+    /// Screens source and destination.
     Screen = 14,
+    /// Overlays source and destination.
     Overlay = 15,
+    /// Retains the darker of source and destination.
     Darken = 16,
+    /// Retains the lighter of source and destination.
     Lighten = 17,
+    /// Brightens destination to reflect source.
     ColorDodge = 18,
+    /// Darkens destination to reflect source.
     ColorBurn = 19,
+    /// Multiplies or screens depending on source.
     HardLight = 20,
+    /// Lightens or darkens depending on source.
     SoftLight = 21,
+    /// Subtracts the darker from the lighter.
     Difference = 22,
+    /// Similar to `Difference`, but with lower contrast.
     Exclusion = 23,
+    /// Multiplies source and destination colors.
     Multiply = 24,
+    /// Uses source's hue with destination's saturation and luminosity.
     Hue = 25,
+    /// Uses source's saturation with destination's hue and luminosity.
     Saturation = 26,
+    /// Uses source's hue and saturation with destination's luminosity.
     Color = 27,
+    /// Uses source's luminosity with destination's hue and saturation.
     Luminosity = 28,
 }
 
@@ -368,10 +464,14 @@ pub enum SkBlendModeABI {
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SkPathFillTypeABI {
+    /// Fills regions with a non-zero winding count.
     #[default]
     Winding = 0,
+    /// Fills regions with an odd winding count.
     EvenOdd = 1,
+    /// Fills regions with a zero winding count.
     InverseWinding = 2,
+    /// Fills regions with an even winding count.
     InverseEvenOdd = 3,
 }
 
@@ -379,12 +479,19 @@ pub enum SkPathFillTypeABI {
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkPathVerbABI {
+    /// Starts a new contour at a point.
     Move = 0,
+    /// A straight line segment.
     Line = 1,
+    /// A quadratic Bezier segment.
     Quad = 2,
+    /// A conic (rational quadratic) segment.
     Conic = 3,
+    /// A cubic Bezier segment.
     Cubic = 4,
+    /// Closes the current contour.
     Close = 5,
+    /// Marks the end of path iteration.
     Done = 6,
 }
 
@@ -502,7 +609,7 @@ mod tests {
     #[test]
     fn test_point_layout() {
         let p = SkPointABI { x: 1.0, y: 2.0 };
-        let bytes: &[u8; 8] = unsafe { std::mem::transmute(&p) };
+        let bytes: [u8; 8] = unsafe { std::mem::transmute(p) };
         // Verify x comes first
         assert_eq!(&bytes[0..4], &1.0_f32.to_ne_bytes());
         assert_eq!(&bytes[4..8], &2.0_f32.to_ne_bytes());
@@ -511,9 +618,9 @@ mod tests {
     #[test]
     fn test_matrix_identity() {
         let m = SkMatrixABI::identity();
-        assert_eq!(m.values[0], 1.0); // scaleX
-        assert_eq!(m.values[4], 1.0); // scaleY
-        assert_eq!(m.values[8], 1.0); // persp2
+        assert!((m.values[0] - 1.0).abs() < f32::EPSILON); // scaleX
+        assert!((m.values[4] - 1.0).abs() < f32::EPSILON); // scaleY
+        assert!((m.values[8] - 1.0).abs() < f32::EPSILON); // persp2
     }
 
     #[test]
