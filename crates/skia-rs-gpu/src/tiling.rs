@@ -3,7 +3,9 @@
 //! This module provides utilities for tiling images across surfaces,
 //! handling different tile modes and transformations.
 
-use skia_rs_core::{Matrix, Point, Rect, Scalar};
+use crate::cast_util::scalar_from_u32;
+use skia_rs_core::cast::{saturate_to_i32, scalar_from_i32};
+use skia_rs_core::{Matrix, Point, Rect};
 
 /// Tile mode for image edges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -60,6 +62,7 @@ pub struct TileInstance {
 }
 
 /// Generate tile instances for a given area.
+#[must_use]
 pub fn generate_tiles(
     image_width: u32,
     image_height: u32,
@@ -71,116 +74,122 @@ pub fn generate_tiles(
         return tiles;
     }
 
-    let src_width = config.source_rect.width() * image_width as f32;
-    let src_height = config.source_rect.height() * image_height as f32;
+    let src_width = config.source_rect.width() * scalar_from_u32(image_width);
+    let src_height = config.source_rect.height() * scalar_from_u32(image_height);
 
     if src_width <= 0.0 || src_height <= 0.0 {
         return tiles;
     }
 
-    match (config.tile_x, config.tile_y) {
-        (TileMode::Clamp, TileMode::Clamp) | (TileMode::Decal, TileMode::Decal) => {
-            // Single tile
+    // Tile modes are handled *per axis*. A Clamp (or Decal) axis is a single
+    // slot spanning the full destination extent, with the UV range covering
+    // the whole source; only Repeat/Mirror axes are subdivided into repeated
+    // native-sized slots. Previously any pair other than (Clamp,Clamp) tiled
+    // *both* axes, so e.g. (Repeat, Clamp) wrongly repeated vertically too.
+    let x_slots = axis_slots(
+        config.tile_x,
+        config.dest_rect.left,
+        config.dest_rect.width(),
+        src_width,
+        config.source_rect.left,
+        config.source_rect.width(),
+    );
+    let y_slots = axis_slots(
+        config.tile_y,
+        config.dest_rect.top,
+        config.dest_rect.height(),
+        src_height,
+        config.source_rect.top,
+        config.source_rect.height(),
+    );
+
+    for ys in &y_slots {
+        for xs in &x_slots {
+            // Mirror flips swap the UV endpoints on the affected axis.
+            let (u0, u1) = if xs.flip {
+                (xs.uv1, xs.uv0)
+            } else {
+                (xs.uv0, xs.uv1)
+            };
+            let (v0, v1) = if ys.flip {
+                (ys.uv1, ys.uv0)
+            } else {
+                (ys.uv0, ys.uv1)
+            };
+
             tiles.push(TileInstance {
-                position: Point::new(config.dest_rect.left, config.dest_rect.top),
-                uv: [
-                    config.source_rect.left,
-                    config.source_rect.top,
-                    config.source_rect.right,
-                    config.source_rect.bottom,
-                ],
-                size: [config.dest_rect.width(), config.dest_rect.height()],
-                tile_index: [0, 0],
+                position: Point::new(xs.pos, ys.pos),
+                uv: [u0, v0, u1, v1],
+                size: [xs.size, ys.size],
+                tile_index: [xs.index, ys.index],
             });
-        }
-        _ => {
-            // Calculate number of tiles needed
-            let dest_width = config.dest_rect.width();
-            let dest_height = config.dest_rect.height();
-
-            let tile_count_x = ((dest_width / src_width).ceil() as i32 + 2).max(1);
-            let tile_count_y = ((dest_height / src_height).ceil() as i32 + 2).max(1);
-
-            // Generate tiles
-            for ty in -1..tile_count_y {
-                for tx in -1..tile_count_x {
-                    let (uv, flip_x, flip_y) =
-                        get_tile_uv(tx, ty, config.tile_x, config.tile_y, &config.source_rect);
-
-                    // Skip decal tiles outside bounds
-                    if config.tile_x == TileMode::Decal && (tx < 0 || tx >= 1) {
-                        continue;
-                    }
-                    if config.tile_y == TileMode::Decal && (ty < 0 || ty >= 1) {
-                        continue;
-                    }
-
-                    let x = config.dest_rect.left + tx as f32 * src_width;
-                    let y = config.dest_rect.top + ty as f32 * src_height;
-
-                    // Apply UV flipping for mirror mode
-                    let final_uv = if flip_x || flip_y {
-                        [
-                            if flip_x { uv[2] } else { uv[0] },
-                            if flip_y { uv[3] } else { uv[1] },
-                            if flip_x { uv[0] } else { uv[2] },
-                            if flip_y { uv[1] } else { uv[3] },
-                        ]
-                    } else {
-                        uv
-                    };
-
-                    tiles.push(TileInstance {
-                        position: Point::new(x, y),
-                        uv: final_uv,
-                        size: [src_width, src_height],
-                        tile_index: [tx, ty],
-                    });
-                }
-            }
         }
     }
 
     tiles
 }
 
-/// Get UV coordinates for a tile at given index.
-fn get_tile_uv(
-    tx: i32,
-    ty: i32,
-    tile_x: TileMode,
-    tile_y: TileMode,
-    source_rect: &Rect,
-) -> ([f32; 4], bool, bool) {
-    let (u_base, flip_x) = get_tile_coord(tx, tile_x, source_rect.left, source_rect.right);
-    let (v_base, flip_y) = get_tile_coord(ty, tile_y, source_rect.top, source_rect.bottom);
-
-    let u_size = source_rect.width();
-    let v_size = source_rect.height();
-
-    (
-        [u_base, v_base, u_base + u_size, v_base + v_size],
-        flip_x,
-        flip_y,
-    )
+/// One slot along a single axis: its destination position/size and the UV
+/// span (plus a mirror flip flag) to draw there.
+struct AxisSlot {
+    index: i32,
+    pos: f32,
+    size: f32,
+    uv0: f32,
+    uv1: f32,
+    flip: bool,
 }
 
-/// Get coordinate for a single axis tile.
-fn get_tile_coord(index: i32, mode: TileMode, min: f32, _max: f32) -> (f32, bool) {
+/// Compute the per-axis slots for a tile mode.
+///
+/// * `Clamp` / `Decal`: a single slot covering the whole destination extent,
+///   with the full source UV range — the axis does not tile.
+/// * `Repeat` / `Mirror`: native-sized slots stepped across the destination
+///   (with a one-slot overscan on each side so partial edge tiles are drawn);
+///   `Mirror` flips alternate slots.
+fn axis_slots(
+    mode: TileMode,
+    dest_start: f32,
+    dest_extent: f32,
+    src_extent: f32,
+    uv_min: f32,
+    uv_size: f32,
+) -> Vec<AxisSlot> {
     match mode {
-        TileMode::Clamp | TileMode::Decal => (min, false),
-        TileMode::Repeat => (min, false),
-        TileMode::Mirror => {
-            let flip = index.rem_euclid(2) != 0;
-            (min, flip)
+        TileMode::Clamp | TileMode::Decal => vec![AxisSlot {
+            index: 0,
+            pos: dest_start,
+            size: dest_extent,
+            uv0: uv_min,
+            uv1: uv_min + uv_size,
+            flip: false,
+        }],
+        TileMode::Repeat | TileMode::Mirror => {
+            let count = saturate_to_i32((dest_extent / src_extent).ceil()) + 2;
+            let mut slots = Vec::with_capacity(usize::try_from(count + 1).unwrap_or(0));
+            for i in -1..count {
+                let flip = mode == TileMode::Mirror && i.rem_euclid(2) != 0;
+                slots.push(AxisSlot {
+                    index: i,
+                    pos: scalar_from_i32(i).mul_add(src_extent, dest_start),
+                    size: src_extent,
+                    uv0: uv_min,
+                    uv1: uv_min + uv_size,
+                    flip,
+                });
+            }
+            slots
         }
     }
 }
 
 /// Calculate UV transform matrix for tiled rendering.
+#[must_use]
 pub fn calculate_uv_transform(image_width: u32, image_height: u32, config: &TileConfig) -> Matrix {
-    let scale_x = config.dest_rect.width() / (config.source_rect.width() * image_width as f32);
-    let scale_y = config.dest_rect.height() / (config.source_rect.height() * image_height as f32);
+    let scale_x =
+        config.dest_rect.width() / (config.source_rect.width() * scalar_from_u32(image_width));
+    let scale_y =
+        config.dest_rect.height() / (config.source_rect.height() * scalar_from_u32(image_height));
 
     let offset_x = config.source_rect.left;
     let offset_y = config.source_rect.top;
@@ -203,7 +212,8 @@ pub struct NinePatch {
 
 impl NinePatch {
     /// Create a new nine-patch configuration.
-    pub fn new(left: f32, top: f32, right: f32, bottom: f32) -> Self {
+    #[must_use]
+    pub const fn new(left: f32, top: f32, right: f32, bottom: f32) -> Self {
         Self {
             left,
             top,
@@ -213,12 +223,18 @@ impl NinePatch {
     }
 
     /// Create a uniform nine-patch (same inset on all sides).
-    pub fn uniform(inset: f32) -> Self {
+    #[must_use]
+    pub const fn uniform(inset: f32) -> Self {
         Self::new(inset, inset, inset, inset)
     }
 }
 
 /// Generate nine-patch tile instances.
+#[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the nine-patch layout is a single cohesive table of 9 regions; splitting it up would obscure the geometry"
+)]
 pub fn generate_nine_patch(
     image_width: u32,
     image_height: u32,
@@ -227,8 +243,8 @@ pub fn generate_nine_patch(
 ) -> Vec<TileInstance> {
     let mut tiles = Vec::with_capacity(9);
 
-    let img_w = image_width as f32;
-    let img_h = image_height as f32;
+    let img_w = scalar_from_u32(image_width);
+    let img_h = scalar_from_u32(image_height);
 
     // Source regions (in pixels)
     let src_left = patch.left;
@@ -384,6 +400,62 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact literal values, no accumulated error"
+    )]
+    fn test_mixed_tile_modes_repeat_x_clamp_y() {
+        // Regression: a Clamp axis must NOT tile. With Repeat in X and Clamp
+        // in Y, all tiles share one row: same y position and full dest height.
+        let config = TileConfig {
+            tile_x: TileMode::Repeat,
+            tile_y: TileMode::Clamp,
+            dest_rect: Rect::from_xywh(0.0, 0.0, 200.0, 100.0),
+            source_rect: Rect::new(0.0, 0.0, 1.0, 1.0),
+            ..Default::default()
+        };
+        let tiles = generate_tiles(64, 64, &config);
+        assert!(tiles.len() > 1, "X should tile");
+        // Exactly one distinct y position, spanning the full dest height.
+        let ys: std::collections::BTreeSet<i64> = tiles
+            .iter()
+            .map(|t| i64::from(t.position.y.to_bits()))
+            .collect();
+        assert_eq!(ys.len(), 1, "Clamp Y must not tile (single row)");
+        for t in &tiles {
+            assert_eq!(t.position.y, 0.0);
+            assert!(
+                (t.size[1] - 100.0).abs() < 1e-3,
+                "clamp Y spans full dest height"
+            );
+        }
+    }
+
+    #[test]
+    fn test_mixed_tile_modes_clamp_x_repeat_y() {
+        let config = TileConfig {
+            tile_x: TileMode::Clamp,
+            tile_y: TileMode::Repeat,
+            dest_rect: Rect::from_xywh(0.0, 0.0, 100.0, 200.0),
+            source_rect: Rect::new(0.0, 0.0, 1.0, 1.0),
+            ..Default::default()
+        };
+        let tiles = generate_tiles(64, 64, &config);
+        // One column: single distinct x position, full dest width.
+        let xs: std::collections::BTreeSet<i64> = tiles
+            .iter()
+            .map(|t| i64::from(t.position.x.to_bits()))
+            .collect();
+        assert_eq!(xs.len(), 1, "Clamp X must not tile (single column)");
+        for t in &tiles {
+            assert!(
+                (t.size[0] - 100.0).abs() < 1e-3,
+                "clamp X spans full dest width"
+            );
+        }
+    }
+
+    #[test]
     fn test_nine_patch() {
         let patch = NinePatch::uniform(10.0);
         let dest = Rect::from_xywh(0.0, 0.0, 100.0, 100.0);
@@ -393,6 +465,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact literal values, no accumulated error"
+    )]
     fn test_tile_instance() {
         let tile = TileInstance {
             position: Point::new(10.0, 20.0),

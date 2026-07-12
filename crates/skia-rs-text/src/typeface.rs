@@ -104,6 +104,23 @@ struct ParsedTypeface {
     underline_thickness: Option<i16>,
     strikeout_position: Option<i16>,
     strikeout_thickness: Option<i16>,
+    avg_char_width: Option<i16>,
+}
+
+/// Read `xAvgCharWidth` from a raw `OS/2` table blob.
+///
+/// `xAvgCharWidth` is the first field after the `version` u16, i.e. a
+/// signed big-endian i16 at byte offset 2. Returns `None` when the table
+/// is too short to contain it (guarding truncated/malformed tables), so
+/// callers fall back to a bbox-derived estimate. ttf-parser does not
+/// surface this field, hence the manual offset read.
+#[inline]
+fn os2_avg_char_width(table: &[u8]) -> Option<i16> {
+    if table.len() >= 4 {
+        Some(i16::from_be_bytes([table[2], table[3]]))
+    } else {
+        None
+    }
 }
 
 /// Raw font metrics extracted from OpenType/TrueType tables.
@@ -140,6 +157,9 @@ pub struct RawFontMetrics {
     pub strikeout_position: Option<i16>,
     /// Strikeout stroke thickness (font units). From the OS/2 table.
     pub strikeout_thickness: Option<i16>,
+    /// Average character advance width (font units), from OS/2
+    /// `xAvgCharWidth`. `None` when the font has no OS/2 table.
+    pub avg_char_width: Option<i16>,
 }
 
 /// Font style combining weight, width, and slant.
@@ -183,6 +203,7 @@ impl FontStyle {
     };
 
     /// Create a new font style.
+    #[must_use]
     pub const fn new(weight: FontWeight, width: FontWidth, slant: FontSlant) -> Self {
         Self {
             weight,
@@ -261,7 +282,7 @@ impl Typeface {
         } else {
             FontSlant::Upright
         };
-        let width = FontWidth(face.width().to_number() as u8);
+        let width = FontWidth(u8::try_from(face.width().to_number()).unwrap_or(u8::MAX));
 
         Some(Self {
             family_name,
@@ -286,31 +307,31 @@ impl Typeface {
 
     /// Get the font style.
     #[inline]
-    pub fn style(&self) -> FontStyle {
+    pub const fn style(&self) -> FontStyle {
         self.style
     }
 
     /// Get the unique ID.
     #[inline]
-    pub fn unique_id(&self) -> u32 {
+    pub const fn unique_id(&self) -> u32 {
         self.id
     }
 
     /// Get units per EM.
     #[inline]
-    pub fn units_per_em(&self) -> u16 {
+    pub const fn units_per_em(&self) -> u16 {
         self.units_per_em
     }
 
     /// Get the number of glyphs.
     #[inline]
-    pub fn glyph_count(&self) -> u16 {
+    pub const fn glyph_count(&self) -> u16 {
         self.glyph_count
     }
 
     /// Check if this is a bold typeface.
     #[inline]
-    pub fn is_bold(&self) -> bool {
+    pub const fn is_bold(&self) -> bool {
         self.style.weight.0 >= FontWeight::BOLD.0
     }
 
@@ -325,9 +346,7 @@ impl Typeface {
     /// Reads the `post` table's `isFixedPitch` flag via `ttf_parser`. Returns
     /// `false` for dataless typefaces (no `post` table is loaded).
     pub fn is_fixed_pitch(&self) -> bool {
-        self.parsed()
-            .map(|p| p.is_monospaced)
-            .unwrap_or(false)
+        self.parsed().is_some_and(|p| p.is_monospaced)
     }
 
     /// Get cached parsed metadata if font data is available.
@@ -341,12 +360,10 @@ impl Typeface {
                 let face = ttf_parser::Face::parse(data, 0).ok()?;
                 let (underline_position, underline_thickness) = face
                     .underline_metrics()
-                    .map(|lm| (Some(lm.position), Some(lm.thickness)))
-                    .unwrap_or((None, None));
+                    .map_or((None, None), |lm| (Some(lm.position), Some(lm.thickness)));
                 let (strikeout_position, strikeout_thickness) = face
                     .strikeout_metrics()
-                    .map(|lm| (Some(lm.position), Some(lm.thickness)))
-                    .unwrap_or((None, None));
+                    .map_or((None, None), |lm| (Some(lm.position), Some(lm.thickness)));
                 Some(ParsedTypeface {
                     units_per_em: face.units_per_em(),
                     ascender: face.ascender(),
@@ -364,6 +381,13 @@ impl Typeface {
                     underline_thickness,
                     strikeout_position,
                     strikeout_thickness,
+                    // OS/2 `xAvgCharWidth` is a signed i16 at byte offset 2
+                    // (immediately after the u16 table version). ttf-parser
+                    // does not surface it, so read it from the raw table.
+                    avg_char_width: face
+                        .raw_face()
+                        .table(ttf_parser::Tag::from_bytes(b"OS/2"))
+                        .and_then(os2_avg_char_width),
                 })
             })
             .as_ref()
@@ -377,17 +401,13 @@ impl Typeface {
     pub fn char_to_glyph(&self, c: char) -> u16 {
         if let Some(data) = self.font_data() {
             if let Ok(face) = ttf_parser::Face::parse(data, 0) {
-                return face.glyph_index(c).map(|g| g.0).unwrap_or(0);
+                return face.glyph_index(c).map_or(0, |g| g.0);
             }
         }
         // Fallback for the dataless default typeface — just use the codepoint
         // for ASCII so existing non-data tests continue to produce non-zero
         // glyph IDs.
-        if c.is_ascii() {
-            c as u16
-        } else {
-            0
-        }
+        if c.is_ascii() { c as u16 } else { 0 }
     }
 
     /// Get glyph IDs for a string.
@@ -424,6 +444,7 @@ impl Typeface {
             underline_thickness: p.underline_thickness,
             strikeout_position: p.strikeout_position,
             strikeout_thickness: p.strikeout_thickness,
+            avg_char_width: p.avg_char_width,
         })
     }
 }
@@ -458,5 +479,29 @@ mod tests {
         let tf = Typeface::default_typeface();
         assert_eq!(tf.char_to_glyph('A'), 65);
         assert_eq!(tf.char_to_glyph('a'), 97);
+    }
+
+    #[test]
+    fn os2_avg_char_width_reads_signed_be_i16_at_offset_2() {
+        // Synthetic OS/2 blob: version (offset 0..2) then xAvgCharWidth
+        // (offset 2..4) big-endian. 0x02F9 = 761. Trailing bytes stand in
+        // for the rest of the table and must be ignored.
+        let table = [0x00, 0x04, 0x02, 0xF9, 0xAB, 0xCD];
+        assert_eq!(os2_avg_char_width(&table), Some(761));
+    }
+
+    #[test]
+    fn os2_avg_char_width_reads_negative_value() {
+        // 0xFF9C big-endian as i16 is -100 — confirms the read is signed.
+        let table = [0x00, 0x05, 0xFF, 0x9C];
+        assert_eq!(os2_avg_char_width(&table), Some(-100));
+    }
+
+    #[test]
+    fn os2_avg_char_width_len_guard_rejects_short_table() {
+        // Fewer than 4 bytes cannot hold xAvgCharWidth; must yield None
+        // rather than panic, so callers use the bbox fallback.
+        assert_eq!(os2_avg_char_width(&[0x00, 0x04, 0x02]), None);
+        assert_eq!(os2_avg_char_width(&[]), None);
     }
 }

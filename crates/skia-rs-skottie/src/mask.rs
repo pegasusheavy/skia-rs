@@ -7,8 +7,9 @@
 
 use crate::keyframe::{AnimatedProperty, KeyframeValue, PathData};
 use crate::model::MaskModel;
-use skia_rs_core::Scalar;
-use skia_rs_path::{Path, PathBuilder};
+use skia_rs_core::{Rect, Scalar};
+use skia_rs_path::ops::{PathOp, op};
+use skia_rs_path::{FillType, Path, PathBuilder};
 
 /// Mask mode (boolean operation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,14 +33,13 @@ pub enum MaskMode {
 impl From<&str> for MaskMode {
     fn from(s: &str) -> Self {
         match s.to_lowercase().as_str() {
-            "n" | "none" => MaskMode::None,
-            "a" | "add" => MaskMode::Add,
-            "s" | "subtract" => MaskMode::Subtract,
-            "i" | "intersect" => MaskMode::Intersect,
-            "l" | "lighten" => MaskMode::Lighten,
-            "d" | "darken" => MaskMode::Darken,
-            "f" | "difference" => MaskMode::Difference,
-            _ => MaskMode::Add,
+            "n" | "none" => Self::None,
+            "s" | "subtract" => Self::Subtract,
+            "i" | "intersect" => Self::Intersect,
+            "l" | "lighten" => Self::Lighten,
+            "d" | "darken" => Self::Darken,
+            "f" | "difference" => Self::Difference,
+            _ => Self::Add,
         }
     }
 }
@@ -62,11 +62,11 @@ pub enum MatteMode {
 impl From<i32> for MatteMode {
     fn from(value: i32) -> Self {
         match value {
-            1 => MatteMode::Alpha,
-            2 => MatteMode::AlphaInverted,
-            3 => MatteMode::Luma,
-            4 => MatteMode::LumaInverted,
-            _ => MatteMode::None,
+            1 => Self::Alpha,
+            2 => Self::AlphaInverted,
+            3 => Self::Luma,
+            4 => Self::LumaInverted,
+            _ => Self::None,
         }
     }
 }
@@ -90,6 +90,7 @@ pub struct Mask {
 
 impl Mask {
     /// Create a new mask.
+    #[must_use]
     pub fn new(mode: MaskMode) -> Self {
         Self {
             name: String::new(),
@@ -109,15 +110,15 @@ impl Mask {
             path: AnimatedProperty::from_lottie(&model.path),
             opacity: AnimatedProperty::from_lottie(&model.opacity),
             inverted: model.inverted,
-            expansion: model
-                .expansion
-                .as_ref()
-                .map(AnimatedProperty::from_lottie)
-                .unwrap_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(0.0))),
+            expansion: model.expansion.as_ref().map_or_else(
+                || AnimatedProperty::static_value(KeyframeValue::Scalar(0.0)),
+                AnimatedProperty::from_lottie,
+            ),
         }
     }
 
     /// Get the mask path at a specific frame.
+    #[must_use]
     pub fn path_at(&self, frame: Scalar) -> Option<Path> {
         let value = self.path.value_at(frame);
 
@@ -128,23 +129,26 @@ impl Mask {
     }
 
     /// Get the opacity at a specific frame (0.0 - 1.0).
+    #[must_use]
     pub fn opacity_at(&self, frame: Scalar) -> Scalar {
         let opacity = self.opacity.value_at(frame).as_scalar().unwrap_or(100.0);
         (opacity / 100.0).clamp(0.0, 1.0)
     }
 
     /// Get the expansion at a specific frame.
+    #[must_use]
     pub fn expansion_at(&self, frame: Scalar) -> Scalar {
         self.expansion.value_at(frame).as_scalar().unwrap_or(0.0)
     }
 
     /// Check if this mask affects rendering (not None mode with zero opacity).
+    #[must_use]
     pub fn is_active(&self, frame: Scalar) -> bool {
         self.mode != MaskMode::None && self.opacity_at(frame) > 0.0
     }
 }
 
-/// Convert PathData to skia Path.
+/// Convert `PathData` to skia Path.
 fn path_data_to_path(data: &PathData) -> Path {
     let mut builder = PathBuilder::new();
 
@@ -183,7 +187,7 @@ fn path_data_to_path(data: &PathData) -> Path {
     if data.closed && n > 1 {
         let last = n - 1;
         let out_t = data.out_tangents.get(last).copied().unwrap_or([0.0, 0.0]);
-        let in_t = data.in_tangents.get(0).copied().unwrap_or([0.0, 0.0]);
+        let in_t = data.in_tangents.first().copied().unwrap_or([0.0, 0.0]);
 
         let c1 = [
             data.vertices[last][0] + out_t[0],
@@ -191,9 +195,7 @@ fn path_data_to_path(data: &PathData) -> Path {
         ];
         let c2 = [data.vertices[0][0] + in_t[0], data.vertices[0][1] + in_t[1]];
 
-        if out_t == [0.0, 0.0] && in_t == [0.0, 0.0] {
-            builder.close();
-        } else {
+        if !(out_t == [0.0, 0.0] && in_t == [0.0, 0.0]) {
             builder.cubic_to(
                 c1[0],
                 c1[1],
@@ -202,8 +204,8 @@ fn path_data_to_path(data: &PathData) -> Path {
                 data.vertices[0][0],
                 data.vertices[0][1],
             );
-            builder.close();
         }
+        builder.close();
     }
 
     builder.build()
@@ -218,6 +220,7 @@ pub struct MaskGroup {
 
 impl MaskGroup {
     /// Create a new empty mask group.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -228,106 +231,78 @@ impl MaskGroup {
     }
 
     /// Check if the group has any active masks.
+    #[must_use]
     pub fn has_active_masks(&self, frame: Scalar) -> bool {
         self.masks.iter().any(|m| m.is_active(frame))
     }
-
-    /// Get all active mask paths at a frame.
-    pub fn get_mask_paths(&self, frame: Scalar) -> Vec<(Path, MaskMode, Scalar)> {
-        self.masks
-            .iter()
-            .filter(|m| m.is_active(frame))
-            .filter_map(|m| {
-                m.path_at(frame)
-                    .map(|path| (path, m.mode, m.opacity_at(frame)))
-            })
-            .collect()
-    }
-
-    /// Compute the combined mask path.
-    ///
-    /// This performs boolean operations to combine masks.
-    pub fn compute_combined_path(&self, frame: Scalar) -> Option<Path> {
-        let mask_paths = self.get_mask_paths(frame);
-
-        if mask_paths.is_empty() {
-            return None;
-        }
-
-        // Start with first mask
-        let mut result = mask_paths[0].0.clone();
-
-        // Combine subsequent masks
-        for (path, mode, _opacity) in mask_paths.iter().skip(1) {
-            result = match mode {
-                MaskMode::Add => {
-                    // Union - combine paths
-                    combine_paths(&result, path)
-                }
-                MaskMode::Subtract => {
-                    // Difference
-                    subtract_path(&result, path)
-                }
-                MaskMode::Intersect => {
-                    // Intersection
-                    intersect_paths(&result, path)
-                }
-                _ => result,
-            };
-        }
-
-        Some(result)
-    }
 }
 
-/// Combine two paths (union).
-fn combine_paths(a: &Path, b: &Path) -> Path {
-    // Simple implementation: just append paths
-    // A proper implementation would use path boolean operations
-    let mut builder = PathBuilder::new();
+/// Build the combined clip path for a set of masks at a frame.
+///
+/// Matches upstream `AttachMask` (`Layer.cpp`): Add unions, Subtract
+/// subtracts (`kDstOut`), Intersect intersects, Difference xors; `inv`
+/// inverts an individual mask's geometry (relative to `bounds`); the
+/// *first* mask in the stack always draws in "source" mode, with its
+/// effective inversion flipped when its own mode is Subtract.
+#[must_use]
+pub fn build_clip(masks: &[Mask], frame: Scalar, bounds: Rect) -> Option<Path> {
+    let mut result: Option<Path> = None;
 
-    for element in a.iter() {
-        match element {
-            skia_rs_path::PathElement::Move(p) => builder.move_to(p.x, p.y),
-            skia_rs_path::PathElement::Line(p) => builder.line_to(p.x, p.y),
-            skia_rs_path::PathElement::Quad(c, p) => builder.quad_to(c.x, c.y, p.x, p.y),
-            skia_rs_path::PathElement::Conic(c, p, w) => builder.conic_to(c.x, c.y, p.x, p.y, w),
-            skia_rs_path::PathElement::Cubic(c1, c2, p) => {
-                builder.cubic_to(c1.x, c1.y, c2.x, c2.y, p.x, p.y)
-            }
-            skia_rs_path::PathElement::Close => builder.close(),
+    for (i, mask) in masks.iter().filter(|m| m.is_active(frame)).enumerate() {
+        let Some(path) = mask.path_at(frame) else {
+            continue;
         };
-    }
 
-    for element in b.iter() {
-        match element {
-            skia_rs_path::PathElement::Move(p) => builder.move_to(p.x, p.y),
-            skia_rs_path::PathElement::Line(p) => builder.line_to(p.x, p.y),
-            skia_rs_path::PathElement::Quad(c, p) => builder.quad_to(c.x, c.y, p.x, p.y),
-            skia_rs_path::PathElement::Conic(c, p, w) => builder.conic_to(c.x, c.y, p.x, p.y, w),
-            skia_rs_path::PathElement::Cubic(c1, c2, p) => {
-                builder.cubic_to(c1.x, c1.y, c2.x, c2.y, p.x, p.y)
-            }
-            skia_rs_path::PathElement::Close => builder.close(),
+        let effective_inverted = if i == 0 {
+            // First mask: always "source" mode; Subtract's geometry is
+            // implicitly inverted, so an explicit `inv` flag flips it back.
+            mask.inverted != (mask.mode == MaskMode::Subtract)
+        } else {
+            mask.inverted
         };
+
+        let path = if effective_inverted {
+            invert_path(&path, bounds)
+        } else {
+            path
+        };
+
+        result = Some(match result {
+            None => path,
+            Some(acc) => {
+                let combined = match mask.mode {
+                    MaskMode::Add => op(&acc, &path, PathOp::Union),
+                    MaskMode::Subtract => op(&acc, &path, PathOp::Difference),
+                    MaskMode::Intersect => op(&acc, &path, PathOp::Intersect),
+                    MaskMode::Difference => op(&acc, &path, PathOp::Xor),
+                    _ => Some(acc.clone()),
+                };
+                combined.unwrap_or(acc)
+            }
+        });
     }
 
-    builder.build()
+    result
 }
 
-/// Subtract path b from path a.
-fn subtract_path(a: &Path, _b: &Path) -> Path {
-    // Simplified: just return a (proper implementation would use path ops)
-    a.clone()
-}
-
-/// Intersect two paths.
-fn intersect_paths(a: &Path, _b: &Path) -> Path {
-    // Simplified: just return a (proper implementation would use path ops)
-    a.clone()
+/// Invert a path's geometry relative to `bounds` (i.e. "everywhere in
+/// `bounds` except `path`"), used to resolve Lottie's `inv` mask flag.
+fn invert_path(path: &Path, bounds: Rect) -> Path {
+    let mut universe = PathBuilder::new();
+    universe.add_rect(&bounds);
+    let universe = universe.build();
+    op(&universe, path, PathOp::Difference).unwrap_or_else(|| {
+        let mut p = path.clone();
+        p.set_fill_type(FillType::InverseWinding);
+        p
+    })
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "tests assert exact keyframe/interpolation output values, not tolerances"
+)]
 mod tests {
     use super::*;
 
@@ -359,5 +334,66 @@ mod tests {
         group.add(Mask::new(MaskMode::Subtract));
 
         assert_eq!(group.masks.len(), 2);
+    }
+
+    fn rect_mask(mode: MaskMode, x: Scalar, y: Scalar, w: Scalar, h: Scalar, inv: bool) -> Mask {
+        let path_data = PathData {
+            vertices: vec![[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
+            in_tangents: vec![[0.0, 0.0]; 4],
+            out_tangents: vec![[0.0, 0.0]; 4],
+            closed: true,
+        };
+
+        Mask {
+            name: String::new(),
+            mode,
+            path: AnimatedProperty::static_value(KeyframeValue::Path(path_data)),
+            opacity: AnimatedProperty::static_value(KeyframeValue::Scalar(100.0)),
+            inverted: inv,
+            expansion: AnimatedProperty::static_value(KeyframeValue::Scalar(0.0)),
+        }
+    }
+
+    #[test]
+    fn test_build_clip_subtract_removes_geometry() {
+        let masks = vec![
+            rect_mask(MaskMode::Add, 0.0, 0.0, 100.0, 100.0, false),
+            rect_mask(MaskMode::Subtract, 25.0, 25.0, 50.0, 50.0, false),
+        ];
+        let bounds = skia_rs_core::Rect::from_xywh(0.0, 0.0, 100.0, 100.0);
+        let clip = build_clip(&masks, 0.0, bounds).unwrap();
+
+        // The subtracted center should no longer be inside the clip region.
+        assert!(!clip.contains(skia_rs_core::Point::new(50.0, 50.0)));
+        // A corner still inside the outer rect (but outside the hole) should remain.
+        assert!(clip.contains(skia_rs_core::Point::new(5.0, 5.0)));
+    }
+
+    #[test]
+    fn test_build_clip_intersect_shrinks_geometry() {
+        let masks = vec![
+            rect_mask(MaskMode::Add, 0.0, 0.0, 100.0, 100.0, false),
+            rect_mask(MaskMode::Intersect, 25.0, 25.0, 50.0, 50.0, false),
+        ];
+        let bounds = skia_rs_core::Rect::from_xywh(0.0, 0.0, 100.0, 100.0);
+        let clip = build_clip(&masks, 0.0, bounds).unwrap();
+
+        assert!(clip.contains(skia_rs_core::Point::new(50.0, 50.0)));
+        // Outside the intersected (smaller) region.
+        assert!(!clip.contains(skia_rs_core::Point::new(5.0, 5.0)));
+    }
+
+    #[test]
+    fn test_build_clip_add_unions_geometry() {
+        let masks = vec![
+            rect_mask(MaskMode::Add, 0.0, 0.0, 40.0, 40.0, false),
+            rect_mask(MaskMode::Add, 60.0, 60.0, 40.0, 40.0, false),
+        ];
+        let bounds = skia_rs_core::Rect::from_xywh(0.0, 0.0, 100.0, 100.0);
+        let clip = build_clip(&masks, 0.0, bounds).unwrap();
+
+        assert!(clip.contains(skia_rs_core::Point::new(20.0, 20.0)));
+        assert!(clip.contains(skia_rs_core::Point::new(80.0, 80.0)));
+        assert!(!clip.contains(skia_rs_core::Point::new(50.0, 50.0)));
     }
 }

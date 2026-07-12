@@ -7,7 +7,7 @@ name = "skia-rs"
 version = "0.1.0"
 description = "Python bindings for skia-rs - 2D graphics library"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 license = { text = "MIT OR Apache-2.0" }
 keywords = ["skia", "graphics", "2d", "canvas", "drawing", "image"]
 classifiers = [
@@ -17,7 +17,6 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",

@@ -4,9 +4,10 @@
 //! to create dashed lines, rounded corners, jittery edges, and more.
 
 use crate::{
-    flatten::{flatten_conic_adaptive, flatten_cubic_adaptive, flatten_quad_adaptive},
     Path, PathBuilder, PathElement,
+    flatten::{flatten_conic_adaptive, flatten_cubic_adaptive, flatten_quad_adaptive},
 };
+use skia_rs_core::cast::{ceil_to_i32, floor_to_i32, scalar_from_i32};
 use skia_rs_core::{Point, Scalar};
 use std::sync::Arc;
 
@@ -52,7 +53,7 @@ pub type PathEffectRef = Arc<dyn PathEffect>;
 // =============================================================================
 
 /// Convert a path with curves to a path containing only lines,
-/// using adaptive tolerance for curve flattening. Used by DashEffect
+/// using adaptive tolerance for curve flattening. Used by `DashEffect`
 /// so dash intervals can transition mid-curve.
 fn flatten_path_to_lines(path: &Path, tolerance: Scalar) -> Path {
     let mut builder = PathBuilder::new();
@@ -60,7 +61,7 @@ fn flatten_path_to_lines(path: &Path, tolerance: Scalar) -> Path {
     let mut contour_start = Point::new(0.0, 0.0);
     let mut points: Vec<Point> = Vec::with_capacity(16);
 
-    for elem in path.iter() {
+    for elem in path {
         match elem {
             PathElement::Move(p) => {
                 builder.move_to(p.x, p.y);
@@ -123,6 +124,7 @@ impl DashEffect {
     ///
     /// `intervals` must have an even number of entries (on/off pairs).
     /// If odd, the pattern is duplicated to make it even.
+    #[must_use]
     pub fn new(intervals: Vec<Scalar>, phase: Scalar) -> Option<Self> {
         if intervals.is_empty() {
             return None;
@@ -131,7 +133,7 @@ impl DashEffect {
         // Ensure even number of intervals
         let intervals = if intervals.len() % 2 != 0 {
             let mut doubled = intervals.clone();
-            doubled.extend(intervals.iter().cloned());
+            doubled.extend(intervals.iter().copied());
             doubled
         } else {
             intervals
@@ -157,27 +159,87 @@ impl DashEffect {
     }
 
     /// Create a simple dash pattern (dash length, gap length).
+    #[must_use]
     pub fn simple(dash: Scalar, gap: Scalar) -> Option<Self> {
         Self::new(vec![dash, gap], 0.0)
     }
 
     /// Create a dotted pattern.
+    #[must_use]
     pub fn dotted(dot_size: Scalar, gap: Scalar) -> Option<Self> {
         Self::new(vec![dot_size, gap], 0.0)
     }
 
     /// Get the intervals.
+    #[must_use]
     pub fn intervals(&self) -> &[Scalar] {
         &self.intervals
     }
 
     /// Get the phase.
-    pub fn phase(&self) -> Scalar {
+    #[must_use]
+    pub const fn phase(&self) -> Scalar {
         self.phase
     }
 }
 
+impl DashEffect {
+    /// Dash a single line segment `from -> to`, advancing the dash state
+    /// (`is_on`, `interval_idx`, `remaining_in_interval`) across it. Used for
+    /// both explicit line segments and the synthesized closing edge so the dash
+    /// distance advances continuously (upstream `SkDashPath::InternalFilter`).
+    fn dash_line(
+        &self,
+        builder: &mut PathBuilder,
+        from: Point,
+        to: Point,
+        is_on: &mut bool,
+        interval_idx: &mut usize,
+        remaining_in_interval: &mut Scalar,
+    ) {
+        let segment_length = from.distance(&to);
+        if segment_length <= 0.0 {
+            return;
+        }
+        let mut t = 0.0;
+        loop {
+            if t >= 1.0 {
+                break;
+            }
+            let remaining_segment = segment_length * (1.0 - t);
+
+            if *remaining_in_interval >= remaining_segment {
+                if *is_on {
+                    builder.line_to(to.x, to.y);
+                }
+                *remaining_in_interval -= remaining_segment;
+                t = 1.0;
+            } else {
+                let dt = *remaining_in_interval / segment_length;
+                let mid = Point::new(
+                    (to.x - from.x).mul_add(t + dt, from.x),
+                    (to.y - from.y).mul_add(t + dt, from.y),
+                );
+                if *is_on {
+                    builder.line_to(mid.x, mid.y);
+                }
+                *interval_idx = (*interval_idx + 1) % self.intervals.len();
+                *is_on = *interval_idx % 2 == 0;
+                *remaining_in_interval = self.intervals[*interval_idx];
+                if *is_on {
+                    builder.move_to(mid.x, mid.y);
+                }
+                t += dt;
+            }
+        }
+    }
+}
+
 impl PathEffect for DashEffect {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "faithful port of SkDashPath::InternalFilter's per-verb dash state machine"
+    )]
     fn apply(&self, path: &Path) -> Option<Path> {
         if path.is_empty() {
             return None;
@@ -203,7 +265,10 @@ impl PathEffect for DashEffect {
         let (mut interval_idx, interval_offset) = {
             let mut accumulated = 0.0;
             let mut idx = 0;
-            while accumulated + self.intervals[idx] <= phase {
+            loop {
+                if accumulated + self.intervals[idx] > phase {
+                    break;
+                }
                 accumulated += self.intervals[idx];
                 idx = (idx + 1) % self.intervals.len();
             }
@@ -213,7 +278,7 @@ impl PathEffect for DashEffect {
         let mut is_on = interval_idx % 2 == 0;
         let mut remaining_in_interval = self.intervals[interval_idx] - interval_offset;
 
-        for element in path.iter() {
+        for element in path {
             match element {
                 PathElement::Move(p) => {
                     current_pos = p;
@@ -222,7 +287,10 @@ impl PathEffect for DashEffect {
                     // Reset dash state for new contour
                     let mut accumulated = 0.0;
                     interval_idx = 0;
-                    while accumulated + self.intervals[interval_idx] <= phase {
+                    loop {
+                        if accumulated + self.intervals[interval_idx] > phase {
+                            break;
+                        }
                         accumulated += self.intervals[interval_idx];
                         interval_idx = (interval_idx + 1) % self.intervals.len();
                     }
@@ -233,61 +301,37 @@ impl PathEffect for DashEffect {
                     }
                 }
                 PathElement::Line(end) => {
-                    let segment_length = current_pos.distance(&end);
-                    let mut t = 0.0;
-
-                    while t < 1.0 {
-                        let remaining_segment = segment_length * (1.0 - t);
-
-                        if remaining_in_interval >= remaining_segment {
-                            // Finish this segment
-                            if is_on {
-                                builder.line_to(end.x, end.y);
-                            }
-                            remaining_in_interval -= remaining_segment;
-                            t = 1.0;
-                        } else {
-                            // Partial segment
-                            let dt = remaining_in_interval / segment_length;
-                            let mid = Point::new(
-                                current_pos.x + (end.x - current_pos.x) * (t + dt),
-                                current_pos.y + (end.y - current_pos.y) * (t + dt),
-                            );
-
-                            if is_on {
-                                builder.line_to(mid.x, mid.y);
-                            }
-
-                            // Move to next interval
-                            interval_idx = (interval_idx + 1) % self.intervals.len();
-                            is_on = interval_idx % 2 == 0;
-                            remaining_in_interval = self.intervals[interval_idx];
-
-                            if is_on {
-                                builder.move_to(mid.x, mid.y);
-                            }
-
-                            t += dt;
-                        }
-                    }
-
+                    self.dash_line(
+                        &mut builder,
+                        current_pos,
+                        end,
+                        &mut is_on,
+                        &mut interval_idx,
+                        &mut remaining_in_interval,
+                    );
                     current_pos = end;
                 }
                 PathElement::Close => {
-                    // Handle closing line if needed
+                    // Dash the closing edge continuously (advancing the dash
+                    // distance across it), not solid/dropped.
                     if current_pos != contour_start {
-                        let segment_length = current_pos.distance(&contour_start);
-                        if segment_length > 0.0 && is_on {
-                            builder.line_to(contour_start.x, contour_start.y);
-                        }
+                        self.dash_line(
+                            &mut builder,
+                            current_pos,
+                            contour_start,
+                            &mut is_on,
+                            &mut interval_idx,
+                            &mut remaining_in_interval,
+                        );
                     }
+                    current_pos = contour_start;
                 }
                 // For curves, we approximate with lines (simplified)
                 PathElement::Quad(ctrl, end) => {
                     // Subdivide and treat as lines
-                    let steps = 8;
+                    let steps: i32 = 8;
                     for i in 1..=steps {
-                        let t = i as Scalar / steps as Scalar;
+                        let t = scalar_from_i32(i) / scalar_from_i32(steps);
                         let p = quadratic_point(current_pos, ctrl, end, t);
                         if is_on {
                             builder.line_to(p.x, p.y);
@@ -297,9 +341,9 @@ impl PathEffect for DashEffect {
                 }
                 PathElement::Conic(ctrl, end, _weight) => {
                     // Approximate as quad
-                    let steps = 8;
+                    let steps: i32 = 8;
                     for i in 1..=steps {
-                        let t = i as Scalar / steps as Scalar;
+                        let t = scalar_from_i32(i) / scalar_from_i32(steps);
                         let p = quadratic_point(current_pos, ctrl, end, t);
                         if is_on {
                             builder.line_to(p.x, p.y);
@@ -308,9 +352,9 @@ impl PathEffect for DashEffect {
                     current_pos = end;
                 }
                 PathElement::Cubic(ctrl1, ctrl2, end) => {
-                    let steps = 12;
+                    let steps: i32 = 12;
                     for i in 1..=steps {
-                        let t = i as Scalar / steps as Scalar;
+                        let t = scalar_from_i32(i) / scalar_from_i32(steps);
                         let p = cubic_point(current_pos, ctrl1, ctrl2, end, t);
                         if is_on {
                             builder.line_to(p.x, p.y);
@@ -344,6 +388,7 @@ pub struct CornerEffect {
 
 impl CornerEffect {
     /// Create a new corner effect.
+    #[must_use]
     pub fn new(radius: Scalar) -> Option<Self> {
         if radius <= 0.0 {
             return None;
@@ -352,91 +397,179 @@ impl CornerEffect {
     }
 
     /// Get the radius.
-    pub fn radius(&self) -> Scalar {
+    #[must_use]
+    pub const fn radius(&self) -> Scalar {
         self.radius
     }
 }
 
+/// Which verb kind was last processed (for the corner-effect state machine).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CornerVerb {
+    None,
+    Move,
+    Line,
+    Curve,
+    Close,
+}
+
+/// Compute the corner step vector for the segment `a -> b`.
+///
+/// Returns `true` if a straight middle segment should be drawn (i.e. the
+/// segment is longer than `2 * radius`), matching `ComputeStep`.
+fn corner_compute_step(a: Point, b: Point, radius: Scalar, step: &mut Point) -> bool {
+    let dist = a.distance(&b);
+    let mut s = Point::new(b.x - a.x, b.y - a.y);
+    if dist <= radius * 2.0 {
+        s.x *= 0.5;
+        s.y *= 0.5;
+        *step = s;
+        false
+    } else {
+        let f = radius / dist;
+        s.x *= f;
+        s.y *= f;
+        *step = s;
+        true
+    }
+}
+
+/// Whether the contour starting at `move_idx` is closed (contains a `Close`
+/// before the next `Move`).
+fn corner_contour_is_closed(elements: &[PathElement], move_idx: usize) -> bool {
+    for e in &elements[move_idx + 1..] {
+        match e {
+            PathElement::Move(_) => return false,
+            PathElement::Close => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 impl PathEffect for CornerEffect {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "faithful port of SkCornerPathEffectImpl::onFilterPath's per-verb corner-rounding state machine"
+    )]
     fn apply(&self, path: &Path) -> Option<Path> {
-        if path.is_empty() {
+        if path.is_empty() || self.radius <= 0.0 {
             return None;
         }
 
-        let mut builder = PathBuilder::new();
-        let elements: Vec<_> = path.iter().collect();
+        // Faithful port of SkCornerPathEffectImpl::onFilterPath: rounds every
+        // corner including the joint between the last and first segments of a
+        // closed contour, and starts a closed contour's output at the first
+        // segment's rounded start (moveTo + step).
+        let radius = self.radius;
+        let mut dst = PathBuilder::new();
+        let elements: Vec<PathElement> = path.iter().collect();
 
-        let mut i = 0;
-        while i < elements.len() {
-            match elements[i] {
+        let mut prev_verb = CornerVerb::None;
+        let mut move_to = Point::zero();
+        let mut last_corner = Point::zero();
+        let mut first_step = Point::zero();
+        let mut step = Point::zero();
+        let mut prev_is_valid = true;
+        let mut current = Point::zero();
+
+        for (i, elem) in elements.iter().enumerate() {
+            let cur_verb;
+            match *elem {
                 PathElement::Move(p) => {
-                    builder.move_to(p.x, p.y);
-                    i += 1;
+                    // Close out the previous (open) contour.
+                    if prev_verb == CornerVerb::Line {
+                        dst.line_to(last_corner.x, last_corner.y);
+                    }
+                    if corner_contour_is_closed(&elements, i) {
+                        move_to = p;
+                        prev_is_valid = false;
+                    } else {
+                        dst.move_to(p.x, p.y);
+                        prev_is_valid = true;
+                    }
+                    current = p;
+                    cur_verb = CornerVerb::Move;
                 }
                 PathElement::Line(end) => {
-                    // Look ahead for corner
-                    let prev_end = if i > 0 {
-                        get_end_point(&elements[i - 1])
+                    let a = current;
+                    let b = end;
+                    let draw_segment = corner_compute_step(a, b, radius, &mut step);
+                    if prev_is_valid {
+                        dst.quad_to(a.x, a.y, a.x + step.x, a.y + step.y);
                     } else {
-                        None
-                    };
-
-                    let next_start = if i + 1 < elements.len() {
-                        get_end_point(&elements[i + 1])
-                    } else {
-                        None
-                    };
-
-                    if let (Some(start), Some(next)) = (prev_end, next_start) {
-                        // Round the corner at 'end'
-                        let v1 = Point::new(start.x - end.x, start.y - end.y);
-                        let v2 = Point::new(next.x - end.x, next.y - end.y);
-
-                        let len1 = v1.length();
-                        let len2 = v2.length();
-
-                        if len1 > 0.0 && len2 > 0.0 {
-                            let radius = self.radius.min(len1 / 2.0).min(len2 / 2.0);
-
-                            let t1 = Point::new(
-                                end.x + v1.x / len1 * radius,
-                                end.y + v1.y / len1 * radius,
-                            );
-                            let t2 = Point::new(
-                                end.x + v2.x / len2 * radius,
-                                end.y + v2.y / len2 * radius,
-                            );
-
-                            builder.line_to(t1.x, t1.y);
-                            builder.quad_to(end.x, end.y, t2.x, t2.y);
-                        } else {
-                            builder.line_to(end.x, end.y);
-                        }
-                    } else {
-                        builder.line_to(end.x, end.y);
+                        dst.move_to(move_to.x + step.x, move_to.y + step.y);
+                        prev_is_valid = true;
                     }
-                    i += 1;
+                    if draw_segment {
+                        dst.line_to(b.x - step.x, b.y - step.y);
+                    }
+                    last_corner = b;
+                    current = end;
+                    cur_verb = CornerVerb::Line;
                 }
                 PathElement::Quad(ctrl, end) => {
-                    builder.quad_to(ctrl.x, ctrl.y, end.x, end.y);
-                    i += 1;
+                    if !prev_is_valid {
+                        dst.move_to(current.x, current.y);
+                        prev_is_valid = true;
+                    }
+                    dst.quad_to(ctrl.x, ctrl.y, end.x, end.y);
+                    last_corner = end;
+                    first_step = Point::zero();
+                    current = end;
+                    cur_verb = CornerVerb::Curve;
                 }
                 PathElement::Conic(ctrl, end, w) => {
-                    builder.conic_to(ctrl.x, ctrl.y, end.x, end.y, w);
-                    i += 1;
+                    if !prev_is_valid {
+                        dst.move_to(current.x, current.y);
+                        prev_is_valid = true;
+                    }
+                    dst.conic_to(ctrl.x, ctrl.y, end.x, end.y, w);
+                    last_corner = end;
+                    first_step = Point::zero();
+                    current = end;
+                    cur_verb = CornerVerb::Curve;
                 }
-                PathElement::Cubic(ctrl1, ctrl2, end) => {
-                    builder.cubic_to(ctrl1.x, ctrl1.y, ctrl2.x, ctrl2.y, end.x, end.y);
-                    i += 1;
+                PathElement::Cubic(c1, c2, end) => {
+                    if !prev_is_valid {
+                        dst.move_to(current.x, current.y);
+                        prev_is_valid = true;
+                    }
+                    dst.cubic_to(c1.x, c1.y, c2.x, c2.y, end.x, end.y);
+                    last_corner = end;
+                    first_step = Point::zero();
+                    current = end;
+                    cur_verb = CornerVerb::Curve;
                 }
                 PathElement::Close => {
-                    builder.close();
-                    i += 1;
+                    if first_step.x != 0.0 || first_step.y != 0.0 {
+                        dst.quad_to(
+                            last_corner.x,
+                            last_corner.y,
+                            last_corner.x + first_step.x,
+                            last_corner.y + first_step.y,
+                        );
+                    }
+                    dst.close();
+                    prev_is_valid = false;
+                    current = move_to;
+                    cur_verb = CornerVerb::Close;
                 }
             }
+
+            // Capture the first segment's step so the closing joint can be
+            // rounded back toward the contour start.
+            if prev_verb == CornerVerb::Move {
+                first_step = step;
+            }
+            prev_verb = cur_verb;
         }
 
-        Some(builder.build())
+        if prev_is_valid {
+            dst.line_to(last_corner.x, last_corner.y);
+        }
+
+        Some(dst.build())
     }
 
     fn effect_kind(&self) -> PathEffectKind {
@@ -463,6 +596,7 @@ pub struct DiscreteEffect {
 
 impl DiscreteEffect {
     /// Create a new discrete effect.
+    #[must_use]
     pub fn new(seg_length: Scalar, deviation: Scalar, seed: u32) -> Option<Self> {
         if seg_length <= 0.0 {
             return None;
@@ -475,20 +609,24 @@ impl DiscreteEffect {
     }
 
     /// Get the segment length.
-    pub fn seg_length(&self) -> Scalar {
+    #[must_use]
+    pub const fn seg_length(&self) -> Scalar {
         self.seg_length
     }
 
     /// Get the deviation.
-    pub fn deviation(&self) -> Scalar {
+    #[must_use]
+    pub const fn deviation(&self) -> Scalar {
         self.deviation
     }
 
     /// Simple pseudo-random number generator.
-    fn random(&self, seed: u32) -> Scalar {
+    fn random(seed: u32) -> Scalar {
         // Simple LCG
-        let n = seed.wrapping_mul(1103515245).wrapping_add(12345);
-        ((n >> 16) & 0x7FFF) as Scalar / 32767.0 * 2.0 - 1.0
+        let n = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+        let masked =
+            u16::try_from((n >> 16) & 0x7FFF).expect("masked to 15 bits, always fits in u16");
+        (Scalar::from(masked) / 32767.0).mul_add(2.0, -1.0)
     }
 }
 
@@ -502,29 +640,28 @@ impl PathEffect for DiscreteEffect {
         let mut current_pos = Point::zero();
         let mut seed = self.seed;
 
-        for element in path.iter() {
+        for element in path {
             match element {
                 PathElement::Move(p) => {
-                    let dx = self.random(seed) * self.deviation;
+                    let dx = Self::random(seed) * self.deviation;
                     seed = seed.wrapping_add(1);
-                    let dy = self.random(seed) * self.deviation;
+                    let dy = Self::random(seed) * self.deviation;
                     seed = seed.wrapping_add(1);
                     builder.move_to(p.x + dx, p.y + dy);
                     current_pos = p;
                 }
                 PathElement::Line(end) => {
                     let length = current_pos.distance(&end);
-                    let num_segments = (length / self.seg_length).ceil() as usize;
-                    let num_segments = num_segments.max(1);
+                    let num_segments = ceil_to_i32(length / self.seg_length).max(1);
 
                     for i in 1..=num_segments {
-                        let t = i as Scalar / num_segments as Scalar;
-                        let x = current_pos.x + (end.x - current_pos.x) * t;
-                        let y = current_pos.y + (end.y - current_pos.y) * t;
+                        let t = scalar_from_i32(i) / scalar_from_i32(num_segments);
+                        let x = (end.x - current_pos.x).mul_add(t, current_pos.x);
+                        let y = (end.y - current_pos.y).mul_add(t, current_pos.y);
 
-                        let dx = self.random(seed) * self.deviation;
+                        let dx = Self::random(seed) * self.deviation;
                         seed = seed.wrapping_add(1);
-                        let dy = self.random(seed) * self.deviation;
+                        let dy = Self::random(seed) * self.deviation;
                         seed = seed.wrapping_add(1);
 
                         builder.line_to(x + dx, y + dy);
@@ -536,17 +673,17 @@ impl PathEffect for DiscreteEffect {
                 }
                 // For curves, subdivide into lines first
                 PathElement::Quad(ctrl, end) => {
-                    let steps = (quadratic_length(current_pos, ctrl, end) / self.seg_length).ceil()
-                        as usize;
-                    let steps = steps.max(4);
+                    let steps =
+                        ceil_to_i32(quadratic_length(current_pos, ctrl, end) / self.seg_length)
+                            .max(4);
 
                     for i in 1..=steps {
-                        let t = i as Scalar / steps as Scalar;
+                        let t = scalar_from_i32(i) / scalar_from_i32(steps);
                         let p = quadratic_point(current_pos, ctrl, end, t);
 
-                        let dx = self.random(seed) * self.deviation;
+                        let dx = Self::random(seed) * self.deviation;
                         seed = seed.wrapping_add(1);
-                        let dy = self.random(seed) * self.deviation;
+                        let dy = Self::random(seed) * self.deviation;
                         seed = seed.wrapping_add(1);
 
                         builder.line_to(p.x + dx, p.y + dy);
@@ -554,17 +691,17 @@ impl PathEffect for DiscreteEffect {
                     current_pos = end;
                 }
                 PathElement::Conic(ctrl, end, _w) => {
-                    let steps = (quadratic_length(current_pos, ctrl, end) / self.seg_length).ceil()
-                        as usize;
-                    let steps = steps.max(4);
+                    let steps =
+                        ceil_to_i32(quadratic_length(current_pos, ctrl, end) / self.seg_length)
+                            .max(4);
 
                     for i in 1..=steps {
-                        let t = i as Scalar / steps as Scalar;
+                        let t = scalar_from_i32(i) / scalar_from_i32(steps);
                         let p = quadratic_point(current_pos, ctrl, end, t);
 
-                        let dx = self.random(seed) * self.deviation;
+                        let dx = Self::random(seed) * self.deviation;
                         seed = seed.wrapping_add(1);
-                        let dy = self.random(seed) * self.deviation;
+                        let dy = Self::random(seed) * self.deviation;
                         seed = seed.wrapping_add(1);
 
                         builder.line_to(p.x + dx, p.y + dy);
@@ -572,17 +709,17 @@ impl PathEffect for DiscreteEffect {
                     current_pos = end;
                 }
                 PathElement::Cubic(ctrl1, ctrl2, end) => {
-                    let steps = (cubic_length(current_pos, ctrl1, ctrl2, end) / self.seg_length)
-                        .ceil() as usize;
-                    let steps = steps.max(4);
+                    let steps =
+                        ceil_to_i32(cubic_length(current_pos, ctrl1, ctrl2, end) / self.seg_length)
+                            .max(4);
 
                     for i in 1..=steps {
-                        let t = i as Scalar / steps as Scalar;
+                        let t = scalar_from_i32(i) / scalar_from_i32(steps);
                         let p = cubic_point(current_pos, ctrl1, ctrl2, end, t);
 
-                        let dx = self.random(seed) * self.deviation;
+                        let dx = Self::random(seed) * self.deviation;
                         seed = seed.wrapping_add(1);
-                        let dy = self.random(seed) * self.deviation;
+                        let dy = Self::random(seed) * self.deviation;
                         seed = seed.wrapping_add(1);
 
                         builder.line_to(p.x + dx, p.y + dy);
@@ -629,25 +766,29 @@ pub enum TrimMode {
 
 impl TrimEffect {
     /// Create a new trim effect.
+    #[must_use]
     pub fn new(start: Scalar, end: Scalar, mode: TrimMode) -> Option<Self> {
-        if start < 0.0 || start > 1.0 || end < 0.0 || end > 1.0 {
+        if !(0.0..=1.0).contains(&start) || !(0.0..=1.0).contains(&end) {
             return None;
         }
         Some(Self { start, end, mode })
     }
 
     /// Get the start position.
-    pub fn start(&self) -> Scalar {
+    #[must_use]
+    pub const fn start(&self) -> Scalar {
         self.start
     }
 
     /// Get the end position.
-    pub fn end(&self) -> Scalar {
+    #[must_use]
+    pub const fn end(&self) -> Scalar {
         self.end
     }
 
     /// Get the trim mode.
-    pub fn mode(&self) -> TrimMode {
+    #[must_use]
+    pub const fn mode(&self) -> TrimMode {
         self.mode
     }
 }
@@ -677,7 +818,7 @@ impl PathEffect for TrimEffect {
                 let mut builder = PathBuilder::new();
                 if start_dist > 0.0 {
                     if let Some(before) = measure.get_segment(0.0, start_dist) {
-                        for elem in before.iter() {
+                        for elem in &before {
                             match elem {
                                 PathElement::Move(p) => {
                                     builder.move_to(p.x, p.y);
@@ -703,7 +844,7 @@ impl PathEffect for TrimEffect {
                 }
                 if end_dist < total {
                     if let Some(after) = measure.get_segment(end_dist, total) {
-                        for elem in after.iter() {
+                        for elem in &after {
                             match elem {
                                 PathElement::Move(p) => {
                                     builder.move_to(p.x, p.y);
@@ -815,22 +956,11 @@ impl PathEffect for SumEffect {
 // Helper Functions
 // =============================================================================
 
-fn get_end_point(element: &PathElement) -> Option<Point> {
-    match element {
-        PathElement::Move(p) => Some(*p),
-        PathElement::Line(p) => Some(*p),
-        PathElement::Quad(_, p) => Some(*p),
-        PathElement::Conic(_, p, _) => Some(*p),
-        PathElement::Cubic(_, _, p) => Some(*p),
-        PathElement::Close => None,
-    }
-}
-
 fn quadratic_point(p0: Point, p1: Point, p2: Point, t: Scalar) -> Point {
     let mt = 1.0 - t;
     Point::new(
-        mt * mt * p0.x + 2.0 * mt * t * p1.x + t * t * p2.x,
-        mt * mt * p0.y + 2.0 * mt * t * p1.y + t * t * p2.y,
+        (t * t).mul_add(p2.x, (mt * mt).mul_add(p0.x, 2.0 * mt * t * p1.x)),
+        (t * t).mul_add(p2.y, (mt * mt).mul_add(p0.y, 2.0 * mt * t * p1.y)),
     )
 }
 
@@ -839,8 +969,14 @@ fn cubic_point(p0: Point, p1: Point, p2: Point, p3: Point, t: Scalar) -> Point {
     let mt2 = mt * mt;
     let t2 = t * t;
     Point::new(
-        mt2 * mt * p0.x + 3.0 * mt2 * t * p1.x + 3.0 * mt * t2 * p2.x + t2 * t * p3.x,
-        mt2 * mt * p0.y + 3.0 * mt2 * t * p1.y + 3.0 * mt * t2 * p2.y + t2 * t * p3.y,
+        (t2 * t).mul_add(
+            p3.x,
+            (3.0 * mt * t2).mul_add(p2.x, (mt2 * mt).mul_add(p0.x, 3.0 * mt2 * t * p1.x)),
+        ),
+        (t2 * t).mul_add(
+            p3.y,
+            (3.0 * mt * t2).mul_add(p2.y, (mt2 * mt).mul_add(p0.y, 3.0 * mt2 * t * p1.y)),
+        ),
     )
 }
 
@@ -848,14 +984,14 @@ fn quadratic_length(p0: Point, p1: Point, p2: Point) -> Scalar {
     // Approximate with chord + control polygon
     let chord = p0.distance(&p2);
     let polygon = p0.distance(&p1) + p1.distance(&p2);
-    (chord + polygon) / 2.0
+    f32::midpoint(chord, polygon)
 }
 
 fn cubic_length(p0: Point, p1: Point, p2: Point, p3: Point) -> Scalar {
     // Approximate with chord + control polygon
     let chord = p0.distance(&p3);
     let polygon = p0.distance(&p1) + p1.distance(&p2) + p2.distance(&p3);
-    (chord + polygon) / 2.0
+    f32::midpoint(chord, polygon)
 }
 
 // =============================================================================
@@ -909,22 +1045,22 @@ impl Path1DEffect {
     }
 
     /// Get the stamped path.
-    pub fn path(&self) -> &Path {
+    pub const fn path(&self) -> &Path {
         &self.path
     }
 
     /// Get the advance distance.
-    pub fn advance(&self) -> Scalar {
+    pub const fn advance(&self) -> Scalar {
         self.advance
     }
 
     /// Get the phase.
-    pub fn phase(&self) -> Scalar {
+    pub const fn phase(&self) -> Scalar {
         self.phase
     }
 
     /// Get the style.
-    pub fn style(&self) -> Path1DStyle {
+    pub const fn style(&self) -> Path1DStyle {
         self.style
     }
 }
@@ -946,7 +1082,10 @@ impl PathEffect for Path1DEffect {
         }
 
         let mut distance = self.phase;
-        while distance < length {
+        loop {
+            if distance >= length {
+                break;
+            }
             // Get position and tangent at this distance
             let pos = measure.get_point_at(distance);
             let tangent = measure.get_tangent_at(distance);
@@ -1006,12 +1145,12 @@ impl Path2DEffect {
     }
 
     /// Get the matrix.
-    pub fn matrix(&self) -> &skia_rs_core::Matrix {
+    pub const fn matrix(&self) -> &skia_rs_core::Matrix {
         &self.matrix
     }
 
     /// Get the tiled path.
-    pub fn path(&self) -> &Path {
+    pub const fn path(&self) -> &Path {
         &self.path
     }
 }
@@ -1035,10 +1174,10 @@ impl PathEffect for Path2DEffect {
         let transformed_bounds = inverse.map_rect(&bounds);
 
         // Compute tile range
-        let start_x = transformed_bounds.left.floor() as i32 - 1;
-        let end_x = transformed_bounds.right.ceil() as i32 + 1;
-        let start_y = transformed_bounds.top.floor() as i32 - 1;
-        let end_y = transformed_bounds.bottom.ceil() as i32 + 1;
+        let start_x = floor_to_i32(transformed_bounds.left) - 1;
+        let end_x = ceil_to_i32(transformed_bounds.right) + 1;
+        let start_y = floor_to_i32(transformed_bounds.top) - 1;
+        let end_y = ceil_to_i32(transformed_bounds.bottom) + 1;
 
         // Limit iterations for safety
         let max_tiles = 1000;
@@ -1051,7 +1190,8 @@ impl PathEffect for Path2DEffect {
                 }
 
                 // Transform tile to world space
-                let tile_offset = skia_rs_core::Matrix::translate(x as Scalar, y as Scalar);
+                let tile_offset =
+                    skia_rs_core::Matrix::translate(scalar_from_i32(x), scalar_from_i32(y));
                 let tile_matrix = self.matrix.concat(&tile_offset);
                 let transformed_path = self.path.transformed(&tile_matrix);
 
@@ -1088,6 +1228,7 @@ impl Line2DEffect {
     ///
     /// - `width`: The width of the lines.
     /// - `matrix`: The matrix defining the line pattern orientation and spacing.
+    #[must_use]
     pub fn new(width: Scalar, matrix: skia_rs_core::Matrix) -> Option<Self> {
         if width <= 0.0 {
             return None;
@@ -1096,12 +1237,14 @@ impl Line2DEffect {
     }
 
     /// Get the line width.
-    pub fn width(&self) -> Scalar {
+    #[must_use]
+    pub const fn width(&self) -> Scalar {
         self.width
     }
 
     /// Get the matrix.
-    pub fn matrix(&self) -> &skia_rs_core::Matrix {
+    #[must_use]
+    pub const fn matrix(&self) -> &skia_rs_core::Matrix {
         &self.matrix
     }
 }
@@ -1125,20 +1268,19 @@ impl PathEffect for Line2DEffect {
         let transformed_bounds = inverse.map_rect(&bounds);
 
         // Generate horizontal lines in transformed space
-        let start_y = transformed_bounds.top.floor() as i32 - 1;
-        let end_y = transformed_bounds.bottom.ceil() as i32 + 1;
+        let start_y = floor_to_i32(transformed_bounds.top) - 1;
+        let end_y = ceil_to_i32(transformed_bounds.bottom) + 1;
 
         // Limit iterations for safety
         let max_lines = 500;
-        let mut line_count = 0;
 
-        for y in start_y..=end_y {
+        for (line_count, y) in (start_y..=end_y).enumerate() {
             if line_count >= max_lines {
                 break;
             }
 
             // Create a line from left to right
-            let y_pos = y as Scalar;
+            let y_pos = scalar_from_i32(y);
             let p0 = Point::new(transformed_bounds.left - 10.0, y_pos);
             let p1 = Point::new(transformed_bounds.right + 10.0, y_pos);
 
@@ -1150,7 +1292,7 @@ impl PathEffect for Line2DEffect {
             let half_width = self.width / 2.0;
             let dx = world_p1.x - world_p0.x;
             let dy = world_p1.y - world_p0.y;
-            let len = (dx * dx + dy * dy).sqrt();
+            let len = dx.hypot(dy);
 
             if len > 0.0 {
                 let nx = -dy / len * half_width;
@@ -1162,8 +1304,6 @@ impl PathEffect for Line2DEffect {
                 builder.line_to(world_p0.x - nx, world_p0.y - ny);
                 builder.close();
             }
-
-            line_count += 1;
         }
 
         Some(builder.build())
@@ -1179,21 +1319,25 @@ impl PathEffect for Line2DEffect {
 // =============================================================================
 
 /// Create a dash path effect.
+#[must_use]
 pub fn make_dash(intervals: Vec<Scalar>, phase: Scalar) -> Option<PathEffectRef> {
     DashEffect::new(intervals, phase).map(|e| Arc::new(e) as PathEffectRef)
 }
 
 /// Create a corner path effect.
+#[must_use]
 pub fn make_corner(radius: Scalar) -> Option<PathEffectRef> {
     CornerEffect::new(radius).map(|e| Arc::new(e) as PathEffectRef)
 }
 
 /// Create a discrete path effect.
+#[must_use]
 pub fn make_discrete(seg_length: Scalar, deviation: Scalar, seed: u32) -> Option<PathEffectRef> {
     DiscreteEffect::new(seg_length, deviation, seed).map(|e| Arc::new(e) as PathEffectRef)
 }
 
 /// Create a trim path effect.
+#[must_use]
 pub fn make_trim(start: Scalar, end: Scalar, mode: TrimMode) -> Option<PathEffectRef> {
     TrimEffect::new(start, end, mode).map(|e| Arc::new(e) as PathEffectRef)
 }
@@ -1224,6 +1368,7 @@ pub fn make_path_2d(matrix: skia_rs_core::Matrix, path: Path) -> Option<PathEffe
 }
 
 /// Create a 2D line effect.
+#[must_use]
 pub fn make_line_2d(width: Scalar, matrix: skia_rs_core::Matrix) -> Option<PathEffectRef> {
     Line2DEffect::new(width, matrix).map(|e| Arc::new(e) as PathEffectRef)
 }
@@ -1236,7 +1381,13 @@ mod tests {
     fn test_dash_effect() {
         let dash = DashEffect::new(vec![10.0, 5.0], 0.0).unwrap();
         assert_eq!(dash.intervals().len(), 2);
-        assert_eq!(dash.phase(), 0.0);
+        #[allow(
+            clippy::float_cmp,
+            reason = "exact test assertion, value round-trips a literal"
+        )]
+        {
+            assert_eq!(dash.phase(), 0.0);
+        }
     }
 
     #[test]
@@ -1244,6 +1395,29 @@ mod tests {
         let dash = DashEffect::new(vec![10.0, 5.0, 3.0], 0.0).unwrap();
         // Should be doubled to make even
         assert_eq!(dash.intervals().len(), 6);
+    }
+
+    #[test]
+    fn test_dash_closing_segment_is_dashed_continuously() {
+        use crate::PathMeasure;
+        // A closed 10x10 square (perimeter 40) dashed [5 on, 5 off] must be
+        // dashed continuously across the closing edge, giving 4 on-segments of
+        // length 5 each => total drawn length 20.
+        let mut b = PathBuilder::new();
+        b.move_to(0.0, 0.0);
+        b.line_to(10.0, 0.0);
+        b.line_to(10.0, 10.0);
+        b.line_to(0.0, 10.0);
+        b.close();
+        let square = b.build();
+
+        let effect = DashEffect::new(vec![5.0, 5.0], 0.0).unwrap();
+        let dashed = effect.apply(&square).unwrap();
+        let drawn = PathMeasure::new(&dashed).length();
+        assert!(
+            (drawn - 20.0).abs() < 1.0,
+            "closing edge must be dashed continuously: expected ~20 drawn units, got {drawn}"
+        );
     }
 
     #[test]
@@ -1260,25 +1434,65 @@ mod tests {
 
         // Each dash starts with a Move. On a curved path with length ~140,
         // we should get multiple dashes (not just one at start and one at end).
-        let moves = result.iter().filter(|e| matches!(e, PathElement::Move(_))).count();
+        let moves = result
+            .iter()
+            .filter(|e| matches!(e, PathElement::Move(_)))
+            .count();
         assert!(
             moves >= 3,
-            "Expected at least 3 dashes on curved path (curve length ~140, dash period 20), got {}",
-            moves
+            "Expected at least 3 dashes on curved path (curve length ~140, dash period 20), got {moves}"
         );
     }
 
     #[test]
     fn test_corner_effect() {
         let corner = CornerEffect::new(5.0).unwrap();
-        assert_eq!(corner.radius(), 5.0);
+        #[allow(
+            clippy::float_cmp,
+            reason = "exact test assertion, value round-trips a literal"
+        )]
+        {
+            assert_eq!(corner.radius(), 5.0);
+        }
+    }
+
+    #[test]
+    fn test_corner_effect_rounds_closed_contour_joint() {
+        // A closed square with all four corners (including the closing joint
+        // between the last and first segments) must be rounded => 4 quads.
+        let mut b = PathBuilder::new();
+        b.move_to(0.0, 0.0);
+        b.line_to(40.0, 0.0);
+        b.line_to(40.0, 40.0);
+        b.line_to(0.0, 40.0);
+        b.line_to(0.0, 0.0);
+        b.close();
+        let square = b.build();
+
+        let corner = CornerEffect::new(5.0).unwrap();
+        let rounded = corner.apply(&square).unwrap();
+        let quads = rounded
+            .iter()
+            .filter(|e| matches!(e, PathElement::Quad(_, _)))
+            .count();
+        assert_eq!(
+            quads, 4,
+            "all four corners of a closed contour must be rounded"
+        );
+        assert!(rounded.is_closed(), "rounded closed contour stays closed");
     }
 
     #[test]
     fn test_discrete_effect() {
         let discrete = DiscreteEffect::new(10.0, 5.0, 42).unwrap();
-        assert_eq!(discrete.seg_length(), 10.0);
-        assert_eq!(discrete.deviation(), 5.0);
+        #[allow(
+            clippy::float_cmp,
+            reason = "exact test assertion, values round-trip literals"
+        )]
+        {
+            assert_eq!(discrete.seg_length(), 10.0);
+            assert_eq!(discrete.deviation(), 5.0);
+        }
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! - Drawing to PDF canvas
 //! - Font embedding (Type 1, TrueType)
 //! - Image embedding (JPEG, PNG)
-//! - Transparency (ExtGState, soft masks, transparency groups)
+//! - Transparency (`ExtGState`, soft masks, transparency groups)
 //! - PDF/A compliance (ISO 19005)
 
 #![warn(missing_docs)]
@@ -42,5 +42,6 @@ pub fn subset_truetype_for_tests(
     data: &[u8],
     glyphs: &std::collections::BTreeSet<u16>,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    font::subset::subset_truetype(data, glyphs).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+    font::subset::subset_truetype(data, glyphs)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
 }

@@ -10,6 +10,7 @@
 //! - Blend shaders
 
 use bitflags::bitflags;
+use skia_rs_core::cast::{floor_to_i32, saturate_to_i32, scalar_from_i32};
 use skia_rs_core::{Color4f, Matrix, Point, Rect, Scalar};
 use std::sync::Arc;
 
@@ -40,14 +41,15 @@ pub(crate) const SHADER_KIND_EMPTY: u8 = 11;
 fn serialize_child_shader(buf: &mut Vec<u8>, shader: &ShaderRef) {
     if let Some(child_data) = shader.serialize() {
         buf.push(1);
-        buf.extend_from_slice(&(child_data.len() as u32).to_le_bytes());
+        let len = u32::try_from(child_data.len()).unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
         buf.extend_from_slice(&child_data);
     } else {
         buf.push(0);
     }
 }
 
-/// Serialize common gradient data (colors, positions, tile_mode, flags, local_matrix).
+/// Serialize common gradient data (colors, positions, `tile_mode`, flags, `local_matrix`).
 fn serialize_gradient_common(
     buf: &mut Vec<u8>,
     colors: &[Color4f],
@@ -63,7 +65,8 @@ fn serialize_gradient_common(
     buf.extend_from_slice(&flags.bits().to_le_bytes());
 
     // Colors count (4 bytes)
-    buf.extend_from_slice(&(colors.len() as u32).to_le_bytes());
+    let colors_len = u32::try_from(colors.len()).unwrap_or(u32::MAX);
+    buf.extend_from_slice(&colors_len.to_le_bytes());
     for color in colors {
         buf.extend_from_slice(&color.r.to_le_bytes());
         buf.extend_from_slice(&color.g.to_le_bytes());
@@ -111,6 +114,15 @@ fn apply_tile_mode(t: Scalar, mode: TileMode) -> Scalar {
 }
 
 /// Interpolate a gradient color at position t.
+///
+/// Positions are handled like `SkGradientBaseShader`: each explicit stop is
+/// pinned monotonic into `[prev, 1]` (`SkTPin`), a first stop greater than 0
+/// implies an extra stop at t=0 carrying the first color
+/// (`fFirstStopIsImplicit`), and a last stop below 1 implies an extra stop at
+/// t=1 carrying the last color (`fLastStopIsImplicit`).
+///
+/// Interpolation happens in the color space of `colors` as given — callers
+/// choose premultiplied or straight stops.
 #[inline]
 fn interpolate_gradient_color(
     colors: &[Color4f],
@@ -125,31 +137,47 @@ fn interpolate_gradient_color(
     }
 
     // Handle out-of-bounds for decal mode
-    if t < 0.0 || t > 1.0 {
+    if !(0.0..=1.0).contains(&t) {
         return Color4f::transparent();
     }
 
-    // If no explicit positions, use uniform distribution
-    if let Some(pos) = positions {
-        // Find the segment containing t
-        for i in 0..pos.len() - 1 {
-            if t >= pos[i] && t <= pos[i + 1] {
-                let segment_t = if pos[i + 1] > pos[i] {
-                    (t - pos[i]) / (pos[i + 1] - pos[i])
+    if let Some(pos) = positions.filter(|p| p.len() == colors.len()) {
+        // Pin positions monotonic into [0, 1] (SkTPin semantics).
+        let mut pinned: Vec<Scalar> = Vec::with_capacity(pos.len());
+        let mut prev: Scalar = 0.0;
+        for &p in pos {
+            let cur = if p.is_nan() { prev } else { p.clamp(prev, 1.0) };
+            pinned.push(cur);
+            prev = cur;
+        }
+
+        // Implicit stop at t=0: everything below the first explicit stop
+        // takes the first color.
+        if t <= pinned[0] {
+            return colors[0];
+        }
+        // Find the segment containing t.
+        for i in 0..pinned.len() - 1 {
+            if t <= pinned[i + 1] {
+                let segment_t = if pinned[i + 1] > pinned[i] {
+                    (t - pinned[i]) / (pinned[i + 1] - pinned[i])
                 } else {
                     0.0
                 };
                 return colors[i].lerp(&colors[i + 1], segment_t);
             }
         }
-        // Edge case: return last color
+        // Implicit stop at t=1: everything past the last explicit stop
+        // takes the last color.
         return colors[colors.len() - 1];
     }
 
     // Uniform positions
-    let scaled = t * (colors.len() - 1) as Scalar;
-    let idx = scaled.floor() as usize;
-    let frac = scaled - idx as Scalar;
+    let stops = i32::try_from(colors.len() - 1).unwrap_or(i32::MAX);
+    let scaled = t * scalar_from_i32(stops);
+    let idx_i32 = saturate_to_i32(scaled.floor());
+    let idx = usize::try_from(idx_i32).unwrap_or(0);
+    let frac = scaled - scalar_from_i32(idx_i32);
 
     if idx >= colors.len() - 1 {
         colors[colors.len() - 1]
@@ -159,6 +187,12 @@ fn interpolate_gradient_color(
 }
 
 /// Interpolate a gradient color at position t, honoring flags.
+///
+/// Returns a **premultiplied** color, per the `Shader::sample` contract.
+/// With `INTERPOLATE_PREMUL` the stops are premultiplied before
+/// interpolation (Skia's `kInterpolateColorsInPremul`); otherwise stops are
+/// interpolated in straight (unpremultiplied) space — Skia's default — and
+/// the result is premultiplied on output.
 #[inline]
 fn interpolate_gradient_color_with_flags(
     colors: &[Color4f],
@@ -167,31 +201,18 @@ fn interpolate_gradient_color_with_flags(
     flags: GradientFlags,
 ) -> Color4f {
     if flags.contains(GradientFlags::INTERPOLATE_PREMUL) {
-        // Convert to premul, interpolate, convert back
         if colors.is_empty() {
             return Color4f::transparent();
         }
         if colors.len() == 1 {
-            return colors[0];
+            return colors[0].premul();
         }
 
-        let premul: Vec<Color4f> = colors
-            .iter()
-            .map(|c| Color4f::new(c.r * c.a, c.g * c.a, c.b * c.a, c.a))
-            .collect();
-        let result = interpolate_gradient_color(&premul, positions, t);
-        if result.a > 1e-6 {
-            Color4f::new(
-                result.r / result.a,
-                result.g / result.a,
-                result.b / result.a,
-                result.a,
-            )
-        } else {
-            Color4f::new(0.0, 0.0, 0.0, 0.0)
-        }
+        let premul: Vec<Color4f> = colors.iter().map(skia_rs_core::Color4f::premul).collect();
+        // Already premultiplied — return as-is.
+        interpolate_gradient_color(&premul, positions, t)
     } else {
-        interpolate_gradient_color(colors, positions, t)
+        interpolate_gradient_color(colors, positions, t).premul()
     }
 }
 
@@ -211,18 +232,14 @@ fn apply_image_tile(coord: Scalar, size: Scalar, mode: TileMode) -> Scalar {
         TileMode::Clamp => coord.clamp(0.0, size - 1e-4),
         TileMode::Repeat => {
             let m = coord.rem_euclid(size);
-            if m < 0.0 {
-                m + size
-            } else {
-                m
-            }
+            if m < 0.0 { m + size } else { m }
         }
         TileMode::Mirror => {
             let n = coord.rem_euclid(2.0 * size);
             if n < size {
                 n
             } else {
-                2.0 * size - n - 1e-4
+                2.0f32.mul_add(size, -n) - 1e-4
             }
         }
         TileMode::Decal => {
@@ -239,6 +256,10 @@ fn apply_image_tile(coord: Scalar, size: Scalar, mode: TileMode) -> Scalar {
 ///
 /// Returns premultiplied Color4f in [0, 1]. For non-RGBA8 color types,
 /// the read is simplified (baseline support).
+#[allow(
+    clippy::many_single_char_names,
+    reason = "r/g/b/a are the conventional names for color channel components"
+)]
 fn read_pixel_rgba8(
     pixels: &[u8],
     info: &skia_rs_core::pixel::ImageInfo,
@@ -248,38 +269,42 @@ fn read_pixel_rgba8(
     use skia_rs_core::color::ColorType;
     let bpp = info.bytes_per_pixel();
     let row_bytes = info.min_row_bytes();
-    let offset = (y as usize) * row_bytes + (x as usize) * bpp;
+    let x = usize::try_from(x).unwrap_or(usize::MAX);
+    let y = usize::try_from(y).unwrap_or(usize::MAX);
+    let offset = y * row_bytes + x * bpp;
     if offset + bpp > pixels.len() {
         return Color4f::new(0.0, 0.0, 0.0, 0.0);
     }
 
     match info.color_type {
         ColorType::Rgba8888 => {
-            let r = pixels[offset] as f32 / 255.0;
-            let g = pixels[offset + 1] as f32 / 255.0;
-            let b = pixels[offset + 2] as f32 / 255.0;
-            let a = pixels[offset + 3] as f32 / 255.0;
+            let r = f32::from(pixels[offset]) / 255.0;
+            let g = f32::from(pixels[offset + 1]) / 255.0;
+            let b = f32::from(pixels[offset + 2]) / 255.0;
+            let a = f32::from(pixels[offset + 3]) / 255.0;
             Color4f::new(r, g, b, a)
         }
         ColorType::Bgra8888 => {
-            let b = pixels[offset] as f32 / 255.0;
-            let g = pixels[offset + 1] as f32 / 255.0;
-            let r = pixels[offset + 2] as f32 / 255.0;
-            let a = pixels[offset + 3] as f32 / 255.0;
+            let b = f32::from(pixels[offset]) / 255.0;
+            let g = f32::from(pixels[offset + 1]) / 255.0;
+            let r = f32::from(pixels[offset + 2]) / 255.0;
+            let a = f32::from(pixels[offset + 3]) / 255.0;
             Color4f::new(r, g, b, a)
         }
         ColorType::Rgb888x => {
-            let r = pixels[offset] as f32 / 255.0;
-            let g = pixels[offset + 1] as f32 / 255.0;
-            let b = pixels[offset + 2] as f32 / 255.0;
+            let r = f32::from(pixels[offset]) / 255.0;
+            let g = f32::from(pixels[offset + 1]) / 255.0;
+            let b = f32::from(pixels[offset + 2]) / 255.0;
             Color4f::new(r, g, b, 1.0)
         }
         ColorType::Alpha8 => {
-            let a = pixels[offset] as f32 / 255.0;
-            Color4f::new(a, a, a, a) // premultiplied white
+            // Alpha-only sources decode as black with alpha (0,0,0,a);
+            // upstream colorizes by the paint color at draw time.
+            let a = f32::from(pixels[offset]) / 255.0;
+            Color4f::new(0.0, 0.0, 0.0, a)
         }
         ColorType::Gray8 => {
-            let g = pixels[offset] as f32 / 255.0;
+            let g = f32::from(pixels[offset]) / 255.0;
             Color4f::new(g, g, g, 1.0)
         }
         _ => Color4f::new(0.0, 0.0, 0.0, 0.0),
@@ -328,7 +353,15 @@ pub trait Shader: Send + Sync + std::fmt::Debug {
     /// Sample the shader at a given point.
     ///
     /// The point is in the shader's local coordinate space (after applying
-    /// any local matrix). Returns the color at that point.
+    /// any local matrix).
+    ///
+    /// **Contract: the returned color is premultiplied.** This matches
+    /// Skia's raster pipeline, where shader stages emit premultiplied
+    /// colors that feed directly into blend stages
+    /// (`skia/src/opts/SkRasterPipeline_opts.h`). All shaders in this crate
+    /// (solid colors, gradients, images, blends, runtime effects) follow
+    /// this convention, and `BlendMode::apply` expects premultiplied
+    /// inputs. Consumers that need straight alpha must unpremultiply.
     fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
         // Default implementation returns transparent
         let _ = (x, y);
@@ -338,9 +371,23 @@ pub trait Shader: Send + Sync + std::fmt::Debug {
     /// Serialize this shader to bytes.
     ///
     /// Returns `None` for shader types that do not support serialization
-    /// (e.g., runtime shaders with SkSL source). Built-in shaders override
+    /// (e.g., runtime shaders with `SkSL` source). Built-in shaders override
     /// this to return `Some(bytes)`.
     fn serialize(&self) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// Concrete-type downcast hook.
+    ///
+    /// Returns `Some(self as &dyn Any)` for shaders that support exact
+    /// parameter extraction (the built-in gradients), enabling consumers such
+    /// as the GPU paint bridge to read real geometry — endpoints, radius,
+    /// angles, color stops — rather than probing via [`Shader::sample`].
+    /// Defaults to `None`; a `None` result means the caller must fall back to
+    /// sampling. Kept as an explicit accessor (rather than an `Any`
+    /// supertrait) to stay within the crate's MSRV, which predates trait
+    /// upcasting.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         None
     }
 }
@@ -383,13 +430,15 @@ pub struct ColorShader {
 impl ColorShader {
     /// Create a new solid color shader.
     #[inline]
-    pub fn new(color: Color4f) -> Self {
+    #[must_use]
+    pub const fn new(color: Color4f) -> Self {
         Self { color }
     }
 
     /// Get the color.
     #[inline]
-    pub fn color(&self) -> Color4f {
+    #[must_use]
+    pub const fn color(&self) -> Color4f {
         self.color
     }
 }
@@ -408,7 +457,8 @@ impl Shader for ColorShader {
     }
 
     fn sample(&self, _x: Scalar, _y: Scalar) -> Color4f {
-        self.color
+        // sample() returns premultiplied color; the stored color is straight.
+        self.color.premul()
     }
 
     fn serialize(&self) -> Option<Vec<u8>> {
@@ -438,7 +488,8 @@ pub struct LinearGradient {
 
 impl LinearGradient {
     /// Create a new linear gradient.
-    pub fn new(
+    #[must_use]
+    pub const fn new(
         start: Point,
         end: Point,
         colors: Vec<Color4f>,
@@ -457,44 +508,51 @@ impl LinearGradient {
     }
 
     /// Set the local matrix.
-    pub fn with_local_matrix(mut self, matrix: Matrix) -> Self {
+    #[must_use]
+    pub const fn with_local_matrix(mut self, matrix: Matrix) -> Self {
         self.local_matrix = Some(matrix);
         self
     }
 
     /// Set gradient flags.
-    pub fn with_flags(mut self, flags: GradientFlags) -> Self {
+    #[must_use]
+    pub const fn with_flags(mut self, flags: GradientFlags) -> Self {
         self.flags = flags;
         self
     }
 
     /// Get the start point.
     #[inline]
-    pub fn start(&self) -> Point {
+    #[must_use]
+    pub const fn start(&self) -> Point {
         self.start
     }
 
     /// Get the end point.
     #[inline]
-    pub fn end(&self) -> Point {
+    #[must_use]
+    pub const fn end(&self) -> Point {
         self.end
     }
 
     /// Get the colors.
     #[inline]
+    #[must_use]
     pub fn colors(&self) -> &[Color4f] {
         &self.colors
     }
 
     /// Get the positions.
     #[inline]
+    #[must_use]
     pub fn positions(&self) -> Option<&[Scalar]> {
         self.positions.as_deref()
     }
 
     /// Get the tile mode.
     #[inline]
-    pub fn tile_mode(&self) -> TileMode {
+    #[must_use]
+    pub const fn tile_mode(&self) -> TileMode {
         self.tile_mode
     }
 }
@@ -512,25 +570,30 @@ impl Shader for LinearGradient {
         ShaderKind::LinearGradient
     }
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
         // Calculate the projection of the point onto the gradient line
         let dx = self.end.x - self.start.x;
         let dy = self.end.y - self.start.y;
-        let len_sq = dx * dx + dy * dy;
+        let len_sq = dx.mul_add(dx, dy * dy);
 
         if len_sq < 1e-10 {
             // Degenerate gradient (start == end)
             return self
                 .colors
                 .first()
-                .cloned()
-                .unwrap_or(Color4f::transparent());
+                .copied()
+                .unwrap_or(Color4f::transparent())
+                .premul();
         }
 
         // Project point onto gradient line
         let px = x - self.start.x;
         let py = y - self.start.y;
-        let mut t = (px * dx + py * dy) / len_sq;
+        let mut t = px.mul_add(dx, py * dy) / len_sq;
 
         // Apply tile mode
         t = apply_tile_mode(t, self.tile_mode);
@@ -586,7 +649,8 @@ pub struct RadialGradient {
 
 impl RadialGradient {
     /// Create a new radial gradient.
-    pub fn new(
+    #[must_use]
+    pub const fn new(
         center: Point,
         radius: Scalar,
         colors: Vec<Color4f>,
@@ -605,44 +669,51 @@ impl RadialGradient {
     }
 
     /// Set the local matrix.
-    pub fn with_local_matrix(mut self, matrix: Matrix) -> Self {
+    #[must_use]
+    pub const fn with_local_matrix(mut self, matrix: Matrix) -> Self {
         self.local_matrix = Some(matrix);
         self
     }
 
     /// Set gradient flags.
-    pub fn with_flags(mut self, flags: GradientFlags) -> Self {
+    #[must_use]
+    pub const fn with_flags(mut self, flags: GradientFlags) -> Self {
         self.flags = flags;
         self
     }
 
     /// Get the center point.
     #[inline]
-    pub fn center(&self) -> Point {
+    #[must_use]
+    pub const fn center(&self) -> Point {
         self.center
     }
 
     /// Get the radius.
     #[inline]
-    pub fn radius(&self) -> Scalar {
+    #[must_use]
+    pub const fn radius(&self) -> Scalar {
         self.radius
     }
 
     /// Get the colors.
     #[inline]
+    #[must_use]
     pub fn colors(&self) -> &[Color4f] {
         &self.colors
     }
 
     /// Get the positions.
     #[inline]
+    #[must_use]
     pub fn positions(&self) -> Option<&[Scalar]> {
         self.positions.as_deref()
     }
 
     /// Get the tile mode.
     #[inline]
-    pub fn tile_mode(&self) -> TileMode {
+    #[must_use]
+    pub const fn tile_mode(&self) -> TileMode {
         self.tile_mode
     }
 }
@@ -660,19 +731,24 @@ impl Shader for RadialGradient {
         ShaderKind::RadialGradient
     }
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
         if self.radius <= 0.0 {
             return self
                 .colors
                 .first()
-                .cloned()
-                .unwrap_or(Color4f::transparent());
+                .copied()
+                .unwrap_or(Color4f::transparent())
+                .premul();
         }
 
         // Calculate distance from center
         let dx = x - self.center.x;
         let dy = y - self.center.y;
-        let dist = (dx * dx + dy * dy).sqrt();
+        let dist = dx.hypot(dy);
         let mut t = dist / self.radius;
 
         // Apply tile mode
@@ -731,7 +807,8 @@ impl SweepGradient {
     /// Create a new sweep gradient.
     ///
     /// Angles are in degrees, with 0 pointing right and increasing clockwise.
-    pub fn new(
+    #[must_use]
+    pub const fn new(
         center: Point,
         start_angle: Scalar,
         end_angle: Scalar,
@@ -752,48 +829,60 @@ impl SweepGradient {
     }
 
     /// Create a full sweep gradient (0-360 degrees).
-    pub fn new_full(center: Point, colors: Vec<Color4f>, positions: Option<Vec<Scalar>>) -> Self {
+    #[must_use]
+    pub const fn new_full(
+        center: Point,
+        colors: Vec<Color4f>,
+        positions: Option<Vec<Scalar>>,
+    ) -> Self {
         Self::new(center, 0.0, 360.0, colors, positions, TileMode::Clamp)
     }
 
     /// Set the local matrix.
-    pub fn with_local_matrix(mut self, matrix: Matrix) -> Self {
+    #[must_use]
+    pub const fn with_local_matrix(mut self, matrix: Matrix) -> Self {
         self.local_matrix = Some(matrix);
         self
     }
 
     /// Set gradient flags.
-    pub fn with_flags(mut self, flags: GradientFlags) -> Self {
+    #[must_use]
+    pub const fn with_flags(mut self, flags: GradientFlags) -> Self {
         self.flags = flags;
         self
     }
 
     /// Get the center point.
     #[inline]
-    pub fn center(&self) -> Point {
+    #[must_use]
+    pub const fn center(&self) -> Point {
         self.center
     }
 
     /// Get the start angle in degrees.
     #[inline]
-    pub fn start_angle(&self) -> Scalar {
+    #[must_use]
+    pub const fn start_angle(&self) -> Scalar {
         self.start_angle
     }
 
     /// Get the end angle in degrees.
     #[inline]
-    pub fn end_angle(&self) -> Scalar {
+    #[must_use]
+    pub const fn end_angle(&self) -> Scalar {
         self.end_angle
     }
 
     /// Get the colors.
     #[inline]
+    #[must_use]
     pub fn colors(&self) -> &[Color4f] {
         &self.colors
     }
 
     /// Get the positions.
     #[inline]
+    #[must_use]
     pub fn positions(&self) -> Option<&[Scalar]> {
         self.positions.as_deref()
     }
@@ -810,6 +899,10 @@ impl Shader for SweepGradient {
 
     fn shader_kind(&self) -> ShaderKind {
         ShaderKind::SweepGradient
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
@@ -888,7 +981,8 @@ pub struct TwoPointConicalGradient {
 
 impl TwoPointConicalGradient {
     /// Create a new two-point conical gradient.
-    pub fn new(
+    #[must_use]
+    pub const fn new(
         start_center: Point,
         start_radius: Scalar,
         end_center: Point,
@@ -911,56 +1005,65 @@ impl TwoPointConicalGradient {
     }
 
     /// Set the local matrix.
-    pub fn with_local_matrix(mut self, matrix: Matrix) -> Self {
+    #[must_use]
+    pub const fn with_local_matrix(mut self, matrix: Matrix) -> Self {
         self.local_matrix = Some(matrix);
         self
     }
 
     /// Set gradient flags.
-    pub fn with_flags(mut self, flags: GradientFlags) -> Self {
+    #[must_use]
+    pub const fn with_flags(mut self, flags: GradientFlags) -> Self {
         self.flags = flags;
         self
     }
 
     /// Get the start center.
     #[inline]
-    pub fn start_center(&self) -> Point {
+    #[must_use]
+    pub const fn start_center(&self) -> Point {
         self.start_center
     }
 
     /// Get the start radius.
     #[inline]
-    pub fn start_radius(&self) -> Scalar {
+    #[must_use]
+    pub const fn start_radius(&self) -> Scalar {
         self.start_radius
     }
 
     /// Get the end center.
     #[inline]
-    pub fn end_center(&self) -> Point {
+    #[must_use]
+    pub const fn end_center(&self) -> Point {
         self.end_center
     }
 
     /// Get the end radius.
     #[inline]
-    pub fn end_radius(&self) -> Scalar {
+    #[must_use]
+    pub const fn end_radius(&self) -> Scalar {
         self.end_radius
     }
 
     /// Get the colors.
     #[inline]
+    #[must_use]
     pub fn colors(&self) -> &[Color4f] {
         &self.colors
     }
 
     /// Get the positions.
     #[inline]
+    #[must_use]
     pub fn positions(&self) -> Option<&[Scalar]> {
         self.positions.as_deref()
     }
 
     /// Get the tile mode.
     #[inline]
-    pub fn tile_mode(&self) -> TileMode {
+    #[must_use]
+    pub const fn tile_mode(&self) -> TileMode {
         self.tile_mode
     }
 }
@@ -978,6 +1081,10 @@ impl Shader for TwoPointConicalGradient {
         ShaderKind::TwoPointConicalGradient
     }
 
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "faithful port of Skia's two-point-conical quadratic solve; a/b/c/d/dr/e/t0/t1 mirror the derivation in the comment above"
+    )]
     fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
         // Two-point conical gradient: solve quadratic for parameter t.
         // Point P at (x, y). Circles C0 = start_center (radius r0) and
@@ -1007,17 +1114,15 @@ impl Shader for TwoPointConicalGradient {
         let ex = x - self.start_center.x;
         let ey = y - self.start_center.y;
 
-        let a = dx * dx + dy * dy - dr * dr;
-        let b = -2.0 * (ex * dx + ey * dy + self.start_radius * dr);
-        let c = ex * ex + ey * ey - self.start_radius * self.start_radius;
+        let a = dr.mul_add(-dr, dx.mul_add(dx, dy * dy));
+        let b = -2.0 * self.start_radius.mul_add(dr, ex.mul_add(dx, ey * dy));
+        let c = self
+            .start_radius
+            .mul_add(-self.start_radius, ex.mul_add(ex, ey * ey));
 
         let t_opt = if a.abs() < 1e-7 {
             // Linear case (d.d == dr^2): B*t + C = 0
-            if b.abs() < 1e-7 {
-                None
-            } else {
-                Some(-c / b)
-            }
+            if b.abs() < 1e-7 { None } else { Some(-c / b) }
         } else {
             let disc = b * b - 4.0 * a * c;
             if disc < 0.0 {
@@ -1025,30 +1130,38 @@ impl Shader for TwoPointConicalGradient {
             } else {
                 let sqrt_disc = disc.sqrt();
                 // Two roots represent two circles the point could lie on.
-                // We want the circle closest to the start (smallest valid t).
+                // Skia's well-behaved (non-swapped) case takes the +sqrt,
+                // i.e. the LARGER t; the smaller root is only used when the
+                // larger one yields a negative interpolated radius (the
+                // swapped/negative-focal case).
                 let t0 = (-b + sqrt_disc) / (2.0 * a);
                 let t1 = (-b - sqrt_disc) / (2.0 * a);
-                // Prefer the root whose interpolated radius is non-negative
-                let r_at = |t: Scalar| self.start_radius + t * dr;
-                let t0_valid = r_at(t0) >= 0.0;
-                let t1_valid = r_at(t1) >= 0.0;
-                match (t0_valid, t1_valid) {
-                    (true, true) => Some(t0.min(t1)),
-                    (true, false) => Some(t0),
-                    (false, true) => Some(t1),
-                    (false, false) => None,
+                let t_larger = t0.max(t1);
+                let t_smaller = t0.min(t1);
+                let r_at = |t: Scalar| t.mul_add(dr, self.start_radius);
+                if r_at(t_larger) >= 0.0 {
+                    Some(t_larger)
+                } else if r_at(t_smaller) >= 0.0 {
+                    Some(t_smaller)
+                } else {
+                    None
                 }
             }
         };
 
-        let t = match t_opt {
-            Some(t) => t,
-            None => return Color4f::transparent(),
+        let Some(t) = t_opt else {
+            return Color4f::transparent();
         };
 
-        // Apply tile mode to t, then interpolate colors.
+        // Apply tile mode to t, then interpolate colors (honoring flags,
+        // e.g. INTERPOLATE_PREMUL, like the other gradient kinds).
         let t_tiled = apply_tile_mode(t, self.tile_mode);
-        interpolate_gradient_color(&self.colors, self.positions.as_deref(), t_tiled)
+        interpolate_gradient_color_with_flags(
+            &self.colors,
+            self.positions.as_deref(),
+            t_tiled,
+            self.flags,
+        )
     }
 
     fn serialize(&self) -> Option<Vec<u8>> {
@@ -1102,7 +1215,7 @@ pub struct ImageShader {
 }
 
 /// Sampling options for image shaders.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SamplingOptions {
     /// Filter mode.
     pub filter: FilterMode,
@@ -1156,7 +1269,8 @@ impl SamplingOptions {
 
 impl ImageShader {
     /// Create a new image shader.
-    pub fn new(
+    #[must_use]
+    pub const fn new(
         bounds: Rect,
         tile_mode_x: TileMode,
         tile_mode_y: TileMode,
@@ -1174,16 +1288,22 @@ impl ImageShader {
     }
 
     /// Create an image shader with the same tile mode for both axes.
-    pub fn with_tile_mode(bounds: Rect, tile_mode: TileMode, sampling: SamplingOptions) -> Self {
+    #[must_use]
+    pub const fn with_tile_mode(
+        bounds: Rect,
+        tile_mode: TileMode,
+        sampling: SamplingOptions,
+    ) -> Self {
         Self::new(bounds, tile_mode, tile_mode, sampling)
     }
 
-    /// Create an ImageShader with owned pixel data.
+    /// Create an `ImageShader` with owned pixel data.
     ///
     /// Pixels are treated as premultiplied RGBA8 in the sRGB color space.
-    /// The image_info should describe the width, height, color type, and
+    /// The `image_info` should describe the width, height, color type, and
     /// row bytes of the pixel buffer.
-    pub fn with_pixels(
+    #[must_use]
+    pub const fn with_pixels(
         pixels: Arc<Vec<u8>>,
         image_info: skia_rs_core::pixel::ImageInfo,
         tile_mode_x: TileMode,
@@ -1193,8 +1313,8 @@ impl ImageShader {
         let bounds = Rect::from_xywh(
             0.0,
             0.0,
-            image_info.width() as Scalar,
-            image_info.height() as Scalar,
+            scalar_from_i32(image_info.width()),
+            scalar_from_i32(image_info.height()),
         );
         Self {
             bounds,
@@ -1208,32 +1328,37 @@ impl ImageShader {
     }
 
     /// Set the local matrix.
-    pub fn with_local_matrix(mut self, matrix: Matrix) -> Self {
+    #[must_use]
+    pub const fn with_local_matrix(mut self, matrix: Matrix) -> Self {
         self.local_matrix = Some(matrix);
         self
     }
 
     /// Get the image bounds.
     #[inline]
-    pub fn bounds(&self) -> Rect {
+    #[must_use]
+    pub const fn bounds(&self) -> Rect {
         self.bounds
     }
 
     /// Get the X tile mode.
     #[inline]
-    pub fn tile_mode_x(&self) -> TileMode {
+    #[must_use]
+    pub const fn tile_mode_x(&self) -> TileMode {
         self.tile_mode_x
     }
 
     /// Get the Y tile mode.
     #[inline]
-    pub fn tile_mode_y(&self) -> TileMode {
+    #[must_use]
+    pub const fn tile_mode_y(&self) -> TileMode {
         self.tile_mode_y
     }
 
     /// Get the sampling options.
     #[inline]
-    pub fn sampling(&self) -> SamplingOptions {
+    #[must_use]
+    pub const fn sampling(&self) -> SamplingOptions {
         self.sampling
     }
 }
@@ -1255,19 +1380,62 @@ impl Shader for ImageShader {
             return Color4f::new(0.0, 0.0, 0.0, 0.0);
         }
 
-        // Apply tile mode to map arbitrary (x, y) into [0, width) x [0, height).
-        let sx = apply_image_tile(x, width as Scalar, self.tile_mode_x);
-        let sy = apply_image_tile(y, height as Scalar, self.tile_mode_y);
+        match self.sampling.filter {
+            FilterMode::Nearest => {
+                // Apply tile mode to map (x, y) into [0, width) x [0, height).
+                let sx = apply_image_tile(x, scalar_from_i32(width), self.tile_mode_x);
+                let sy = apply_image_tile(y, scalar_from_i32(height), self.tile_mode_y);
 
-        if !sx.is_finite() || !sy.is_finite() || sx < 0.0 || sy < 0.0 {
-            return Color4f::new(0.0, 0.0, 0.0, 0.0);
+                if !sx.is_finite() || !sy.is_finite() || sx < 0.0 || sy < 0.0 {
+                    return Color4f::new(0.0, 0.0, 0.0, 0.0);
+                }
+
+                // Nearest-neighbor sampling: round down to integer pixel.
+                let ix = floor_to_i32(sx).clamp(0, width - 1);
+                let iy = floor_to_i32(sy).clamp(0, height - 1);
+
+                read_pixel_rgba8(pixels, info, ix, iy)
+            }
+            FilterMode::Linear => {
+                // Bilinear filtering: texel centers sit at integer + 0.5, so
+                // shift by 0.5 and blend the four surrounding texels. Each
+                // neighbor coordinate is mapped through the tile mode; Decal
+                // neighbors outside the image contribute transparent.
+                let fx = x - 0.5;
+                let fy = y - 0.5;
+                let x0 = fx.floor();
+                let y0 = fy.floor();
+                let wx = fx - x0;
+                let wy = fy - y0;
+
+                let texel = |tx: Scalar, ty: Scalar| -> Color4f {
+                    let sx = apply_image_tile(tx, scalar_from_i32(width), self.tile_mode_x);
+                    let sy = apply_image_tile(ty, scalar_from_i32(height), self.tile_mode_y);
+                    if !sx.is_finite() || !sy.is_finite() || sx < 0.0 || sy < 0.0 {
+                        return Color4f::new(0.0, 0.0, 0.0, 0.0);
+                    }
+                    let ix = floor_to_i32(sx).clamp(0, width - 1);
+                    let iy = floor_to_i32(sy).clamp(0, height - 1);
+                    read_pixel_rgba8(pixels, info, ix, iy)
+                };
+
+                let c00 = texel(x0, y0);
+                let c10 = texel(x0 + 1.0, y0);
+                let c01 = texel(x0, y0 + 1.0);
+                let c11 = texel(x0 + 1.0, y0 + 1.0);
+
+                let lerp = |a: f32, b: f32, t: f32| (b - a).mul_add(t, a);
+                let bilerp = |c00: f32, c10: f32, c01: f32, c11: f32| {
+                    lerp(lerp(c00, c10, wx), lerp(c01, c11, wx), wy)
+                };
+                Color4f::new(
+                    bilerp(c00.r, c10.r, c01.r, c11.r),
+                    bilerp(c00.g, c10.g, c01.g, c11.g),
+                    bilerp(c00.b, c10.b, c01.b, c11.b),
+                    bilerp(c00.a, c10.a, c01.a, c11.a),
+                )
+            }
         }
-
-        // Nearest-neighbor sampling: round down to integer pixel.
-        let ix = (sx as i32).clamp(0, width - 1);
-        let iy = (sy as i32).clamp(0, height - 1);
-
-        read_pixel_rgba8(pixels, info, ix, iy)
     }
 
     fn is_opaque(&self) -> bool {
@@ -1313,13 +1481,16 @@ impl Shader for ImageShader {
             buf.push(1); // present
 
             // ImageInfo fields
-            buf.extend_from_slice(&(info.width() as u32).to_le_bytes());
-            buf.extend_from_slice(&(info.height() as u32).to_le_bytes());
+            let img_w = u32::try_from(info.width()).unwrap_or(0);
+            let img_h = u32::try_from(info.height()).unwrap_or(0);
+            buf.extend_from_slice(&img_w.to_le_bytes());
+            buf.extend_from_slice(&img_h.to_le_bytes());
             buf.push(info.color_type as u8);
             buf.push(info.alpha_type as u8);
 
             // Pixel data length + data
-            buf.extend_from_slice(&(pixels.len() as u32).to_le_bytes());
+            let pixels_len = u32::try_from(pixels.len()).unwrap_or(u32::MAX);
+            buf.extend_from_slice(&pixels_len.to_le_bytes());
             buf.extend_from_slice(pixels);
         } else {
             buf.push(0); // absent
@@ -1351,18 +1522,21 @@ impl BlendShader {
 
     /// Get the blend mode.
     #[inline]
-    pub fn blend_mode(&self) -> crate::BlendMode {
+    #[must_use]
+    pub const fn blend_mode(&self) -> crate::BlendMode {
         self.blend_mode
     }
 
     /// Get the destination shader.
     #[inline]
+    #[must_use]
     pub fn dst(&self) -> &ShaderRef {
         &self.dst
     }
 
     /// Get the source shader.
     #[inline]
+    #[must_use]
     pub fn src(&self) -> &ShaderRef {
         &self.src
     }
@@ -1408,7 +1582,7 @@ impl Shader for BlendShader {
 /// Perlin noise generator based on Ken Perlin's classic algorithm.
 ///
 /// Produces smoothly-varying pseudo-random values in the range roughly [-1, 1]
-/// for noise, or [0, 1] for turbulence (which uses abs()). The classic Perlin
+/// for noise, or [0, 1] for turbulence (which uses `abs()`). The classic Perlin
 /// noise uses a 256-entry permutation table and interpolates gradients at
 /// integer lattice points.
 #[derive(Debug, Clone)]
@@ -1424,15 +1598,15 @@ struct PerlinNoiseGenerator {
 impl PerlinNoiseGenerator {
     fn new(seed: u32) -> Self {
         // Linear-congruential generator for reproducibility.
-        let mut state = if seed == 0 { 0xdeadbeef } else { seed };
+        let mut state = if seed == 0 { 0xdead_beef } else { seed };
         let mut rand_u8 = || -> u8 {
             state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
             ((state >> 16) & 0xff) as u8
         };
 
         let mut perm_table = [0u16; 256];
-        for i in 0..256 {
-            perm_table[i] = i as u16;
+        for (i, slot) in perm_table.iter_mut().enumerate() {
+            *slot = u16::try_from(i).unwrap_or(u16::MAX);
         }
         // Fisher-Yates shuffle
         for i in (1..256).rev() {
@@ -1448,39 +1622,44 @@ impl PerlinNoiseGenerator {
         // Gradient table: unit vectors at 8 directions
         let mut grad_x = [0.0f32; 256];
         let mut grad_y = [0.0f32; 256];
-        for i in 0..256 {
-            let angle = (i as f32) * std::f32::consts::TAU / 256.0;
-            grad_x[i] = angle.cos();
-            grad_y[i] = angle.sin();
+        for (i, (gx, gy)) in grad_x.iter_mut().zip(grad_y.iter_mut()).enumerate() {
+            let angle =
+                scalar_from_i32(i32::try_from(i).unwrap_or(0)) * std::f32::consts::TAU / 256.0;
+            *gx = angle.cos();
+            *gy = angle.sin();
         }
 
-        Self { perm, grad_x, grad_y }
+        Self {
+            perm,
+            grad_x,
+            grad_y,
+        }
     }
 
     /// Evaluate classic 2D Perlin noise at (x, y). Returns approximately [-1, 1].
     fn noise_2d(&self, x: f32, y: f32) -> f32 {
-        let xi = x.floor() as i32;
-        let yi = y.floor() as i32;
-        let xf = x - (xi as f32);
-        let yf = y - (yi as f32);
+        let xi = floor_to_i32(x);
+        let yi = floor_to_i32(y);
+        let xf = x - scalar_from_i32(xi);
+        let yf = y - scalar_from_i32(yi);
 
         let u = fade(xf);
         let v = fade(yf);
 
-        let xi0 = (xi & 255) as usize;
-        let yi0 = (yi & 255) as usize;
-        let xi1 = ((xi + 1) & 255) as usize;
-        let yi1 = ((yi + 1) & 255) as usize;
+        let xi0 = usize::try_from(xi & 255).unwrap_or(0);
+        let yi0 = usize::try_from(yi & 255).unwrap_or(0);
+        let xi1 = usize::try_from((xi + 1) & 255).unwrap_or(0);
+        let yi1 = usize::try_from((yi + 1) & 255).unwrap_or(0);
 
         let g00 = self.perm[(self.perm[xi0] as usize + yi0) & 511] as usize;
         let g10 = self.perm[(self.perm[xi1] as usize + yi0) & 511] as usize;
         let g01 = self.perm[(self.perm[xi0] as usize + yi1) & 511] as usize;
         let g11 = self.perm[(self.perm[xi1] as usize + yi1) & 511] as usize;
 
-        let d00 = self.grad_x[g00] * xf + self.grad_y[g00] * yf;
-        let d10 = self.grad_x[g10] * (xf - 1.0) + self.grad_y[g10] * yf;
-        let d01 = self.grad_x[g01] * xf + self.grad_y[g01] * (yf - 1.0);
-        let d11 = self.grad_x[g11] * (xf - 1.0) + self.grad_y[g11] * (yf - 1.0);
+        let d00 = self.grad_x[g00].mul_add(xf, self.grad_y[g00] * yf);
+        let d10 = self.grad_x[g10].mul_add(xf - 1.0, self.grad_y[g10] * yf);
+        let d01 = self.grad_x[g01].mul_add(xf, self.grad_y[g01] * (yf - 1.0));
+        let d11 = self.grad_x[g11].mul_add(xf - 1.0, self.grad_y[g11] * (yf - 1.0));
 
         let ix0 = lerp(d00, d10, u);
         let ix1 = lerp(d01, d11, u);
@@ -1499,11 +1678,7 @@ impl PerlinNoiseGenerator {
             freq *= 2.0;
             amp *= 0.5;
         }
-        if max_val > 0.0 {
-            total / max_val
-        } else {
-            0.0
-        }
+        if max_val > 0.0 { total / max_val } else { 0.0 }
     }
 
     /// Turbulence (absolute value of octave sum).
@@ -1529,12 +1704,12 @@ impl PerlinNoiseGenerator {
 #[inline]
 fn fade(t: f32) -> f32 {
     // Ken Perlin's improved fade: 6t^5 - 15t^4 + 10t^3
-    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+    t * t * t * t.mul_add(t.mul_add(6.0, -15.0), 10.0)
 }
 
 #[inline]
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a + (b - a) * t
+    (b - a).mul_add(t, a)
 }
 
 /// Perlin noise shader.
@@ -1563,7 +1738,8 @@ pub enum NoiseType {
 
 impl PerlinNoiseShader {
     /// Create a fractal noise shader.
-    pub fn fractal_noise(
+    #[must_use]
+    pub const fn fractal_noise(
         base_frequency_x: Scalar,
         base_frequency_y: Scalar,
         num_octaves: i32,
@@ -1581,7 +1757,8 @@ impl PerlinNoiseShader {
     }
 
     /// Create a turbulence shader.
-    pub fn turbulence(
+    #[must_use]
+    pub const fn turbulence(
         base_frequency_x: Scalar,
         base_frequency_y: Scalar,
         num_octaves: i32,
@@ -1599,38 +1776,39 @@ impl PerlinNoiseShader {
     }
 
     /// Set the tile size for seamless tiling.
-    pub fn with_tile_size(mut self, width: i32, height: i32) -> Self {
+    #[must_use]
+    pub const fn with_tile_size(mut self, width: i32, height: i32) -> Self {
         self.tile_size = Some((width, height));
         self
     }
 
     /// Get the noise type.
     #[inline]
-    pub fn noise_type(&self) -> NoiseType {
+    pub const fn noise_type(&self) -> NoiseType {
         self.noise_type
     }
 
     /// Get the base frequency X.
     #[inline]
-    pub fn base_frequency_x(&self) -> Scalar {
+    pub const fn base_frequency_x(&self) -> Scalar {
         self.base_frequency_x
     }
 
     /// Get the base frequency Y.
     #[inline]
-    pub fn base_frequency_y(&self) -> Scalar {
+    pub const fn base_frequency_y(&self) -> Scalar {
         self.base_frequency_y
     }
 
     /// Get the number of octaves.
     #[inline]
-    pub fn num_octaves(&self) -> i32 {
+    pub const fn num_octaves(&self) -> i32 {
         self.num_octaves
     }
 
     /// Get the seed.
     #[inline]
-    pub fn seed(&self) -> Scalar {
+    pub const fn seed(&self) -> Scalar {
         self.seed
     }
 }
@@ -1648,16 +1826,26 @@ impl Shader for PerlinNoiseShader {
         ShaderKind::PerlinNoise
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "seed is only used to deterministically initialize the noise LCG; the float bit pattern is saturated into u32, no core cast helper covers f32->u32 and the exact numeric value carries no meaning beyond reproducibility"
+    )]
     fn sample(&self, x: Scalar, y: Scalar) -> Color4f {
-        let generator = self.generator.get_or_init(|| PerlinNoiseGenerator::new(self.seed as u32));
+        let generator = self
+            .generator
+            .get_or_init(|| PerlinNoiseGenerator::new(self.seed as u32));
         let fx = x * self.base_frequency_x;
         let fy = y * self.base_frequency_y;
-        let octaves = self.num_octaves.max(1) as u32;
+        let octaves = u32::try_from(self.num_octaves.max(1)).unwrap_or(1);
 
         let value = match self.noise_type {
             NoiseType::FractalNoise => {
                 // Map fractal noise from [-1, 1] to [0, 1]
-                (generator.fractal_2d(fx, fy, octaves) * 0.5 + 0.5).clamp(0.0, 1.0)
+                generator
+                    .fractal_2d(fx, fy, octaves)
+                    .mul_add(0.5, 0.5)
+                    .clamp(0.0, 1.0)
             }
             NoiseType::Turbulence => generator.turbulence_2d(fx, fy, octaves),
         };
@@ -1721,13 +1909,15 @@ impl LocalMatrixShader {
 
     /// Get the inner shader.
     #[inline]
+    #[must_use]
     pub fn inner(&self) -> &ShaderRef {
         &self.inner
     }
 
     /// Get the matrix.
     #[inline]
-    pub fn matrix(&self) -> &Matrix {
+    #[must_use]
+    pub const fn matrix(&self) -> &Matrix {
         &self.matrix
     }
 }
@@ -1751,13 +1941,10 @@ impl Shader for LocalMatrixShader {
         // not invertible, fall back to sampling the inner shader at the
         // untransformed coordinates.
         let inv = self.matrix.invert();
-        let (sx, sy) = match inv {
-            Some(m) => {
-                let p = m.map_point(Point::new(x, y));
-                (p.x, p.y)
-            }
-            None => (x, y),
-        };
+        let (sx, sy) = inv.map_or((x, y), |m| {
+            let p = m.map_point(Point::new(x, y));
+            (p.x, p.y)
+        });
         self.inner.sample(sx, sy)
     }
 
@@ -1799,19 +1986,22 @@ impl ComposeShader {
 
     /// Get the outer shader.
     #[inline]
+    #[must_use]
     pub fn outer(&self) -> &ShaderRef {
         &self.outer
     }
 
     /// Get the inner shader.
     #[inline]
+    #[must_use]
     pub fn inner(&self) -> &ShaderRef {
         &self.inner
     }
 
     /// Get the blend mode.
     #[inline]
-    pub fn blend_mode(&self) -> crate::BlendMode {
+    #[must_use]
+    pub const fn blend_mode(&self) -> crate::BlendMode {
         self.blend_mode
     }
 }
@@ -1858,7 +2048,8 @@ pub struct EmptyShader;
 
 impl EmptyShader {
     /// Create an empty shader.
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self
     }
 }
@@ -1947,10 +2138,21 @@ fn deserialize_child_shader(bytes: &[u8], offset: &mut usize) -> Option<ShaderRe
 }
 
 /// Helper to deserialize common gradient data.
-fn deserialize_gradient_common(
-    bytes: &[u8],
-    offset: &mut usize,
-) -> Option<(Vec<Color4f>, Option<Vec<Scalar>>, TileMode, GradientFlags, Option<Matrix>)> {
+/// Colors, optional explicit positions, tile mode, flags, and optional
+/// local matrix, as decoded from common gradient serialization data.
+type GradientCommonData = (
+    Vec<Color4f>,
+    Option<Vec<Scalar>>,
+    TileMode,
+    GradientFlags,
+    Option<Matrix>,
+);
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "sequentially decodes each serialized gradient field in the same order serialize_gradient_common wrote them; splitting would obscure that pairing"
+)]
+fn deserialize_gradient_common(bytes: &[u8], offset: &mut usize) -> Option<GradientCommonData> {
     // Tile mode (1 byte)
     if *offset >= bytes.len() {
         return None;
@@ -2345,6 +2547,10 @@ fn deserialize_two_point_conical(bytes: &[u8], offset: &mut usize) -> Option<Sha
     Some(Arc::new(gradient))
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "sequentially decodes each serialized ImageShader field in wire order; splitting would obscure that pairing with serialize()"
+)]
 fn deserialize_image_shader(bytes: &[u8], offset: &mut usize) -> Option<ShaderRef> {
     // Bounds (16 bytes)
     if *offset + 16 > bytes.len() {
@@ -2515,12 +2721,8 @@ fn deserialize_image_shader(bytes: &[u8], offset: &mut usize) -> Option<ShaderRe
         let pixel_data = bytes[*offset..*offset + pixel_len].to_vec();
         *offset += pixel_len;
 
-        let info = skia_rs_core::pixel::ImageInfo::new(
-            width,
-            height,
-            color_type,
-            alpha_type,
-        ).ok()?;
+        let info =
+            skia_rs_core::pixel::ImageInfo::new(width, height, color_type, alpha_type).ok()?;
 
         (Some(Arc::new(pixel_data)), Some(info))
     } else {
@@ -2695,14 +2897,20 @@ fn deserialize_compose_shader(bytes: &[u8], offset: &mut usize) -> Option<Shader
 
 /// Convenience functions for creating shaders.
 pub mod shaders {
-    use super::*;
+    use super::{
+        Arc, BlendShader, Color4f, ColorShader, ComposeShader, EmptyShader, LinearGradient,
+        LocalMatrixShader, Matrix, PerlinNoiseShader, Point, RadialGradient, Scalar, ShaderRef,
+        SweepGradient, TileMode, TwoPointConicalGradient,
+    };
 
     /// Create a solid color shader.
+    #[must_use]
     pub fn color(color: Color4f) -> ShaderRef {
         Arc::new(ColorShader::new(color))
     }
 
     /// Create a linear gradient shader.
+    #[must_use]
     pub fn linear_gradient(
         start: Point,
         end: Point,
@@ -2716,6 +2924,7 @@ pub mod shaders {
     }
 
     /// Create a radial gradient shader.
+    #[must_use]
     pub fn radial_gradient(
         center: Point,
         radius: Scalar,
@@ -2729,6 +2938,7 @@ pub mod shaders {
     }
 
     /// Create a sweep gradient shader.
+    #[must_use]
     pub fn sweep_gradient(
         center: Point,
         start_angle: Scalar,
@@ -2748,6 +2958,7 @@ pub mod shaders {
     }
 
     /// Create a two-point conical gradient shader.
+    #[must_use]
     pub fn two_point_conical_gradient(
         start_center: Point,
         start_radius: Scalar,
@@ -2774,6 +2985,7 @@ pub mod shaders {
     }
 
     /// Create a fractal noise shader.
+    #[must_use]
     pub fn fractal_noise(
         base_frequency_x: Scalar,
         base_frequency_y: Scalar,
@@ -2789,6 +3001,7 @@ pub mod shaders {
     }
 
     /// Create a turbulence shader.
+    #[must_use]
     pub fn turbulence(
         base_frequency_x: Scalar,
         base_frequency_y: Scalar,
@@ -2814,12 +3027,17 @@ pub mod shaders {
     }
 
     /// Create an empty (transparent) shader.
+    #[must_use]
     pub fn empty() -> ShaderRef {
         Arc::new(EmptyShader::new())
     }
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "tests assert exact expected values (e.g. transparent alpha == 0.0), not tolerance comparisons"
+)]
 mod tests {
     use super::*;
 
@@ -2908,7 +3126,10 @@ mod tests {
         // ComposeShader(outer, inner, mode) blends them
         let compose = ComposeShader::new(solid.clone(), half.clone(), crate::BlendMode::SrcOver);
         let c = compose.sample(0.0, 0.0);
-        assert!(c.a > 0.5, "ComposeShader should not produce transparent output");
+        assert!(
+            c.a > 0.5,
+            "ComposeShader should not produce transparent output"
+        );
     }
 
     #[test]
@@ -2928,20 +3149,34 @@ mod tests {
             TileMode::Clamp,
         );
 
-        // A point on the inner circle (at start_center + start_radius in x direction)
-        // should be red (t=0).
+        // The point (10, 0) lies on two interpolated circles: t=0 (the inner
+        // circle) and t=0.25 (center (25,0), radius 15). Per the gradient
+        // spec (and Skia), the LARGEST t with r(t) >= 0 wins, so the color is
+        // lerp(red, blue, 0.25).
         let c_inner = gradient.sample(10.0, 0.0);
-        assert!(c_inner.r > 0.9, "inner circle point should be red, got r={}", c_inner.r);
+        assert!(
+            (c_inner.r - 0.75).abs() < 1e-3,
+            "point on both cones takes the larger t (0.25), got r={}",
+            c_inner.r
+        );
 
         // A point on the outer circle (at end_center + end_radius in x direction)
         // should be blue (t=1).
         let c_outer = gradient.sample(130.0, 0.0);
-        assert!(c_outer.b > 0.9, "outer circle point should be blue, got b={}", c_outer.b);
+        assert!(
+            c_outer.b > 0.9,
+            "outer circle point should be blue, got b={}",
+            c_outer.b
+        );
 
         // Midpoint should show a mix (purple-ish)
         let c_mid = gradient.sample(50.0, 0.0);
-        assert!(c_mid.r > 0.1 && c_mid.b > 0.1,
-                "midpoint should mix red and blue, got r={} b={}", c_mid.r, c_mid.b);
+        assert!(
+            c_mid.r > 0.1 && c_mid.b > 0.1,
+            "midpoint should mix red and blue, got r={} b={}",
+            c_mid.r,
+            c_mid.b
+        );
     }
 
     #[test]
@@ -2971,7 +3206,7 @@ mod tests {
         let shader = PerlinNoiseShader::fractal_noise(0.1, 0.1, 4, 42.0);
         for x in 0..10 {
             for y in 0..10 {
-                let c = shader.sample(x as f32, y as f32);
+                let c = shader.sample(scalar_from_i32(x), scalar_from_i32(y));
                 assert!(c.r >= 0.0 && c.r <= 1.0, "r out of range: {}", c.r);
                 assert!(c.a >= 0.99, "alpha should be 1: {}", c.a);
             }
@@ -2983,7 +3218,7 @@ mod tests {
         let shader = PerlinNoiseShader::turbulence(0.1, 0.1, 4, 42.0);
         for x in 0..10 {
             for y in 0..10 {
-                let c = shader.sample(x as f32, y as f32);
+                let c = shader.sample(scalar_from_i32(x), scalar_from_i32(y));
                 assert!(c.r >= 0.0 && c.r <= 1.0);
             }
         }
@@ -2996,8 +3231,8 @@ mod tests {
         // At least one of a few sample points should differ
         let mut differ = false;
         for k in 0..10 {
-            let ra = a.sample(k as f32, k as f32).r;
-            let rb = b.sample(k as f32, k as f32).r;
+            let ra = a.sample(scalar_from_i32(k), scalar_from_i32(k)).r;
+            let rb = b.sample(scalar_from_i32(k), scalar_from_i32(k)).r;
             if (ra - rb).abs() > 1e-4 {
                 differ = true;
                 break;
@@ -3021,9 +3256,9 @@ mod tests {
         use skia_rs_core::pixel::ImageInfo;
         // 2x2 image: red, green, blue, white
         let pixels: Arc<Vec<u8>> = Arc::new(vec![
-            255, 0, 0, 255,    // (0,0) red
-            0, 255, 0, 255,    // (1,0) green
-            0, 0, 255, 255,    // (0,1) blue
+            255, 0, 0, 255, // (0,0) red
+            0, 255, 0, 255, // (1,0) green
+            0, 0, 255, 255, // (0,1) blue
             255, 255, 255, 255, // (1,1) white
         ]);
         let info = ImageInfo::new(2, 2, ColorType::Rgba8888, AlphaType::Premul).unwrap();
@@ -3037,10 +3272,16 @@ mod tests {
 
         // Sample exact pixel positions
         let c_00 = shader.sample(0.5, 0.5);
-        assert!((c_00.r - 1.0).abs() < 1e-3, "expected red at (0.5, 0.5), got {:?}", c_00);
+        assert!(
+            (c_00.r - 1.0).abs() < 1e-3,
+            "expected red at (0.5, 0.5), got {c_00:?}"
+        );
 
         let c_11 = shader.sample(1.5, 1.5);
-        assert!((c_11.r - 1.0).abs() < 1e-3 && (c_11.g - 1.0).abs() < 1e-3, "expected white at (1.5, 1.5), got {:?}", c_11);
+        assert!(
+            (c_11.r - 1.0).abs() < 1e-3 && (c_11.g - 1.0).abs() < 1e-3,
+            "expected white at (1.5, 1.5), got {c_11:?}"
+        );
     }
 
     #[test]
@@ -3061,10 +3302,7 @@ mod tests {
         use skia_rs_core::color::AlphaType;
         use skia_rs_core::color::ColorType;
         use skia_rs_core::pixel::ImageInfo;
-        let pixels: Arc<Vec<u8>> = Arc::new(vec![
-            0, 0, 0, 255,
-            255, 255, 255, 255,
-        ]);
+        let pixels: Arc<Vec<u8>> = Arc::new(vec![0, 0, 0, 255, 255, 255, 255, 255]);
         let info = ImageInfo::new(2, 1, ColorType::Rgba8888, AlphaType::Premul).unwrap();
         let shader = ImageShader::with_pixels(
             pixels,
@@ -3076,7 +3314,10 @@ mod tests {
 
         // Sampling far outside should clamp to nearest edge pixel
         let c_right = shader.sample(100.0, 0.5);
-        assert!((c_right.r - 1.0).abs() < 1e-3, "clamp should return white from right edge, got {:?}", c_right);
+        assert!(
+            (c_right.r - 1.0).abs() < 1e-3,
+            "clamp should return white from right edge, got {c_right:?}"
+        );
     }
 
     #[test]
@@ -3085,8 +3326,8 @@ mod tests {
         use skia_rs_core::color::ColorType;
         use skia_rs_core::pixel::ImageInfo;
         let pixels: Arc<Vec<u8>> = Arc::new(vec![
-            255, 0, 0, 255,    // red
-            0, 255, 0, 255,    // green
+            255, 0, 0, 255, // red
+            0, 255, 0, 255, // green
         ]);
         let info = ImageInfo::new(2, 1, ColorType::Rgba8888, AlphaType::Premul).unwrap();
         let shader = ImageShader::with_pixels(
@@ -3099,7 +3340,10 @@ mod tests {
 
         // Sampling beyond width should wrap
         let c = shader.sample(2.5, 0.5); // Should wrap to 0.5
-        assert!((c.r - 1.0).abs() < 1e-3, "repeat should wrap to red pixel, got {:?}", c);
+        assert!(
+            (c.r - 1.0).abs() < 1e-3,
+            "repeat should wrap to red pixel, got {c:?}"
+        );
     }
 
     #[test]
@@ -3107,9 +3351,7 @@ mod tests {
         use skia_rs_core::color::AlphaType;
         use skia_rs_core::color::ColorType;
         use skia_rs_core::pixel::ImageInfo;
-        let pixels: Arc<Vec<u8>> = Arc::new(vec![
-            255, 0, 0, 255,
-        ]);
+        let pixels: Arc<Vec<u8>> = Arc::new(vec![255, 0, 0, 255]);
         let info = ImageInfo::new(1, 1, ColorType::Rgba8888, AlphaType::Premul).unwrap();
         let shader = ImageShader::with_pixels(
             pixels,
@@ -3149,24 +3391,243 @@ mod tests {
         let grad_premul = LinearGradient::new(
             Point::new(0.0, 0.0),
             Point::new(10.0, 0.0),
-            colors.clone(),
+            colors,
             None,
             TileMode::Clamp,
         )
         .with_flags(GradientFlags::INTERPOLATE_PREMUL);
 
-        // Sample at midpoint (t=0.5)
+        // Sample at midpoint (t=0.5). sample() returns premultiplied color.
         let c_normal = grad_normal.sample(5.0, 0.0);
         let c_premul = grad_premul.sample(5.0, 0.0);
 
-        // Without premul, RGB lerps directly: (1.0 + 0.0)/2 = 0.5
-        // With premul, RGB*alpha lerps: (1.0*1.0 + 0.0*0.0)/2 = 0.5, then unpremul
-        // The difference should be visible
+        // Without the flag, interpolation happens in unpremul space:
+        // straight (0.5, 0, 0, 0.5), premultiplied on output -> r = 0.25.
         assert!(
-            c_normal.r > 0.4 && c_normal.r < 0.6,
-            "normal interpolation at midpoint"
+            (c_normal.r - 0.25).abs() < 1e-4,
+            "unpremul interpolation midpoint premul r, got {}",
+            c_normal.r
         );
-        // With premul, the color at midpoint should be darker (more transparent)
-        assert!(c_premul.a < 1.0, "premul should affect alpha");
+        assert!((c_normal.a - 0.5).abs() < 1e-4);
+
+        // With the flag, stops are premultiplied before interpolation:
+        // lerp((1,0,0,1), (0,0,0,0)) = (0.5, 0, 0, 0.5), already premul.
+        assert!(
+            (c_premul.r - 0.5).abs() < 1e-4,
+            "premul interpolation midpoint r, got {}",
+            c_premul.r
+        );
+        assert!((c_premul.a - 0.5).abs() < 1e-4);
+    }
+
+    // --- Conformance regression tests (Task 3) ---
+
+    #[test]
+    fn test_gradient_t_below_first_stop_returns_first_color() {
+        // SkGradientBaseShader: pos[0] > 0 means an implicit stop at t=0
+        // carrying the first color (fFirstStopIsImplicit).
+        let colors = vec![
+            Color4f::new(1.0, 0.0, 0.0, 1.0),
+            Color4f::new(0.0, 0.0, 1.0, 1.0),
+        ];
+        let grad = LinearGradient::new(
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 0.0),
+            colors,
+            Some(vec![0.5, 1.0]),
+            TileMode::Clamp,
+        );
+        let c = grad.sample(25.0, 0.0); // t = 0.25 < first stop 0.5
+        assert!(
+            (c.r - 1.0).abs() < 1e-4 && c.b.abs() < 1e-4,
+            "t below first explicit stop must return the first color, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn test_gradient_positions_pinned_monotonic() {
+        // Non-monotonic positions are pinned per SkTPin(pos[i], prev, 1):
+        // [0.0, 0.8, 0.5] becomes [0.0, 0.8, 0.8].
+        let colors = vec![
+            Color4f::new(1.0, 0.0, 0.0, 1.0),
+            Color4f::new(0.0, 1.0, 0.0, 1.0),
+            Color4f::new(0.0, 0.0, 1.0, 1.0),
+        ];
+        let grad = LinearGradient::new(
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 0.0),
+            colors,
+            Some(vec![0.0, 0.8, 0.5]),
+            TileMode::Clamp,
+        );
+        // t = 0.9 is past the pinned last stop (0.8) -> last color.
+        let c = grad.sample(90.0, 0.0);
+        assert!(
+            (c.b - 1.0).abs() < 1e-4,
+            "t past pinned last stop must return last color, got {c:?}"
+        );
+        // t = 0.4 lies mid-segment [0.0, 0.8] -> lerp(red, green, 0.5).
+        let c = grad.sample(40.0, 0.0);
+        assert!(
+            (c.r - 0.5).abs() < 1e-4 && (c.g - 0.5).abs() < 1e-4,
+            "pinned positions should keep first segment intact, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn test_gradient_position_above_one_pinned() {
+        // Position 2.0 pins to 1.0.
+        let colors = vec![
+            Color4f::new(1.0, 0.0, 0.0, 1.0),
+            Color4f::new(0.0, 0.0, 1.0, 1.0),
+        ];
+        let grad = LinearGradient::new(
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 0.0),
+            colors,
+            Some(vec![0.0, 2.0]),
+            TileMode::Clamp,
+        );
+        let c = grad.sample(50.0, 0.0); // t = 0.5 -> halfway
+        assert!(
+            (c.r - 0.5).abs() < 1e-4 && (c.b - 0.5).abs() < 1e-4,
+            "position above 1 must be pinned to 1, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn test_two_point_conical_picks_larger_root() {
+        // C0 = (0,0) r0 = 0.1, C1 = (1,0) r1 = 0.2, P = (0.5, 0).
+        // Quadratic roots: t = 2/3 and t = 4/11; both have r(t) >= 0.
+        // Upstream well-behaved case takes the larger t (== +sqrt root).
+        let grad = TwoPointConicalGradient::new(
+            Point::new(0.0, 0.0),
+            0.1,
+            Point::new(1.0, 0.0),
+            0.2,
+            vec![
+                Color4f::new(0.0, 0.0, 0.0, 1.0),
+                Color4f::new(1.0, 1.0, 1.0, 1.0),
+            ],
+            None,
+            TileMode::Clamp,
+        );
+        let c = grad.sample(0.5, 0.0);
+        assert!(
+            (c.r - 2.0 / 3.0).abs() < 1e-3,
+            "conical must pick the larger valid root (t = 2/3), got r = {}",
+            c.r
+        );
+    }
+
+    #[test]
+    fn test_two_point_conical_honors_premul_flag() {
+        let grad = TwoPointConicalGradient::new(
+            Point::new(0.0, 0.0),
+            0.0,
+            Point::new(10.0, 0.0),
+            10.0,
+            vec![
+                Color4f::new(1.0, 0.0, 0.0, 1.0),
+                Color4f::new(0.0, 0.0, 1.0, 0.0),
+            ],
+            None,
+            TileMode::Clamp,
+        )
+        .with_flags(GradientFlags::INTERPOLATE_PREMUL);
+        // Point (5, 0) -> t = 0.25 (focal gradient: |5 - 10t| = 10t).
+        // Premul stops: (1,0,0,1) and (0,0,0,0); lerp at 0.25 gives
+        // (0.75, 0, 0, 0.75). Blue must not leak in premul interpolation
+        // (without the flag the straight-space lerp would leak b = 0.1875).
+        let c = grad.sample(5.0, 0.0);
+        assert!(
+            (c.r - 0.75).abs() < 1e-3 && c.b.abs() < 1e-3 && (c.a - 0.75).abs() < 1e-3,
+            "conical must interpolate premultiplied stops with the flag, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn test_color_shader_sample_is_premultiplied() {
+        let shader = ColorShader::new(Color4f::new(1.0, 0.5, 0.0, 0.5));
+        let c = shader.sample(0.0, 0.0);
+        assert!((c.r - 0.5).abs() < 1e-5, "premul r, got {}", c.r);
+        assert!((c.g - 0.25).abs() < 1e-5, "premul g, got {}", c.g);
+        assert!((c.a - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_blend_shader_children_are_premul_for_blend() {
+        // src: red at 50% alpha; dst: opaque green. SrcOver on premul values:
+        // r = 0.5, g = 1*(1-0.5) = 0.5, a = 1.
+        let src: ShaderRef = Arc::new(ColorShader::new(Color4f::new(1.0, 0.0, 0.0, 0.5)));
+        let dst: ShaderRef = Arc::new(ColorShader::new(Color4f::new(0.0, 1.0, 0.0, 1.0)));
+        let blend = BlendShader::new(crate::BlendMode::SrcOver, dst, src);
+        let c = blend.sample(0.0, 0.0);
+        assert!((c.r - 0.5).abs() < 1e-4, "premul srcover r, got {}", c.r);
+        assert!((c.g - 0.5).abs() < 1e-4, "premul srcover g, got {}", c.g);
+        assert!((c.a - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_compose_shader_children_are_premul_for_blend() {
+        let outer: ShaderRef = Arc::new(ColorShader::new(Color4f::new(1.0, 0.0, 0.0, 0.5)));
+        let inner: ShaderRef = Arc::new(ColorShader::new(Color4f::new(0.0, 1.0, 0.0, 1.0)));
+        let compose = ComposeShader::new(outer, inner, crate::BlendMode::SrcOver);
+        let c = compose.sample(0.0, 0.0);
+        assert!((c.r - 0.5).abs() < 1e-4, "premul srcover r, got {}", c.r);
+        assert!((c.g - 0.5).abs() < 1e-4, "premul srcover g, got {}", c.g);
+    }
+
+    #[test]
+    fn test_alpha8_samples_as_black_with_alpha() {
+        // Alpha-only sources decode as (0,0,0,a) — black, not white.
+        use skia_rs_core::color::{AlphaType, ColorType};
+        use skia_rs_core::pixel::ImageInfo;
+
+        let info = ImageInfo::new(1, 1, ColorType::Alpha8, AlphaType::Premul).unwrap();
+        let pixels = Arc::new(vec![128u8]);
+        let shader = ImageShader::with_pixels(
+            pixels,
+            info,
+            TileMode::Clamp,
+            TileMode::Clamp,
+            SamplingOptions::NEAREST,
+        );
+        let c = shader.sample(0.5, 0.5);
+        assert!(c.r.abs() < 1e-4, "alpha8 r must be 0, got {}", c.r);
+        assert!(c.g.abs() < 1e-4, "alpha8 g must be 0, got {}", c.g);
+        assert!(c.b.abs() < 1e-4, "alpha8 b must be 0, got {}", c.b);
+        assert!((c.a - 128.0 / 255.0).abs() < 1e-4, "alpha8 a, got {}", c.a);
+    }
+
+    #[test]
+    fn test_image_shader_bilinear_filtering() {
+        use skia_rs_core::color::{AlphaType, ColorType};
+        use skia_rs_core::pixel::ImageInfo;
+
+        // 2x1 image: black texel then white texel.
+        let info = ImageInfo::new(2, 1, ColorType::Rgba8888, AlphaType::Premul).unwrap();
+        let pixels = Arc::new(vec![
+            0u8, 0, 0, 255, // black
+            255, 255, 255, 255, // white
+        ]);
+        let shader = ImageShader::with_pixels(
+            pixels,
+            info,
+            TileMode::Clamp,
+            TileMode::Clamp,
+            SamplingOptions::LINEAR,
+        );
+        // x = 1.0 is exactly between the two texel centers (0.5 and 1.5):
+        // bilinear result is 50% gray.
+        let c = shader.sample(1.0, 0.5);
+        assert!(
+            (c.r - 0.5).abs() < 2.0 / 255.0,
+            "bilinear midpoint should be 0.5 gray, got {}",
+            c.r
+        );
+        // At a texel center filtering must return the texel itself.
+        let c0 = shader.sample(0.5, 0.5);
+        assert!(c0.r < 1e-3, "texel center must be exact, got {}", c0.r);
     }
 }

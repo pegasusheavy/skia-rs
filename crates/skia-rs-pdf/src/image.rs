@@ -1,8 +1,8 @@
 //! PDF image embedding support.
 //!
 //! This module provides image embedding for PDF documents, including:
-//! - JPEG images (DCTDecode, pass-through)
-//! - PNG/other images (FlateDecode compression)
+//! - JPEG images (`DCTDecode`, pass-through)
+//! - PNG/other images (`FlateDecode` compression)
 //! - Image masks and soft masks
 //! - Color space handling
 
@@ -23,7 +23,8 @@ pub enum PdfColorSpace {
 
 impl PdfColorSpace {
     /// Get PDF name.
-    pub fn pdf_name(&self) -> &'static str {
+    #[must_use]
+    pub const fn pdf_name(&self) -> &'static str {
         match self {
             Self::DeviceGray => "DeviceGray",
             Self::DeviceRGB => "DeviceRGB",
@@ -33,12 +34,12 @@ impl PdfColorSpace {
     }
 
     /// Get number of components.
-    pub fn components(&self) -> u8 {
+    #[must_use]
+    pub const fn components(&self) -> u8 {
         match self {
-            Self::DeviceGray => 1,
+            Self::DeviceGray | Self::Indexed => 1,
             Self::DeviceRGB => 3,
             Self::DeviceCMYK => 4,
-            Self::Indexed => 1,
         }
     }
 }
@@ -60,7 +61,8 @@ pub enum PdfImageFilter {
 
 impl PdfImageFilter {
     /// Get PDF filter name.
-    pub fn pdf_name(&self) -> Option<&'static str> {
+    #[must_use]
+    pub const fn pdf_name(&self) -> Option<&'static str> {
         match self {
             Self::None => None,
             Self::FlateDecode => Some("FlateDecode"),
@@ -71,7 +73,7 @@ impl PdfImageFilter {
     }
 }
 
-/// A PDF image XObject.
+/// A PDF image `XObject`.
 #[derive(Debug, Clone)]
 pub struct PdfImage {
     /// Image width in pixels.
@@ -98,6 +100,11 @@ pub struct PdfImage {
 
 impl PdfImage {
     /// Create a new image from raw RGB data.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `data.len() != width * height * 3`.
+    #[must_use]
     pub fn from_rgb(width: u32, height: u32, data: &[u8]) -> Self {
         assert_eq!(data.len(), (width * height * 3) as usize);
 
@@ -119,6 +126,11 @@ impl PdfImage {
     }
 
     /// Create a new image from raw RGBA data.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `data.len() != width * height * 4`.
+    #[must_use]
     pub fn from_rgba(width: u32, height: u32, data: &[u8]) -> (Self, Self) {
         assert_eq!(data.len(), (width * height * 4) as usize);
 
@@ -165,6 +177,11 @@ impl PdfImage {
     }
 
     /// Create a new image from grayscale data.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `data.len() != width * height`.
+    #[must_use]
     pub fn from_grayscale(width: u32, height: u32, data: &[u8]) -> Self {
         assert_eq!(data.len(), (width * height) as usize);
 
@@ -185,6 +202,7 @@ impl PdfImage {
     }
 
     /// Create an image from JPEG data (pass-through, no re-encoding).
+    #[must_use]
     pub fn from_jpeg(width: u32, height: u32, jpeg_data: Vec<u8>) -> Self {
         // Detect color space from JPEG header
         let color_space = detect_jpeg_color_space(&jpeg_data);
@@ -204,41 +222,42 @@ impl PdfImage {
     }
 
     /// Set the soft mask.
-    pub fn set_soft_mask(&mut self, mask_id: u32) {
+    pub const fn set_soft_mask(&mut self, mask_id: u32) {
         self.soft_mask_id = Some(mask_id);
     }
 
-    /// Generate the image XObject PDF dictionary.
+    /// Generate the image `XObject` PDF dictionary.
+    #[must_use]
     pub fn to_pdf_xobject(&self, id: u32) -> Vec<u8> {
         let mut output = Vec::new();
 
         // Object header
-        write!(output, "{} 0 obj\n<<\n", id).unwrap();
-        write!(output, "/Type /XObject\n").unwrap();
-        write!(output, "/Subtype /Image\n").unwrap();
-        write!(output, "/Width {}\n", self.width).unwrap();
-        write!(output, "/Height {}\n", self.height).unwrap();
-        write!(output, "/BitsPerComponent {}\n", self.bits_per_component).unwrap();
+        write!(output, "{id} 0 obj\n<<\n").unwrap();
+        writeln!(output, "/Type /XObject").unwrap();
+        writeln!(output, "/Subtype /Image").unwrap();
+        writeln!(output, "/Width {}", self.width).unwrap();
+        writeln!(output, "/Height {}", self.height).unwrap();
+        writeln!(output, "/BitsPerComponent {}", self.bits_per_component).unwrap();
 
         if self.is_mask {
-            write!(output, "/ColorSpace /DeviceGray\n").unwrap();
+            writeln!(output, "/ColorSpace /DeviceGray").unwrap();
         } else {
-            write!(output, "/ColorSpace /{}\n", self.color_space.pdf_name()).unwrap();
+            writeln!(output, "/ColorSpace /{}", self.color_space.pdf_name()).unwrap();
         }
 
         if let Some(filter_name) = self.filter.pdf_name() {
-            write!(output, "/Filter /{}\n", filter_name).unwrap();
+            writeln!(output, "/Filter /{filter_name}").unwrap();
         }
 
         if let Some(mask_id) = self.soft_mask_id {
-            write!(output, "/SMask {} 0 R\n", mask_id).unwrap();
+            writeln!(output, "/SMask {mask_id} 0 R").unwrap();
         }
 
         if self.interpolate {
-            write!(output, "/Interpolate true\n").unwrap();
+            writeln!(output, "/Interpolate true").unwrap();
         }
 
-        write!(output, "/Length {}\n", self.data.len()).unwrap();
+        writeln!(output, "/Length {}", self.data.len()).unwrap();
         write!(output, ">>\nstream\n").unwrap();
         output.extend_from_slice(&self.data);
         write!(output, "\nendstream\nendobj\n").unwrap();
@@ -266,20 +285,18 @@ fn detect_jpeg_color_space(data: &[u8]) -> PdfColorSpace {
             let marker = data[i + 1];
 
             // SOF markers (0xC0-0xCF except 0xC4, 0xC8, 0xCC)
-            if (marker >= 0xC0 && marker <= 0xCF)
+            if (0xC0..=0xCF).contains(&marker)
                 && marker != 0xC4
                 && marker != 0xC8
                 && marker != 0xCC
+                && i + 9 < data.len()
             {
-                if i + 9 < data.len() {
-                    let num_components = data[i + 9];
-                    return match num_components {
-                        1 => PdfColorSpace::DeviceGray,
-                        3 => PdfColorSpace::DeviceRGB,
-                        4 => PdfColorSpace::DeviceCMYK,
-                        _ => PdfColorSpace::DeviceRGB,
-                    };
-                }
+                let num_components = data[i + 9];
+                return match num_components {
+                    1 => PdfColorSpace::DeviceGray,
+                    4 => PdfColorSpace::DeviceCMYK,
+                    _ => PdfColorSpace::DeviceRGB,
+                };
             }
 
             // Skip marker
@@ -306,6 +323,7 @@ pub struct PdfImageManager {
 
 impl PdfImageManager {
     /// Create a new image manager.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -329,7 +347,7 @@ impl PdfImageManager {
         self.images.push(mask);
         let image_idx = self.images.len();
         // Store the mask *index* here; the writer translates to object id.
-        image.soft_mask_id = Some(mask_idx as u32);
+        image.soft_mask_id = Some(u32::try_from(mask_idx).unwrap_or(u32::MAX));
         self.images.push(image);
         (image_idx, mask_idx)
     }
@@ -350,6 +368,7 @@ impl PdfImageManager {
     }
 
     /// Get image by index.
+    #[must_use]
     pub fn get(&self, index: usize) -> Option<&PdfImage> {
         self.images.get(index)
     }
@@ -360,6 +379,7 @@ impl PdfImageManager {
     }
 
     /// Get all images.
+    #[must_use]
     pub fn images(&self) -> &[PdfImage] {
         &self.images
     }
@@ -370,11 +390,13 @@ impl PdfImageManager {
     }
 
     /// Get number of images.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.images.len()
     }
 
     /// Check if empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.images.is_empty()
     }
@@ -432,7 +454,7 @@ mod tests {
         // The image stores the mask's *index* in soft_mask_id so that the
         // writer can translate it to the emitted object id.
         let image = m.get(image_idx).unwrap();
-        assert_eq!(image.soft_mask_id, Some(mask_idx as u32));
+        assert_eq!(image.soft_mask_id, Some(u32::try_from(mask_idx).unwrap()));
         // Mask is a mask with gray colorspace.
         let mask = m.get(mask_idx).unwrap();
         assert!(mask.is_mask);

@@ -14,13 +14,18 @@ use skia_rs_core::Scalar;
 /// let path = parse_svg_path("M 10 10 L 100 100 Z").unwrap();
 /// assert!(!path.is_empty());
 /// ```
+///
+/// # Errors
+///
+/// Returns [`SvgPathError`] if `d` is not well-formed SVG path data (e.g. an
+/// unknown command, a malformed number, or a missing initial `moveto`).
 pub fn parse_svg_path(d: &str) -> Result<Path, SvgPathError> {
     let parser = SvgPathParser::new(d);
     parser.parse()
 }
 
 /// Error type for SVG path parsing.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SvgPathError {
     /// Unexpected end of input.
     UnexpectedEnd,
@@ -32,16 +37,21 @@ pub enum SvgPathError {
     ExpectedNumber,
     /// Missing move command at start.
     MissingMoveTo,
+    /// Numeric data appeared where a command was expected (e.g. directly after `Z`).
+    UnexpectedNumber,
 }
 
 impl std::fmt::Display for SvgPathError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SvgPathError::UnexpectedEnd => write!(f, "unexpected end of path data"),
-            SvgPathError::InvalidNumber(s) => write!(f, "invalid number: {}", s),
-            SvgPathError::UnknownCommand(c) => write!(f, "unknown command: {}", c),
-            SvgPathError::ExpectedNumber => write!(f, "expected a number"),
-            SvgPathError::MissingMoveTo => write!(f, "path must start with moveto"),
+            Self::UnexpectedEnd => write!(f, "unexpected end of path data"),
+            Self::InvalidNumber(s) => write!(f, "invalid number: {s}"),
+            Self::UnknownCommand(c) => write!(f, "unknown command: {c}"),
+            Self::ExpectedNumber => write!(f, "expected a number"),
+            Self::MissingMoveTo => write!(f, "path must start with moveto"),
+            Self::UnexpectedNumber => {
+                write!(f, "unexpected number where a command was expected")
+            }
         }
     }
 }
@@ -54,6 +64,10 @@ struct SvgPathParser<'a> {
     builder: PathBuilder,
     last_control: Option<(Scalar, Scalar)>,
     has_move: bool,
+    /// The uppercased previous command letter, used to gate S/T reflection and
+    /// to reject numeric data directly after `Z` (like `SkParsePath`'s
+    /// `previousOp`). `'\0'` means no command has executed yet.
+    prev_op: char,
 }
 
 impl<'a> SvgPathParser<'a> {
@@ -64,6 +78,7 @@ impl<'a> SvgPathParser<'a> {
             builder: PathBuilder::new(),
             last_control: None,
             has_move: false,
+            prev_op: '\0',
         }
     }
 
@@ -79,7 +94,7 @@ impl<'a> SvgPathParser<'a> {
         Ok(self.builder.build())
     }
 
-    fn is_end(&self) -> bool {
+    const fn is_end(&self) -> bool {
         self.pos >= self.input.len()
     }
 
@@ -112,6 +127,10 @@ impl<'a> SvgPathParser<'a> {
             Ok(cmd)
         } else if !self.has_move {
             Err(SvgPathError::MissingMoveTo)
+        } else if self.prev_op == 'Z' {
+            // Numeric data directly after a close is a parse error (upstream
+            // rejects the path rather than starting an implicit lineto).
+            Err(SvgPathError::UnexpectedNumber)
         } else {
             // Implicit lineto
             Ok('L')
@@ -186,16 +205,17 @@ impl<'a> SvgPathParser<'a> {
     fn execute_command(&mut self, cmd: char) -> Result<(), SvgPathError> {
         let is_relative = cmd.is_ascii_lowercase();
         let cmd_upper = cmd.to_ascii_uppercase();
+        let prev_op = self.prev_op;
 
-        match cmd_upper {
+        let result = match cmd_upper {
             'M' => self.parse_moveto(is_relative),
             'L' => self.parse_lineto(is_relative),
             'H' => self.parse_horizontal_lineto(is_relative),
             'V' => self.parse_vertical_lineto(is_relative),
             'C' => self.parse_curveto(is_relative),
-            'S' => self.parse_smooth_curveto(is_relative),
+            'S' => self.parse_smooth_curveto(is_relative, prev_op),
             'Q' => self.parse_quadto(is_relative),
-            'T' => self.parse_smooth_quadto(is_relative),
+            'T' => self.parse_smooth_quadto(is_relative, prev_op),
             'A' => self.parse_arcto(is_relative),
             'Z' => {
                 self.builder.close();
@@ -203,14 +223,17 @@ impl<'a> SvgPathParser<'a> {
                 Ok(())
             }
             _ => Err(SvgPathError::UnknownCommand(cmd)),
-        }
+        };
+        result?;
+        self.prev_op = cmd_upper;
+        Ok(())
     }
 
     fn parse_moveto(&mut self, is_relative: bool) -> Result<(), SvgPathError> {
         let mut first = true;
         loop {
             self.skip_whitespace();
-            if self.is_end() || self.peek().map_or(false, |c| c.is_ascii_alphabetic()) {
+            if self.is_end() || self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
                 break;
             }
 
@@ -239,7 +262,7 @@ impl<'a> SvgPathParser<'a> {
     fn parse_lineto(&mut self, is_relative: bool) -> Result<(), SvgPathError> {
         loop {
             self.skip_whitespace();
-            if self.is_end() || self.peek().map_or(false, |c| c.is_ascii_alphabetic()) {
+            if self.is_end() || self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
                 break;
             }
 
@@ -262,7 +285,7 @@ impl<'a> SvgPathParser<'a> {
     fn parse_horizontal_lineto(&mut self, is_relative: bool) -> Result<(), SvgPathError> {
         loop {
             self.skip_whitespace();
-            if self.is_end() || self.peek().map_or(false, |c| c.is_ascii_alphabetic()) {
+            if self.is_end() || self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
                 break;
             }
 
@@ -279,7 +302,7 @@ impl<'a> SvgPathParser<'a> {
     fn parse_vertical_lineto(&mut self, is_relative: bool) -> Result<(), SvgPathError> {
         loop {
             self.skip_whitespace();
-            if self.is_end() || self.peek().map_or(false, |c| c.is_ascii_alphabetic()) {
+            if self.is_end() || self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
                 break;
             }
 
@@ -296,7 +319,7 @@ impl<'a> SvgPathParser<'a> {
     fn parse_curveto(&mut self, is_relative: bool) -> Result<(), SvgPathError> {
         loop {
             self.skip_whitespace();
-            if self.is_end() || self.peek().map_or(false, |c| c.is_ascii_alphabetic()) {
+            if self.is_end() || self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
                 break;
             }
 
@@ -320,10 +343,15 @@ impl<'a> SvgPathParser<'a> {
         Ok(())
     }
 
-    fn parse_smooth_curveto(&mut self, is_relative: bool) -> Result<(), SvgPathError> {
+    fn parse_smooth_curveto(
+        &mut self,
+        is_relative: bool,
+        prev_op: char,
+    ) -> Result<(), SvgPathError> {
+        let mut iteration = 0;
         loop {
             self.skip_whitespace();
-            if self.is_end() || self.peek().map_or(false, |c| c.is_ascii_alphabetic()) {
+            if self.is_end() || self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
                 break;
             }
 
@@ -333,11 +361,16 @@ impl<'a> SvgPathParser<'a> {
             let y = self.parse_number()?;
 
             let (cx, cy) = self.current_point();
-            let (x1, y1) = if let Some((lx, ly)) = self.last_control {
-                (2.0 * cx - lx, 2.0 * cy - ly)
-            } else {
-                (cx, cy)
+            // S reflects the previous control point only when the previous
+            // command was a cubic (C or S); within a run, subsequent segments
+            // reflect off the prior S. Otherwise the control point is the
+            // current point (SVG 1.1 / SkParsePath).
+            let reflect = iteration > 0 || prev_op == 'C' || prev_op == 'S';
+            let (x1, y1) = match (reflect, self.last_control) {
+                (true, Some((lx, ly))) => (2.0f32.mul_add(cx, -lx), 2.0f32.mul_add(cy, -ly)),
+                _ => (cx, cy),
             };
+            iteration += 1;
 
             let (x2, y2, x, y) = if is_relative {
                 (cx + x2, cy + y2, cx + x, cy + y)
@@ -354,7 +387,7 @@ impl<'a> SvgPathParser<'a> {
     fn parse_quadto(&mut self, is_relative: bool) -> Result<(), SvgPathError> {
         loop {
             self.skip_whitespace();
-            if self.is_end() || self.peek().map_or(false, |c| c.is_ascii_alphabetic()) {
+            if self.is_end() || self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
                 break;
             }
 
@@ -376,10 +409,15 @@ impl<'a> SvgPathParser<'a> {
         Ok(())
     }
 
-    fn parse_smooth_quadto(&mut self, is_relative: bool) -> Result<(), SvgPathError> {
+    fn parse_smooth_quadto(
+        &mut self,
+        is_relative: bool,
+        prev_op: char,
+    ) -> Result<(), SvgPathError> {
+        let mut iteration = 0;
         loop {
             self.skip_whitespace();
-            if self.is_end() || self.peek().map_or(false, |c| c.is_ascii_alphabetic()) {
+            if self.is_end() || self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
                 break;
             }
 
@@ -387,11 +425,14 @@ impl<'a> SvgPathParser<'a> {
             let y = self.parse_number()?;
 
             let (cx, cy) = self.current_point();
-            let (x1, y1) = if let Some((lx, ly)) = self.last_control {
-                (2.0 * cx - lx, 2.0 * cy - ly)
-            } else {
-                (cx, cy)
+            // T reflects the previous control point only when the previous
+            // command was a quadratic (Q or T); otherwise control == current.
+            let reflect = iteration > 0 || prev_op == 'Q' || prev_op == 'T';
+            let (x1, y1) = match (reflect, self.last_control) {
+                (true, Some((lx, ly))) => (2.0f32.mul_add(cx, -lx), 2.0f32.mul_add(cy, -ly)),
+                _ => (cx, cy),
             };
+            iteration += 1;
 
             let (x, y) = if is_relative {
                 (cx + x, cy + y)
@@ -408,7 +449,7 @@ impl<'a> SvgPathParser<'a> {
     fn parse_arcto(&mut self, is_relative: bool) -> Result<(), SvgPathError> {
         loop {
             self.skip_whitespace();
-            if self.is_end() || self.peek().map_or(false, |c| c.is_ascii_alphabetic()) {
+            if self.is_end() || self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
                 break;
             }
 
@@ -467,5 +508,123 @@ mod tests {
     fn test_parse_horizontal_vertical() {
         let path = parse_svg_path("M 0 0 H 100 V 100 H 0 Z").unwrap();
         assert_eq!(path.verb_count(), 5);
+    }
+
+    #[test]
+    fn test_number_after_z_is_error() {
+        // Numeric data directly after Z must be rejected, not treated as lineto.
+        assert!(parse_svg_path("M0 0 L10 10 Z 5 5").is_err());
+    }
+
+    #[test]
+    fn test_smooth_cubic_reflection_gated_on_previous() {
+        use crate::PathElement;
+        // S after a line: the first control point equals the current point
+        // (no reflection), so the cubic is C(cur, x2y2, xy).
+        let path = parse_svg_path("M0 0 L10 0 S 20 10 30 0").unwrap();
+        let cubic = path.iter().find_map(|e| match e {
+            PathElement::Cubic(c1, c2, end) => Some((c1, c2, end)),
+            _ => None,
+        });
+        let (c1, _c2, _end) = cubic.expect("expected a cubic");
+        // current point at S is (10,0); with no reflection c1 == current point.
+        assert!(
+            (c1.x - 10.0).abs() < 1e-3 && (c1.y - 0.0).abs() < 1e-3,
+            "S after L must not reflect: c1={c1:?}"
+        );
+    }
+
+    #[test]
+    fn test_smooth_cubic_reflection_after_cubic() {
+        use crate::PathElement;
+        // S after C: reflect the previous control point about the current point.
+        // C: control2 = (10,10); current after C = (20,0). Reflected c1 = (30,-10).
+        let path = parse_svg_path("M0 0 C 0 10 10 10 20 0 S 40 10 50 0").unwrap();
+        let cubics: Vec<_> = path
+            .iter()
+            .filter_map(|e| match e {
+                PathElement::Cubic(c1, c2, end) => Some((c1, c2, end)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cubics.len(), 2);
+        let c1 = cubics[1].0;
+        assert!(
+            (c1.x - 30.0).abs() < 1e-3 && (c1.y + 10.0).abs() < 1e-3,
+            "S after C must reflect: c1={c1:?}"
+        );
+    }
+
+    #[test]
+    fn test_smooth_quad_reflection_gated() {
+        use crate::PathElement;
+        // T after a line: control == current point (no reflection).
+        let path = parse_svg_path("M0 0 L10 0 T 30 0").unwrap();
+        let quad = path.iter().find_map(|e| match e {
+            PathElement::Quad(c, end) => Some((c, end)),
+            _ => None,
+        });
+        let (c, _end) = quad.expect("expected a quad");
+        assert!(
+            (c.x - 10.0).abs() < 1e-3 && (c.y - 0.0).abs() < 1e-3,
+            "T after L must not reflect: c={c:?}"
+        );
+    }
+
+    #[test]
+    fn test_smooth_cubic_not_reflected_after_quad() {
+        use crate::PathElement;
+        // S must reflect only after C/S. After Q, control = current point.
+        let path = parse_svg_path("M0 0 Q 10 10 20 0 S 40 10 50 0").unwrap();
+        let c1 = path
+            .iter()
+            .find_map(|e| match e {
+                PathElement::Cubic(c1, _, _) => Some(c1),
+                _ => None,
+            })
+            .expect("expected cubic from S");
+        assert!(
+            (c1.x - 20.0).abs() < 1e-3 && (c1.y - 0.0).abs() < 1e-3,
+            "S after Q must not reflect: c1={c1:?}"
+        );
+    }
+
+    #[test]
+    fn test_smooth_quad_not_reflected_after_cubic() {
+        use crate::PathElement;
+        // T must reflect only after Q/T. After C, control = current point.
+        let path = parse_svg_path("M0 0 C 0 10 10 10 20 0 T 40 0").unwrap();
+        let c = path
+            .iter()
+            .find_map(|e| match e {
+                PathElement::Quad(c, _) => Some(c),
+                _ => None,
+            })
+            .expect("expected quad from T");
+        assert!(
+            (c.x - 20.0).abs() < 1e-3 && (c.y - 0.0).abs() < 1e-3,
+            "T after C must not reflect: c={c:?}"
+        );
+    }
+
+    #[test]
+    fn test_relative_after_close_uses_subpath_start() {
+        use crate::PathElement;
+        // After Z the current point returns to the subpath start (5,5), so the
+        // relative lineto 'l 10 0' goes to (15,5).
+        let path = parse_svg_path("M5 5 L20 5 L20 20 Z l 10 0").unwrap();
+        // Find the last line endpoint.
+        let last_line = path
+            .iter()
+            .filter_map(|e| match e {
+                PathElement::Line(p) => Some(p),
+                _ => None,
+            })
+            .last()
+            .unwrap();
+        assert!(
+            (last_line.x - 15.0).abs() < 1e-3 && (last_line.y - 5.0).abs() < 1e-3,
+            "relative line after Z should start at subpath start: {last_line:?}"
+        );
     }
 }

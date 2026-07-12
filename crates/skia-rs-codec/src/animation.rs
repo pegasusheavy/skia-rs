@@ -20,17 +20,32 @@ pub struct AnimatedImage {
     pub frames: Vec<AnimationFrame>,
     /// How many times the animation loops.
     pub loop_count: LoopCount,
+    /// Width of the animation canvas (the GIF logical-screen width). Frames
+    /// are positioned within this canvas via their `x_offset`/`y_offset`
+    /// and may be smaller than the canvas.
+    pub canvas_width: i32,
+    /// Height of the animation canvas (the GIF logical-screen height).
+    pub canvas_height: i32,
 }
 
 impl AnimatedImage {
+    /// Returns the animation canvas size as `(width, height)`.
+    #[inline]
+    #[must_use]
+    pub const fn canvas_dimensions(&self) -> (i32, i32) {
+        (self.canvas_width, self.canvas_height)
+    }
+
     /// Returns the number of frames.
     #[inline]
+    #[must_use]
     pub fn frame_count(&self) -> usize {
         self.frames.len()
     }
 
     /// Returns `true` if the animation has no frames.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.frames.is_empty()
     }
@@ -38,12 +53,14 @@ impl AnimatedImage {
     /// Sum of all per-frame delays. Useful for UI "total duration"
     /// displays. Note this is the sum for a single play-through — it does
     /// not account for `loop_count`.
+    #[must_use]
     pub fn total_duration(&self) -> Duration {
         self.frames.iter().map(|f| f.delay).sum()
     }
 
     /// Borrow a frame by index.
     #[inline]
+    #[must_use]
     pub fn frame(&self, index: usize) -> Option<&AnimationFrame> {
         self.frames.get(index)
     }
@@ -86,8 +103,14 @@ pub enum DisposalMethod {
     /// Leave the canvas as-is; the next frame composites over the
     /// current pixels.
     Keep,
-    /// Clear the frame's region to the background/transparent before
-    /// compositing the next frame.
+    /// Clear the frame's region to **transparent** before compositing the
+    /// next frame.
+    ///
+    /// Despite the name, this always clears to transparent black, never to
+    /// the GIF's logical-screen background color. This matches Skia's
+    /// `SkCodecAnimation::DisposalMethod::kRestoreBGColor`, whose GIF
+    /// implementation (`SkGifCodec`) fills the disposed region with
+    /// `SK_ColorTRANSPARENT`.
     Background,
     /// Restore the canvas area underneath this frame to what it was
     /// before this frame was drawn.
@@ -111,9 +134,9 @@ impl From<gif::DisposalMethod> for DisposalMethod {
             // Spec: `Any` = decoder's choice. Historically treated as
             // "do not dispose" (same as Keep), which is what most
             // renderers do.
-            gif::DisposalMethod::Any | gif::DisposalMethod::Keep => DisposalMethod::Keep,
-            gif::DisposalMethod::Background => DisposalMethod::Background,
-            gif::DisposalMethod::Previous => DisposalMethod::Previous,
+            gif::DisposalMethod::Any | gif::DisposalMethod::Keep => Self::Keep,
+            gif::DisposalMethod::Background => Self::Background,
+            gif::DisposalMethod::Previous => Self::Previous,
         }
     }
 }
@@ -122,14 +145,14 @@ impl From<gif::DisposalMethod> for DisposalMethod {
 impl From<gif::Repeat> for LoopCount {
     fn from(r: gif::Repeat) -> Self {
         match r {
-            gif::Repeat::Infinite => LoopCount::Infinite,
+            gif::Repeat::Infinite => Self::Infinite,
             // GIF89a's NETSCAPE2.0 loop extension uses 0 to mean
             // "infinite" at the wire level, but the `gif` crate already
             // surfaces that as `Repeat::Infinite`. A `Finite(0)` here
             // therefore means "play once" — which is what `Once`
             // expresses in this enum.
-            gif::Repeat::Finite(0) => LoopCount::Once,
-            gif::Repeat::Finite(n) => LoopCount::Finite(n as u32),
+            gif::Repeat::Finite(0) => Self::Once,
+            gif::Repeat::Finite(n) => Self::Finite(u32::from(n)),
         }
     }
 }
@@ -158,6 +181,8 @@ mod tests {
         let anim = AnimatedImage {
             frames: vec![mk_frame(50), mk_frame(100), mk_frame(25)],
             loop_count: LoopCount::Infinite,
+            canvas_width: 1,
+            canvas_height: 1,
         };
         assert_eq!(anim.frame_count(), 3);
         assert_eq!(anim.total_duration(), Duration::from_millis(175));
@@ -168,6 +193,8 @@ mod tests {
         let anim = AnimatedImage {
             frames: vec![mk_frame(10)],
             loop_count: LoopCount::Once,
+            canvas_width: 1,
+            canvas_height: 1,
         };
         assert!(anim.frame(0).is_some());
         assert!(anim.frame(1).is_none());

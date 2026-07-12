@@ -89,21 +89,27 @@ impl WasmSurface {
     }
 
     /// Get pixel data as a Uint8ClampedArray for ImageData.
+    ///
+    /// The surface stores premultiplied RGBA8888 pixels internally; this
+    /// converts to unpremultiplied (straight-alpha) RGBA8888 bytes, matching
+    /// `ImageData`'s expected format (same conversion as
+    /// [`WasmSurface::get_image_data`]).
     pub fn get_pixels(&self) -> Vec<u8> {
-        self.inner.pixels().to_vec()
+        crate::pixel_convert::premul_rgba_to_image_data(self.inner.pixels())
     }
 
     /// Get as ImageData for direct canvas rendering.
+    ///
+    /// The surface stores premultiplied RGBA8888 pixels; `ImageData`
+    /// expects unpremultiplied (straight-alpha) RGBA8888. No channel
+    /// reordering is needed — the surface is already RGBA, matching
+    /// `ImageData`'s byte order.
     pub fn get_image_data(&self) -> Result<ImageData, JsValue> {
         let pixels = self.inner.pixels();
         let width = self.inner.width() as u32;
         let height = self.inner.height() as u32;
 
-        // Convert BGRA to RGBA for web
-        let mut rgba = pixels.to_vec();
-        for chunk in rgba.chunks_exact_mut(4) {
-            chunk.swap(0, 2); // Swap B and R
-        }
+        let rgba = crate::pixel_convert::premul_rgba_to_image_data(pixels);
 
         ImageData::new_with_u8_clamped_array_and_sh(wasm_bindgen::Clamped(&rgba), width, height)
     }

@@ -65,3 +65,6 @@ path = "examples/skia_comparison.rs"
 [[example]]
 name = "memory_profile"
 path = "examples/memory_profile.rs"
+
+[lints]
+workspace = true

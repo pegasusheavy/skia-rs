@@ -40,11 +40,13 @@ pub struct Region {
 impl Region {
     /// Create an empty region.
     #[inline]
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self { rects: Vec::new() }
     }
 
     /// Create a region from a single rectangle.
+    #[must_use]
     pub fn from_rect(rect: IRect) -> Self {
         if rect.is_empty() {
             return Self::new();
@@ -53,30 +55,35 @@ impl Region {
     }
 
     /// Create a region from a floating-point rectangle (rounds outward).
+    #[must_use]
     pub fn from_rect_f(rect: &Rect) -> Self {
         Self::from_rect(rect.round_out())
     }
 
     /// Returns true if the region is empty.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.rects.is_empty()
     }
 
     /// Returns true if the region is a single rectangle.
     #[inline]
+    #[must_use]
     pub fn is_rect(&self) -> bool {
         self.rects.len() == 1
     }
 
     /// Returns true if the region is complex (more than one rectangle).
     #[inline]
+    #[must_use]
     pub fn is_complex(&self) -> bool {
         self.rects.len() > 1
     }
 
     /// Returns the bounding rectangle of this region.
     #[inline]
+    #[must_use]
     pub fn bounds(&self) -> IRect {
         if self.rects.is_empty() {
             return IRect::empty();
@@ -90,6 +97,7 @@ impl Region {
 
     /// Returns the number of rectangles in the region.
     #[inline]
+    #[must_use]
     pub fn rect_count(&self) -> usize {
         self.rects.len()
     }
@@ -102,6 +110,7 @@ impl Region {
 
     /// Returns the rectangles composing this region.
     #[inline]
+    #[must_use]
     pub fn rects(&self) -> &[IRect] {
         &self.rects
     }
@@ -123,12 +132,13 @@ impl Region {
     }
 
     /// Set the region to another region.
-    pub fn set_region(&mut self, other: &Region) -> bool {
-        self.rects = other.rects.clone();
+    pub fn set_region(&mut self, other: &Self) -> bool {
+        self.rects.clone_from(&other.rects);
         !self.is_empty()
     }
 
     /// Returns true if the point is contained in the region.
+    #[must_use]
     pub fn contains(&self, x: i32, y: i32) -> bool {
         if !self.bounds().contains(x, y) {
             return false;
@@ -142,6 +152,7 @@ impl Region {
     }
 
     /// Returns true if the rectangle is completely contained in the region.
+    #[must_use]
     pub fn contains_rect(&self, rect: &IRect) -> bool {
         if rect.is_empty() {
             return true;
@@ -224,6 +235,7 @@ impl Region {
     }
 
     /// Returns true if this region intersects with a rectangle.
+    #[must_use]
     pub fn intersects_rect(&self, rect: &IRect) -> bool {
         if self.is_empty() || rect.is_empty() {
             return false;
@@ -240,7 +252,8 @@ impl Region {
     }
 
     /// Returns true if this region intersects with another region.
-    pub fn intersects_region(&self, other: &Region) -> bool {
+    #[must_use]
+    pub fn intersects_region(&self, other: &Self) -> bool {
         if self.is_empty() || other.is_empty() {
             return false;
         }
@@ -265,6 +278,7 @@ impl Region {
     }
 
     /// Returns a translated copy of this region.
+    #[must_use]
     pub fn translated(&self, dx: i32, dy: i32) -> Self {
         let mut result = self.clone();
         result.translate(dx, dy);
@@ -273,12 +287,12 @@ impl Region {
 
     /// Combine this region with a rectangle using the specified operation.
     pub fn op_rect(&mut self, rect: IRect, op: RegionOp) -> bool {
-        let other = Region::from_rect(rect);
+        let other = Self::from_rect(rect);
         self.op_region(&other, op)
     }
 
     /// Combine this region with another region using the specified operation.
-    pub fn op_region(&mut self, other: &Region, op: RegionOp) -> bool {
+    pub fn op_region(&mut self, other: &Self, op: RegionOp) -> bool {
         match op {
             RegionOp::Replace => self.set_region(other),
             RegionOp::Intersect => self.intersect(other),
@@ -295,7 +309,7 @@ impl Region {
     }
 
     /// Intersect this region with another.
-    fn intersect(&mut self, other: &Region) -> bool {
+    fn intersect(&mut self, other: &Self) -> bool {
         if self.is_empty() || other.is_empty() {
             self.set_empty();
             return false;
@@ -316,12 +330,14 @@ impl Region {
             }
         }
 
-        self.rects = result_rects;
+        // Canonicalize to strict scanline form so PartialEq, is_rect(),
+        // rect_count() and iteration order match SkRegion semantics.
+        self.rects = canonicalize_rects(&result_rects);
         !self.is_empty()
     }
 
     /// Union this region with another.
-    fn union(&mut self, other: &Region) -> bool {
+    fn union(&mut self, other: &Self) -> bool {
         if other.is_empty() {
             return !self.is_empty();
         }
@@ -333,14 +349,14 @@ impl Region {
         // and adjacent rects are merged.  Without this the rect list grows
         // without bound on repeated unions, making all O(n) region ops slow.
         let mut all_rects = std::mem::take(&mut self.rects);
-        all_rects.extend(other.rects.iter().cloned());
+        all_rects.extend(other.rects.iter().copied());
 
         self.rects = canonicalize_rects(&all_rects);
         !self.is_empty()
     }
 
     /// XOR this region with another.
-    fn xor(&mut self, other: &Region) -> bool {
+    fn xor(&mut self, other: &Self) -> bool {
         // XOR = (A - B) + (B - A)
         let mut a_minus_b = self.clone();
         a_minus_b.difference(other);
@@ -354,7 +370,7 @@ impl Region {
     }
 
     /// Subtract another region from this one.
-    fn difference(&mut self, other: &Region) -> bool {
+    fn difference(&mut self, other: &Self) -> bool {
         if self.is_empty() || other.is_empty() {
             return !self.is_empty();
         }
@@ -378,7 +394,9 @@ impl Region {
             result_rects.extend(fragments);
         }
 
-        self.rects = result_rects;
+        // Canonicalize to strict scanline form so PartialEq, is_rect(),
+        // rect_count() and iteration order match SkRegion semantics.
+        self.rects = canonicalize_rects(&result_rects);
         !self.is_empty()
     }
 }
@@ -430,6 +448,10 @@ fn subtract_rect(rect1: &IRect, rect2: &IRect) -> Vec<IRect> {
     result
 }
 
+/// A horizontal scanline band: `(top, bottom, x-intervals)`, where each
+/// x-interval is an inclusive-left/exclusive-right `(left, right)` pair.
+type Band = (i32, i32, Vec<(i32, i32)>);
+
 /// Canonicalize a list of rectangles into scanline form.
 ///
 /// Returns a minimal list of non-overlapping rectangles whose union equals
@@ -443,7 +465,7 @@ fn subtract_rect(rect1: &IRect, rect2: &IRect) -> Vec<IRect> {
 /// 3. Attempt to extend the previous output band downward when the current
 ///    band has an identical x-interval list, eliminating redundant splits.
 ///
-/// The result is equivalent to Skia's canonical SkRegion scanline format.
+/// The result is equivalent to Skia's canonical `SkRegion` scanline format.
 fn canonicalize_rects(input: &[IRect]) -> Vec<IRect> {
     if input.is_empty() {
         return Vec::new();
@@ -465,7 +487,7 @@ fn canonicalize_rects(input: &[IRect]) -> Vec<IRect> {
     y_edges.dedup();
 
     let mut result: Vec<IRect> = Vec::new();
-    let mut prev_band: Option<(i32, i32, Vec<(i32, i32)>)> = None;
+    let mut prev_band: Option<Band> = None;
 
     // Reusable buffers - allocate once, clear per-band.
     let mut intervals: Vec<(i32, i32)> = Vec::with_capacity(input.len());
@@ -560,7 +582,7 @@ impl<'a> Iterator for RegionIter<'a> {
     }
 }
 
-impl<'a> ExactSizeIterator for RegionIter<'a> {}
+impl ExactSizeIterator for RegionIter<'_> {}
 
 impl<'a> IntoIterator for &'a Region {
     type Item = &'a IRect;
@@ -713,7 +735,11 @@ mod tests {
         }
 
         let rects = region.rects();
-        assert_eq!(rects.len(), 1, "Repeated union with same rect should stay at 1");
+        assert_eq!(
+            rects.len(),
+            1,
+            "Repeated union with same rect should stay at 1"
+        );
     }
 
     #[test]
@@ -725,5 +751,56 @@ mod tests {
         }
         let rects = region.rects();
         assert_eq!(rects.len(), 50, "50 disjoint rects should remain 50 rects");
+    }
+
+    // --- Conformance regression tests (Task 1) ---
+
+    #[test]
+    fn test_difference_canonicalizes_scanline_order() {
+        let mut region = Region::from_rect(IRect::new(0, 0, 100, 100));
+        region.op_rect(IRect::new(25, 25, 75, 75), RegionOp::Difference);
+
+        // Iteration must be in strict top-to-bottom scanline order.
+        let rects: Vec<_> = region.iter().collect();
+        assert_eq!(rects.len(), 4);
+        for w in rects.windows(2) {
+            assert!(w[0].top <= w[1].top, "rects must be in scanline order");
+        }
+
+        // The same frame built purely from unions must compare equal, proving
+        // difference canonicalizes to the same representation.
+        let mut frame = Region::from_rect(IRect::new(0, 0, 100, 25));
+        frame.op_rect(IRect::new(0, 25, 25, 75), RegionOp::Union);
+        frame.op_rect(IRect::new(75, 25, 100, 75), RegionOp::Union);
+        frame.op_rect(IRect::new(0, 75, 100, 100), RegionOp::Union);
+        assert_eq!(region, frame, "difference must canonicalize like union");
+    }
+
+    #[test]
+    fn test_intersect_canonicalizes_scanline_order() {
+        // A complex region (two vertically disjoint rects) intersected with a
+        // spanning rect must yield canonical, scanline-ordered output.
+        let mut region = Region::from_rect(IRect::new(0, 0, 10, 10));
+        region.op_rect(IRect::new(0, 20, 10, 30), RegionOp::Union);
+        region.op_rect(IRect::new(0, 0, 10, 30), RegionOp::Intersect);
+
+        let rects: Vec<_> = region.iter().collect();
+        assert_eq!(
+            rects,
+            vec![IRect::new(0, 0, 10, 10), IRect::new(0, 20, 10, 30)]
+        );
+    }
+
+    #[test]
+    fn test_intersect_merges_to_single_rect() {
+        // Two adjacent rects whose intersection with a band should merge into a
+        // single canonical rect (is_rect true, rect_count 1).
+        let mut region = Region::from_rect(IRect::new(0, 0, 10, 10));
+        region.op_rect(IRect::new(0, 10, 10, 20), RegionOp::Union);
+        // Region is now the single merged rect [0,0,10,20].
+        region.op_rect(IRect::new(0, 0, 10, 20), RegionOp::Intersect);
+        assert!(region.is_rect(), "intersection should be a single rect");
+        assert_eq!(region.rect_count(), 1);
+        assert_eq!(region.bounds(), IRect::new(0, 0, 10, 20));
     }
 }

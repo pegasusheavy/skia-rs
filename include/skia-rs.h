@@ -16,6 +16,36 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+// ABI-stable verb codes emitted by [`sk_path_iter_next`].
+#define SK_PATH_VERB_MOVE 0
+
+// ABI-stable verb code for a line segment.
+#define SK_PATH_VERB_LINE 1
+
+// ABI-stable verb code for a quadratic bezier.
+#define SK_PATH_VERB_QUAD 2
+
+// ABI-stable verb code for a conic section.
+#define SK_PATH_VERB_CONIC 3
+
+// ABI-stable verb code for a cubic bezier.
+#define SK_PATH_VERB_CUBIC 4
+
+// ABI-stable verb code for a contour close.
+#define SK_PATH_VERB_CLOSE 5
+
+// Sentinel verb code returned once the iterator is exhausted.
+#define SK_PATH_VERB_DONE 6
+
+// ABI version major number
+#define SK_ABI_VERSION_MAJOR 1
+
+// ABI version minor number
+#define SK_ABI_VERSION_MINOR 0
+
+// ABI version patch number
+#define SK_ABI_VERSION_PATCH 0
+
 // Index constants for matrix elements.
 #define Matrix_SCALE_X 0
 
@@ -75,23 +105,58 @@ enum MipmapMode
 typedef uint8_t MipmapMode;
 #endif // __cplusplus
 
-// Gradient flags for controlling interpolation.
-typedef struct GradientFlags GradientFlags;
+// Describes the color space for interpreting colors.
+//
+// Equivalent to Skia's `SkColorSpace`.
+typedef struct ColorSpace ColorSpace;
 
-// Paint configuration for drawing operations.
-typedef struct Paint Paint;
+// A boxed path effect.
+typedef struct PathEffectRef PathEffectRef;
 
-// A 2D geometric path.
-typedef struct Path Path;
+// A region composed of rectangles.
+//
+// Represents a complex area that can be the result of multiple boolean
+// operations on rectangles. Used for efficient clipping operations.
+//
+// Corresponds to Skia's `SkRegion`.
+typedef struct Region Region;
 
-// Builder for constructing paths.
-typedef struct PathBuilder PathBuilder;
+// Opaque canvas handle.
+//
+// A canvas is an explicit raster drawing context borrowed from a surface.
+// Call [`sk_surface_lock_canvas`] to acquire one, issue draw/transform/clip
+// calls, then release with [`sk_canvas_release`]. The canvas retains
+// exclusive mutable access to the backing pixel buffer while locked.
+typedef struct sk_canvas_t sk_canvas_t;
 
-// Sampling options for image shaders.
-typedef struct SamplingOptions SamplingOptions;
+// Stateful iterator over a path's verbs.
+//
+// Create with [`sk_path_iter_new`], advance with [`sk_path_iter_next`],
+// destroy with [`sk_path_iter_delete`]. The iterator holds a clone of the
+// path's verbs/points — the source path can be modified or dropped after
+// iteration begins without invalidating the iterator.
+typedef struct sk_path_iter_t sk_path_iter_t;
 
-// Opaque surface type.
-typedef Surface SkSurface;
+// Opaque picture recorder. Not reference counted — single ownership.
+//
+// The FFI recorder does not use the workspace [`PictureRecorder`] directly
+// because that type's recording API returns an unboxed mutable reference
+// that cannot cross the FFI boundary cleanly. Instead we track our own
+// [`DrawCommand`] stream and wrap it into a [`Picture`] at finish time,
+// calling [`Picture::from_parts`].
+typedef struct sk_picture_recorder_t sk_picture_recorder_t;
+
+// Recording canvas handle. Returned by
+// [`sk_picture_recorder_begin_recording`] and accepted by
+// [`sk_recording_canvas_*`] — it is **not** interchangeable with
+// [`sk_canvas_t`] (which is raster-backed).
+typedef struct sk_recording_canvas_t sk_recording_canvas_t;
+
+// Opaque reference counted object type.
+typedef void sk_refcnt_t;
+
+// Reference counted surface type.
+typedef struct sk_surface_t sk_surface_t;
 
 // C-compatible image info structure.
 typedef struct sk_imageinfo_t {
@@ -105,14 +170,43 @@ typedef struct sk_imageinfo_t {
     uint32_t alpha_type;
 } sk_imageinfo_t;
 
-// Opaque paint type.
-typedef struct Paint SkPaint;
+// Reference counted paint type.
+typedef struct sk_paint_t sk_paint_t;
 
-// C-compatible color (ARGB).
+// C-compatible color (ARGB packed).
 typedef uint32_t sk_color_t;
 
-// Opaque path type.
-typedef struct Path SkPath;
+// C-compatible 4-component color (float RGBA).
+typedef struct sk_color4f_t {
+    // Red.
+    float r;
+    // Green.
+    float g;
+    // Blue.
+    float b;
+    // Alpha.
+    float a;
+} sk_color4f_t;
+
+// C ABI type for the paint's blend mode. Values follow upstream
+// `SkBlendMode` numbering (`include/core/SkBlendMode.h`), all 29 modes
+// (`kClear = 0` .. `kLuminosity = 28`); see [`BlendMode::from_u8`].
+typedef uint32_t sk_blend_mode_t;
+
+// Reference counted shader type.
+typedef struct sk_shader_t sk_shader_t;
+
+// Reference counted color filter.
+typedef struct sk_colorfilter_t sk_colorfilter_t;
+
+// Reference counted mask filter.
+typedef struct sk_maskfilter_t sk_maskfilter_t;
+
+// Reference counted image filter.
+typedef struct sk_imagefilter_t sk_imagefilter_t;
+
+// Reference counted path type.
+typedef struct sk_path_t sk_path_t;
 
 // C-compatible rectangle structure.
 typedef struct sk_rect_t {
@@ -126,15 +220,6 @@ typedef struct sk_rect_t {
     float bottom;
 } sk_rect_t;
 
-// Opaque path builder type.
-typedef struct PathBuilder SkPathBuilder;
-
-// C-compatible matrix structure.
-typedef struct sk_matrix_t {
-    // Matrix values (row-major).
-    float values[9];
-} sk_matrix_t;
-
 // C-compatible point structure.
 typedef struct sk_point_t {
     // X coordinate.
@@ -142,6 +227,104 @@ typedef struct sk_point_t {
     // Y coordinate.
     float y;
 } sk_point_t;
+
+// Reference counted path builder type.
+typedef struct sk_pathbuilder_t sk_pathbuilder_t;
+
+// C-compatible matrix structure.
+typedef struct sk_matrix_t {
+    // Matrix values (row-major).
+    float values[9];
+} sk_matrix_t;
+
+// C ABI type for [`SkClipOp`].
+//
+// Functions taking a clip op accept this raw `uint32_t` and decode it via
+// [`decode_clip_op`], rejecting out-of-range values instead of constructing
+// an invalid Rust enum from C.
+typedef uint32_t sk_clip_op_t;
+
+// C-compatible integer rectangle structure.
+typedef struct sk_irect_t {
+    // Left edge.
+    int32_t left;
+    // Top edge.
+    int32_t top;
+    // Right edge.
+    int32_t right;
+    // Bottom edge.
+    int32_t bottom;
+} sk_irect_t;
+
+// Reference counted image type.
+typedef struct sk_image_t sk_image_t;
+
+// Reference counted typeface type.
+typedef struct sk_typeface_t sk_typeface_t;
+
+// Reference counted font type (typeface + size + options).
+typedef struct sk_font_t sk_font_t;
+
+// C-compatible 4x4 matrix structure (column-major).
+typedef struct sk_matrix44_t {
+    // Matrix values in column-major order (m[col * 4 + row]).
+    float values[16];
+} sk_matrix44_t;
+
+// Reference counted [`ColorSpace`].
+typedef struct RefCounted_ColorSpace sk_colorspace_t;
+
+// Reference counted [`TextBlob`].
+typedef struct RefCounted_TextBlob sk_textblob_t;
+
+// Reference counted [`Picture`].
+typedef struct RefCounted_PictureRef sk_picture_t;
+
+// Reference counted [`Region`].
+typedef struct RefCounted_Region sk_region_t;
+
+// C ABI type for [`SkRegionOp`]; see [`decode_region_op`].
+typedef uint32_t sk_region_op_t;
+
+// Reference counted [`PathEffectRef`].
+typedef struct RefCounted_PathEffectRef sk_patheffect_t;
+
+// C ABI type for [`SkTrimMode`]; see [`decode_trim_mode`].
+typedef uint32_t sk_trim_mode_t;
+
+// Binary-compatible 2D point (matches `SkPoint` exactly)
+typedef struct SkPointABI {
+    // X coordinate.
+    float x;
+    // Y coordinate.
+    float y;
+} SkPointABI;
+
+// Binary-compatible rectangle (matches `SkRect` exactly)
+typedef struct SkRectABI {
+    // Left edge.
+    float left;
+    // Top edge.
+    float top;
+    // Right edge.
+    float right;
+    // Bottom edge.
+    float bottom;
+} SkRectABI;
+
+// Binary-compatible 3x3 matrix (matches `SkMatrix` exactly)
+//
+// Layout: [scaleX, skewX, transX, skewY, scaleY, transY, persp0, persp1, persp2]
+typedef struct SkMatrixABI {
+    // Row-major 3x3 matrix values.
+    float values[9];
+} SkMatrixABI;
+
+// Binary-compatible 4x4 matrix (matches SkMatrix44/SkM44 exactly)
+typedef struct SkMatrix44ABI {
+    // Row-major 4x4 matrix values.
+    float values[16];
+} SkMatrix44ABI;
 
 // A 32-bit ARGB color.
 //
@@ -214,10 +397,6 @@ typedef uint32_t Color;
 
 
 
-
-
-
-
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -228,114 +407,267 @@ extern "C" {
 // Reading this flag clears it.
 bool sk_last_call_panicked(void);
 
+// Get the reference count of an object.
+//
+// Returns 0 if the pointer is null or fails the tag check. The tag check
+// is a best-effort heuristic against passing a non-refcounted pointer, not
+// a memory-safety guarantee: `ptr` must still be null or point to a valid
+// allocation of at least `size_of::<RefCountedHeader>()` readable bytes.
+uint32_t sk_refcnt_get_count(const sk_refcnt_t *ptr);
+
+// Check if an object has only one reference (is unique).
+bool sk_refcnt_is_unique(const sk_refcnt_t *ptr);
+
+// Initialize the library and verify ABI compatibility.
+//
+// C clients must call this once, before any other `sk_*` function, passing
+// the major/minor version they were compiled against. Returns `true` if the
+// linked library is compatible. If `false`, the caller must not call any
+// other `sk_*` function — behavior is undefined.
+//
+// Calling `sk_init` twice with compatible values is a no-op.
+bool sk_init(uint32_t major,
+             uint32_t minor);
+
+// Check whether [`sk_init`] has been called successfully.
+bool sk_is_initialized(void);
+
 // Create a new raster surface.
-SkSurface *sk_surface_new_raster(int32_t width,
-                                 int32_t height);
+//
+// Returns a surface with refcount of 1, or null on failure.
+sk_surface_t *sk_surface_new_raster(int32_t width,
+                                    int32_t height);
 
 // Create a raster surface with specific image info.
-SkSurface *sk_surface_new_raster_with_info(const struct sk_imageinfo_t *info);
+//
+// Returns a surface with refcount of 1, or null on failure.
+sk_surface_t *sk_surface_new_raster_with_info(const struct sk_imageinfo_t *info);
 
-// Delete a surface.
-void sk_surface_unref(SkSurface *surface);
+// Increment the reference count of a surface.
+void sk_surface_ref(sk_surface_t *surface);
+
+// Decrement the reference count of a surface.
+//
+// Frees the surface when the count reaches 0.
+//
+// # Panics
+// Panics (caught by `catch_panic_void`, see the crate-level docs) if the
+// internal locked-surfaces mutex is poisoned by another thread panicking
+// while holding it.
+void sk_surface_unref(sk_surface_t *surface);
+
+// Get the reference count of a surface.
+uint32_t sk_surface_get_refcnt(const sk_surface_t *surface);
+
+// Check if the surface has only one reference.
+bool sk_surface_is_unique(const sk_surface_t *surface);
 
 // Get the width of a surface.
-int32_t sk_surface_get_width(const SkSurface *surface);
+int32_t sk_surface_get_width(const sk_surface_t *surface);
 
 // Get the height of a surface.
-int32_t sk_surface_get_height(const SkSurface *surface);
+int32_t sk_surface_get_height(const sk_surface_t *surface);
 
-// Get the pixel data from a surface.
-bool sk_surface_peek_pixels(const SkSurface *surface,
+// Get the pixel data from a surface (unsynchronized borrow).
+//
+// The bytes are always **premultiplied**, regardless of the surface's
+// declared alpha type — the underlying buffer physically stores premul
+// pixels, and a borrowed pointer cannot be converted in place without
+// mutating the surface's own storage. Surfaces created with
+// `alpha_type = Unpremul` are rejected (returns `false`); use
+// [`sk_surface_read_pixels`] instead, which copies out and unpremultiplies
+// as needed.
+//
+// **Lifetime:** the pointer returned via `out_pixels` is only valid for as
+// long as `surface` remains allocated AND is not mutated. Any subsequent
+// drawing call on this surface (e.g. [`sk_surface_draw_rect`]) may move
+// or resize the underlying buffer, invalidating the pointer. Callers that
+// need a stable snapshot should copy out via [`sk_surface_read_pixels`].
+bool sk_surface_peek_pixels(const sk_surface_t *surface,
                             const uint8_t **out_pixels,
                             uintptr_t *out_row_bytes);
 
+// Copy the pixel data from a surface into a caller-owned buffer.
+//
+// Safer than [`sk_surface_peek_pixels`] — the caller owns the destination
+// buffer and does not need to track the surface's lifetime.
+//
+// The bytes are converted to match the surface's declared alpha type: for
+// surfaces created with `alpha_type = Unpremul`, the copied pixels are
+// unpremultiplied before being written to `dst`; otherwise the raw
+// premultiplied bytes are copied as-is.
+//
+// Returns the number of bytes written, or 0 on failure (null surface,
+// null/undersized destination buffer).
+uintptr_t sk_surface_read_pixels(const sk_surface_t *surface,
+                                 uint8_t *dst,
+                                 uintptr_t dst_len);
+
 // Create a new paint.
-SkPaint *sk_paint_new(void);
+sk_paint_t *sk_paint_new(void);
 
 // Clone a paint.
-SkPaint *sk_paint_clone(const SkPaint *paint);
+sk_paint_t *sk_paint_clone(const sk_paint_t *paint);
 
-// Delete a paint.
-void sk_paint_delete(SkPaint *paint);
+// Increment the reference count of a paint.
+void sk_paint_ref(sk_paint_t *paint);
+
+// Decrement the reference count of a paint (alias for unref).
+void sk_paint_delete(sk_paint_t *paint);
+
+// Decrement the reference count of a paint.
+void sk_paint_unref(sk_paint_t *paint);
+
+// Get the reference count of a paint.
+uint32_t sk_paint_get_refcnt(const sk_paint_t *paint);
 
 // Set the paint color.
-void sk_paint_set_color(SkPaint *paint,
+void sk_paint_set_color(sk_paint_t *paint,
                         sk_color_t color);
 
 // Get the paint color.
-sk_color_t sk_paint_get_color(const SkPaint *paint);
+sk_color_t sk_paint_get_color(const sk_paint_t *paint);
+
+// Set the paint color as float RGBA.
+void sk_paint_set_color4f(sk_paint_t *paint,
+                          struct sk_color4f_t color);
+
+// Get the paint color as float RGBA.
+struct sk_color4f_t sk_paint_get_color4f(const sk_paint_t *paint);
 
 // Set the paint style.
-void sk_paint_set_style(SkPaint *paint,
+void sk_paint_set_style(sk_paint_t *paint,
                         uint32_t style);
 
 // Set the stroke width.
-void sk_paint_set_stroke_width(SkPaint *paint,
+void sk_paint_set_stroke_width(sk_paint_t *paint,
                                float width);
 
 // Get the stroke width.
-float sk_paint_get_stroke_width(const SkPaint *paint);
+float sk_paint_get_stroke_width(const sk_paint_t *paint);
 
 // Set anti-alias.
-void sk_paint_set_antialias(SkPaint *paint,
+void sk_paint_set_antialias(sk_paint_t *paint,
                             bool aa);
 
 // Check if anti-alias is enabled.
-bool sk_paint_is_antialias(const SkPaint *paint);
+bool sk_paint_is_antialias(const sk_paint_t *paint);
+
+// Set the paint's blend mode.
+//
+// `mode` follows upstream `SkBlendMode` (0-28); see [`BlendMode::from_u8`].
+// Returns false (leaving the paint's blend mode unchanged) if `paint` is
+// null or `mode` is out of range.
+bool sk_paint_set_blend_mode(sk_paint_t *paint,
+                             sk_blend_mode_t mode);
+
+// Get the paint's blend mode as a raw `sk_blend_mode_t` (upstream
+// `SkBlendMode` numbering, 0-28). Returns `SrcOver` (3) if `paint` is null,
+// matching `SkPaint`'s default blend mode.
+sk_blend_mode_t sk_paint_get_blend_mode(const sk_paint_t *paint);
+
+// Attach a shader to the paint. Passing null clears it.
+//
+// The paint takes a new reference to the shader; the caller retains their
+// own reference and must still unref it.
+void sk_paint_set_shader(sk_paint_t *paint,
+                         const sk_shader_t *shader);
+
+// Attach a color filter to the paint. Passing null clears it.
+void sk_paint_set_color_filter(sk_paint_t *paint,
+                               const sk_colorfilter_t *filter);
+
+// Attach a mask filter to the paint. Passing null clears it.
+void sk_paint_set_mask_filter(sk_paint_t *paint,
+                              const sk_maskfilter_t *filter);
+
+// Attach an image filter to the paint. Passing null clears it.
+void sk_paint_set_image_filter(sk_paint_t *paint,
+                               const sk_imagefilter_t *filter);
 
 // Create a new path.
-SkPath *sk_path_new(void);
+sk_path_t *sk_path_new(void);
 
 // Clone a path.
-SkPath *sk_path_clone(const SkPath *path);
+sk_path_t *sk_path_clone(const sk_path_t *path);
 
-// Delete a path.
-void sk_path_delete(SkPath *path);
+// Increment the reference count of a path.
+void sk_path_ref(sk_path_t *path);
+
+// Decrement the reference count of a path (alias for unref).
+void sk_path_delete(sk_path_t *path);
+
+// Decrement the reference count of a path.
+void sk_path_unref(sk_path_t *path);
+
+// Get the reference count of a path.
+uint32_t sk_path_get_refcnt(const sk_path_t *path);
 
 // Get the path bounds.
-void sk_path_get_bounds(const SkPath *path,
+void sk_path_get_bounds(const sk_path_t *path,
                         struct sk_rect_t *bounds);
 
 // Check if path is empty.
-bool sk_path_is_empty(const SkPath *path);
+bool sk_path_is_empty(const sk_path_t *path);
 
 // Get the fill type.
-uint32_t sk_path_get_filltype(const SkPath *path);
+uint32_t sk_path_get_filltype(const sk_path_t *path);
 
 // Set the fill type.
-void sk_path_set_filltype(SkPath *path,
+void sk_path_set_filltype(sk_path_t *path,
                           uint32_t fill_type);
 
 // Check if path contains a point.
-bool sk_path_contains(const SkPath *path,
+bool sk_path_contains(const sk_path_t *path,
                       float x,
                       float y);
 
-// Create a new path builder.
-SkPathBuilder *sk_pathbuilder_new(void);
+// Create an iterator over a path's verbs.
+struct sk_path_iter_t *sk_path_iter_new(const sk_path_t *path);
 
-// Delete a path builder.
-void sk_pathbuilder_delete(SkPathBuilder *builder);
+// Destroy a path iterator.
+void sk_path_iter_delete(struct sk_path_iter_t *iter);
+
+// Advance the iterator.
+//
+// Fills up to four points in `out_points` (caller provides at least 4
+// slots) and the conic weight (if applicable) in `out_weight`. Returns the
+// verb code; `SK_PATH_VERB_DONE` indicates exhaustion.
+uint32_t sk_path_iter_next(struct sk_path_iter_t *iter,
+                           struct sk_point_t *out_points,
+                           float *out_weight);
+
+// Create a new path builder.
+sk_pathbuilder_t *sk_pathbuilder_new(void);
+
+// Increment the reference count of a path builder.
+void sk_pathbuilder_ref(sk_pathbuilder_t *builder);
+
+// Decrement the reference count of a path builder (alias for unref).
+void sk_pathbuilder_delete(sk_pathbuilder_t *builder);
+
+// Decrement the reference count of a path builder.
+void sk_pathbuilder_unref(sk_pathbuilder_t *builder);
 
 // Move to a point.
-void sk_pathbuilder_move_to(SkPathBuilder *builder,
+void sk_pathbuilder_move_to(sk_pathbuilder_t *builder,
                             float x,
                             float y);
 
 // Line to a point.
-void sk_pathbuilder_line_to(SkPathBuilder *builder,
+void sk_pathbuilder_line_to(sk_pathbuilder_t *builder,
                             float x,
                             float y);
 
 // Quadratic bezier to a point.
-void sk_pathbuilder_quad_to(SkPathBuilder *builder,
+void sk_pathbuilder_quad_to(sk_pathbuilder_t *builder,
                             float cx,
                             float cy,
                             float x,
                             float y);
 
 // Cubic bezier to a point.
-void sk_pathbuilder_cubic_to(SkPathBuilder *builder,
+void sk_pathbuilder_cubic_to(sk_pathbuilder_t *builder,
                              float c1x,
                              float c1y,
                              float c2x,
@@ -344,24 +676,27 @@ void sk_pathbuilder_cubic_to(SkPathBuilder *builder,
                              float y);
 
 // Close the path.
-void sk_pathbuilder_close(SkPathBuilder *builder);
+void sk_pathbuilder_close(sk_pathbuilder_t *builder);
 
 // Add a rectangle.
-void sk_pathbuilder_add_rect(SkPathBuilder *builder,
+void sk_pathbuilder_add_rect(sk_pathbuilder_t *builder,
                              const struct sk_rect_t *rect);
 
 // Add an oval.
-void sk_pathbuilder_add_oval(SkPathBuilder *builder,
+void sk_pathbuilder_add_oval(sk_pathbuilder_t *builder,
                              const struct sk_rect_t *rect);
 
 // Add a circle.
-void sk_pathbuilder_add_circle(SkPathBuilder *builder,
+void sk_pathbuilder_add_circle(sk_pathbuilder_t *builder,
                                float cx,
                                float cy,
                                float radius);
 
-// Build the path (consumes the builder).
-SkPath *sk_pathbuilder_detach(SkPathBuilder *builder);
+// Build the path and reset the builder.
+sk_path_t *sk_pathbuilder_detach(sk_pathbuilder_t *builder);
+
+// Build the path without resetting the builder.
+sk_path_t *sk_pathbuilder_snapshot(const sk_pathbuilder_t *builder);
 
 // Set matrix to identity.
 void sk_matrix_set_identity(struct sk_matrix_t *matrix);
@@ -380,50 +715,609 @@ void sk_matrix_set_scale(struct sk_matrix_t *matrix,
 void sk_matrix_set_rotate(struct sk_matrix_t *matrix,
                           float degrees);
 
-// Concatenate two matrices.
+// Concatenate two matrices: `*result = a * b`.
+//
+// `result` may alias `a` and/or `b` (in-place concat is a supported usage,
+// mirroring `SkMatrix::preConcat`/`postConcat` call patterns). Both inputs
+// are copied into owned locals via [`ptr::read`] *before* anything is
+// written through `result`, so no `&`/`&mut` reference ever aliases the
+// same memory — forming `result.as_mut()` while `a`/`b` were still live
+// `&`-refs into the same allocation would be immediate UB when `result`
+// aliases an input.
 void sk_matrix_concat(struct sk_matrix_t *result,
                       const struct sk_matrix_t *a,
                       const struct sk_matrix_t *b);
 
 // Map a point through a matrix.
+//
+// `result` may alias `point` (in-place mapping). `matrix`/`point` are read
+// via [`ptr::read`] before writing through `result`; see
+// [`sk_matrix_concat`] for why that ordering matters.
 void sk_matrix_map_point(const struct sk_matrix_t *matrix,
                          const struct sk_point_t *point,
                          struct sk_point_t *result);
 
-// Get the library version.
+// Invert a matrix into `result`. Returns true on success, false if the
+// matrix is singular (non-invertible); on failure `result` is unchanged.
+//
+// `result` may alias `matrix` (in-place inversion); `matrix` is read via
+// [`ptr::read`] before writing through `result`; see [`sk_matrix_concat`]
+// for why that ordering matters.
+bool sk_matrix_invert(const struct sk_matrix_t *matrix,
+                      struct sk_matrix_t *result);
+
+// Return true if the matrix is the identity.
+bool sk_matrix_is_identity(const struct sk_matrix_t *matrix);
+
+// Return the determinant of the matrix.
+float sk_matrix_determinant(const struct sk_matrix_t *matrix);
+
+// Get the library version as a NUL-terminated static string.
+//
+// Sourced from the crate's `Cargo.toml` version (`CARGO_PKG_VERSION`) at
+// compile time, so it always matches the shipped `skia-rs-ffi` release.
 const char *sk_version(void);
 
 // Check if the library is available.
 bool sk_is_available(void);
 
-// Clear a surface with a color.
-void sk_surface_clear(SkSurface *surface,
+// Clear a surface with a color. No-op while the surface is locked (see
+// [`sk_surface_lock_canvas`]).
+void sk_surface_clear(sk_surface_t *surface,
                       sk_color_t color);
 
-// Draw a rect on a surface.
-void sk_surface_draw_rect(SkSurface *surface,
+// Draw a rect on a surface. No-op while the surface is locked (see
+// [`sk_surface_lock_canvas`]).
+void sk_surface_draw_rect(sk_surface_t *surface,
                           const struct sk_rect_t *rect,
-                          const SkPaint *paint);
+                          const sk_paint_t *paint);
 
-// Draw a circle on a surface.
-void sk_surface_draw_circle(SkSurface *surface,
+// Draw a circle on a surface. No-op while the surface is locked (see
+// [`sk_surface_lock_canvas`]).
+void sk_surface_draw_circle(sk_surface_t *surface,
                             float cx,
                             float cy,
                             float radius,
-                            const SkPaint *paint);
+                            const sk_paint_t *paint);
 
-// Draw a path on a surface.
-void sk_surface_draw_path(SkSurface *surface,
-                          const SkPath *path,
-                          const SkPaint *paint);
+// Draw a path on a surface. No-op while the surface is locked (see
+// [`sk_surface_lock_canvas`]).
+void sk_surface_draw_path(sk_surface_t *surface,
+                          const sk_path_t *path,
+                          const sk_paint_t *paint);
 
-// Draw a line on a surface.
-void sk_surface_draw_line(SkSurface *surface,
+// Draw a line on a surface. No-op while the surface is locked (see
+// [`sk_surface_lock_canvas`]).
+void sk_surface_draw_line(sk_surface_t *surface,
                           float x0,
                           float y0,
                           float x1,
                           float y1,
-                          const SkPaint *paint);
+                          const sk_paint_t *paint);
+
+// Acquire a canvas borrowed from the given surface.
+//
+// The returned canvas is valid until [`sk_canvas_release`] is called and
+// must not outlive `surface`. Only one canvas may be held per surface at
+// a time — attempting to lock twice returns null. While a surface is
+// locked, the `sk_surface_draw_*`/`sk_surface_clear` convenience helpers
+// (which bypass the locked canvas and draw directly on the surface) are
+// rejected (no-op) to avoid two independent mutable views of the same
+// pixel buffer.
+//
+// # Panics
+// Panics (caught by `catch_panic`, see the crate-level docs) if the
+// internal locked-surfaces mutex is poisoned by another thread panicking
+// while holding it.
+struct sk_canvas_t *sk_surface_lock_canvas(sk_surface_t *surface);
+
+// Release a canvas acquired via [`sk_surface_lock_canvas`].
+//
+// # Panics
+// Panics (caught by `catch_panic_void`, see the crate-level docs) if the
+// internal locked-surfaces mutex is poisoned by another thread panicking
+// while holding it.
+void sk_canvas_release(struct sk_canvas_t *canvas);
+
+// Get the width of the canvas.
+int32_t sk_canvas_get_width(const struct sk_canvas_t *canvas);
+
+// Get the height of the canvas.
+int32_t sk_canvas_get_height(const struct sk_canvas_t *canvas);
+
+// Save the current transformation matrix and clip stack.
+int32_t sk_canvas_save(struct sk_canvas_t *canvas);
+
+// Save a layer — pushes a save frame that records the layer bounds and
+// paint for composition on restore.
+//
+// Both `bounds` and `paint` are optional (null is acceptable). The layer
+// is allocated lazily (at the next draw) because draws go through the
+// transient [`Canvas`] layer machinery already. Returns the new save count,
+// or 0 on failure (null canvas).
+//
+// **Pragmatic note:** because the FFI canvas reconstructs its underlying
+// [`Canvas`] between calls, the `layer_paint` / `layer_bounds` are tracked but
+// composition is delegated to the transient canvas at the next draw — the
+// effective behavior matches the recording-only semantics in
+// [`skia_rs_canvas::Canvas::save_layer`].
+uint32_t sk_canvas_save_layer(struct sk_canvas_t *canvas,
+                              const struct sk_rect_t *_bounds,
+                              const sk_paint_t *_paint);
+
+// Restore the most recently saved matrix and clip.
+void sk_canvas_restore(struct sk_canvas_t *canvas);
+
+// Concatenate a matrix onto the canvas's current transform.
+void sk_canvas_concat(struct sk_canvas_t *canvas,
+                      const struct sk_matrix_t *matrix);
+
+// Translate the canvas coordinate system.
+void sk_canvas_translate(struct sk_canvas_t *canvas,
+                         float dx,
+                         float dy);
+
+// Scale the canvas coordinate system.
+void sk_canvas_scale(struct sk_canvas_t *canvas,
+                     float sx,
+                     float sy);
+
+// Rotate the canvas coordinate system (degrees).
+void sk_canvas_rotate(struct sk_canvas_t *canvas,
+                      float degrees);
+
+// Clear the canvas with a color.
+void sk_canvas_clear(struct sk_canvas_t *canvas,
+                     sk_color_t color);
+
+// Draw a rect on the canvas, honoring the canvas's current transform and
+// clip stack.
+void sk_canvas_draw_rect(struct sk_canvas_t *canvas,
+                         const struct sk_rect_t *rect,
+                         const sk_paint_t *paint);
+
+// Draw a path on the canvas, honoring the canvas's current transform and
+// clip stack.
+void sk_canvas_draw_path(struct sk_canvas_t *canvas,
+                         const sk_path_t *path,
+                         const sk_paint_t *paint);
+
+// Intersect or subtract a rectangle from the clip.
+//
+// `op` follows upstream `SkClipOp`: 0 = Difference, 1 = Intersect (see
+// [`decode_clip_op`]). Returns false if the canvas handle is null or `op`
+// is out of range; otherwise true.
+bool sk_canvas_clip_rect(struct sk_canvas_t *canvas,
+                         const struct sk_rect_t *rect,
+                         sk_clip_op_t op,
+                         bool anti_alias);
+
+// Intersect or subtract a path from the clip.
+//
+// `op` follows upstream `SkClipOp`; see [`decode_clip_op`]. Returns false
+// if `op` is out of range.
+bool sk_canvas_clip_path(struct sk_canvas_t *canvas,
+                         const sk_path_t *path,
+                         sk_clip_op_t op,
+                         bool anti_alias);
+
+// Fill `out` with the device-space integer clip bounds of this canvas.
+//
+// Returns true on success. If the clip is empty or the canvas has no clips,
+// `out` is filled with `[0, 0, width, height]`.
+bool sk_canvas_get_clip_ibounds(struct sk_canvas_t *canvas,
+                                struct sk_irect_t *out);
+
+// Decode an encoded image (PNG/JPEG/…) from a byte buffer.
+sk_image_t *sk_image_from_encoded(const uint8_t *data,
+                                  uintptr_t len);
+
+// Create an image filled with a single color.
+sk_image_t *sk_image_from_color(int32_t width,
+                                int32_t height,
+                                sk_color_t color);
+
+// Increment the reference count of an image.
+void sk_image_ref(sk_image_t *image);
+
+// Decrement the reference count of an image.
+void sk_image_unref(sk_image_t *image);
+
+// Get the reference count of an image.
+uint32_t sk_image_get_refcnt(const sk_image_t *image);
+
+// Get the image width.
+int32_t sk_image_get_width(const sk_image_t *image);
+
+// Get the image height.
+int32_t sk_image_get_height(const sk_image_t *image);
+
+// Encode an image as PNG into a caller-allocated buffer.
+//
+// Returns the number of bytes written. If `dst` is null or `dst_len` is 0,
+// returns the required buffer size without writing. Returns 0 on failure.
+uintptr_t sk_image_encode_png(const sk_image_t *image,
+                              uint8_t *dst,
+                              uintptr_t dst_len);
+
+// Create the default typeface.
+sk_typeface_t *sk_typeface_default(void);
+
+// Load a typeface from raw font file data (TTF/OTF).
+sk_typeface_t *sk_typeface_from_data(const uint8_t *data,
+                                     uintptr_t len);
+
+// Increment typeface refcount.
+void sk_typeface_ref(sk_typeface_t *tf);
+
+// Decrement typeface refcount.
+void sk_typeface_unref(sk_typeface_t *tf);
+
+// Get typeface refcount.
+uint32_t sk_typeface_get_refcnt(const sk_typeface_t *tf);
+
+// Get the typeface's units-per-em.
+uint16_t sk_typeface_units_per_em(const sk_typeface_t *tf);
+
+// Get the typeface's glyph count.
+uint16_t sk_typeface_glyph_count(const sk_typeface_t *tf);
+
+// Create a font from a typeface and size.
+sk_font_t *sk_font_new(const sk_typeface_t *tf,
+                       float size);
+
+// Increment font refcount.
+void sk_font_ref(sk_font_t *font);
+
+// Decrement font refcount.
+void sk_font_unref(sk_font_t *font);
+
+// Get font size.
+float sk_font_get_size(const sk_font_t *font);
+
+// Measure a UTF-8 text string at the font's current size. Returns the
+// advance width in pixels; negative return indicates an invalid font or
+// invalid UTF-8.
+float sk_font_measure_text(const sk_font_t *font,
+                           const char *text,
+                           uintptr_t text_len);
+
+// Increment shader refcount.
+void sk_shader_ref(sk_shader_t *shader);
+
+// Decrement shader refcount.
+void sk_shader_unref(sk_shader_t *shader);
+
+// Get shader refcount.
+uint32_t sk_shader_get_refcnt(const sk_shader_t *shader);
+
+// Create a linear gradient shader.
+//
+// `colors_len` must equal `positions_len` (or `positions` may be null).
+// `tile_mode` maps to [`TileMode`]: 0=Clamp, 1=Repeat, 2=Mirror, 3=Decal.
+sk_shader_t *sk_shader_new_linear_gradient(struct sk_point_t start,
+                                           struct sk_point_t end,
+                                           const struct sk_color4f_t *colors,
+                                           const float *positions,
+                                           uintptr_t count,
+                                           uint32_t tile_mode);
+
+// Create a radial gradient shader.
+sk_shader_t *sk_shader_new_radial_gradient(struct sk_point_t center,
+                                           float radius,
+                                           const struct sk_color4f_t *colors,
+                                           const float *positions,
+                                           uintptr_t count,
+                                           uint32_t tile_mode);
+
+// Create a sweep gradient shader.
+sk_shader_t *sk_shader_new_sweep_gradient(struct sk_point_t center,
+                                          float start_angle,
+                                          float end_angle,
+                                          const struct sk_color4f_t *colors,
+                                          const float *positions,
+                                          uintptr_t count);
+
+// Increment color filter refcount.
+void sk_colorfilter_ref(sk_colorfilter_t *f);
+
+// Decrement color filter refcount.
+void sk_colorfilter_unref(sk_colorfilter_t *f);
+
+// Create an identity color-matrix filter.
+sk_colorfilter_t *sk_colorfilter_new_identity(void);
+
+// Create a saturation color filter (1.0 = identity, 0.0 = grayscale).
+sk_colorfilter_t *sk_colorfilter_new_saturation(float amount);
+
+// Create a color-matrix filter from 20 floats (row-major 4x5).
+sk_colorfilter_t *sk_colorfilter_new_matrix(const float *values);
+
+// Increment mask filter refcount.
+void sk_maskfilter_ref(sk_maskfilter_t *f);
+
+// Decrement mask filter refcount.
+void sk_maskfilter_unref(sk_maskfilter_t *f);
+
+// Create a blur mask filter with the given sigma (pixels).
+//
+// `style` follows [`BlurStyle`]: 0=Normal, 1=Solid, 2=Outer, 3=Inner.
+sk_maskfilter_t *sk_maskfilter_new_blur(uint32_t style,
+                                        float sigma);
+
+// Increment image filter refcount.
+void sk_imagefilter_ref(sk_imagefilter_t *f);
+
+// Decrement image filter refcount.
+void sk_imagefilter_unref(sk_imagefilter_t *f);
+
+// Create a Gaussian blur image filter.
+sk_imagefilter_t *sk_imagefilter_new_blur(float sigma_x,
+                                          float sigma_y,
+                                          uint32_t tile_mode);
+
+// Create an identity [`sk_matrix44_t`].
+struct sk_matrix44_t sk_matrix44_new(void);
+
+// Construct a [`sk_matrix44_t`] from 16 column-major floats.
+struct sk_matrix44_t sk_matrix44_from_array(const float *values);
+
+// Map a 2D point through a 4x4 matrix (projects through W).
+//
+// `result` may alias `point` (in-place mapping); inputs are read via
+// [`ptr::read`] before writing through `result` — see
+// [`sk_matrix_concat`] for why that ordering matters.
+void sk_matrix44_map_point(const struct sk_matrix44_t *matrix,
+                           const struct sk_point_t *point,
+                           struct sk_point_t *result);
+
+// Invert a 4x4 matrix. Returns true on success; `result` is unchanged if
+// the matrix is singular.
+//
+// `result` may alias `matrix` (in-place inversion); `matrix` is read via
+// [`ptr::read`] before writing through `result` — see
+// [`sk_matrix_concat`] for why that ordering matters.
+bool sk_matrix44_invert(const struct sk_matrix44_t *matrix,
+                        struct sk_matrix44_t *result);
+
+// Return true if the matrix is the identity matrix.
+bool sk_matrix44_is_identity(const struct sk_matrix44_t *matrix);
+
+// Return the determinant of the matrix.
+float sk_matrix44_determinant(const struct sk_matrix44_t *matrix);
+
+// Concatenate two 4x4 matrices: `*result = a * b`.
+//
+// `result` may alias `a` and/or `b` (in-place concat); inputs are read via
+// [`ptr::read`] before writing through `result` — see
+// [`sk_matrix_concat`] for why that ordering matters.
+void sk_matrix44_concat(struct sk_matrix44_t *result,
+                        const struct sk_matrix44_t *a,
+                        const struct sk_matrix44_t *b);
+
+// Create a new sRGB color space.
+sk_colorspace_t *sk_colorspace_new_srgb(void);
+
+// Create a new linear sRGB color space.
+sk_colorspace_t *sk_colorspace_new_srgb_linear(void);
+
+// Create a new Display P3 color space.
+sk_colorspace_t *sk_colorspace_new_display_p3(void);
+
+// Parse a color space from a raw ICC profile byte buffer. Returns null on
+// failure (malformed profile, missing `acsp` magic, etc.).
+sk_colorspace_t *sk_colorspace_from_icc(const uint8_t *data,
+                                        uintptr_t len);
+
+// Return true if this color space is sRGB.
+bool sk_colorspace_is_srgb(const sk_colorspace_t *cs);
+
+// Return true if this color space has a linear transfer function.
+bool sk_colorspace_is_linear(const sk_colorspace_t *cs);
+
+// Increment color space refcount.
+void sk_colorspace_ref(sk_colorspace_t *cs);
+
+// Decrement color space refcount.
+void sk_colorspace_unref(sk_colorspace_t *cs);
+
+// Build a text blob from a NUL-terminated UTF-8 string. `text` and `font`
+// must be valid, non-null pointers; returns null otherwise.
+sk_textblob_t *sk_textblob_make_from_text(const char *text,
+                                          uintptr_t text_len,
+                                          const sk_font_t *font);
+
+// Increment text blob refcount.
+void sk_textblob_ref(sk_textblob_t *blob);
+
+// Decrement text blob refcount.
+void sk_textblob_unref(sk_textblob_t *blob);
+
+// Get text blob bounds.
+bool sk_textblob_get_bounds(const sk_textblob_t *blob,
+                            struct sk_rect_t *out);
+
+// Draw a text blob on a canvas at `(x, y)`.
+bool sk_canvas_draw_text_blob(struct sk_canvas_t *canvas,
+                              const sk_textblob_t *blob,
+                              float x,
+                              float y,
+                              const sk_paint_t *paint);
+
+// Create a new picture recorder.
+struct sk_picture_recorder_t *sk_picture_recorder_new(void);
+
+// Destroy a picture recorder.
+//
+// Any outstanding [`sk_recording_canvas_t`] handles are left dangling by
+// design (the caller is responsible for releasing them), but every
+// `sk_recording_canvas_*` entry point checks the shared liveness flag
+// before touching the recorder, so calling them after this returns errors
+// out safely instead of dereferencing freed memory.
+void sk_picture_recorder_delete(struct sk_picture_recorder_t *r);
+
+// Begin recording into a fresh picture.
+//
+// Returns a recording canvas handle that draw ops append to. The caller
+// drops the handle via [`sk_recording_canvas_release`] but **must** call
+// [`sk_picture_recorder_finish_recording`] to get the recorded picture.
+struct sk_recording_canvas_t *sk_picture_recorder_begin_recording(struct sk_picture_recorder_t *r,
+                                                                  const struct sk_rect_t *bounds);
+
+// Release a recording canvas handle acquired via
+// [`sk_picture_recorder_begin_recording`]. Does *not* finalize the
+// recording — call [`sk_picture_recorder_finish_recording`] for that.
+void sk_recording_canvas_release(struct sk_recording_canvas_t *canvas);
+
+// Finish recording and return the captured picture. Returns null if the
+// recorder was not recording. After this call the recorder can be reused
+// with another [`sk_picture_recorder_begin_recording`].
+sk_picture_t *sk_picture_recorder_finish_recording(struct sk_picture_recorder_t *r);
+
+// Push a save onto the recording canvas's state.
+int32_t sk_recording_canvas_save(struct sk_recording_canvas_t *canvas);
+
+// Pop a save on the recording canvas's state.
+void sk_recording_canvas_restore(struct sk_recording_canvas_t *canvas);
+
+// Translate the recording canvas's current transform.
+void sk_recording_canvas_translate(struct sk_recording_canvas_t *canvas,
+                                   float dx,
+                                   float dy);
+
+// Draw a rect into the recording canvas. The rect is captured in the
+// caller-space coordinates (post-transform) so playback can place it on
+// any target canvas.
+void sk_recording_canvas_draw_rect(struct sk_recording_canvas_t *canvas,
+                                   const struct sk_rect_t *rect,
+                                   const sk_paint_t *paint);
+
+// Draw a path into the recording canvas.
+void sk_recording_canvas_draw_path(struct sk_recording_canvas_t *canvas,
+                                   const sk_path_t *path,
+                                   const sk_paint_t *paint);
+
+// Play a recorded picture back onto a raster canvas.
+bool sk_picture_playback(const sk_picture_t *picture,
+                         struct sk_canvas_t *canvas);
+
+// Get the picture's cull rect.
+bool sk_picture_get_cull_rect(const sk_picture_t *picture,
+                              struct sk_rect_t *out);
+
+// Get the approximate operation count of a picture.
+uintptr_t sk_picture_approximate_op_count(const sk_picture_t *picture);
+
+// Increment picture refcount.
+void sk_picture_ref(sk_picture_t *picture);
+
+// Decrement picture refcount.
+void sk_picture_unref(sk_picture_t *picture);
+
+// Create a new, empty region.
+sk_region_t *sk_region_new(void);
+
+// Set the region to a single integer rectangle. Returns true if the rect
+// was non-empty (the region now holds it), false if empty (the region is
+// cleared).
+bool sk_region_set_rect(sk_region_t *region,
+                        const struct sk_irect_t *rect);
+
+// Apply a rect op on the region.
+//
+// `op` follows upstream `SkRegion::Op`; see [`decode_region_op`]. Returns
+// false if `op` is out of range.
+bool sk_region_op_rect(sk_region_t *region,
+                       const struct sk_irect_t *rect,
+                       sk_region_op_t op);
+
+// Get the region's integer bounds.
+bool sk_region_get_bounds(const sk_region_t *region,
+                          struct sk_irect_t *out);
+
+// Return true if the region is empty.
+bool sk_region_is_empty(const sk_region_t *region);
+
+// Return true if the region contains a point.
+bool sk_region_contains(const sk_region_t *region,
+                        int32_t x,
+                        int32_t y);
+
+// Increment region refcount.
+void sk_region_ref(sk_region_t *region);
+
+// Decrement region refcount.
+void sk_region_unref(sk_region_t *region);
+
+// Create a dash path effect.
+//
+// `intervals` must be non-null with `count` positive entries; the pattern
+// is duplicated internally if `count` is odd, matching Skia's semantics.
+// `phase` shifts where the pattern starts. Returns null if the intervals
+// are invalid (empty, negative, or sum to 0).
+sk_patheffect_t *sk_patheffect_new_dash(const float *intervals,
+                                        uintptr_t count,
+                                        float phase);
+
+// Create a trim path effect. `start` and `end` are normalized lengths
+// in [0, 1]. `mode` follows upstream `SkTrimPathEffect::Mode`; see
+// [`decode_trim_mode`]. Returns null if `mode` is out of range.
+sk_patheffect_t *sk_patheffect_new_trim(float start,
+                                        float end,
+                                        sk_trim_mode_t mode);
+
+// Attach a path effect to a paint, or clear it if `effect` is null. The
+// paint takes its own [`Arc`] reference; the caller retains their own.
+void sk_paint_set_path_effect(sk_paint_t *paint,
+                              const sk_patheffect_t *effect);
+
+// Increment path effect refcount.
+void sk_patheffect_ref(sk_patheffect_t *effect);
+
+// Decrement path effect refcount.
+void sk_patheffect_unref(sk_patheffect_t *effect);
+
+// Get the ABI version as a packed 32-bit integer
+uint32_t sk_abi_get_version(void);
+
+// Check if the ABI version is compatible
+bool sk_abi_is_compatible(uint32_t major,
+                          uint32_t minor);
+
+// Convert from internal Point to ABI Point
+struct SkPointABI sk_point_to_abi(float x,
+                                  float y);
+
+// Convert from internal Rect to ABI Rect
+struct SkRectABI sk_rect_to_abi(float left,
+                                float top,
+                                float right,
+                                float bottom);
+
+// Create identity matrix
+struct SkMatrixABI sk_matrix_identity(void);
+
+// Create identity matrix 4x4
+struct SkMatrix44ABI sk_matrix44_identity(void);
+
+// Get size of `SkPointABI` (for runtime verification)
+uintptr_t sk_sizeof_point(void);
+
+// Get size of `SkRectABI` (for runtime verification)
+uintptr_t sk_sizeof_rect(void);
+
+// Get size of `SkMatrixABI` (for runtime verification)
+uintptr_t sk_sizeof_matrix(void);
+
+// Get size of `SkImageInfoABI` (for runtime verification)
+uintptr_t sk_sizeof_imageinfo(void);
+
+// Get size of `SkColor4fABI` (for runtime verification)
+uintptr_t sk_sizeof_color4f(void);
+
+// Validate that all ABI types have expected sizes
+// Returns true if all sizes match, false otherwise
+bool sk_abi_validate(void);
 
 #ifdef __cplusplus
 }  // extern "C"

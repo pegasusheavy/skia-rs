@@ -9,8 +9,12 @@
 //! - Skew
 
 use crate::keyframe::{AnimatedProperty, KeyframeValue};
-use crate::model::TransformModel;
+use crate::model::{ShapeModel, TransformModel};
 use skia_rs_core::{Matrix, Scalar};
+
+/// AE control limit for skew angle (degrees), per upstream
+/// `TransformAdapter2D::totalMatrix` (`Transform.cpp`).
+const MAX_SKEW_ANGLE: Scalar = 85.0;
 
 /// Animated transform for a layer or shape.
 #[derive(Debug, Clone)]
@@ -53,11 +57,13 @@ impl Default for Transform {
 
 impl Transform {
     /// Create a new identity transform.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Parse from Lottie transform model.
+    #[must_use]
     pub fn from_lottie(model: &TransformModel) -> Self {
         let mut transform = Self::new();
 
@@ -100,33 +106,79 @@ impl Transform {
         transform
     }
 
+    /// Parse a group/shape "tr" transform item. `ShapeModel` fields are
+    /// heavily overloaded across shape types (same JSON keys mean
+    /// different things per `"ty"`); for `"tr"` items:
+    /// `a`=anchor, `p`=position, `s`=scale (%), `r`=rotation (degrees),
+    /// `o`=opacity (%), `sk`=skew (degrees), `sa`=skew axis (degrees).
+    #[must_use]
+    pub fn from_shape_lottie(model: &ShapeModel) -> Self {
+        let mut transform = Self::new();
+
+        if let Some(ref anchor) = model.transform {
+            transform.anchor = AnimatedProperty::from_lottie(anchor);
+        }
+        if let Some(ref position) = model.position {
+            transform.position = AnimatedProperty::from_lottie(position);
+        }
+        if let Some(ref scale) = model.size {
+            transform.scale = AnimatedProperty::from_lottie(scale);
+        }
+        if let Some(ref rotation) = model.roundness {
+            transform.rotation = AnimatedProperty::from_lottie(rotation);
+        }
+        if let Some(ref opacity) = model.opacity {
+            transform.opacity = AnimatedProperty::from_lottie(opacity);
+        }
+        if let Some(ref skew) = model.skew {
+            transform.skew = Some(AnimatedProperty::from_lottie(skew));
+        }
+        if let Some(ref skew_axis) = model.skew_axis {
+            transform.skew_axis = Some(AnimatedProperty::from_lottie(skew_axis));
+        }
+
+        transform
+    }
+
     /// Check if this transform is animated.
+    #[must_use]
     pub fn is_animated(&self) -> bool {
         self.anchor.is_animated()
             || self.position.is_animated()
-            || self.position_x.as_ref().map_or(false, |p| p.is_animated())
-            || self.position_y.as_ref().map_or(false, |p| p.is_animated())
+            || self
+                .position_x
+                .as_ref()
+                .is_some_and(super::keyframe::AnimatedProperty::is_animated)
+            || self
+                .position_y
+                .as_ref()
+                .is_some_and(super::keyframe::AnimatedProperty::is_animated)
             || self.scale.is_animated()
             || self.rotation.is_animated()
             || self.opacity.is_animated()
-            || self.skew.as_ref().map_or(false, |s| s.is_animated())
-            || self.skew_axis.as_ref().map_or(false, |s| s.is_animated())
+            || self
+                .skew
+                .as_ref()
+                .is_some_and(super::keyframe::AnimatedProperty::is_animated)
+            || self
+                .skew_axis
+                .as_ref()
+                .is_some_and(super::keyframe::AnimatedProperty::is_animated)
     }
 
     /// Get the position at a specific frame.
+    #[must_use]
     pub fn position_at(&self, frame: Scalar) -> [Scalar; 2] {
         if self.position_x.is_some() || self.position_y.is_some() {
             // Separated position
             let x = self
                 .position_x
                 .as_ref()
-                .map(|p| p.value_at(frame).as_scalar().unwrap_or(0.0))
-                .unwrap_or(0.0);
+                .map_or(0.0, |p| p.value_at(frame).as_scalar().unwrap_or(0.0));
             let y = self
                 .position_y
                 .as_ref()
-                .map(|p| p.value_at(frame).as_scalar().unwrap_or(0.0))
-                .unwrap_or(0.0);
+                .map_or(0.0, |p| p.value_at(frame).as_scalar().unwrap_or(0.0));
             [x, y]
         } else {
             self.position
@@ -137,11 +189,13 @@ impl Transform {
     }
 
     /// Get the anchor point at a specific frame.
+    #[must_use]
     pub fn anchor_at(&self, frame: Scalar) -> [Scalar; 2] {
         self.anchor.value_at(frame).as_vec2().unwrap_or([0.0, 0.0])
     }
 
     /// Get the scale at a specific frame (as factor, not percentage).
+    #[must_use]
     pub fn scale_at(&self, frame: Scalar) -> [Scalar; 2] {
         let scale = self
             .scale
@@ -152,34 +206,44 @@ impl Transform {
     }
 
     /// Get the rotation at a specific frame (in radians).
+    #[must_use]
     pub fn rotation_at(&self, frame: Scalar) -> Scalar {
         let degrees = self.rotation.value_at(frame).as_scalar().unwrap_or(0.0);
-        degrees * std::f32::consts::PI / 180.0
+        degrees.to_radians()
     }
 
     /// Get the opacity at a specific frame (0.0 - 1.0).
+    #[must_use]
     pub fn opacity_at(&self, frame: Scalar) -> Scalar {
         let opacity = self.opacity.value_at(frame).as_scalar().unwrap_or(100.0);
         (opacity / 100.0).clamp(0.0, 1.0)
     }
 
     /// Get the skew at a specific frame (in radians).
+    ///
+    /// Per upstream `TransformAdapter2D::totalMatrix` (`Transform.cpp`),
+    /// the skew angle is pinned to `[-85, 85]` degrees and negated before
+    /// conversion to radians.
+    #[must_use]
     pub fn skew_at(&self, frame: Scalar) -> Option<Scalar> {
         self.skew.as_ref().map(|s| {
             let degrees = s.value_at(frame).as_scalar().unwrap_or(0.0);
-            degrees * std::f32::consts::PI / 180.0
+            let pinned = degrees.clamp(-MAX_SKEW_ANGLE, MAX_SKEW_ANGLE);
+            -pinned.to_radians()
         })
     }
 
     /// Get the skew axis at a specific frame (in radians).
+    #[must_use]
     pub fn skew_axis_at(&self, frame: Scalar) -> Option<Scalar> {
         self.skew_axis.as_ref().map(|s| {
             let degrees = s.value_at(frame).as_scalar().unwrap_or(0.0);
-            degrees * std::f32::consts::PI / 180.0
+            degrees.to_radians()
         })
     }
 
     /// Compute the transformation matrix at a specific frame.
+    #[must_use]
     pub fn matrix_at(&self, frame: Scalar) -> Matrix {
         let position = self.position_at(frame);
         let anchor = self.anchor_at(frame);
@@ -243,6 +307,7 @@ pub struct TransformSnapshot {
 
 impl TransformSnapshot {
     /// Create a snapshot from a transform at a specific frame.
+    #[must_use]
     pub fn from_transform(transform: &Transform, frame: Scalar) -> Self {
         Self {
             position: transform.position_at(frame),
@@ -256,6 +321,7 @@ impl TransformSnapshot {
     }
 
     /// Compute the matrix.
+    #[must_use]
     pub fn to_matrix(&self) -> Matrix {
         let mut matrix = Matrix::IDENTITY;
 
@@ -292,6 +358,10 @@ impl TransformSnapshot {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "tests assert exact keyframe/interpolation output values, not tolerances"
+)]
 mod tests {
     use super::*;
 
@@ -339,6 +409,42 @@ mod tests {
 
         let opacity = transform.opacity_at(0.0);
         assert_eq!(opacity, 1.0); // Clamped to 1.0
+    }
+
+    #[test]
+    fn test_skew_is_negated_and_pinned() {
+        let mut transform = Transform::new();
+        transform.skew = Some(AnimatedProperty::static_value(KeyframeValue::Scalar(30.0)));
+
+        let skew = transform.skew_at(0.0).unwrap();
+        assert!((skew - (-30.0f32.to_radians())).abs() < 0.0001);
+
+        // AE pins skew to +/-85 degrees.
+        transform.skew = Some(AnimatedProperty::static_value(KeyframeValue::Scalar(200.0)));
+        let skew = transform.skew_at(0.0).unwrap();
+        assert!((skew - (-85.0f32.to_radians())).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_from_shape_lottie_parses_tr_transform() {
+        use crate::model::ShapeModel;
+
+        let json = r#"{
+            "ty":"tr",
+            "a":{"a":0,"k":[5,5,0]},
+            "p":{"a":0,"k":[50,60,0]},
+            "s":{"a":0,"k":[50,50]},
+            "r":{"a":0,"k":45},
+            "o":{"a":0,"k":50}
+        }"#;
+        let model: ShapeModel = serde_json::from_str(json).unwrap();
+        let transform = Transform::from_shape_lottie(&model);
+
+        assert_eq!(transform.position_at(0.0), [50.0, 60.0]);
+        assert_eq!(transform.anchor_at(0.0), [5.0, 5.0]);
+        assert_eq!(transform.scale_at(0.0), [0.5, 0.5]);
+        assert!((transform.rotation_at(0.0) - std::f32::consts::FRAC_PI_4).abs() < 0.001);
+        assert_eq!(transform.opacity_at(0.0), 0.5);
     }
 
     #[test]

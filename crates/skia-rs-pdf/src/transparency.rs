@@ -1,17 +1,19 @@
 //! PDF transparency support.
 //!
 //! This module provides transparency features for PDF documents, including:
-//! - Extended Graphics State (ExtGState) for opacity
+//! - Extended Graphics State (`ExtGState`) for opacity
 //! - Transparency groups
 //! - Soft masks
 //! - Blend modes
 
 use skia_rs_core::Scalar;
+use skia_rs_core::cast::saturate_to_i32;
 use skia_rs_paint::BlendMode;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 /// Extended Graphics State for PDF transparency.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ExtGraphicsState {
     /// Stroking alpha (CA).
     pub stroke_alpha: Option<Scalar>,
@@ -33,24 +35,9 @@ pub struct ExtGraphicsState {
     pub object_id: Option<u32>,
 }
 
-impl Default for ExtGraphicsState {
-    fn default() -> Self {
-        Self {
-            stroke_alpha: None,
-            fill_alpha: None,
-            blend_mode: None,
-            soft_mask: None,
-            alpha_is_shape: None,
-            text_knockout: None,
-            stroke_overprint: None,
-            fill_overprint: None,
-            object_id: None,
-        }
-    }
-}
-
 impl ExtGraphicsState {
-    /// Create a new ExtGraphicsState with fill and stroke alpha.
+    /// Create a new `ExtGraphicsState` with fill and stroke alpha.
+    #[must_use]
     pub fn with_alpha(alpha: Scalar) -> Self {
         Self {
             stroke_alpha: Some(alpha),
@@ -59,7 +46,8 @@ impl ExtGraphicsState {
         }
     }
 
-    /// Create a new ExtGraphicsState with blend mode.
+    /// Create a new `ExtGraphicsState` with blend mode.
+    #[must_use]
     pub fn with_blend_mode(mode: PdfBlendMode) -> Self {
         Self {
             blend_mode: Some(mode),
@@ -68,64 +56,65 @@ impl ExtGraphicsState {
     }
 
     /// Set fill alpha.
-    pub fn set_fill_alpha(&mut self, alpha: Scalar) -> &mut Self {
+    pub const fn set_fill_alpha(&mut self, alpha: Scalar) -> &mut Self {
         self.fill_alpha = Some(alpha);
         self
     }
 
     /// Set stroke alpha.
-    pub fn set_stroke_alpha(&mut self, alpha: Scalar) -> &mut Self {
+    pub const fn set_stroke_alpha(&mut self, alpha: Scalar) -> &mut Self {
         self.stroke_alpha = Some(alpha);
         self
     }
 
     /// Set blend mode.
-    pub fn set_blend_mode(&mut self, mode: PdfBlendMode) -> &mut Self {
+    pub const fn set_blend_mode(&mut self, mode: PdfBlendMode) -> &mut Self {
         self.blend_mode = Some(mode);
         self
     }
 
     /// Set soft mask reference.
-    pub fn set_soft_mask(&mut self, mask_id: u32) -> &mut Self {
+    pub const fn set_soft_mask(&mut self, mask_id: u32) -> &mut Self {
         self.soft_mask = Some(mask_id);
         self
     }
 
-    /// Generate the ExtGState PDF dictionary.
+    /// Generate the `ExtGState` PDF dictionary.
+    #[must_use]
     pub fn to_pdf_dict(&self, id: u32) -> String {
-        let mut dict = format!("{} 0 obj\n<<\n", id);
+        let mut dict = format!("{id} 0 obj\n<<\n");
         dict.push_str("/Type /ExtGState\n");
 
         if let Some(alpha) = self.stroke_alpha {
-            dict.push_str(&format!("/CA {:.3}\n", alpha));
+            let _ = writeln!(dict, "/CA {alpha:.3}");
         }
 
         if let Some(alpha) = self.fill_alpha {
-            dict.push_str(&format!("/ca {:.3}\n", alpha));
+            let _ = writeln!(dict, "/ca {alpha:.3}");
         }
 
         if let Some(mode) = &self.blend_mode {
-            dict.push_str(&format!("/BM /{}\n", mode.pdf_name()));
+            let _ = writeln!(dict, "/BM /{}", mode.pdf_name());
         }
 
         if let Some(mask_id) = self.soft_mask {
-            dict.push_str(&format!("/SMask {} 0 R\n", mask_id));
+            let _ = writeln!(dict, "/SMask {mask_id} 0 R");
         }
 
         if let Some(ais) = self.alpha_is_shape {
-            dict.push_str(&format!("/AIS {}\n", if ais { "true" } else { "false" }));
+            let _ = writeln!(dict, "/AIS {}", if ais { "true" } else { "false" });
         }
 
         if let Some(tk) = self.text_knockout {
-            dict.push_str(&format!("/TK {}\n", if tk { "true" } else { "false" }));
+            let _ = writeln!(dict, "/TK {}", if tk { "true" } else { "false" });
         }
 
         if let Some(op) = self.stroke_overprint {
-            dict.push_str(&format!("/OP {}\n", if op { "true" } else { "false" }));
+            let _ = writeln!(dict, "/OP {}", if op { "true" } else { "false" });
         }
 
         if let Some(op) = self.fill_overprint {
-            dict.push_str(&format!("/op {}\n", if op { "true" } else { "false" }));
+            let _ = writeln!(dict, "/op {}", if op { "true" } else { "false" });
         }
 
         dict.push_str(">>\nendobj\n");
@@ -133,16 +122,29 @@ impl ExtGraphicsState {
     }
 
     /// Create a unique key for caching.
+    ///
+    /// Must cover every field that affects the emitted `/ExtGState`
+    /// dictionary — omitting one (as this used to, for `soft_mask`,
+    /// `alpha_is_shape`, `text_knockout`, and the overprint flags) makes
+    /// `TransparencyManager::add_ext_gstate` wrongly dedupe two distinct
+    /// states that happen to share the same alpha/blend-mode into a single
+    /// cached object, silently dropping the other attributes.
+    #[must_use]
     pub fn cache_key(&self) -> ExtGStateKey {
         ExtGStateKey {
-            stroke_alpha: self.stroke_alpha.map(|a| (a * 1000.0) as i32),
-            fill_alpha: self.fill_alpha.map(|a| (a * 1000.0) as i32),
+            stroke_alpha: self.stroke_alpha.map(|a| saturate_to_i32(a * 1000.0)),
+            fill_alpha: self.fill_alpha.map(|a| saturate_to_i32(a * 1000.0)),
             blend_mode: self.blend_mode,
+            soft_mask: self.soft_mask,
+            alpha_is_shape: self.alpha_is_shape,
+            text_knockout: self.text_knockout,
+            stroke_overprint: self.stroke_overprint,
+            fill_overprint: self.fill_overprint,
         }
     }
 }
 
-/// Key for caching ExtGraphicsState objects.
+/// Key for caching `ExtGraphicsState` objects.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ExtGStateKey {
     /// Stroking alpha (scaled to int for hashing).
@@ -151,6 +153,16 @@ pub struct ExtGStateKey {
     fill_alpha: Option<i32>,
     /// Blend mode.
     blend_mode: Option<PdfBlendMode>,
+    /// Soft mask object reference.
+    soft_mask: Option<u32>,
+    /// Alpha is shape (AIS).
+    alpha_is_shape: Option<bool>,
+    /// Text knockout (TK).
+    text_knockout: Option<bool>,
+    /// Overprint for stroking (OP).
+    stroke_overprint: Option<bool>,
+    /// Overprint for non-stroking (op).
+    fill_overprint: Option<bool>,
 }
 
 /// PDF blend modes.
@@ -192,7 +204,8 @@ pub enum PdfBlendMode {
 
 impl PdfBlendMode {
     /// Get the PDF name for this blend mode.
-    pub fn pdf_name(&self) -> &'static str {
+    #[must_use]
+    pub const fn pdf_name(&self) -> &'static str {
         match self {
             Self::Normal => "Normal",
             Self::Multiply => "Multiply",
@@ -213,8 +226,9 @@ impl PdfBlendMode {
         }
     }
 
-    /// Convert from skia BlendMode.
-    pub fn from_skia_blend_mode(mode: BlendMode) -> Option<Self> {
+    /// Convert from skia `BlendMode`.
+    #[must_use]
+    pub const fn from_skia_blend_mode(mode: BlendMode) -> Option<Self> {
         match mode {
             BlendMode::SrcOver => Some(Self::Normal),
             BlendMode::Multiply => Some(Self::Multiply),
@@ -242,7 +256,7 @@ impl PdfBlendMode {
 pub struct SoftMask {
     /// Subtype (Alpha or Luminosity).
     pub subtype: SoftMaskSubtype,
-    /// Transparency group XObject reference.
+    /// Transparency group `XObject` reference.
     pub group_ref: u32,
     /// Backdrop color (optional).
     pub backdrop: Option<Vec<Scalar>>,
@@ -261,7 +275,8 @@ pub enum SoftMaskSubtype {
 
 impl SoftMask {
     /// Create an alpha soft mask.
-    pub fn alpha(group_ref: u32) -> Self {
+    #[must_use]
+    pub const fn alpha(group_ref: u32) -> Self {
         Self {
             subtype: SoftMaskSubtype::Alpha,
             group_ref,
@@ -271,7 +286,8 @@ impl SoftMask {
     }
 
     /// Create a luminosity soft mask.
-    pub fn luminosity(group_ref: u32) -> Self {
+    #[must_use]
+    pub const fn luminosity(group_ref: u32) -> Self {
         Self {
             subtype: SoftMaskSubtype::Luminosity,
             group_ref,
@@ -281,8 +297,9 @@ impl SoftMask {
     }
 
     /// Generate the soft mask PDF dictionary.
+    #[must_use]
     pub fn to_pdf_dict(&self, id: u32) -> String {
-        let mut dict = format!("{} 0 obj\n<<\n", id);
+        let mut dict = format!("{id} 0 obj\n<<\n");
         dict.push_str("/Type /Mask\n");
 
         match self.subtype {
@@ -290,18 +307,18 @@ impl SoftMask {
             SoftMaskSubtype::Luminosity => dict.push_str("/S /Luminosity\n"),
         }
 
-        dict.push_str(&format!("/G {} 0 R\n", self.group_ref));
+        let _ = writeln!(dict, "/G {} 0 R", self.group_ref);
 
         if let Some(ref backdrop) = self.backdrop {
             dict.push_str("/BC [");
             for val in backdrop {
-                dict.push_str(&format!("{:.3} ", val));
+                let _ = write!(dict, "{val:.3} ");
             }
             dict.push_str("]\n");
         }
 
         if let Some(transfer_ref) = self.transfer {
-            dict.push_str(&format!("/TR {} 0 R\n", transfer_ref));
+            let _ = writeln!(dict, "/TR {transfer_ref} 0 R");
         }
 
         dict.push_str(">>\nendobj\n");
@@ -338,6 +355,7 @@ impl Default for TransparencyGroup {
 
 impl TransparencyGroup {
     /// Create a new transparency group.
+    #[must_use]
     pub fn new(bbox: [Scalar; 4]) -> Self {
         Self {
             bbox,
@@ -346,13 +364,13 @@ impl TransparencyGroup {
     }
 
     /// Set as isolated group.
-    pub fn set_isolated(&mut self, isolated: bool) -> &mut Self {
+    pub const fn set_isolated(&mut self, isolated: bool) -> &mut Self {
         self.isolated = isolated;
         self
     }
 
     /// Set as knockout group.
-    pub fn set_knockout(&mut self, knockout: bool) -> &mut Self {
+    pub const fn set_knockout(&mut self, knockout: bool) -> &mut Self {
         self.knockout = knockout;
         self
     }
@@ -363,44 +381,46 @@ impl TransparencyGroup {
         self
     }
 
-    /// Generate the transparency group XObject.
+    /// Generate the transparency group `XObject`.
+    #[must_use]
     pub fn to_pdf_xobject(&self, id: u32) -> Vec<u8> {
+        use std::io::Write;
+
         let mut output = Vec::new();
 
-        use std::io::Write;
-        write!(output, "{} 0 obj\n<<\n", id).unwrap();
-        write!(output, "/Type /XObject\n").unwrap();
-        write!(output, "/Subtype /Form\n").unwrap();
-        write!(output, "/FormType 1\n").unwrap();
-        write!(
+        writeln!(output, "{id} 0 obj\n<<").unwrap();
+        writeln!(output, "/Type /XObject").unwrap();
+        writeln!(output, "/Subtype /Form").unwrap();
+        writeln!(output, "/FormType 1").unwrap();
+        writeln!(
             output,
-            "/BBox [{} {} {} {}]\n",
+            "/BBox [{} {} {} {}]",
             self.bbox[0], self.bbox[1], self.bbox[2], self.bbox[3]
         )
         .unwrap();
 
         // Transparency group dictionary
-        write!(output, "/Group <<\n").unwrap();
-        write!(output, "/Type /Group\n").unwrap();
-        write!(output, "/S /Transparency\n").unwrap();
+        writeln!(output, "/Group <<").unwrap();
+        writeln!(output, "/Type /Group").unwrap();
+        writeln!(output, "/S /Transparency").unwrap();
 
         if let Some(ref cs) = self.color_space {
-            write!(output, "/CS /{}\n", cs).unwrap();
+            writeln!(output, "/CS /{cs}").unwrap();
         }
 
         if self.isolated {
-            write!(output, "/I true\n").unwrap();
+            writeln!(output, "/I true").unwrap();
         }
 
         if self.knockout {
-            write!(output, "/K true\n").unwrap();
+            writeln!(output, "/K true").unwrap();
         }
 
-        write!(output, ">>\n").unwrap();
-        write!(output, "/Length {}\n", self.content.len()).unwrap();
-        write!(output, ">>\nstream\n").unwrap();
+        writeln!(output, ">>").unwrap();
+        writeln!(output, "/Length {}", self.content.len()).unwrap();
+        writeln!(output, ">>\nstream").unwrap();
         output.extend_from_slice(&self.content);
-        write!(output, "\nendstream\nendobj\n").unwrap();
+        writeln!(output, "\nendstream\nendobj").unwrap();
 
         output
     }
@@ -409,9 +429,9 @@ impl TransparencyGroup {
 /// Manager for PDF transparency resources.
 #[derive(Debug, Default)]
 pub struct TransparencyManager {
-    /// ExtGState objects.
+    /// `ExtGState` objects.
     ext_gstates: Vec<ExtGraphicsState>,
-    /// ExtGState cache.
+    /// `ExtGState` cache.
     gstate_cache: HashMap<ExtGStateKey, usize>,
     /// Soft masks.
     soft_masks: Vec<SoftMask>,
@@ -421,11 +441,12 @@ pub struct TransparencyManager {
 
 impl TransparencyManager {
     /// Create a new transparency manager.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Get or create an ExtGState for the given alpha value.
+    /// Get or create an `ExtGState` for the given alpha value.
     pub fn get_or_create_alpha_state(&mut self, alpha: Scalar) -> usize {
         let state = ExtGraphicsState::with_alpha(alpha);
         let key = state.cache_key();
@@ -440,7 +461,7 @@ impl TransparencyManager {
         idx
     }
 
-    /// Get or create an ExtGState for the given blend mode.
+    /// Get or create an `ExtGState` for the given blend mode.
     pub fn get_or_create_blend_state(&mut self, mode: PdfBlendMode) -> usize {
         let state = ExtGraphicsState::with_blend_mode(mode);
         let key = state.cache_key();
@@ -455,7 +476,7 @@ impl TransparencyManager {
         idx
     }
 
-    /// Add a custom ExtGState.
+    /// Add a custom `ExtGState`.
     pub fn add_ext_gstate(&mut self, state: ExtGraphicsState) -> usize {
         let key = state.cache_key();
 
@@ -483,22 +504,25 @@ impl TransparencyManager {
         idx
     }
 
-    /// Get all ExtGState objects.
+    /// Get all `ExtGState` objects.
+    #[must_use]
     pub fn ext_gstates(&self) -> &[ExtGraphicsState] {
         &self.ext_gstates
     }
 
-    /// Get mutable ExtGState objects.
+    /// Get mutable `ExtGState` objects.
     pub fn ext_gstates_mut(&mut self) -> &mut [ExtGraphicsState] {
         &mut self.ext_gstates
     }
 
     /// Get all soft masks.
+    #[must_use]
     pub fn soft_masks(&self) -> &[SoftMask] {
         &self.soft_masks
     }
 
     /// Get all transparency groups.
+    #[must_use]
     pub fn groups(&self) -> &[TransparencyGroup] {
         &self.groups
     }
@@ -528,6 +552,93 @@ mod tests {
         let dict = state.to_pdf_dict(6);
 
         assert!(dict.contains("/BM /Multiply"));
+    }
+
+    #[test]
+    fn test_cache_key_distinguishes_soft_mask_and_flags() {
+        let mut manager = TransparencyManager::new();
+
+        // Shared base: same alpha values throughout, so every distinction
+        // below can only come from the field under test.
+        let base = ExtGraphicsState {
+            fill_alpha: Some(0.5),
+            stroke_alpha: Some(0.5),
+            ..Default::default()
+        };
+        let idx_base = manager.add_ext_gstate(base.clone());
+        assert_eq!(manager.ext_gstates().len(), 1);
+
+        // Each variant toggles exactly ONE field away from `base`. If any
+        // one of these fields were dropped from `cache_key`, the
+        // corresponding variant would wrongly collide with `base` (or with
+        // a previous variant) and `ext_gstates().len()` would fail to grow,
+        // catching a regression on that specific field.
+        let soft_mask = ExtGraphicsState {
+            soft_mask: Some(42),
+            ..base
+        };
+        let idx_soft_mask = manager.add_ext_gstate(soft_mask);
+        assert_ne!(idx_base, idx_soft_mask, "soft_mask must affect cache_key");
+        assert_eq!(manager.ext_gstates().len(), 2);
+
+        let alpha_is_shape = ExtGraphicsState {
+            alpha_is_shape: Some(true),
+            ..base
+        };
+        let idx_alpha_is_shape = manager.add_ext_gstate(alpha_is_shape);
+        assert_ne!(
+            idx_base, idx_alpha_is_shape,
+            "alpha_is_shape must affect cache_key"
+        );
+        assert_ne!(idx_soft_mask, idx_alpha_is_shape);
+        assert_eq!(manager.ext_gstates().len(), 3);
+
+        let text_knockout = ExtGraphicsState {
+            text_knockout: Some(true),
+            ..base
+        };
+        let idx_text_knockout = manager.add_ext_gstate(text_knockout);
+        assert_ne!(
+            idx_base, idx_text_knockout,
+            "text_knockout must affect cache_key"
+        );
+        assert_ne!(idx_soft_mask, idx_text_knockout);
+        assert_ne!(idx_alpha_is_shape, idx_text_knockout);
+        assert_eq!(manager.ext_gstates().len(), 4);
+
+        let stroke_overprint = ExtGraphicsState {
+            stroke_overprint: Some(true),
+            ..base
+        };
+        let idx_stroke_overprint = manager.add_ext_gstate(stroke_overprint);
+        assert_ne!(
+            idx_base, idx_stroke_overprint,
+            "stroke_overprint must affect cache_key"
+        );
+        assert_ne!(idx_soft_mask, idx_stroke_overprint);
+        assert_ne!(idx_alpha_is_shape, idx_stroke_overprint);
+        assert_ne!(idx_text_knockout, idx_stroke_overprint);
+        assert_eq!(manager.ext_gstates().len(), 5);
+
+        let fill_overprint = ExtGraphicsState {
+            fill_overprint: Some(true),
+            ..base
+        };
+        let idx_fill_overprint = manager.add_ext_gstate(fill_overprint);
+        assert_ne!(
+            idx_base, idx_fill_overprint,
+            "fill_overprint must affect cache_key"
+        );
+        assert_ne!(idx_soft_mask, idx_fill_overprint);
+        assert_ne!(idx_alpha_is_shape, idx_fill_overprint);
+        assert_ne!(idx_text_knockout, idx_fill_overprint);
+        assert_ne!(idx_stroke_overprint, idx_fill_overprint);
+
+        // Base(1) + 5 single-field variants = 6 distinct cached entries.
+        // Any regression that drops a field from `cache_key` collapses at
+        // least one variant back into an existing entry and this count
+        // fails to reach 6.
+        assert_eq!(manager.ext_gstates().len(), 6);
     }
 
     #[test]

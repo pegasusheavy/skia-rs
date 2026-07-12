@@ -3,8 +3,16 @@
 use crate::blend::BlendMode;
 use crate::filter::{ColorFilterRef, ImageFilterRef, MaskFilterRef};
 use crate::shader::ShaderRef;
+use skia_rs_core::cast::f32_to_u8_sat;
 use skia_rs_core::{Color, Color4f, Scalar};
 use skia_rs_path::PathEffectRef;
+
+/// Convert a float color component in [0, 1] to a byte, rounding to
+/// nearest (Skia's `SkColor4f::toSkColor` semantics — 0.5 maps to 128).
+#[inline]
+fn color_component_to_byte(v: Scalar) -> u8 {
+    f32_to_u8_sat(v * 255.0)
+}
 
 /// Paint style (fill, stroke, or both).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -89,11 +97,13 @@ impl Default for Paint {
             path_effect: None,
             blend_mode: BlendMode::SrcOver,
             style: Style::Fill,
-            stroke_width: 1.0,
+            // SkPaint.cpp: fWidth{0} — a zero stroke width means hairline.
+            stroke_width: 0.0,
             stroke_miter: 4.0,
             stroke_cap: StrokeCap::Butt,
             stroke_join: StrokeJoin::Miter,
-            anti_alias: true,
+            // SkPaint defaults to no anti-aliasing.
+            anti_alias: false,
             dither: false,
         }
     }
@@ -102,30 +112,36 @@ impl Default for Paint {
 impl Paint {
     /// Create a new paint with default settings.
     #[inline]
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Get the color as Color4f.
     #[inline]
-    pub fn color(&self) -> Color4f {
+    #[must_use]
+    pub const fn color(&self) -> Color4f {
         self.color
     }
 
     /// Get the color as 32-bit Color.
+    ///
+    /// Float components are rounded to the nearest byte (Skia's
+    /// `SkColor4f::toSkColor` rounding), not truncated.
     #[inline]
+    #[must_use]
     pub fn color32(&self) -> Color {
         Color::from_argb(
-            (self.color.a * 255.0).clamp(0.0, 255.0) as u8,
-            (self.color.r * 255.0).clamp(0.0, 255.0) as u8,
-            (self.color.g * 255.0).clamp(0.0, 255.0) as u8,
-            (self.color.b * 255.0).clamp(0.0, 255.0) as u8,
+            color_component_to_byte(self.color.a),
+            color_component_to_byte(self.color.r),
+            color_component_to_byte(self.color.g),
+            color_component_to_byte(self.color.b),
         )
     }
 
     /// Set the color from Color4f.
     #[inline]
-    pub fn set_color(&mut self, color: Color4f) -> &mut Self {
+    pub const fn set_color(&mut self, color: Color4f) -> &mut Self {
         self.color = color;
         self
     }
@@ -145,97 +161,105 @@ impl Paint {
 
     /// Get the alpha value (0.0-1.0).
     #[inline]
-    pub fn alpha(&self) -> Scalar {
+    #[must_use]
+    pub const fn alpha(&self) -> Scalar {
         self.color.a
     }
 
     /// Set the alpha value (0.0-1.0).
     #[inline]
-    pub fn set_alpha(&mut self, alpha: Scalar) -> &mut Self {
+    pub const fn set_alpha(&mut self, alpha: Scalar) -> &mut Self {
         self.color.a = alpha;
         self
     }
 
     /// Get the blend mode.
     #[inline]
-    pub fn blend_mode(&self) -> BlendMode {
+    #[must_use]
+    pub const fn blend_mode(&self) -> BlendMode {
         self.blend_mode
     }
 
     /// Set the blend mode.
     #[inline]
-    pub fn set_blend_mode(&mut self, mode: BlendMode) -> &mut Self {
+    pub const fn set_blend_mode(&mut self, mode: BlendMode) -> &mut Self {
         self.blend_mode = mode;
         self
     }
 
     /// Get the style.
     #[inline]
-    pub fn style(&self) -> Style {
+    #[must_use]
+    pub const fn style(&self) -> Style {
         self.style
     }
 
     /// Set the style.
     #[inline]
-    pub fn set_style(&mut self, style: Style) -> &mut Self {
+    pub const fn set_style(&mut self, style: Style) -> &mut Self {
         self.style = style;
         self
     }
 
     /// Get the stroke width.
     #[inline]
-    pub fn stroke_width(&self) -> Scalar {
+    #[must_use]
+    pub const fn stroke_width(&self) -> Scalar {
         self.stroke_width
     }
 
     /// Set the stroke width.
     #[inline]
-    pub fn set_stroke_width(&mut self, width: Scalar) -> &mut Self {
+    pub const fn set_stroke_width(&mut self, width: Scalar) -> &mut Self {
         self.stroke_width = width.max(0.0);
         self
     }
 
     /// Get the stroke miter limit.
     #[inline]
-    pub fn stroke_miter(&self) -> Scalar {
+    #[must_use]
+    pub const fn stroke_miter(&self) -> Scalar {
         self.stroke_miter
     }
 
     /// Set the stroke miter limit.
     #[inline]
-    pub fn set_stroke_miter(&mut self, miter: Scalar) -> &mut Self {
+    pub const fn set_stroke_miter(&mut self, miter: Scalar) -> &mut Self {
         self.stroke_miter = miter.max(0.0);
         self
     }
 
     /// Get the stroke cap.
     #[inline]
-    pub fn stroke_cap(&self) -> StrokeCap {
+    #[must_use]
+    pub const fn stroke_cap(&self) -> StrokeCap {
         self.stroke_cap
     }
 
     /// Set the stroke cap.
     #[inline]
-    pub fn set_stroke_cap(&mut self, cap: StrokeCap) -> &mut Self {
+    pub const fn set_stroke_cap(&mut self, cap: StrokeCap) -> &mut Self {
         self.stroke_cap = cap;
         self
     }
 
     /// Get the stroke join.
     #[inline]
-    pub fn stroke_join(&self) -> StrokeJoin {
+    #[must_use]
+    pub const fn stroke_join(&self) -> StrokeJoin {
         self.stroke_join
     }
 
     /// Set the stroke join.
     #[inline]
-    pub fn set_stroke_join(&mut self, join: StrokeJoin) -> &mut Self {
+    pub const fn set_stroke_join(&mut self, join: StrokeJoin) -> &mut Self {
         self.stroke_join = join;
         self
     }
 
     /// Get the shader.
     #[inline]
+    #[must_use]
     pub fn shader(&self) -> Option<&ShaderRef> {
         self.shader.as_ref()
     }
@@ -249,12 +273,14 @@ impl Paint {
 
     /// Check if the paint has a shader.
     #[inline]
+    #[must_use]
     pub fn has_shader(&self) -> bool {
         self.shader.is_some()
     }
 
     /// Get the mask filter.
     #[inline]
+    #[must_use]
     pub fn mask_filter(&self) -> Option<&MaskFilterRef> {
         self.mask_filter.as_ref()
     }
@@ -268,12 +294,14 @@ impl Paint {
 
     /// Check if the paint has a mask filter.
     #[inline]
+    #[must_use]
     pub fn has_mask_filter(&self) -> bool {
         self.mask_filter.is_some()
     }
 
     /// Get the color filter.
     #[inline]
+    #[must_use]
     pub fn color_filter(&self) -> Option<&ColorFilterRef> {
         self.color_filter.as_ref()
     }
@@ -287,12 +315,14 @@ impl Paint {
 
     /// Check if the paint has a color filter.
     #[inline]
+    #[must_use]
     pub fn has_color_filter(&self) -> bool {
         self.color_filter.is_some()
     }
 
     /// Get the image filter.
     #[inline]
+    #[must_use]
     pub fn image_filter(&self) -> Option<&ImageFilterRef> {
         self.image_filter.as_ref()
     }
@@ -306,12 +336,14 @@ impl Paint {
 
     /// Check if the paint has an image filter.
     #[inline]
+    #[must_use]
     pub fn has_image_filter(&self) -> bool {
         self.image_filter.is_some()
     }
 
     /// Get the path effect.
     #[inline]
+    #[must_use]
     pub fn path_effect(&self) -> Option<&PathEffectRef> {
         self.path_effect.as_ref()
     }
@@ -325,39 +357,43 @@ impl Paint {
 
     /// Check if the paint has a path effect.
     #[inline]
+    #[must_use]
     pub fn has_path_effect(&self) -> bool {
         self.path_effect.is_some()
     }
 
     /// Check if anti-aliasing is enabled.
     #[inline]
-    pub fn is_anti_alias(&self) -> bool {
+    #[must_use]
+    pub const fn is_anti_alias(&self) -> bool {
         self.anti_alias
     }
 
     /// Set anti-aliasing.
     #[inline]
-    pub fn set_anti_alias(&mut self, aa: bool) -> &mut Self {
+    pub const fn set_anti_alias(&mut self, aa: bool) -> &mut Self {
         self.anti_alias = aa;
         self
     }
 
     /// Check if dithering is enabled.
     #[inline]
-    pub fn is_dither(&self) -> bool {
+    #[must_use]
+    pub const fn is_dither(&self) -> bool {
         self.dither
     }
 
     /// Set dithering.
     #[inline]
-    pub fn set_dither(&mut self, dither: bool) -> &mut Self {
+    pub const fn set_dither(&mut self, dither: bool) -> &mut Self {
         self.dither = dither;
         self
     }
 
-    /// Alias for is_anti_alias (Skia compatibility).
+    /// Alias for `is_anti_alias` (Skia compatibility).
     #[inline]
-    pub fn anti_alias(&self) -> bool {
+    #[must_use]
+    pub const fn anti_alias(&self) -> bool {
         self.anti_alias
     }
 
@@ -375,20 +411,21 @@ impl Paint {
     /// - 4 bytes: stroke miter (f32 little-endian)
     /// - 1 byte: stroke cap
     /// - 1 byte: stroke join
-    /// - 1 byte: flags (bit 0: anti_alias, bit 1: dither)
-    /// - [optional trailing sections for shader, mask_filter, color_filter, image_filter]
+    /// - 1 byte: flags (bit 0: `anti_alias`, bit 1: dither)
+    /// - [optional trailing sections for shader, `mask_filter`, `color_filter`, `image_filter`]
     ///
     /// Each optional section is: [1 byte present flag] [4 bytes length] [data].
     /// If a shader/filter does not support serialization (e.g., runtime shaders), the
     /// present flag is 0 and that field is omitted from deserialization.
+    #[must_use]
     pub fn serialize(&self) -> Vec<u8> {
         let mut data = Vec::with_capacity(17);
 
-        // Color (4 bytes)
-        data.push((self.color.r * 255.0).clamp(0.0, 255.0) as u8);
-        data.push((self.color.g * 255.0).clamp(0.0, 255.0) as u8);
-        data.push((self.color.b * 255.0).clamp(0.0, 255.0) as u8);
-        data.push((self.color.a * 255.0).clamp(0.0, 255.0) as u8);
+        // Color (4 bytes, rounded to nearest)
+        data.push(color_component_to_byte(self.color.r));
+        data.push(color_component_to_byte(self.color.g));
+        data.push(color_component_to_byte(self.color.b));
+        data.push(color_component_to_byte(self.color.a));
 
         // Blend mode (1 byte)
         data.push(self.blend_mode as u8);
@@ -422,7 +459,11 @@ impl Paint {
         match self.shader.as_ref().and_then(|s| s.serialize()) {
             Some(shader_data) => {
                 data.push(1); // present
-                data.extend_from_slice(&(shader_data.len() as u32).to_le_bytes());
+                data.extend_from_slice(
+                    &u32::try_from(shader_data.len())
+                        .unwrap_or(u32::MAX)
+                        .to_le_bytes(),
+                );
                 data.extend_from_slice(&shader_data);
             }
             None => data.push(0), // absent
@@ -432,7 +473,11 @@ impl Paint {
         match self.mask_filter.as_ref().and_then(|f| f.serialize()) {
             Some(filter_data) => {
                 data.push(1);
-                data.extend_from_slice(&(filter_data.len() as u32).to_le_bytes());
+                data.extend_from_slice(
+                    &u32::try_from(filter_data.len())
+                        .unwrap_or(u32::MAX)
+                        .to_le_bytes(),
+                );
                 data.extend_from_slice(&filter_data);
             }
             None => data.push(0),
@@ -442,7 +487,11 @@ impl Paint {
         match self.color_filter.as_ref().and_then(|f| f.serialize()) {
             Some(filter_data) => {
                 data.push(1);
-                data.extend_from_slice(&(filter_data.len() as u32).to_le_bytes());
+                data.extend_from_slice(
+                    &u32::try_from(filter_data.len())
+                        .unwrap_or(u32::MAX)
+                        .to_le_bytes(),
+                );
                 data.extend_from_slice(&filter_data);
             }
             None => data.push(0),
@@ -452,13 +501,53 @@ impl Paint {
         match self.image_filter.as_ref().and_then(|f| f.serialize()) {
             Some(filter_data) => {
                 data.push(1);
-                data.extend_from_slice(&(filter_data.len() as u32).to_le_bytes());
+                data.extend_from_slice(
+                    &u32::try_from(filter_data.len())
+                        .unwrap_or(u32::MAX)
+                        .to_le_bytes(),
+                );
                 data.extend_from_slice(&filter_data);
             }
             None => data.push(0),
         }
 
         data
+    }
+
+    /// Read an optional length-prefixed byte section at `*offset`, advancing
+    /// `*offset` past it.
+    ///
+    /// Returns `Ok(None)` if the section is absent (present-flag is 0 or
+    /// there is no more data), `Ok(Some(bytes))` if present and well formed,
+    /// and `Err(())` if the data is truncated/malformed.
+    fn read_optional_section<'a>(
+        data: &'a [u8],
+        offset: &mut usize,
+    ) -> Result<Option<&'a [u8]>, ()> {
+        if *offset >= data.len() {
+            return Ok(None);
+        }
+        let present = data[*offset] == 1;
+        *offset += 1;
+        if !present {
+            return Ok(None);
+        }
+        if *offset + 4 > data.len() {
+            return Err(());
+        }
+        let len = u32::from_le_bytes([
+            data[*offset],
+            data[*offset + 1],
+            data[*offset + 2],
+            data[*offset + 3],
+        ]) as usize;
+        *offset += 4;
+        if *offset + len > data.len() {
+            return Err(());
+        }
+        let bytes = &data[*offset..*offset + len];
+        *offset += len;
+        Ok(Some(bytes))
     }
 
     /// Deserialize a paint from bytes.
@@ -468,6 +557,7 @@ impl Paint {
     /// Shaders and filters are deserialized from optional trailing sections.
     /// Runtime shaders/filters (SkSL-based) do not serialize and will be `None`
     /// after deserialization.
+    #[must_use]
     pub fn deserialize(data: &[u8]) -> Option<Self> {
         if data.len() < 17 {
             return None;
@@ -476,10 +566,10 @@ impl Paint {
         let mut offset = 0;
 
         // Color
-        let r = data[offset] as f32 / 255.0;
-        let g = data[offset + 1] as f32 / 255.0;
-        let b = data[offset + 2] as f32 / 255.0;
-        let a = data[offset + 3] as f32 / 255.0;
+        let r = f32::from(data[offset]) / 255.0;
+        let g = f32::from(data[offset + 1]) / 255.0;
+        let b = f32::from(data[offset + 2]) / 255.0;
+        let a = f32::from(data[offset + 3]) / 255.0;
         let color = Color4f::new(r, g, b, a);
         offset += 4;
 
@@ -539,114 +629,33 @@ impl Paint {
         offset += 1;
 
         // Optional trailing sections (shader, mask_filter, color_filter, image_filter)
-        // Read shader section if present
-        let shader = if offset < data.len() && data[offset] == 1 {
-            offset += 1;
-            if offset + 4 > data.len() {
-                return None;
-            }
-            let len = u32::from_le_bytes([
-                data[offset],
-                data[offset + 1],
-                data[offset + 2],
-                data[offset + 3],
-            ]) as usize;
-            offset += 4;
-            if offset + len > data.len() {
-                return None;
-            }
-            let shader_bytes = &data[offset..offset + len];
-            offset += len;
+        let shader = Self::read_optional_section(data, &mut offset)
+            .ok()?
+            .and_then(|shader_bytes| {
+                let mut shader_offset = 0;
+                crate::shader::deserialize_shader(shader_bytes, &mut shader_offset)
+            });
 
-            let mut shader_offset = 0;
-            crate::shader::deserialize_shader(shader_bytes, &mut shader_offset)
-        } else {
-            if offset < data.len() {
-                offset += 1; // skip absent flag
-            }
-            None
-        };
+        let mask_filter = Self::read_optional_section(data, &mut offset)
+            .ok()?
+            .and_then(|filter_bytes| {
+                let mut filter_offset = 0;
+                crate::filter::deserialize_mask_filter(filter_bytes, &mut filter_offset)
+            });
 
-        // MaskFilter section
-        let mask_filter = if offset < data.len() && data[offset] == 1 {
-            offset += 1;
-            if offset + 4 > data.len() {
-                return None;
-            }
-            let len = u32::from_le_bytes([
-                data[offset],
-                data[offset + 1],
-                data[offset + 2],
-                data[offset + 3],
-            ]) as usize;
-            offset += 4;
-            if offset + len > data.len() {
-                return None;
-            }
-            let filter_bytes = &data[offset..offset + len];
-            offset += len;
-            let mut filter_offset = 0;
-            crate::filter::deserialize_mask_filter(filter_bytes, &mut filter_offset)
-        } else {
-            if offset < data.len() {
-                offset += 1;
-            }
-            None
-        };
+        let color_filter = Self::read_optional_section(data, &mut offset)
+            .ok()?
+            .and_then(|filter_bytes| {
+                let mut filter_offset = 0;
+                crate::filter::deserialize_color_filter(filter_bytes, &mut filter_offset)
+            });
 
-        // ColorFilter section
-        let color_filter = if offset < data.len() && data[offset] == 1 {
-            offset += 1;
-            if offset + 4 > data.len() {
-                return None;
-            }
-            let len = u32::from_le_bytes([
-                data[offset],
-                data[offset + 1],
-                data[offset + 2],
-                data[offset + 3],
-            ]) as usize;
-            offset += 4;
-            if offset + len > data.len() {
-                return None;
-            }
-            let filter_bytes = &data[offset..offset + len];
-            offset += len;
-            let mut filter_offset = 0;
-            crate::filter::deserialize_color_filter(filter_bytes, &mut filter_offset)
-        } else {
-            if offset < data.len() {
-                offset += 1;
-            }
-            None
-        };
-
-        // ImageFilter section
-        let image_filter = if offset < data.len() && data[offset] == 1 {
-            offset += 1;
-            if offset + 4 > data.len() {
-                return None;
-            }
-            let len = u32::from_le_bytes([
-                data[offset],
-                data[offset + 1],
-                data[offset + 2],
-                data[offset + 3],
-            ]) as usize;
-            offset += 4;
-            if offset + len > data.len() {
-                return None;
-            }
-            let filter_bytes = &data[offset..offset + len];
-            offset += len;
-            let mut filter_offset = 0;
-            crate::filter::deserialize_image_filter(filter_bytes, &mut filter_offset)
-        } else {
-            if offset < data.len() {
-                offset += 1;
-            }
-            None
-        };
+        let image_filter = Self::read_optional_section(data, &mut offset)
+            .ok()?
+            .and_then(|filter_bytes| {
+                let mut filter_offset = 0;
+                crate::filter::deserialize_image_filter(filter_bytes, &mut filter_offset)
+            });
 
         Some(Self {
             color,
@@ -670,6 +679,44 @@ impl Paint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact default value check (hairline stroke width is exactly 0.0), not a computed comparison"
+    )]
+    fn test_paint_defaults_match_skpaint() {
+        // SkPaint.cpp: fWidth{0} (hairline) and fAntiAlias false by default.
+        let paint = Paint::new();
+        assert_eq!(
+            paint.stroke_width(),
+            0.0,
+            "default stroke width is hairline (0)"
+        );
+        assert!(!paint.is_anti_alias(), "anti-aliasing is off by default");
+    }
+
+    #[test]
+    fn test_color32_rounds_float_components() {
+        // Float->byte conversion must round to nearest, not truncate:
+        // 0.5 * 255 = 127.5 -> 128.
+        let mut paint = Paint::new();
+        paint.set_color(Color4f::new(0.5, 0.5, 0.5, 0.5));
+        let c = paint.color32();
+        assert_eq!(c.red(), 128, "r was {}", c.red());
+        assert_eq!(c.green(), 128);
+        assert_eq!(c.blue(), 128);
+        assert_eq!(c.alpha(), 128);
+    }
+
+    #[test]
+    fn test_serialize_rounds_color_bytes() {
+        let mut paint = Paint::new();
+        paint.set_color(Color4f::new(0.5, 0.5, 0.5, 0.5));
+        let data = paint.serialize();
+        // First four bytes are RGBA.
+        assert_eq!(&data[0..4], &[128, 128, 128, 128]);
+    }
 
     #[test]
     fn test_paint_serialization() {
@@ -931,32 +978,27 @@ mod tests {
                 assert_eq!(
                     restored.blend_mode(),
                     mode,
-                    "round-trip failed for {:?}",
-                    mode
+                    "round-trip failed for {mode:?}"
                 );
             }
         }
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact byte round-trip check for serialize/deserialize, not a computed comparison"
+    )]
     fn test_paint_serialize_extreme_stroke_widths() {
         let mut paint = Paint::new();
-        for w in &[
-            0.0,
-            0.001,
-            100.0,
-            10_000.0,
-            f32::MIN_POSITIVE,
-            f32::EPSILON,
-        ] {
+        for w in &[0.0, 0.001, 100.0, 10_000.0, f32::MIN_POSITIVE, f32::EPSILON] {
             paint.set_stroke_width(*w);
             let bytes = paint.serialize();
             let restored = Paint::deserialize(&bytes).unwrap();
             assert_eq!(
                 restored.stroke_width(),
                 *w,
-                "stroke width {} failed round-trip",
-                w
+                "stroke width {w} failed round-trip"
             );
         }
     }
@@ -991,6 +1033,10 @@ mod proptests {
 
     proptest! {
         #[test]
+        #[allow(
+            clippy::float_cmp,
+            reason = "exact byte round-trip check for serialize/deserialize, not a computed comparison"
+        )]
         fn test_paint_stroke_width_round_trip(width in 0.0_f32..1e6) {
             let mut paint = Paint::new();
             paint.set_stroke_width(width);

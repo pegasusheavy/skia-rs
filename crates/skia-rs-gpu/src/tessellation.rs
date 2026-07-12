@@ -3,8 +3,9 @@
 //! This module provides algorithms for converting vector paths into triangle meshes
 //! suitable for GPU rendering.
 
-use skia_rs_core::{Point, Rect, Scalar};
-use skia_rs_path::{Path, PathBuilder, PathElement};
+use crate::cast_util::{scalar_from_u32, scalar_from_usize, u32_from_usize};
+use skia_rs_core::{Matrix, Point, Rect, Scalar};
+use skia_rs_path::{Path, PathElement};
 
 /// A vertex in a tessellated mesh.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -19,6 +20,7 @@ pub struct TessVertex {
 impl TessVertex {
     /// Create a new vertex.
     #[inline]
+    #[must_use]
     pub const fn new(x: f32, y: f32, u: f32, v: f32) -> Self {
         Self {
             position: [x, y],
@@ -28,7 +30,8 @@ impl TessVertex {
 
     /// Create a vertex from a point.
     #[inline]
-    pub fn from_point(p: Point) -> Self {
+    #[must_use]
+    pub const fn from_point(p: Point) -> Self {
         Self {
             position: [p.x, p.y],
             uv: [0.0, 0.0],
@@ -50,11 +53,13 @@ pub struct TessMesh {
 
 impl TessMesh {
     /// Create a new empty mesh.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Create a mesh with preallocated capacity.
+    #[must_use]
     pub fn with_capacity(vertex_capacity: usize, index_capacity: usize) -> Self {
         Self {
             vertices: Vec::with_capacity(vertex_capacity),
@@ -69,18 +74,20 @@ impl TessMesh {
     }
 
     /// Check if empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.vertices.is_empty() || self.indices.is_empty()
     }
 
     /// Number of triangles.
+    #[must_use]
     pub fn triangle_count(&self) -> usize {
         self.indices.len() / 3
     }
 
     /// Add a vertex and return its index.
     pub fn add_vertex(&mut self, vertex: TessVertex) -> TessIndex {
-        let idx = self.vertices.len() as TessIndex;
+        let idx = u32_from_usize(self.vertices.len());
         self.vertices.push(vertex);
         idx
     }
@@ -93,8 +100,8 @@ impl TessMesh {
     }
 
     /// Merge another mesh into this one.
-    pub fn merge(&mut self, other: &TessMesh) {
-        let base_index = self.vertices.len() as TessIndex;
+    pub fn merge(&mut self, other: &Self) {
+        let base_index = u32_from_usize(self.vertices.len());
         self.vertices.extend_from_slice(&other.vertices);
         self.indices
             .extend(other.indices.iter().map(|i| i + base_index));
@@ -145,27 +152,160 @@ impl TessQuality {
     };
 }
 
+/// Upper bound on the number of segments a single curve is flattened into.
+///
+/// Matches Skia's `GrPathUtils::kMaxPointsPerCurve` (`1 << 10`). Curve
+/// subdivision is tolerance-driven; this only guards against pathological
+/// inputs (huge magnification) rather than being the normal limiter.
+pub const MAX_POINTS_PER_CURVE: u32 = 1 << 10;
+
+/// Compute the maximum scale factor (largest singular value of the 2x2
+/// linear part) of a view matrix — the Skia `SkMatrix::getMaxScale`
+/// equivalent used by `GrPathUtils::scaleToleranceToSrc`.
+#[must_use]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "a/b/c/d are the 2x2 linear-part matrix entries; single-letter names match the standard matrix notation"
+)]
+pub fn matrix_max_scale(m: &Matrix) -> Scalar {
+    let a = m.scale_x();
+    let b = m.skew_y();
+    let c = m.skew_x();
+    let d = m.scale_y();
+    // Largest singular value of [[a, c], [b, d]].
+    let aa = d.mul_add(d, c.mul_add(c, a.mul_add(a, b * b)));
+    let det = a.mul_add(d, -(b * c));
+    let disc = aa.mul_add(aa, -(4.0 * det * det)).max(0.0).sqrt();
+    (0.5 * (aa + disc)).max(0.0).sqrt()
+}
+
+/// Stroke join style (how consecutive segments meet at a vertex).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StrokeJoin {
+    /// Sharp corner extended to a point, limited by the miter limit.
+    #[default]
+    Miter,
+    /// Flat corner (chamfer).
+    Bevel,
+    /// Rounded corner (arc of radius half-width).
+    Round,
+}
+
+/// Stroke cap style (how open contour ends are terminated).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StrokeCap {
+    /// Squared off exactly at the endpoint.
+    #[default]
+    Butt,
+    /// Squared off half a stroke width beyond the endpoint.
+    Square,
+    /// Rounded (semicircle of radius half-width).
+    Round,
+}
+
+/// Stroke styling: width, join, cap, and miter limit.
+#[derive(Debug, Clone, Copy)]
+pub struct StrokeStyle {
+    /// Full stroke width.
+    pub width: Scalar,
+    /// Join style at interior vertices.
+    pub join: StrokeJoin,
+    /// Cap style at open contour ends.
+    pub cap: StrokeCap,
+    /// Miter limit: max ratio of miter length to half-width before a miter
+    /// join falls back to bevel. Skia's default is 4.
+    pub miter_limit: Scalar,
+}
+
+impl StrokeStyle {
+    /// Create a style with the given width and Skia defaults (miter joins,
+    /// butt caps, miter limit 4).
+    #[must_use]
+    pub const fn new(width: Scalar) -> Self {
+        Self {
+            width,
+            join: StrokeJoin::Miter,
+            cap: StrokeCap::Butt,
+            miter_limit: 4.0,
+        }
+    }
+
+    /// Builder: set the join style.
+    #[must_use]
+    pub const fn with_join(mut self, join: StrokeJoin) -> Self {
+        self.join = join;
+        self
+    }
+
+    /// Builder: set the cap style.
+    #[must_use]
+    pub const fn with_cap(mut self, cap: StrokeCap) -> Self {
+        self.cap = cap;
+        self
+    }
+
+    /// Builder: set the miter limit.
+    #[must_use]
+    pub const fn with_miter_limit(mut self, limit: Scalar) -> Self {
+        self.miter_limit = limit;
+        self
+    }
+}
+
 /// Path tessellator.
 pub struct PathTessellator {
     quality: TessQuality,
     /// Flattened points from current contour.
     contour_points: Vec<Point>,
+    /// Max view-matrix scale used to convert the device-space tolerance to
+    /// source space (`GrPathUtils::scaleToleranceToSrc`). 1.0 = identity.
+    device_scale: Scalar,
 }
 
 impl PathTessellator {
     /// Create a new tessellator with default quality.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             quality: TessQuality::default(),
             contour_points: Vec::new(),
+            device_scale: 1.0,
         }
     }
 
     /// Create a new tessellator with specified quality.
-    pub fn with_quality(quality: TessQuality) -> Self {
+    #[must_use]
+    pub const fn with_quality(quality: TessQuality) -> Self {
         Self {
             quality,
             contour_points: Vec::new(),
+            device_scale: 1.0,
+        }
+    }
+
+    /// Set the view matrix used for device-space flattening. Curves are
+    /// flattened to a tolerance measured in *device* pixels: the source-space
+    /// tolerance shrinks as the matrix magnifies, so a path drawn 10x larger
+    /// gets ~10x finer subdivision (`GrPathUtils::scaleToleranceToSrc`).
+    pub fn set_view_matrix(&mut self, matrix: &Matrix) {
+        self.device_scale = matrix_max_scale(matrix).max(1e-4);
+    }
+
+    /// Source-space flattening tolerance: device tolerance divided by the
+    /// view-matrix max scale, clamped to a small positive minimum.
+    fn src_tolerance(&self) -> Scalar {
+        (self.quality.tolerance / self.device_scale).max(1e-4)
+    }
+
+    /// Seed a fresh contour at `start` when the point list is empty.
+    ///
+    /// Implements `SkPath`'s post-`Close` rule: a drawing verb (line/curve)
+    /// that follows a `Close` without an intervening `Move` begins a new
+    /// contour at the previous contour's start point (the last move point).
+    /// Without this the new contour would silently drop its first vertex.
+    fn ensure_contour(&mut self, start: Point) {
+        if self.contour_points.is_empty() {
+            self.contour_points.push(start);
         }
     }
 
@@ -177,7 +317,7 @@ impl PathTessellator {
         let mut current_point = Point::zero();
         let mut contour_start = Point::zero();
 
-        for element in path.iter() {
+        for element in path {
             match element {
                 PathElement::Move(p) => {
                     self.flush_contour(&mut mesh);
@@ -186,18 +326,22 @@ impl PathTessellator {
                     self.contour_points.push(p);
                 }
                 PathElement::Line(p) => {
+                    self.ensure_contour(contour_start);
                     self.contour_points.push(p);
                     current_point = p;
                 }
                 PathElement::Quad(ctrl, end) => {
+                    self.ensure_contour(contour_start);
                     self.flatten_quad(current_point, ctrl, end);
                     current_point = end;
                 }
                 PathElement::Conic(ctrl, end, weight) => {
+                    self.ensure_contour(contour_start);
                     self.flatten_conic(current_point, ctrl, end, weight);
                     current_point = end;
                 }
                 PathElement::Cubic(ctrl1, ctrl2, end) => {
+                    self.ensure_contour(contour_start);
                     self.flatten_cubic(current_point, ctrl1, ctrl2, end);
                     current_point = end;
                 }
@@ -206,6 +350,8 @@ impl PathTessellator {
                         self.contour_points.push(contour_start);
                     }
                     self.flush_contour(&mut mesh);
+                    // Per SkPath, the next contour (if any drawing verb
+                    // follows without a Move) starts at the close point.
                     current_point = contour_start;
                 }
             }
@@ -217,37 +363,131 @@ impl PathTessellator {
         mesh
     }
 
-    /// Tessellate a path for stroking.
-    pub fn tessellate_stroke(&mut self, path: &Path, stroke_width: Scalar) -> TessMesh {
-        let mut mesh = TessMesh::new();
-        let half_width = stroke_width * 0.5;
+    /// Flatten a path into a list of contours (each a polyline of points),
+    /// applying the same curve flattening and post-`Close` seeding as
+    /// [`Self::tessellate_fill`]. Used for fill-strategy classification.
+    fn flatten_contours(&mut self, path: &Path) -> Vec<Vec<Point>> {
+        let mut contours: Vec<Vec<Point>> = Vec::new();
+        self.contour_points.clear();
+        let mut current = Point::zero();
+        let mut start = Point::zero();
 
+        for element in path {
+            match element {
+                PathElement::Move(p) => {
+                    if self.contour_points.len() >= 3 {
+                        contours.push(std::mem::take(&mut self.contour_points));
+                    } else {
+                        self.contour_points.clear();
+                    }
+                    current = p;
+                    start = p;
+                    self.contour_points.push(p);
+                }
+                PathElement::Line(p) => {
+                    self.ensure_contour(start);
+                    self.contour_points.push(p);
+                    current = p;
+                }
+                PathElement::Quad(ctrl, end) => {
+                    self.ensure_contour(start);
+                    self.flatten_quad(current, ctrl, end);
+                    current = end;
+                }
+                PathElement::Conic(ctrl, end, weight) => {
+                    self.ensure_contour(start);
+                    self.flatten_conic(current, ctrl, end, weight);
+                    current = end;
+                }
+                PathElement::Cubic(ctrl1, ctrl2, end) => {
+                    self.ensure_contour(start);
+                    self.flatten_cubic(current, ctrl1, ctrl2, end);
+                    current = end;
+                }
+                PathElement::Close => {
+                    if self.contour_points.len() >= 3 {
+                        contours.push(std::mem::take(&mut self.contour_points));
+                    } else {
+                        self.contour_points.clear();
+                    }
+                    current = start;
+                }
+            }
+        }
+        if self.contour_points.len() >= 3 {
+            contours.push(std::mem::take(&mut self.contour_points));
+        }
+        self.contour_points.clear();
+        contours
+    }
+
+    /// Classify how a path's fill should be rasterized.
+    ///
+    /// Direct triangulation only produces a correct fill for a *single convex
+    /// contour*. Multi-contour paths (holes) and non-convex contours require
+    /// the winding/even-odd fill rule, which ear-clipping per contour cannot
+    /// express (it would fill holes solid). Those must be routed through
+    /// stencil-then-cover, so this returns [`FillStrategy::StencilCover`] for
+    /// them. Matches the brief's minimum conforming approach.
+    pub fn classify_fill(&mut self, path: &Path) -> FillStrategy {
+        let contours = self.flatten_contours(path);
+        if contours.len() == 1 && polygon_is_convex(&contours[0]) {
+            FillStrategy::DirectConvex
+        } else {
+            FillStrategy::StencilCover
+        }
+    }
+
+    /// Tessellate a fill only when it is a single convex contour, for which
+    /// direct triangulation is correct. Returns `None` when the path must be
+    /// routed through stencil-then-cover (see [`Self::classify_fill`]).
+    pub fn tessellate_fill_convex(&mut self, path: &Path) -> Option<TessMesh> {
+        match self.classify_fill(path) {
+            FillStrategy::DirectConvex => Some(self.tessellate_fill(path)),
+            FillStrategy::StencilCover => None,
+        }
+    }
+
+    /// Tessellate a path for stroking with the default style (miter joins,
+    /// butt caps, miter limit 4).
+    pub fn tessellate_stroke(&mut self, path: &Path, stroke_width: Scalar) -> TessMesh {
+        self.tessellate_stroke_styled(path, &StrokeStyle::new(stroke_width))
+    }
+
+    /// Tessellate a path for stroking with an explicit [`StrokeStyle`]
+    /// (join, cap, miter limit).
+    pub fn tessellate_stroke_styled(&mut self, path: &Path, style: &StrokeStyle) -> TessMesh {
+        let mut mesh = TessMesh::new();
         self.contour_points.clear();
 
         let mut current_point = Point::zero();
         let mut contour_start = Point::zero();
 
-        for element in path.iter() {
+        for element in path {
             match element {
                 PathElement::Move(p) => {
-                    self.flush_stroke_contour(&mut mesh, half_width, false);
+                    self.flush_stroke_contour(&mut mesh, style, false);
                     current_point = p;
                     contour_start = p;
                     self.contour_points.push(p);
                 }
                 PathElement::Line(p) => {
+                    self.ensure_contour(contour_start);
                     self.contour_points.push(p);
                     current_point = p;
                 }
                 PathElement::Quad(ctrl, end) => {
+                    self.ensure_contour(contour_start);
                     self.flatten_quad(current_point, ctrl, end);
                     current_point = end;
                 }
                 PathElement::Conic(ctrl, end, weight) => {
+                    self.ensure_contour(contour_start);
                     self.flatten_conic(current_point, ctrl, end, weight);
                     current_point = end;
                 }
                 PathElement::Cubic(ctrl1, ctrl2, end) => {
+                    self.ensure_contour(contour_start);
                     self.flatten_cubic(current_point, ctrl1, ctrl2, end);
                     current_point = end;
                 }
@@ -255,14 +495,14 @@ impl PathTessellator {
                     if current_point != contour_start {
                         self.contour_points.push(contour_start);
                     }
-                    self.flush_stroke_contour(&mut mesh, half_width, true);
+                    self.flush_stroke_contour(&mut mesh, style, true);
                     current_point = contour_start;
                 }
             }
         }
 
         // Flush any remaining contour
-        self.flush_stroke_contour(&mut mesh, half_width, false);
+        self.flush_stroke_contour(&mut mesh, style, false);
 
         mesh
     }
@@ -271,7 +511,7 @@ impl PathTessellator {
     fn flatten_quad(&mut self, p0: Point, p1: Point, p2: Point) {
         let steps = self.quad_subdivisions(p0, p1, p2);
         for i in 1..=steps {
-            let t = i as Scalar / steps as Scalar;
+            let t = scalar_from_u32(i) / scalar_from_u32(steps);
             let p = Self::eval_quad(p0, p1, p2, t);
             self.contour_points.push(p);
         }
@@ -296,11 +536,10 @@ impl PathTessellator {
         let base_d = Self::point_to_line_distance(p1, p0, p2);
         let weight_amp = 1.0 + (w - 1.0).abs().min(4.0);
         let d = base_d * weight_amp;
-        let steps = ((d / self.quality.tolerance).sqrt().ceil() as u32)
-            .max(2)
-            .min(self.quality.max_subdivisions.max(2));
+        let steps = crate::cast_util::u32_from_scalar_sat((d / self.src_tolerance()).sqrt().ceil())
+            .clamp(2, MAX_POINTS_PER_CURVE);
         for i in 1..=steps {
-            let t = i as Scalar / steps as Scalar;
+            let t = scalar_from_u32(i) / scalar_from_u32(steps);
             let p = Self::eval_conic(p0, p1, p2, w, t);
             self.contour_points.push(p);
         }
@@ -310,17 +549,22 @@ impl PathTessellator {
     fn flatten_cubic(&mut self, p0: Point, p1: Point, p2: Point, p3: Point) {
         let steps = self.cubic_subdivisions(p0, p1, p2, p3);
         for i in 1..=steps {
-            let t = i as Scalar / steps as Scalar;
+            let t = scalar_from_u32(i) / scalar_from_u32(steps);
             let p = Self::eval_cubic(p0, p1, p2, p3, t);
             self.contour_points.push(p);
         }
     }
 
     /// Calculate number of subdivisions for quadratic curve.
+    ///
+    /// Tolerance-driven (device-space): the count scales with the square root
+    /// of the curve's deviation over the source-space tolerance, bounded only
+    /// by `MAX_POINTS_PER_CURVE`. The old fixed `max_subdivisions` cap made
+    /// magnified curves visibly faceted; it no longer limits curve flattening.
     fn quad_subdivisions(&self, p0: Point, p1: Point, p2: Point) -> u32 {
         let d = Self::point_to_line_distance(p1, p0, p2);
-        let steps = ((d / self.quality.tolerance).sqrt().ceil() as u32).max(1);
-        steps.min(self.quality.max_subdivisions)
+        crate::cast_util::u32_from_scalar_sat((d / self.src_tolerance()).sqrt().ceil())
+            .clamp(1, MAX_POINTS_PER_CURVE)
     }
 
     /// Calculate number of subdivisions for cubic curve.
@@ -328,8 +572,8 @@ impl PathTessellator {
         let d1 = Self::point_to_line_distance(p1, p0, p3);
         let d2 = Self::point_to_line_distance(p2, p0, p3);
         let d = d1.max(d2);
-        let steps = ((d / self.quality.tolerance).sqrt().ceil() as u32).max(1);
-        steps.min(self.quality.max_subdivisions)
+        crate::cast_util::u32_from_scalar_sat((d / self.src_tolerance()).sqrt().ceil())
+            .clamp(1, MAX_POINTS_PER_CURVE)
     }
 
     /// Evaluate quadratic bezier at t.
@@ -338,8 +582,8 @@ impl PathTessellator {
         let mt2 = mt * mt;
         let t2 = t * t;
         Point::new(
-            mt2 * p0.x + 2.0 * mt * t * p1.x + t2 * p2.x,
-            mt2 * p0.y + 2.0 * mt * t * p1.y + t2 * p2.y,
+            t2.mul_add(p2.x, mt2 * p0.x + 2.0 * mt * t * p1.x),
+            t2.mul_add(p2.y, mt2 * p0.y + 2.0 * mt * t * p1.y),
         )
     }
 
@@ -351,8 +595,8 @@ impl PathTessellator {
         let wt = 2.0 * w * mt * t;
         let denom = mt2 + wt + t2;
         Point::new(
-            (mt2 * p0.x + wt * p1.x + t2 * p2.x) / denom,
-            (mt2 * p0.y + wt * p1.y + t2 * p2.y) / denom,
+            t2.mul_add(p2.x, mt2 * p0.x + wt * p1.x) / denom,
+            t2.mul_add(p2.y, mt2 * p0.y + wt * p1.y) / denom,
         )
     }
 
@@ -364,8 +608,14 @@ impl PathTessellator {
         let t2 = t * t;
         let t3 = t2 * t;
         Point::new(
-            mt3 * p0.x + 3.0 * mt2 * t * p1.x + 3.0 * mt * t2 * p2.x + t3 * p3.x,
-            mt3 * p0.y + 3.0 * mt2 * t * p1.y + 3.0 * mt * t2 * p2.y + t3 * p3.y,
+            t3.mul_add(
+                p3.x,
+                (3.0 * mt * t2).mul_add(p2.x, mt3 * p0.x + 3.0 * mt2 * t * p1.x),
+            ),
+            t3.mul_add(
+                p3.y,
+                (3.0 * mt * t2).mul_add(p2.y, mt3 * p0.y + 3.0 * mt2 * t * p1.y),
+            ),
         )
     }
 
@@ -373,11 +623,13 @@ impl PathTessellator {
     fn point_to_line_distance(p: Point, line_start: Point, line_end: Point) -> Scalar {
         let dx = line_end.x - line_start.x;
         let dy = line_end.y - line_start.y;
-        let len_sq = dx * dx + dy * dy;
+        let len_sq = dx.mul_add(dx, dy * dy);
         if len_sq < 1e-10 {
-            return ((p.x - line_start.x).powi(2) + (p.y - line_start.y).powi(2)).sqrt();
+            return (p.x - line_start.x).hypot(p.y - line_start.y);
         }
-        let num = ((p.x - line_start.x) * dy - (p.y - line_start.y) * dx).abs();
+        let num = (p.x - line_start.x)
+            .mul_add(dy, -((p.y - line_start.y) * dx))
+            .abs();
         num / len_sq.sqrt()
     }
 
@@ -413,7 +665,7 @@ impl PathTessellator {
         }
 
         // Push vertices into the mesh up front; ear clipping emits indices.
-        let base_idx = mesh.vertices.len() as TessIndex;
+        let base_idx = u32_from_usize(mesh.vertices.len());
         let vertices: Vec<TessVertex> = self
             .contour_points
             .iter()
@@ -426,89 +678,248 @@ impl PathTessellator {
     }
 
     /// Flush current contour for stroke tessellation.
-    fn flush_stroke_contour(&mut self, mesh: &mut TessMesh, half_width: Scalar, closed: bool) {
-        if self.contour_points.len() < 2 {
-            self.contour_points.clear();
-            return;
+    ///
+    /// Strokes each segment as an offset quad, then fills joins and end caps
+    /// per the [`StrokeStyle`]. Miter joins extend the outer corner by
+    /// `half_width / cos(theta/2)` and fall back to a bevel when that exceeds
+    /// the miter limit; caps honor butt/square/round on open contours. The
+    /// triangles are coverage-correct (they may overlap in the join interior,
+    /// which is harmless for opaque/stencil rasterization).
+    fn flush_stroke_contour(&mut self, mesh: &mut TessMesh, style: &StrokeStyle, closed: bool) {
+        let pts = std::mem::take(&mut self.contour_points);
+        stroke_contour(&pts, style, closed, mesh);
+    }
+}
+
+/// Stroke a flattened contour into triangles.
+fn stroke_contour(raw: &[Point], style: &StrokeStyle, closed: bool, mesh: &mut TessMesh) {
+    let hw = style.width * 0.5;
+    if hw <= 0.0 {
+        return;
+    }
+
+    // Drop consecutive duplicate points so segment directions are well-defined.
+    let mut pts: Vec<Point> = Vec::with_capacity(raw.len());
+    for &p in raw {
+        if pts.last().is_none_or(|q| dist2(*q, p) > 1e-12) {
+            pts.push(p);
         }
+    }
+    // For a closed contour, drop a trailing duplicate of the first point.
+    if closed && pts.len() > 1 && dist2(pts[0], *pts.last().unwrap()) <= 1e-12 {
+        pts.pop();
+    }
+    let n = pts.len();
+    if n < 2 {
+        return;
+    }
 
-        let n = self.contour_points.len();
+    // Unit direction and left-normal for each segment.
+    let seg_count = if closed { n } else { n - 1 };
+    let mut dirs = Vec::with_capacity(seg_count);
+    for s in 0..seg_count {
+        let a = pts[s];
+        let b = pts[(s + 1) % n];
+        dirs.push(unit(sub(b, a)));
+    }
 
-        // Generate left and right edge vertices
-        let mut left_vertices = Vec::with_capacity(n);
-        let mut right_vertices = Vec::with_capacity(n);
+    // Body quad for each segment.
+    for s in 0..seg_count {
+        let a = pts[s];
+        let b = pts[(s + 1) % n];
+        let nrm = left_normal(dirs[s]);
+        emit_quad(
+            mesh,
+            offset(a, nrm, hw),
+            offset(a, nrm, -hw),
+            offset(b, nrm, -hw),
+            offset(b, nrm, hw),
+        );
+    }
 
-        for i in 0..n {
-            let prev_idx = if i == 0 {
-                if closed { n - 1 } else { 0 }
-            } else {
-                i - 1
-            };
-            let next_idx = if i == n - 1 {
-                if closed { 0 } else { n - 1 }
-            } else {
-                i + 1
-            };
+    // Joins at interior vertices (and the wrap vertex for closed contours).
+    let join_start = usize::from(!closed);
+    for (v, &p) in pts.iter().enumerate().skip(join_start) {
+        // Incoming segment ends at vertex v; outgoing starts at v.
+        let in_seg = (v + seg_count - 1) % seg_count;
+        let out_seg = v % seg_count;
+        if !closed && (v == 0 || v >= seg_count) {
+            continue;
+        }
+        emit_join(mesh, p, dirs[in_seg], dirs[out_seg], hw, style);
+    }
 
-            let p = self.contour_points[i];
-            let prev = self.contour_points[prev_idx];
-            let next = self.contour_points[next_idx];
+    // Caps on open contours.
+    if !closed {
+        // Start cap: outward tangent points backward along the first segment.
+        emit_cap(mesh, pts[0], neg(dirs[0]), hw, style.cap);
+        // End cap: outward tangent points forward along the last segment.
+        emit_cap(mesh, pts[n - 1], dirs[seg_count - 1], hw, style.cap);
+    }
+}
 
-            // Calculate tangent direction
-            let tangent = if i == 0 && !closed {
-                Point::new(next.x - p.x, next.y - p.y)
-            } else if i == n - 1 && !closed {
-                Point::new(p.x - prev.x, p.y - prev.y)
-            } else {
-                let t1 = Point::new(p.x - prev.x, p.y - prev.y);
-                let t2 = Point::new(next.x - p.x, next.y - p.y);
-                Point::new(t1.x + t2.x, t1.y + t2.y)
-            };
+#[inline]
+fn sub(a: Point, b: Point) -> Point {
+    Point::new(a.x - b.x, a.y - b.y)
+}
+#[inline]
+fn neg(a: Point) -> Point {
+    Point::new(-a.x, -a.y)
+}
+#[inline]
+fn dist2(a: Point, b: Point) -> Scalar {
+    let d = sub(a, b);
+    d.x.mul_add(d.x, d.y * d.y)
+}
+#[inline]
+fn unit(v: Point) -> Point {
+    let len = v.x.hypot(v.y);
+    if len < 1e-10 {
+        Point::new(0.0, 0.0)
+    } else {
+        Point::new(v.x / len, v.y / len)
+    }
+}
+#[inline]
+fn left_normal(dir: Point) -> Point {
+    Point::new(-dir.y, dir.x)
+}
+#[inline]
+fn offset(p: Point, dir: Point, amt: Scalar) -> Point {
+    Point::new(dir.x.mul_add(amt, p.x), dir.y.mul_add(amt, p.y))
+}
 
-            // Normalize and get perpendicular
-            let len = (tangent.x * tangent.x + tangent.y * tangent.y).sqrt();
-            if len < 1e-10 {
-                left_vertices.push(TessVertex::from_point(p));
-                right_vertices.push(TessVertex::from_point(p));
-                continue;
+/// Wrap an angle (in radians) to `(-PI, PI]` in a single step, avoiding an
+/// iterative `while` loop with a float comparison in its condition.
+#[inline]
+fn wrap_to_pi(angle: Scalar) -> Scalar {
+    let two_pi = 2.0 * std::f32::consts::PI;
+    angle - two_pi * (angle / two_pi).round()
+}
+
+/// Emit two triangles for quad a-b-c-d (in order).
+fn emit_quad(mesh: &mut TessMesh, a: Point, b: Point, c: Point, d: Point) {
+    let ia = mesh.add_vertex(TessVertex::from_point(a));
+    let ib = mesh.add_vertex(TessVertex::from_point(b));
+    let ic = mesh.add_vertex(TessVertex::from_point(c));
+    let id = mesh.add_vertex(TessVertex::from_point(d));
+    mesh.add_triangle(ia, ib, ic);
+    mesh.add_triangle(ia, ic, id);
+}
+
+fn emit_tri(mesh: &mut TessMesh, a: Point, b: Point, c: Point) {
+    let ia = mesh.add_vertex(TessVertex::from_point(a));
+    let ib = mesh.add_vertex(TessVertex::from_point(b));
+    let ic = mesh.add_vertex(TessVertex::from_point(c));
+    mesh.add_triangle(ia, ib, ic);
+}
+
+/// Fill the join at vertex `v` between two segment directions.
+fn emit_join(
+    mesh: &mut TessMesh,
+    v: Point,
+    d_in: Point,
+    d_out: Point,
+    hw: Scalar,
+    style: &StrokeStyle,
+) {
+    let n0 = left_normal(d_in);
+    let n1 = left_normal(d_out);
+    let turn = d_in.x.mul_add(d_out.y, -(d_in.y * d_out.x)); // z of cross(d_in, d_out)
+    if turn.abs() < 1e-9 {
+        return; // straight — segment quads already meet flush
+    }
+
+    // Bevel triangles fill the wedge between the two segment ends on both
+    // offset sides (the inner side lies inside the overlap; harmless).
+    emit_tri(mesh, v, offset(v, n0, hw), offset(v, n1, hw));
+    emit_tri(mesh, v, offset(v, n0, -hw), offset(v, n1, -hw));
+
+    match style.join {
+        StrokeJoin::Bevel | StrokeJoin::Round => {
+            if style.join == StrokeJoin::Round {
+                emit_round_fan(mesh, v, n0, n1, hw);
             }
-
-            let normal = Point::new(-tangent.y / len, tangent.x / len);
-
-            left_vertices.push(TessVertex::new(
-                p.x + normal.x * half_width,
-                p.y + normal.y * half_width,
-                0.0,
-                0.0,
-            ));
-            right_vertices.push(TessVertex::new(
-                p.x - normal.x * half_width,
-                p.y - normal.y * half_width,
-                1.0,
-                0.0,
-            ));
         }
-
-        // Create triangle strip
-        let base_idx = mesh.vertices.len() as TessIndex;
-        mesh.vertices.extend(left_vertices);
-        let right_base = mesh.vertices.len() as TessIndex;
-        mesh.vertices.extend(right_vertices);
-
-        for i in 0..(n - 1) {
-            let i = i as TessIndex;
-            mesh.add_triangle(base_idx + i, right_base + i, base_idx + i + 1);
-            mesh.add_triangle(base_idx + i + 1, right_base + i, right_base + i + 1);
+        StrokeJoin::Miter => {
+            // Miter length ratio = 1 / cos(theta/2), where the half-angle is
+            // between the bisector and a segment normal.
+            let m = unit(Point::new(n0.x + n1.x, n0.y + n1.y));
+            let cos_half = m.x.mul_add(n0.x, m.y * n0.y);
+            if cos_half.abs() > 1e-4 {
+                let ratio = 1.0 / cos_half.abs();
+                if ratio <= style.miter_limit {
+                    // Extend the outer corner to the miter tip on both sides;
+                    // the inner tip is inside the body union (harmless).
+                    let tip_pos = offset(v, m, hw * ratio);
+                    let tip_neg = offset(v, m, -hw * ratio);
+                    emit_tri(mesh, offset(v, n0, hw), tip_pos, offset(v, n1, hw));
+                    emit_tri(mesh, offset(v, n0, -hw), tip_neg, offset(v, n1, -hw));
+                }
+                // else: exceeds miter limit -> bevel only (already emitted).
+            }
         }
+    }
+}
 
-        // Close the stroke if needed
-        if closed && n > 2 {
-            let last = (n - 1) as TessIndex;
-            mesh.add_triangle(base_idx + last, right_base + last, base_idx);
-            mesh.add_triangle(base_idx, right_base + last, right_base);
+/// Fill a round join/cap as a triangle fan from `v` sweeping between the two
+/// offset normals at radius `hw`.
+fn emit_round_fan(mesh: &mut TessMesh, v: Point, n0: Point, n1: Point, hw: Scalar) {
+    let a0 = n0.y.atan2(n0.x);
+    let a1 = n1.y.atan2(n1.x);
+    // Sweep the shorter way around.
+    let delta = wrap_to_pi(a1 - a0);
+    let steps =
+        crate::cast_util::u32_from_scalar_sat((delta.abs() / (std::f32::consts::PI / 8.0)).ceil())
+            .max(1);
+    for i in 0..steps {
+        let t0 = delta.mul_add(scalar_from_u32(i) / scalar_from_u32(steps), a0);
+        let t1 = delta.mul_add(scalar_from_u32(i + 1) / scalar_from_u32(steps), a0);
+        let p0 = Point::new(t0.cos().mul_add(hw, v.x), t0.sin().mul_add(hw, v.y));
+        let p1 = Point::new(t1.cos().mul_add(hw, v.x), t1.sin().mul_add(hw, v.y));
+        emit_tri(mesh, v, p0, p1);
+        // Mirror the fan to the opposite side for symmetric round joins.
+        let p0m = Point::new(t0.cos().mul_add(-hw, v.x), t0.sin().mul_add(-hw, v.y));
+        let p1m = Point::new(t1.cos().mul_add(-hw, v.x), t1.sin().mul_add(-hw, v.y));
+        emit_tri(mesh, v, p1m, p0m);
+    }
+}
+
+/// Emit an end cap at endpoint `p` whose outward tangent is `out_dir`.
+fn emit_cap(mesh: &mut TessMesh, p: Point, out_dir: Point, hw: Scalar, cap: StrokeCap) {
+    let nrm = left_normal(out_dir);
+    match cap {
+        StrokeCap::Butt => {}
+        StrokeCap::Square => {
+            // Extend the stroke rectangle by half_width along the outward
+            // tangent.
+            let a = offset(p, nrm, hw);
+            let b = offset(p, nrm, -hw);
+            let a2 = offset(a, out_dir, hw);
+            let b2 = offset(b, out_dir, hw);
+            emit_quad(mesh, a, b, b2, a2);
         }
-
-        self.contour_points.clear();
+        StrokeCap::Round => {
+            // Semicircle of radius half_width around the endpoint, sweeping
+            // from +normal to -normal through the outward tangent.
+            let start = nrm.y.atan2(nrm.x);
+            let out_ang = out_dir.y.atan2(out_dir.x);
+            // Sweep 180 degrees toward the outward direction.
+            let dir_sign = {
+                let d = wrap_to_pi(out_ang - start);
+                if d >= 0.0 { 1.0 } else { -1.0 }
+            };
+            let steps = 8u32;
+            for i in 0..steps {
+                let t0 = (dir_sign * std::f32::consts::PI)
+                    .mul_add(scalar_from_u32(i) / scalar_from_u32(steps), start);
+                let t1 = (dir_sign * std::f32::consts::PI)
+                    .mul_add(scalar_from_u32(i + 1) / scalar_from_u32(steps), start);
+                let p0 = Point::new(t0.cos().mul_add(hw, p.x), t0.sin().mul_add(hw, p.y));
+                let p1 = Point::new(t1.cos().mul_add(hw, p.x), t1.sin().mul_add(hw, p.y));
+                emit_tri(mesh, p, p0, p1);
+            }
+        }
     }
 }
 
@@ -516,6 +927,49 @@ impl Default for PathTessellator {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// How a path's fill should be rasterized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FillStrategy {
+    /// A single convex contour: direct triangulation is correct and cheap.
+    DirectConvex,
+    /// Multiple contours and/or a non-convex contour: must be routed through
+    /// stencil-then-cover so the fill rule and holes are honored.
+    StencilCover,
+}
+
+/// Test whether a polygon (given as a closed point ring) is convex.
+///
+/// A polygon is convex iff every consecutive turn has the same sign.
+/// Collinear (zero-cross) triples are ignored. Fewer than 3 points is not a
+/// fillable polygon and returns false.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "a/b/c are triangle vertices in the standard geometry naming convention"
+)]
+fn polygon_is_convex(points: &[Point]) -> bool {
+    let n = points.len();
+    if n < 3 {
+        return false;
+    }
+    let mut sign = 0i32;
+    for i in 0..n {
+        let a = points[i];
+        let b = points[(i + 1) % n];
+        let c = points[(i + 2) % n];
+        let cross = triangle_cross(a, b, c);
+        if cross.abs() < 1e-9 {
+            continue; // collinear — does not affect convexity
+        }
+        let s = if cross > 0.0 { 1 } else { -1 };
+        if sign == 0 {
+            sign = s;
+        } else if s != sign {
+            return false;
+        }
+    }
+    true
 }
 
 /// Compute signed area of a polygon (positive = counter-clockwise).
@@ -528,7 +982,7 @@ fn polygon_signed_area(points: &[Point]) -> Scalar {
     for i in 0..n {
         let p = points[i];
         let q = points[(i + 1) % n];
-        area += p.x * q.y - q.x * p.y;
+        area += p.x.mul_add(q.y, -(q.x * p.y));
     }
     area * 0.5
 }
@@ -536,7 +990,7 @@ fn polygon_signed_area(points: &[Point]) -> Scalar {
 /// Twice the signed area of triangle abc (sign gives orientation).
 #[inline]
 fn triangle_cross(a: Point, b: Point, c: Point) -> Scalar {
-    (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+    (b.x - a.x).mul_add(c.y - a.y, -((b.y - a.y) * (c.x - a.x)))
 }
 
 /// Test whether point `p` lies inside triangle `abc` (with a tolerant
@@ -556,6 +1010,14 @@ fn point_in_triangle(p: Point, a: Point, b: Point, c: Point) -> bool {
 /// algorithm is robust for concave polygons; it degenerates gracefully
 /// (emits a fan) when no ear can be found, which only happens for
 /// pathological self-intersecting input.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "a/b/c and ia/ib/ic are triangle vertices/indices in the standard geometry naming convention"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "ear-clipping is a single cohesive algorithm; splitting it up would obscure the control flow"
+)]
 fn ear_clip_triangulate(points: &[Point], base_idx: TessIndex, mesh: &mut TessMesh) {
     let n = points.len();
     if n < 3 {
@@ -630,15 +1092,15 @@ fn ear_clip_triangulate(points: &[Point], base_idx: TessIndex, mesh: &mut TessMe
                 // front-face rule stays consistent with the source path.
                 if ccw {
                     mesh.add_triangle(
-                        base_idx + ia as TessIndex,
-                        base_idx + ib as TessIndex,
-                        base_idx + ic as TessIndex,
+                        base_idx + u32_from_usize(ia),
+                        base_idx + u32_from_usize(ib),
+                        base_idx + u32_from_usize(ic),
                     );
                 } else {
                     mesh.add_triangle(
-                        base_idx + ia as TessIndex,
-                        base_idx + ic as TessIndex,
-                        base_idx + ib as TessIndex,
+                        base_idx + u32_from_usize(ia),
+                        base_idx + u32_from_usize(ic),
+                        base_idx + u32_from_usize(ib),
                     );
                 }
                 remaining.remove(i);
@@ -664,15 +1126,15 @@ fn ear_clip_triangulate(points: &[Point], base_idx: TessIndex, mesh: &mut TessMe
         if cross.abs() > 1e-12 {
             if ccw == (cross > 0.0) {
                 mesh.add_triangle(
-                    base_idx + ia as TessIndex,
-                    base_idx + ib as TessIndex,
-                    base_idx + ic as TessIndex,
+                    base_idx + u32_from_usize(ia),
+                    base_idx + u32_from_usize(ib),
+                    base_idx + u32_from_usize(ic),
                 );
             } else {
                 mesh.add_triangle(
-                    base_idx + ia as TessIndex,
-                    base_idx + ic as TessIndex,
-                    base_idx + ib as TessIndex,
+                    base_idx + u32_from_usize(ia),
+                    base_idx + u32_from_usize(ic),
+                    base_idx + u32_from_usize(ib),
                 );
             }
         }
@@ -684,15 +1146,16 @@ fn ear_clip_triangulate(points: &[Point], base_idx: TessIndex, mesh: &mut TessMe
             let ib = w[0];
             let ic = w[1];
             mesh.add_triangle(
-                base_idx + ia as TessIndex,
-                base_idx + ib as TessIndex,
-                base_idx + ic as TessIndex,
+                base_idx + u32_from_usize(ia),
+                base_idx + u32_from_usize(ib),
+                base_idx + u32_from_usize(ic),
             );
         }
     }
 }
 
 /// Tessellate a rectangle.
+#[must_use]
 pub fn tessellate_rect(rect: Rect) -> TessMesh {
     let mut mesh = TessMesh::with_capacity(4, 6);
 
@@ -708,6 +1171,11 @@ pub fn tessellate_rect(rect: Rect) -> TessMesh {
 }
 
 /// Tessellate a rounded rectangle.
+#[must_use]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "x/y/u/v are the standard position/UV coordinate names used throughout this module"
+)]
 pub fn tessellate_rounded_rect(rect: Rect, radius: Scalar, quality: TessQuality) -> TessMesh {
     let mut mesh = TessMesh::new();
 
@@ -717,9 +1185,10 @@ pub fn tessellate_rounded_rect(rect: Rect, radius: Scalar, quality: TessQuality)
     }
 
     // Calculate number of segments for corners
-    let segments = ((std::f32::consts::PI * r / quality.tolerance).ceil() as usize)
-        .max(4)
-        .min(quality.max_subdivisions as usize);
+    let segments = crate::cast_util::usize_from_scalar_sat(
+        (std::f32::consts::PI * r / quality.tolerance).ceil(),
+    )
+    .clamp(4, MAX_POINTS_PER_CURVE as usize);
 
     let center = rect.center();
     let center_idx = mesh.add_vertex(TessVertex::new(center.x, center.y, 0.5, 0.5));
@@ -728,8 +1197,8 @@ pub fn tessellate_rounded_rect(rect: Rect, radius: Scalar, quality: TessQuality)
 
     // Top-left corner
     for i in 0..=segments {
-        let angle =
-            std::f32::consts::PI + (i as f32 / segments as f32) * std::f32::consts::FRAC_PI_2;
+        let angle = (scalar_from_usize(i) / scalar_from_usize(segments))
+            .mul_add(std::f32::consts::FRAC_PI_2, std::f32::consts::PI);
         let x = rect.left + r + r * angle.cos();
         let y = rect.top + r + r * angle.sin();
         let u = (x - rect.left) / rect.width();
@@ -739,8 +1208,10 @@ pub fn tessellate_rounded_rect(rect: Rect, radius: Scalar, quality: TessQuality)
 
     // Top-right corner
     for i in 0..=segments {
-        let angle =
-            std::f32::consts::PI * 1.5 + (i as f32 / segments as f32) * std::f32::consts::FRAC_PI_2;
+        let angle = std::f32::consts::PI.mul_add(
+            1.5,
+            (scalar_from_usize(i) / scalar_from_usize(segments)) * std::f32::consts::FRAC_PI_2,
+        );
         let x = rect.right - r + r * angle.cos();
         let y = rect.top + r + r * angle.sin();
         let u = (x - rect.left) / rect.width();
@@ -750,7 +1221,8 @@ pub fn tessellate_rounded_rect(rect: Rect, radius: Scalar, quality: TessQuality)
 
     // Bottom-right corner
     for i in 0..=segments {
-        let angle = (i as f32 / segments as f32) * std::f32::consts::FRAC_PI_2;
+        let angle =
+            (scalar_from_usize(i) / scalar_from_usize(segments)) * std::f32::consts::FRAC_PI_2;
         let x = rect.right - r + r * angle.cos();
         let y = rect.bottom - r + r * angle.sin();
         let u = (x - rect.left) / rect.width();
@@ -760,8 +1232,8 @@ pub fn tessellate_rounded_rect(rect: Rect, radius: Scalar, quality: TessQuality)
 
     // Bottom-left corner
     for i in 0..=segments {
-        let angle = std::f32::consts::FRAC_PI_2
-            + (i as f32 / segments as f32) * std::f32::consts::FRAC_PI_2;
+        let angle = (scalar_from_usize(i) / scalar_from_usize(segments))
+            .mul_add(std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2);
         let x = rect.left + r + r * angle.cos();
         let y = rect.bottom - r + r * angle.sin();
         let u = (x - rect.left) / rect.width();
@@ -780,22 +1252,25 @@ pub fn tessellate_rounded_rect(rect: Rect, radius: Scalar, quality: TessQuality)
 }
 
 /// Tessellate a circle.
+#[must_use]
 pub fn tessellate_circle(center: Point, radius: Scalar, quality: TessQuality) -> TessMesh {
     let mut mesh = TessMesh::new();
 
-    let segments = ((2.0 * std::f32::consts::PI * radius / quality.tolerance).ceil() as usize)
-        .max(8)
-        .min(quality.max_subdivisions as usize * 4);
+    let segments = crate::cast_util::usize_from_scalar_sat(
+        (2.0 * std::f32::consts::PI * radius / quality.tolerance).ceil(),
+    )
+    .clamp(8, MAX_POINTS_PER_CURVE as usize);
 
     let center_idx = mesh.add_vertex(TessVertex::new(center.x, center.y, 0.5, 0.5));
 
     let mut edge_vertices = Vec::with_capacity(segments);
     for i in 0..segments {
-        let angle = (i as f32 / segments as f32) * 2.0 * std::f32::consts::PI;
-        let x = center.x + radius * angle.cos();
-        let y = center.y + radius * angle.sin();
-        let u = 0.5 + 0.5 * angle.cos();
-        let v = 0.5 + 0.5 * angle.sin();
+        let angle =
+            (scalar_from_usize(i) / scalar_from_usize(segments)) * 2.0 * std::f32::consts::PI;
+        let x = radius.mul_add(angle.cos(), center.x);
+        let y = radius.mul_add(angle.sin(), center.y);
+        let u = 0.5f32.mul_add(angle.cos(), 0.5);
+        let v = 0.5f32.mul_add(angle.sin(), 0.5);
         edge_vertices.push(mesh.add_vertex(TessVertex::new(x, y, u, v)));
     }
 
@@ -810,8 +1285,13 @@ pub fn tessellate_circle(center: Point, radius: Scalar, quality: TessQuality) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skia_rs_path::PathBuilder;
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact literal values, no accumulated error"
+    )]
     fn test_tess_vertex() {
         let v = TessVertex::new(1.0, 2.0, 0.5, 0.5);
         assert_eq!(v.position, [1.0, 2.0]);
@@ -894,8 +1374,169 @@ mod tests {
 
     #[test]
     fn test_quality_presets() {
-        assert!(TessQuality::LOW.tolerance > TessQuality::HIGH.tolerance);
-        assert!(TessQuality::LOW.max_subdivisions < TessQuality::HIGH.max_subdivisions);
+        const { assert!(TessQuality::LOW.tolerance > TessQuality::HIGH.tolerance) };
+        const { assert!(TessQuality::LOW.max_subdivisions < TessQuality::HIGH.max_subdivisions) };
+    }
+
+    fn rect_path() -> Path {
+        let mut b = PathBuilder::new();
+        b.move_to(0.0, 0.0)
+            .line_to(10.0, 0.0)
+            .line_to(10.0, 10.0)
+            .line_to(0.0, 10.0)
+            .close();
+        b.build()
+    }
+
+    #[test]
+    fn test_classify_fill_single_convex_direct() {
+        let mut t = PathTessellator::new();
+        assert_eq!(t.classify_fill(&rect_path()), FillStrategy::DirectConvex);
+        assert!(t.tessellate_fill_convex(&rect_path()).is_some());
+    }
+
+    #[test]
+    fn test_classify_fill_multi_contour_stencil() {
+        // Two contours (outer + hole) must route to stencil-cover so the hole
+        // stays a hole rather than being filled solid by per-contour ear-clip.
+        let mut b = PathBuilder::new();
+        b.move_to(0.0, 0.0)
+            .line_to(30.0, 0.0)
+            .line_to(30.0, 30.0)
+            .line_to(0.0, 30.0)
+            .close()
+            .move_to(10.0, 10.0)
+            .line_to(20.0, 10.0)
+            .line_to(20.0, 20.0)
+            .line_to(10.0, 20.0)
+            .close();
+        let path = b.build();
+        let mut t = PathTessellator::new();
+        assert_eq!(t.classify_fill(&path), FillStrategy::StencilCover);
+        assert!(t.tessellate_fill_convex(&path).is_none());
+    }
+
+    #[test]
+    fn test_classify_fill_concave_stencil() {
+        // A single non-convex (L-shaped) contour must route to stencil-cover.
+        let mut b = PathBuilder::new();
+        b.move_to(0.0, 0.0)
+            .line_to(30.0, 0.0)
+            .line_to(30.0, 10.0)
+            .line_to(10.0, 10.0)
+            .line_to(10.0, 30.0)
+            .line_to(0.0, 30.0)
+            .close();
+        let path = b.build();
+        let mut t = PathTessellator::new();
+        assert_eq!(t.classify_fill(&path), FillStrategy::StencilCover);
+    }
+
+    #[test]
+    fn test_device_scale_increases_curve_subdivision() {
+        // Regression: device-space tolerance. Magnifying the view matrix must
+        // yield finer curve flattening (more vertices), not a fixed cap.
+        let mut b = PathBuilder::new();
+        b.move_to(0.0, 0.0)
+            .cubic_to(0.0, 100.0, 100.0, 100.0, 100.0, 0.0);
+        let path = b.build();
+
+        let mut t1 = PathTessellator::new();
+        let n1 = t1.tessellate_fill(&path).vertices.len();
+
+        let mut t10 = PathTessellator::new();
+        t10.set_view_matrix(&Matrix::scale(10.0, 10.0));
+        let n10 = t10.tessellate_fill(&path).vertices.len();
+
+        assert!(
+            n10 > n1,
+            "magnified path should subdivide finer: {n1} vs {n10}"
+        );
+    }
+
+    #[test]
+    fn test_line_after_close_starts_at_last_move() {
+        // Regression: a Line following Close without a Move begins a new
+        // contour at the last move point. The second contour must therefore
+        // be a full triangle, not a dropped-first-vertex degenerate.
+        let mut b = PathBuilder::new();
+        b.move_to(0.0, 0.0)
+            .line_to(10.0, 0.0)
+            .line_to(10.0, 10.0)
+            .close()
+            // No move_to here: per SkPath, these lines start a new contour at
+            // (0,0) (the last move point).
+            .line_to(0.0, 20.0)
+            .line_to(20.0, 20.0);
+        let path = b.build();
+
+        let mut t = PathTessellator::new();
+        let contours = t.flatten_contours(&path);
+        assert_eq!(contours.len(), 2, "expected two contours");
+        // The second contour must begin at the last move point (0,0), not at
+        // its first explicit line vertex.
+        assert_eq!(contours[1][0], Point::new(0.0, 0.0));
+    }
+
+    #[test]
+    fn test_stroke_miter_vs_bevel_geometry() {
+        // A sharp right-angle corner: the miter join extends the outer corner
+        // beyond the bevel, so the miter mesh reaches farther from the vertex.
+        let mut b = PathBuilder::new();
+        b.move_to(0.0, 10.0).line_to(10.0, 10.0).line_to(10.0, 0.0);
+        let path = b.build();
+
+        let mut t = PathTessellator::new();
+        let miter =
+            t.tessellate_stroke_styled(&path, &StrokeStyle::new(4.0).with_join(StrokeJoin::Miter));
+        let mut t2 = PathTessellator::new();
+        let bevel =
+            t2.tessellate_stroke_styled(&path, &StrokeStyle::new(4.0).with_join(StrokeJoin::Bevel));
+
+        // Measure how far the outer corner extends along the join's outer
+        // bisector ((1,1)/sqrt2) from the corner (10,10). Segment endpoints
+        // project negatively, so this isolates the join geometry.
+        let corner = Point::new(10.0, 10.0);
+        let bx = std::f32::consts::FRAC_1_SQRT_2;
+        let reach = |m: &TessMesh| {
+            m.vertices
+                .iter()
+                .map(|v| (v.position[0] - corner.x).mul_add(bx, (v.position[1] - corner.y) * bx))
+                .fold(f32::MIN, f32::max)
+        };
+        assert!(
+            reach(&miter) > reach(&bevel) + 1e-3,
+            "miter must reach farther than bevel at a sharp corner: {} vs {}",
+            reach(&miter),
+            reach(&bevel)
+        );
+    }
+
+    #[test]
+    fn test_stroke_square_cap_adds_geometry() {
+        // A square cap extends the ends, producing more geometry than butt.
+        let mut b = PathBuilder::new();
+        b.move_to(0.0, 0.0).line_to(10.0, 0.0);
+        let path = b.build();
+
+        let mut t = PathTessellator::new();
+        let butt =
+            t.tessellate_stroke_styled(&path, &StrokeStyle::new(4.0).with_cap(StrokeCap::Butt));
+        let mut t2 = PathTessellator::new();
+        let square =
+            t2.tessellate_stroke_styled(&path, &StrokeStyle::new(4.0).with_cap(StrokeCap::Square));
+        assert!(square.triangle_count() > butt.triangle_count());
+
+        // Square cap reaches at least half_width beyond the end (x = 12).
+        let max_x = square
+            .vertices
+            .iter()
+            .map(|v| v.position[0])
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_x >= 11.9,
+            "square cap should extend past endpoint, got {max_x}"
+        );
     }
 
     #[test]
@@ -954,10 +1595,7 @@ mod tests {
             let c = pts[tri[2] as usize];
             assert!(
                 !point_in_triangle(notch, a, b, c),
-                "triangle ({:?},{:?},{:?}) covers the concave notch",
-                a,
-                b,
-                c
+                "triangle ({a:?},{b:?},{c:?}) covers the concave notch"
             );
         }
     }
@@ -1063,9 +1701,7 @@ mod tests {
 
         assert!(
             heavy > gentle,
-            "sharp conic ({} steps) should emit more segments than a gentle one ({} steps)",
-            heavy,
-            gentle,
+            "sharp conic ({heavy} steps) should emit more segments than a gentle one ({gentle} steps)"
         );
     }
 }

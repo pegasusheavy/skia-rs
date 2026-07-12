@@ -4,6 +4,7 @@
 //! peak memory usage, and allocation counts for various operations.
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 // =============================================================================
@@ -23,8 +24,15 @@ pub struct TrackingAllocator {
     inner: System,
 }
 
+impl Default for TrackingAllocator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TrackingAllocator {
     /// Create a new tracking allocator.
+    #[must_use]
     pub const fn new() -> Self {
         Self { inner: System }
     }
@@ -40,30 +48,32 @@ static TRACKING_ENABLED: AtomicBool = AtomicBool::new(false);
 
 unsafe impl GlobalAlloc for TrackingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let ptr = self.inner.alloc(layout);
+        unsafe {
+            let ptr = self.inner.alloc(layout);
 
-        if TRACKING_ENABLED.load(Ordering::Relaxed) && !ptr.is_null() {
-            let size = layout.size();
-            let total = ALLOCATED.fetch_add(size, Ordering::Relaxed) + size;
-            ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+            if TRACKING_ENABLED.load(Ordering::Relaxed) && !ptr.is_null() {
+                let size = layout.size();
+                let total = ALLOCATED.fetch_add(size, Ordering::Relaxed) + size;
+                ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
 
-            // Update peak
-            let current = total - DEALLOCATED.load(Ordering::Relaxed);
-            let mut peak = PEAK.load(Ordering::Relaxed);
-            while current > peak {
-                match PEAK.compare_exchange_weak(
-                    peak,
-                    current,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => break,
-                    Err(p) => peak = p,
+                // Update peak
+                let current = total - DEALLOCATED.load(Ordering::Relaxed);
+                let mut peak = PEAK.load(Ordering::Relaxed);
+                while current > peak {
+                    match PEAK.compare_exchange_weak(
+                        peak,
+                        current,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => break,
+                        Err(p) => peak = p,
+                    }
                 }
             }
-        }
 
-        ptr
+            ptr
+        }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -131,11 +141,17 @@ pub struct MemoryStats {
 
 impl MemoryStats {
     /// Get the current memory in use.
-    pub fn current(&self) -> usize {
+    #[must_use]
+    pub const fn current(&self) -> usize {
         self.allocated.saturating_sub(self.deallocated)
     }
 
     /// Get bytes per allocation (average).
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "benchmark byte/allocation counts stay far below 2^52; precision loss cannot occur in practice for reported averages"
+    )]
     pub fn bytes_per_alloc(&self) -> f64 {
         if self.alloc_count == 0 {
             0.0
@@ -145,6 +161,7 @@ impl MemoryStats {
     }
 
     /// Format stats as human-readable string.
+    #[must_use]
     pub fn format(&self) -> String {
         format!(
             "Memory: {} allocated, {} peak, {} allocs ({:.1} bytes/alloc)",
@@ -163,6 +180,11 @@ impl std::fmt::Display for MemoryStats {
 }
 
 /// Format bytes as human-readable string.
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "benchmark byte counts stay far below 2^52; precision loss cannot occur in practice for a human-readable size"
+)]
 pub fn format_bytes(bytes: usize) -> String {
     const KB: usize = 1024;
     const MB: usize = KB * 1024;
@@ -175,7 +197,7 @@ pub fn format_bytes(bytes: usize) -> String {
     } else if bytes >= KB {
         format!("{:.2} KB", bytes as f64 / KB as f64)
     } else {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     }
 }
 
@@ -238,7 +260,14 @@ impl MemoryMeasurement {
         }
     }
 
+    /// Get the label for this measurement.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
     /// Get the current stats (delta from start).
+    #[must_use]
     pub fn current(&self) -> MemoryStats {
         let now = get_stats();
         MemoryStats {
@@ -251,6 +280,7 @@ impl MemoryMeasurement {
     }
 
     /// Finish measurement and return stats.
+    #[must_use]
     pub fn finish(self) -> MemoryStats {
         let stats = self.current();
         disable_tracking();
@@ -293,6 +323,7 @@ pub struct MemoryProfile {
 
 impl MemoryProfile {
     /// Create a new memory profile.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -310,26 +341,29 @@ impl MemoryProfile {
     }
 
     /// Generate a formatted report.
+    #[must_use]
     pub fn report(&self) -> String {
         let mut report = String::new();
         report.push_str("Memory Profile Report\n");
         report.push_str("=====================\n\n");
-        report.push_str(&format!(
-            "{:<40} {:>12} {:>12} {:>10} {:>12}\n",
+        let _ = writeln!(
+            report,
+            "{:<40} {:>12} {:>12} {:>10} {:>12}",
             "Operation", "Allocated", "Peak", "Allocs", "Bytes/Alloc"
-        ));
+        );
         report.push_str(&"-".repeat(90));
         report.push('\n');
 
         for (label, stats) in &self.measurements {
-            report.push_str(&format!(
-                "{:<40} {:>12} {:>12} {:>10} {:>12.1}\n",
+            let _ = writeln!(
+                report,
+                "{:<40} {:>12} {:>12} {:>10} {:>12.1}",
                 label,
                 format_bytes(stats.allocated),
                 format_bytes(stats.peak),
                 stats.alloc_count,
                 stats.bytes_per_alloc()
-            ));
+            );
         }
 
         report.push_str(&"-".repeat(90));
@@ -345,13 +379,14 @@ impl MemoryProfile {
             .max()
             .unwrap_or(0);
 
-        report.push_str(&format!(
-            "{:<40} {:>12} {:>12} {:>10}\n",
+        let _ = writeln!(
+            report,
+            "{:<40} {:>12} {:>12} {:>10}",
             "TOTAL",
             format_bytes(total_allocated),
             format_bytes(max_peak),
             total_allocs
-        ));
+        );
 
         report
     }
@@ -374,42 +409,50 @@ pub mod size_of {
     use skia_rs_path::{Path, PathBuilder};
 
     /// Get size of Point.
-    pub fn point() -> usize {
+    #[must_use]
+    pub const fn point() -> usize {
         std::mem::size_of::<Point>()
     }
 
     /// Get size of Rect.
-    pub fn rect() -> usize {
+    #[must_use]
+    pub const fn rect() -> usize {
         std::mem::size_of::<Rect>()
     }
 
     /// Get size of Matrix (3x3).
-    pub fn matrix() -> usize {
+    #[must_use]
+    pub const fn matrix() -> usize {
         std::mem::size_of::<Matrix>()
     }
 
     /// Get size of Matrix44 (4x4).
-    pub fn matrix44() -> usize {
+    #[must_use]
+    pub const fn matrix44() -> usize {
         std::mem::size_of::<Matrix44>()
     }
 
     /// Get size of Color4f.
-    pub fn color4f() -> usize {
+    #[must_use]
+    pub const fn color4f() -> usize {
         std::mem::size_of::<Color4f>()
     }
 
     /// Get size of Paint (base struct only).
-    pub fn paint() -> usize {
+    #[must_use]
+    pub const fn paint() -> usize {
         std::mem::size_of::<Paint>()
     }
 
     /// Get size of Path (base struct only).
-    pub fn path() -> usize {
+    #[must_use]
+    pub const fn path() -> usize {
         std::mem::size_of::<Path>()
     }
 
-    /// Get size of PathBuilder (base struct only).
-    pub fn path_builder() -> usize {
+    /// Get size of `PathBuilder` (base struct only).
+    #[must_use]
+    pub const fn path_builder() -> usize {
         std::mem::size_of::<PathBuilder>()
     }
 
@@ -438,8 +481,8 @@ mod tests {
         assert_eq!(format_bytes(500), "500 B");
         assert_eq!(format_bytes(1024), "1.00 KB");
         assert_eq!(format_bytes(1536), "1.50 KB");
-        assert_eq!(format_bytes(1048576), "1.00 MB");
-        assert_eq!(format_bytes(1073741824), "1.00 GB");
+        assert_eq!(format_bytes(1_048_576), "1.00 MB");
+        assert_eq!(format_bytes(1_073_741_824), "1.00 GB");
     }
 
     #[test]
@@ -453,7 +496,7 @@ mod tests {
         };
 
         assert_eq!(stats.current(), 600);
-        assert_eq!(stats.bytes_per_alloc(), 100.0);
+        assert!((stats.bytes_per_alloc() - 100.0).abs() < f64::EPSILON);
     }
 
     #[test]

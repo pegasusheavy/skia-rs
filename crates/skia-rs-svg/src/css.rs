@@ -8,8 +8,7 @@
 //! - Cascading and specificity
 
 use crate::dom::{SvgDom, SvgNode, SvgPaint};
-use skia_rs_core::{Color, Matrix, Scalar};
-use std::collections::HashMap;
+use skia_rs_core::{Matrix, Scalar};
 
 /// A CSS stylesheet containing multiple rules.
 #[derive(Debug, Clone, Default)]
@@ -20,11 +19,18 @@ pub struct Stylesheet {
 
 impl Stylesheet {
     /// Create an empty stylesheet.
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self { rules: Vec::new() }
     }
 
     /// Parse a CSS stylesheet from a string.
+    ///
+    /// # Panics
+    ///
+    /// Never panics in practice: the internal `unwrap()` only fires on a
+    /// character just confirmed present via `peek()`.
+    #[must_use]
     pub fn parse(css: &str) -> Self {
         let mut stylesheet = Self::new();
         let css = css.trim();
@@ -34,7 +40,7 @@ impl Stylesheet {
 
         while chars.peek().is_some() {
             // Skip whitespace
-            while chars.peek().map(|c| c.is_whitespace()).unwrap_or(false) {
+            while chars.peek().is_some_and(|c| c.is_whitespace()) {
                 chars.next();
             }
 
@@ -80,7 +86,7 @@ impl Stylesheet {
             // Read declarations until }
             let mut declarations_str = String::new();
             let mut brace_depth = 1;
-            while let Some(c) = chars.next() {
+            for c in chars.by_ref() {
                 if c == '{' {
                     brace_depth += 1;
                 } else if c == '}' {
@@ -137,15 +143,22 @@ pub enum CssSelector {
     /// ID selector (e.g., #id).
     Id(String),
     /// Descendant selector (e.g., g rect).
-    Descendant(Box<CssSelector>, Box<CssSelector>),
+    Descendant(Box<Self>, Box<Self>),
     /// Child selector (e.g., g > rect).
-    Child(Box<CssSelector>, Box<CssSelector>),
+    Child(Box<Self>, Box<Self>),
     /// Multiple conditions (e.g., rect.classname).
-    And(Vec<CssSelector>),
+    And(Vec<Self>),
 }
 
 impl CssSelector {
     /// Parse a selector string.
+    ///
+    /// # Panics
+    ///
+    /// Never panics in practice: the internal `expect()` only fires when
+    /// exactly one simple selector was collected, in which case `pop()`
+    /// always succeeds.
+    #[must_use]
     pub fn parse(s: &str) -> Self {
         let s = s.trim();
 
@@ -153,7 +166,7 @@ impl CssSelector {
         if s.contains(" > ") {
             let parts: Vec<&str> = s.splitn(2, " > ").collect();
             if parts.len() == 2 {
-                return CssSelector::Child(
+                return Self::Child(
                     Box::new(Self::parse(parts[0])),
                     Box::new(Self::parse(parts[1])),
                 );
@@ -163,7 +176,7 @@ impl CssSelector {
         if s.contains(' ') {
             let parts: Vec<&str> = s.splitn(2, ' ').collect();
             if parts.len() == 2 && !parts[1].is_empty() {
-                return CssSelector::Descendant(
+                return Self::Descendant(
                     Box::new(Self::parse(parts[0])),
                     Box::new(Self::parse(parts[1])),
                 );
@@ -173,9 +186,9 @@ impl CssSelector {
         // Check for combined selectors (e.g., rect.classname#id)
         let mut selectors = Vec::new();
         let mut current = String::new();
-        let mut chars = s.chars().peekable();
+        let chars = s.chars();
 
-        while let Some(c) = chars.next() {
+        for c in chars {
             match c {
                 '.' | '#' => {
                     if !current.is_empty() {
@@ -197,25 +210,26 @@ impl CssSelector {
                 .pop()
                 .expect("selectors.len() == 1 guarantees element")
         } else if selectors.is_empty() {
-            CssSelector::Universal
+            Self::Universal
         } else {
-            CssSelector::And(selectors)
+            Self::And(selectors)
         }
     }
 
     /// Calculate specificity (ID, class, element counts).
+    #[must_use]
     pub fn specificity(&self) -> (u32, u32, u32) {
         match self {
-            CssSelector::Universal => (0, 0, 0),
-            CssSelector::Element(_) => (0, 0, 1),
-            CssSelector::Class(_) => (0, 1, 0),
-            CssSelector::Id(_) => (1, 0, 0),
-            CssSelector::Descendant(a, b) | CssSelector::Child(a, b) => {
+            Self::Universal => (0, 0, 0),
+            Self::Element(_) => (0, 0, 1),
+            Self::Class(_) => (0, 1, 0),
+            Self::Id(_) => (1, 0, 0),
+            Self::Descendant(a, b) | Self::Child(a, b) => {
                 let (id_a, class_a, elem_a) = a.specificity();
                 let (id_b, class_b, elem_b) = b.specificity();
                 (id_a + id_b, class_a + class_b, elem_a + elem_b)
             }
-            CssSelector::And(selectors) => {
+            Self::And(selectors) => {
                 let mut id = 0;
                 let mut class = 0;
                 let mut elem = 0;
@@ -231,13 +245,14 @@ impl CssSelector {
     }
 
     /// Check if this selector matches a node.
+    #[must_use]
     pub fn matches(&self, node: &SvgNode, ancestors: &[&SvgNode]) -> bool {
         match self {
-            CssSelector::Universal => true,
-            CssSelector::Element(tag) => node_tag_name(node) == tag,
-            CssSelector::Class(class) => node.classes.contains(class),
-            CssSelector::Id(id) => node.id.as_deref() == Some(id.as_str()),
-            CssSelector::Descendant(ancestor_sel, child_sel) => {
+            Self::Universal => true,
+            Self::Element(tag) => node_tag_name(node) == tag,
+            Self::Class(class) => node.classes.contains(class),
+            Self::Id(id) => node.id.as_deref() == Some(id.as_str()),
+            Self::Descendant(ancestor_sel, child_sel) => {
                 if !child_sel.matches(node, ancestors) {
                     return false;
                 }
@@ -249,18 +264,16 @@ impl CssSelector {
                 }
                 false
             }
-            CssSelector::Child(parent_sel, child_sel) => {
+            Self::Child(parent_sel, child_sel) => {
                 if !child_sel.matches(node, ancestors) {
                     return false;
                 }
                 // Check immediate parent
-                if let Some(parent) = ancestors.last() {
+                ancestors.last().is_some_and(|parent| {
                     parent_sel.matches(parent, &ancestors[..ancestors.len().saturating_sub(1)])
-                } else {
-                    false
-                }
+                })
             }
-            CssSelector::And(selectors) => selectors.iter().all(|s| s.matches(node, ancestors)),
+            Self::And(selectors) => selectors.iter().all(|s| s.matches(node, ancestors)),
         }
     }
 }
@@ -301,11 +314,64 @@ fn node_tag_name(node: &SvgNode) -> &str {
 }
 
 /// Style declarations (property-value pairs).
-pub type StyleDeclarations = HashMap<String, String>;
+///
+/// Declarations are kept in **document order** rather than in a `HashMap`,
+/// because CSS cascade within a block is order-dependent (a later
+/// declaration of the same property wins, and dependent properties such as
+/// `fill` / `fill-opacity` must apply in source order). A repeated property
+/// updates in place so "last wins" holds without duplicating entries.
+#[derive(Debug, Clone, Default)]
+pub struct StyleDeclarations {
+    decls: Vec<(String, String)>,
+}
 
-/// Parse CSS declarations from a string.
+impl StyleDeclarations {
+    /// Create an empty declaration list.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { decls: Vec::new() }
+    }
+
+    /// Insert or overwrite a property, preserving first-seen order.
+    pub fn insert(&mut self, property: String, value: String) {
+        if let Some(entry) = self.decls.iter_mut().find(|(p, _)| *p == property) {
+            entry.1 = value;
+        } else {
+            self.decls.push((property, value));
+        }
+    }
+
+    /// Look up a property's value.
+    #[must_use]
+    pub fn get(&self, property: &str) -> Option<&String> {
+        self.decls
+            .iter()
+            .find(|(p, _)| p == property)
+            .map(|(_, v)| v)
+    }
+
+    /// Iterate declarations in document order.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &String)> {
+        self.decls.iter().map(|(p, v)| (p, v))
+    }
+
+    /// Number of declarations.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.decls.len()
+    }
+
+    /// Whether there are no declarations.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.decls.is_empty()
+    }
+}
+
+/// Parse CSS declarations from a string, preserving document order.
+#[must_use]
 pub fn parse_declarations(s: &str) -> StyleDeclarations {
-    let mut declarations = HashMap::new();
+    let mut declarations = StyleDeclarations::new();
 
     for decl in s.split(';') {
         let decl = decl.trim();
@@ -324,6 +390,7 @@ pub fn parse_declarations(s: &str) -> StyleDeclarations {
 }
 
 /// Parse an inline style attribute.
+#[must_use]
 pub fn parse_inline_style(style: &str) -> StyleDeclarations {
     parse_declarations(style)
 }
@@ -358,7 +425,7 @@ fn apply_stylesheet_to_node(node: &mut SvgNode, stylesheet: &Stylesheet, ancesto
 
     // Recursively apply to children
     // We need to create a new ancestors list that includes this node
-    let node_ptr = node as *const SvgNode;
+    let node_ptr = std::ptr::from_ref::<SvgNode>(node);
     let mut new_ancestors: Vec<&SvgNode> = ancestors.to_vec();
     // Safety: we're not modifying ancestors while iterating
     new_ancestors.push(unsafe { &*node_ptr });
@@ -369,7 +436,7 @@ fn apply_stylesheet_to_node(node: &mut SvgNode, stylesheet: &Stylesheet, ancesto
 }
 
 fn apply_declarations_to_node(node: &mut SvgNode, declarations: &StyleDeclarations) {
-    for (property, value) in declarations {
+    for (property, value) in declarations.iter() {
         apply_style_property(node, property, value);
     }
 }
@@ -384,34 +451,24 @@ pub fn apply_style_property(node: &mut SvgNode, property: &str, value: &str) {
             node.stroke = parse_css_paint(value);
         }
         "stroke-width" => {
-            node.stroke_width = parse_css_length(value);
+            node.stroke_width = Some(parse_css_length(value));
+        }
+        "color" => {
+            if !value.trim().eq_ignore_ascii_case("inherit") {
+                node.color = crate::parser::parse_color(value);
+            }
         }
         "opacity" => {
-            node.opacity = value.parse().unwrap_or(1.0);
+            node.opacity = parse_opacity_value(value).unwrap_or(1.0);
         }
         "fill-opacity" => {
-            // Adjust fill opacity
-            if let Some(SvgPaint::Color(ref mut color)) = node.fill {
-                let opacity: f32 = value.parse().unwrap_or(1.0);
-                *color = Color::from_argb(
-                    (opacity * 255.0) as u8,
-                    color.red(),
-                    color.green(),
-                    color.blue(),
-                );
-            }
+            // Fill opacity is an independent inherited property that
+            // multiplies into the fill paint alpha at render time — it does
+            // not mutate the fill color.
+            node.fill_opacity = parse_opacity_value(value);
         }
         "stroke-opacity" => {
-            // Adjust stroke opacity
-            if let Some(SvgPaint::Color(ref mut color)) = node.stroke {
-                let opacity: f32 = value.parse().unwrap_or(1.0);
-                *color = Color::from_argb(
-                    (opacity * 255.0) as u8,
-                    color.red(),
-                    color.green(),
-                    color.blue(),
-                );
-            }
+            node.stroke_opacity = parse_opacity_value(value);
         }
         "visibility" => {
             node.visible = value != "hidden";
@@ -469,41 +526,42 @@ pub fn apply_style_property(node: &mut SvgNode, property: &str, value: &str) {
 
 fn parse_css_paint(s: &str) -> Option<SvgPaint> {
     let s = s.trim();
-    if s == "none" || s == "transparent" {
-        Some(SvgPaint::None)
-    } else if s.starts_with("url(") {
-        let url = s[4..]
-            .trim_end_matches(')')
-            .trim_matches('"')
-            .trim_matches('\'');
-        Some(SvgPaint::Url(url.to_string()))
+    if s == "transparent" {
+        return Some(SvgPaint::None);
+    }
+    // Reuse the SVG `<paint>` grammar (none / currentColor / color /
+    // url(#id) fallback) so CSS and presentation attributes agree.
+    crate::parser::parse_paint(s)
+}
+
+/// Parse an `<opacity-value>` (number or percentage) clamped to `[0, 1]`.
+fn parse_opacity_value(s: &str) -> Option<Scalar> {
+    let s = s.trim();
+    let v = if let Some(pct) = s.strip_suffix('%') {
+        pct.trim().parse::<Scalar>().ok()? / 100.0
     } else {
-        parse_css_color(s).map(SvgPaint::Color)
-    }
+        s.parse::<Scalar>().ok()?
+    };
+    Some(v.clamp(0.0, 1.0))
 }
 
-fn parse_css_color(s: &str) -> Option<Color> {
-    // "currentcolor" needs context from the inheritance chain, which
-    // Color::from_css doesn't have. Return None so the caller can handle it.
-    if s.trim().eq_ignore_ascii_case("currentcolor") {
-        return None;
-    }
-    Color::from_css(s)
-}
-
+#[allow(
+    clippy::option_if_let_else,
+    reason = "five-way unit suffix dispatch reads far more clearly as an if/else-if chain than nested map_or_else calls"
+)]
 fn parse_css_length(s: &str) -> Scalar {
     let s = s.trim();
-    if s.ends_with("px") {
-        s[..s.len() - 2].parse().unwrap_or(0.0)
-    } else if s.ends_with("pt") {
-        s[..s.len() - 2].parse::<Scalar>().unwrap_or(0.0) * 1.333
-    } else if s.ends_with("em") {
-        s[..s.len() - 2].parse::<Scalar>().unwrap_or(0.0) * 16.0
-    } else if s.ends_with("rem") {
-        s[..s.len() - 3].parse::<Scalar>().unwrap_or(0.0) * 16.0
-    } else if s.ends_with('%') {
+    if let Some(stripped) = s.strip_suffix("px") {
+        stripped.parse().unwrap_or(0.0)
+    } else if let Some(stripped) = s.strip_suffix("pt") {
+        stripped.parse::<Scalar>().unwrap_or(0.0) * 1.333
+    } else if let Some(stripped) = s.strip_suffix("rem") {
+        stripped.parse::<Scalar>().unwrap_or(0.0) * 16.0
+    } else if let Some(stripped) = s.strip_suffix("em") {
+        stripped.parse::<Scalar>().unwrap_or(0.0) * 16.0
+    } else if let Some(stripped) = s.strip_suffix('%') {
         // Percentage - context dependent, return as fraction
-        s[..s.len() - 1].parse::<Scalar>().unwrap_or(0.0) / 100.0
+        stripped.parse::<Scalar>().unwrap_or(0.0) / 100.0
     } else {
         s.parse().unwrap_or(0.0)
     }
@@ -515,6 +573,7 @@ fn parse_css_transform(s: &str) -> Matrix {
 }
 
 /// Extract embedded stylesheets from an SVG DOM.
+#[must_use]
 pub fn extract_stylesheets(dom: &SvgDom) -> Stylesheet {
     let mut stylesheet = Stylesheet::new();
     extract_stylesheets_from_node(&dom.root, &mut stylesheet);
@@ -540,6 +599,8 @@ fn extract_stylesheets_from_node(node: &SvgNode, stylesheet: &mut Stylesheet) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::parse_color as parse_css_color;
+    use skia_rs_core::Color;
 
     #[test]
     fn test_parse_css_color() {
@@ -561,12 +622,46 @@ mod tests {
     }
 
     #[test]
+    fn test_declarations_preserve_document_order() {
+        // Order must be deterministic (document order), not HashMap iteration
+        // order. A repeated property keeps its first position but takes the
+        // last value ("last wins").
+        let decls = parse_declarations("fill: red; stroke: blue; fill: green");
+        let order: Vec<&str> = decls.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(order, vec!["fill", "stroke"]);
+        assert_eq!(decls.get("fill"), Some(&"green".to_string()));
+    }
+
+    #[test]
+    fn test_fill_opacity_is_independent_property() {
+        // fill-opacity sets the node property and does NOT mutate the fill
+        // color; the two are combined at render time.
+        use crate::dom::{SvgNode, SvgNodeKind, SvgRect};
+        let mut node = SvgNode::new(SvgNodeKind::Rect(SvgRect::default()));
+        apply_style_property(&mut node, "fill", "red");
+        apply_style_property(&mut node, "fill-opacity", "0.25");
+        assert!(matches!(
+            node.fill,
+            Some(SvgPaint::Color(c)) if c == Color::from_rgb(255, 0, 0)
+        ));
+        assert!((node.fill_opacity.unwrap() - 0.25).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_css_currentcolor_paint() {
+        use crate::dom::{SvgNode, SvgNodeKind, SvgRect};
+        let mut node = SvgNode::new(SvgNodeKind::Rect(SvgRect::default()));
+        apply_style_property(&mut node, "fill", "currentColor");
+        assert!(matches!(node.fill, Some(SvgPaint::CurrentColor)));
+    }
+
+    #[test]
     fn test_parse_stylesheet() {
-        let css = r#"
+        let css = r"
             rect { fill: red; }
             .highlight { stroke: yellow; }
             #main { opacity: 0.5; }
-        "#;
+        ";
 
         let stylesheet = Stylesheet::parse(css);
         assert_eq!(stylesheet.rules.len(), 3);

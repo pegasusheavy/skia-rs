@@ -29,6 +29,7 @@
 //! ```
 
 use std::collections::HashSet;
+use std::fmt::Write as _;
 
 // =============================================================================
 // PDF/A Conformance Levels
@@ -57,7 +58,8 @@ pub enum PdfALevel {
 
 impl PdfALevel {
     /// Get the PDF/A part number.
-    pub fn part(&self) -> u8 {
+    #[must_use]
+    pub const fn part(&self) -> u8 {
         match self {
             Self::A1a | Self::A1b => 1,
             Self::A2a | Self::A2b | Self::A2u => 2,
@@ -66,7 +68,8 @@ impl PdfALevel {
     }
 
     /// Get the conformance level identifier.
-    pub fn conformance(&self) -> &'static str {
+    #[must_use]
+    pub const fn conformance(&self) -> &'static str {
         match self {
             Self::A1a | Self::A2a | Self::A3a => "A",
             Self::A1b | Self::A2b | Self::A3b => "B",
@@ -75,36 +78,41 @@ impl PdfALevel {
     }
 
     /// Get the minimum PDF version required.
-    pub fn min_pdf_version(&self) -> &'static str {
+    #[must_use]
+    pub const fn min_pdf_version(&self) -> &'static str {
         match self {
             Self::A1a | Self::A1b => "1.4",
-            Self::A2a | Self::A2b | Self::A2u => "1.7",
-            Self::A3a | Self::A3b | Self::A3u => "1.7",
+            Self::A2a | Self::A2b | Self::A2u | Self::A3a | Self::A3b | Self::A3u => "1.7",
         }
     }
 
     /// Check if transparency is allowed.
-    pub fn allows_transparency(&self) -> bool {
+    #[must_use]
+    pub const fn allows_transparency(&self) -> bool {
         !matches!(self, Self::A1a | Self::A1b)
     }
 
     /// Check if embedded files are allowed.
-    pub fn allows_embedded_files(&self) -> bool {
+    #[must_use]
+    pub const fn allows_embedded_files(&self) -> bool {
         matches!(self, Self::A3a | Self::A3b | Self::A3u)
     }
 
     /// Check if JPEG2000 compression is allowed.
-    pub fn allows_jpeg2000(&self) -> bool {
+    #[must_use]
+    pub const fn allows_jpeg2000(&self) -> bool {
         !matches!(self, Self::A1a | Self::A1b)
     }
 
     /// Check if Unicode text is required.
-    pub fn requires_unicode(&self) -> bool {
+    #[must_use]
+    pub const fn requires_unicode(&self) -> bool {
         matches!(self, Self::A2u | Self::A3u)
     }
 
     /// Check if structure (tagged PDF) is required.
-    pub fn requires_structure(&self) -> bool {
+    #[must_use]
+    pub const fn requires_structure(&self) -> bool {
         matches!(self, Self::A1a | Self::A2a | Self::A3a)
     }
 }
@@ -245,29 +253,38 @@ pub struct XmpMetadata {
 
 impl XmpMetadata {
     /// Create new XMP metadata.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Set document title.
+    #[must_use]
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
         self
     }
 
     /// Set document author.
+    #[must_use]
     pub fn with_author(mut self, author: impl Into<String>) -> Self {
         self.author = Some(author.into());
         self
     }
 
     /// Set PDF/A level.
-    pub fn with_pdfa_level(mut self, level: PdfALevel) -> Self {
+    #[must_use]
+    pub const fn with_pdfa_level(mut self, level: PdfALevel) -> Self {
         self.pdfa_level = Some(level);
         self
     }
 
     /// Generate XMP packet.
+    #[must_use]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "XMP/RDF packet emitter: a single literal serialization sequence; splitting would harm fidelity/reviewability"
+    )]
     pub fn to_xmp(&self) -> String {
         let mut xmp = String::new();
 
@@ -285,30 +302,33 @@ impl XmpMetadata {
         xmp.push('\n');
 
         if let Some(ref title) = self.title {
-            xmp.push_str(&format!(
+            let _ = write!(
+                xmp,
                 r#"      <dc:title><rdf:Alt><rdf:li xml:lang="x-default">{}</rdf:li></rdf:Alt></dc:title>"#,
                 escape_xml(title)
-            ));
+            );
             xmp.push('\n');
         }
 
         if let Some(ref author) = self.author {
-            xmp.push_str(&format!(
-                r#"      <dc:creator><rdf:Seq><rdf:li>{}</rdf:li></rdf:Seq></dc:creator>"#,
+            let _ = write!(
+                xmp,
+                r"      <dc:creator><rdf:Seq><rdf:li>{}</rdf:li></rdf:Seq></dc:creator>",
                 escape_xml(author)
-            ));
+            );
             xmp.push('\n');
         }
 
         if let Some(ref subject) = self.subject {
-            xmp.push_str(&format!(
+            let _ = write!(
+                xmp,
                 r#"      <dc:description><rdf:Alt><rdf:li xml:lang="x-default">{}</rdf:li></rdf:Alt></dc:description>"#,
                 escape_xml(subject)
-            ));
+            );
             xmp.push('\n');
         }
 
-        xmp.push_str(r#"    </rdf:Description>"#);
+        xmp.push_str(r"    </rdf:Description>");
         xmp.push('\n');
 
         // XMP Basic metadata
@@ -318,30 +338,25 @@ impl XmpMetadata {
         xmp.push('\n');
 
         if let Some(ref creator) = self.creator {
-            xmp.push_str(&format!(
-                r#"      <xmp:CreatorTool>{}</xmp:CreatorTool>"#,
+            let _ = write!(
+                xmp,
+                r"      <xmp:CreatorTool>{}</xmp:CreatorTool>",
                 escape_xml(creator)
-            ));
+            );
             xmp.push('\n');
         }
 
         if let Some(ref create_date) = self.create_date {
-            xmp.push_str(&format!(
-                r#"      <xmp:CreateDate>{}</xmp:CreateDate>"#,
-                create_date
-            ));
+            let _ = write!(xmp, r"      <xmp:CreateDate>{create_date}</xmp:CreateDate>");
             xmp.push('\n');
         }
 
         if let Some(ref modify_date) = self.modify_date {
-            xmp.push_str(&format!(
-                r#"      <xmp:ModifyDate>{}</xmp:ModifyDate>"#,
-                modify_date
-            ));
+            let _ = write!(xmp, r"      <xmp:ModifyDate>{modify_date}</xmp:ModifyDate>");
             xmp.push('\n');
         }
 
-        xmp.push_str(r#"    </rdf:Description>"#);
+        xmp.push_str(r"    </rdf:Description>");
         xmp.push('\n');
 
         // PDF metadata
@@ -349,26 +364,24 @@ impl XmpMetadata {
             r#"    <rdf:Description rdf:about="" xmlns:pdf="http://ns.adobe.com/pdf/1.3/">"#,
         );
         xmp.push('\n');
-        xmp.push_str(r#"      <pdf:Producer>skia-rs 0.1.0</pdf:Producer>"#);
+        xmp.push_str(r"      <pdf:Producer>skia-rs 0.1.0</pdf:Producer>");
         xmp.push('\n');
-        xmp.push_str(r#"    </rdf:Description>"#);
+        xmp.push_str(r"    </rdf:Description>");
         xmp.push('\n');
 
         // PDF/A identification
         if let Some(level) = self.pdfa_level {
             xmp.push_str(r#"    <rdf:Description rdf:about="" xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/">"#);
             xmp.push('\n');
-            xmp.push_str(&format!(
-                r#"      <pdfaid:part>{}</pdfaid:part>"#,
-                level.part()
-            ));
+            let _ = write!(xmp, r"      <pdfaid:part>{}</pdfaid:part>", level.part());
             xmp.push('\n');
-            xmp.push_str(&format!(
-                r#"      <pdfaid:conformance>{}</pdfaid:conformance>"#,
+            let _ = write!(
+                xmp,
+                r"      <pdfaid:conformance>{}</pdfaid:conformance>",
                 level.conformance()
-            ));
+            );
             xmp.push('\n');
-            xmp.push_str(r#"    </rdf:Description>"#);
+            xmp.push_str(r"    </rdf:Description>");
             xmp.push('\n');
         }
 
@@ -378,28 +391,28 @@ impl XmpMetadata {
             xmp.push('\n');
 
             if let Some(ref doc_id) = self.document_id {
-                xmp.push_str(&format!(
-                    r#"      <xmpMM:DocumentID>uuid:{}</xmpMM:DocumentID>"#,
-                    doc_id
-                ));
+                let _ = write!(
+                    xmp,
+                    r"      <xmpMM:DocumentID>uuid:{doc_id}</xmpMM:DocumentID>"
+                );
                 xmp.push('\n');
             }
 
             if let Some(ref inst_id) = self.instance_id {
-                xmp.push_str(&format!(
-                    r#"      <xmpMM:InstanceID>uuid:{}</xmpMM:InstanceID>"#,
-                    inst_id
-                ));
+                let _ = write!(
+                    xmp,
+                    r"      <xmpMM:InstanceID>uuid:{inst_id}</xmpMM:InstanceID>"
+                );
                 xmp.push('\n');
             }
 
-            xmp.push_str(r#"    </rdf:Description>"#);
+            xmp.push_str(r"    </rdf:Description>");
             xmp.push('\n');
         }
 
-        xmp.push_str(r#"  </rdf:RDF>"#);
+        xmp.push_str(r"  </rdf:RDF>");
         xmp.push('\n');
-        xmp.push_str(r#"</x:xmpmeta>"#);
+        xmp.push_str(r"</x:xmpmeta>");
         xmp.push('\n');
 
         // Padding for in-place updates
@@ -433,7 +446,7 @@ pub struct OutputIntent {
     pub output_condition: String,
     /// Output condition identifier type.
     pub output_condition_identifier: String,
-    /// Registry name (e.g., "http://www.color.org").
+    /// Registry name (e.g., "<http://www.color.org>").
     pub registry_name: Option<String>,
     /// Human-readable info.
     pub info: Option<String>,
@@ -443,6 +456,7 @@ pub struct OutputIntent {
 
 impl OutputIntent {
     /// Create sRGB output intent.
+    #[must_use]
     pub fn srgb() -> Self {
         Self {
             output_condition: "sRGB IEC61966-2.1".to_string(),
@@ -454,6 +468,7 @@ impl OutputIntent {
     }
 
     /// Create FOGRA39 (coated) output intent for print.
+    #[must_use]
     pub fn fogra39() -> Self {
         Self {
             output_condition: "FOGRA39".to_string(),
@@ -465,6 +480,7 @@ impl OutputIntent {
     }
 
     /// Create custom output intent with ICC profile.
+    #[must_use]
     pub fn custom(condition: &str, icc_profile: Vec<u8>) -> Self {
         Self {
             output_condition: condition.to_string(),
@@ -488,7 +504,8 @@ pub struct PdfAValidator {
 
 impl PdfAValidator {
     /// Create a new validator for the specified level.
-    pub fn new(level: PdfALevel) -> Self {
+    #[must_use]
+    pub const fn new(level: PdfALevel) -> Self {
         Self {
             level,
             errors: Vec::new(),
@@ -496,6 +513,11 @@ impl PdfAValidator {
     }
 
     /// Validate a document and return errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns the accumulated list of [`PdfAError`]s if the document does
+    /// not conform to the configured [`PdfALevel`].
     pub fn validate(&mut self, doc: &PdfADocument) -> Result<(), Vec<PdfAError>> {
         self.errors.clear();
 
@@ -548,31 +570,31 @@ impl PdfAValidator {
             if !font.is_embedded {
                 self.errors.push(PdfAError {
                     code: PdfAErrorCode::FontNotEmbedded,
-                    message: format!("Font '{}' must be embedded", name),
-                    location: Some(format!("Font: {}", name)),
+                    message: format!("Font '{name}' must be embedded"),
+                    location: Some(format!("Font: {name}")),
                 });
             }
 
             if !font.has_cmap {
                 self.errors.push(PdfAError {
                     code: PdfAErrorCode::FontMissingCmap,
-                    message: format!("Font '{}' missing ToUnicode CMap", name),
-                    location: Some(format!("Font: {}", name)),
+                    message: format!("Font '{name}' missing ToUnicode CMap"),
+                    location: Some(format!("Font: {name}")),
                 });
             }
 
             if !font.has_widths {
                 self.errors.push(PdfAError {
                     code: PdfAErrorCode::FontMissingWidths,
-                    message: format!("Font '{}' missing glyph widths", name),
-                    location: Some(format!("Font: {}", name)),
+                    message: format!("Font '{name}' missing glyph widths"),
+                    location: Some(format!("Font: {name}")),
                 });
             }
         }
     }
 
     fn check_colors(&mut self, doc: &PdfADocument) {
-        if doc.output_intent.is_none() && doc.uses_device_colors {
+        if doc.output_intent.is_none() && doc.features.content.uses_device_colors {
             self.errors.push(PdfAError {
                 code: PdfAErrorCode::MissingOutputIntent,
                 message: "Output intent required when using device-dependent colors".to_string(),
@@ -583,14 +605,14 @@ impl PdfAValidator {
         for color_space in &doc.uncalibrated_colors {
             self.errors.push(PdfAError {
                 code: PdfAErrorCode::UncalibratedColorSpace,
-                message: format!("Uncalibrated color space '{}' not allowed", color_space),
-                location: Some(format!("ColorSpace: {}", color_space)),
+                message: format!("Uncalibrated color space '{color_space}' not allowed"),
+                location: Some(format!("ColorSpace: {color_space}")),
             });
         }
     }
 
     fn check_images(&mut self, doc: &PdfADocument) {
-        if !self.level.allows_jpeg2000() && doc.uses_jpeg2000 {
+        if !self.level.allows_jpeg2000() && doc.features.compression.uses_jpeg2000 {
             self.errors.push(PdfAError {
                 code: PdfAErrorCode::Jpeg2000NotAllowed,
                 message: "JPEG2000 compression not allowed in PDF/A-1".to_string(),
@@ -598,7 +620,7 @@ impl PdfAValidator {
             });
         }
 
-        if doc.uses_lzw {
+        if doc.features.compression.uses_lzw {
             self.errors.push(PdfAError {
                 code: PdfAErrorCode::LzwCompressionNotAllowed,
                 message: "LZW compression not allowed in PDF/A".to_string(),
@@ -608,7 +630,7 @@ impl PdfAValidator {
     }
 
     fn check_transparency(&mut self, doc: &PdfADocument) {
-        if !self.level.allows_transparency() && doc.uses_transparency {
+        if !self.level.allows_transparency() && doc.features.content.uses_transparency {
             self.errors.push(PdfAError {
                 code: PdfAErrorCode::TransparencyNotAllowed,
                 message: "Transparency not allowed in PDF/A-1".to_string(),
@@ -618,7 +640,7 @@ impl PdfAValidator {
     }
 
     fn check_structure(&mut self, doc: &PdfADocument) {
-        if self.level.requires_structure() && !doc.has_structure {
+        if self.level.requires_structure() && !doc.features.content.has_structure {
             self.errors.push(PdfAError {
                 code: PdfAErrorCode::MissingDocumentStructure,
                 message: "Tagged PDF structure required for PDF/A-a conformance".to_string(),
@@ -628,7 +650,7 @@ impl PdfAValidator {
     }
 
     fn check_security(&mut self, doc: &PdfADocument) {
-        if doc.is_encrypted {
+        if doc.features.security.is_encrypted {
             self.errors.push(PdfAError {
                 code: PdfAErrorCode::EncryptionNotAllowed,
                 message: "Encryption not allowed in PDF/A".to_string(),
@@ -636,7 +658,7 @@ impl PdfAValidator {
             });
         }
 
-        if doc.has_javascript {
+        if doc.features.security.has_javascript {
             self.errors.push(PdfAError {
                 code: PdfAErrorCode::JavaScriptNotAllowed,
                 message: "JavaScript not allowed in PDF/A".to_string(),
@@ -678,7 +700,7 @@ impl PdfAValidator {
 pub struct PdfAFontInfo {
     /// Font is embedded.
     pub is_embedded: bool,
-    /// Has ToUnicode CMap.
+    /// Has `ToUnicode` `CMap`.
     pub has_cmap: bool,
     /// Has glyph widths.
     pub has_widths: bool,
@@ -691,8 +713,55 @@ pub struct EmbeddedFileInfo {
     pub name: String,
     /// MIME type.
     pub mime_type: Option<String>,
-    /// AFRelationship (Source, Data, Alternative, etc.)
+    /// `AFRelationship` (Source, Data, Alternative, etc.)
     pub relationship: Option<String>,
+}
+
+/// Compression-related feature flags tracked on a [`PdfADocument`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PdfACompressionFlags {
+    /// Uses JPEG2000 compression.
+    pub uses_jpeg2000: bool,
+    /// Uses LZW compression.
+    pub uses_lzw: bool,
+}
+
+/// Content-related feature flags tracked on a [`PdfADocument`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PdfAContentFlags {
+    /// Uses device-dependent colors (`DeviceRGB`, `DeviceCMYK`, `DeviceGray`).
+    pub uses_device_colors: bool,
+    /// Uses transparency.
+    pub uses_transparency: bool,
+    /// Has tagged structure.
+    pub has_structure: bool,
+}
+
+/// Security-related feature flags tracked on a [`PdfADocument`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PdfASecurityFlags {
+    /// Is encrypted.
+    pub is_encrypted: bool,
+    /// Has JavaScript.
+    pub has_javascript: bool,
+}
+
+/// Boolean feature flags tracked on a [`PdfADocument`] for validation.
+///
+/// Grouped into three sub-structs by topic (rather than seven top-level
+/// `bool` fields on `PdfADocument`, or one seven-`bool` struct here) to keep
+/// the document model within clippy's `struct_excessive_bools` guidance at
+/// every level — these are independent, unrelated yes/no facts about the
+/// document, not a state machine, so plain bools (rather than enums) remain
+/// the clearest representation.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PdfAFeatureFlags {
+    /// Compression-related flags.
+    pub compression: PdfACompressionFlags,
+    /// Content-related flags.
+    pub content: PdfAContentFlags,
+    /// Security-related flags.
+    pub security: PdfASecurityFlags,
 }
 
 /// PDF/A document model for validation.
@@ -706,33 +775,28 @@ pub struct PdfADocument {
     pub output_intent: Option<OutputIntent>,
     /// Fonts used in document.
     pub fonts: std::collections::HashMap<String, PdfAFontInfo>,
-    /// Uses device-dependent colors (DeviceRGB, DeviceCMYK, DeviceGray).
-    pub uses_device_colors: bool,
     /// Uncalibrated color spaces used.
     pub uncalibrated_colors: HashSet<String>,
-    /// Uses JPEG2000 compression.
-    pub uses_jpeg2000: bool,
-    /// Uses LZW compression.
-    pub uses_lzw: bool,
-    /// Uses transparency.
-    pub uses_transparency: bool,
-    /// Has tagged structure.
-    pub has_structure: bool,
-    /// Is encrypted.
-    pub is_encrypted: bool,
-    /// Has JavaScript.
-    pub has_javascript: bool,
+    /// Boolean feature flags (device colors, compression, transparency, etc).
+    pub features: PdfAFeatureFlags,
     /// Embedded files.
     pub embedded_files: Vec<EmbeddedFileInfo>,
 }
 
 impl PdfADocument {
     /// Create a new PDF/A document model.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Create XMP metadata with PDF/A identification.
+    ///
+    /// # Panics
+    ///
+    /// Does not panic in practice: the `expect` below fires only if the
+    /// `xmp_metadata` field set two lines above were somehow cleared
+    /// concurrently, which cannot happen through `&mut self`.
     pub fn create_xmp_metadata(&mut self, level: PdfALevel) -> &mut XmpMetadata {
         let doc_id = uuid_v4();
         let inst_id = uuid_v4();
@@ -788,27 +852,31 @@ fn uuid_v4() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
-    let nanos = now.as_nanos() as u64;
+    // Low 64 bits of the nanosecond timestamp — matches the truncating `as
+    // u64` cast this replaces (this is a PRNG seed, not a precise duration).
+    let nanos = u64::try_from(now.as_nanos() & u128::from(u64::MAX)).unwrap_or(u64::MAX);
     let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
 
     // Combine the clock and the counter through a splitmix64-style mixer
     // so the output bits look uniformly distributed.
-    let mut x = nanos ^ counter.wrapping_mul(0x9E3779B97F4A7C15);
-    x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94D049BB133111EB);
+    let mut x = nanos ^ counter.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     x ^= x >> 31;
 
-    let mut y = x.wrapping_mul(6364136223846793005).wrapping_add(counter);
-    y = (y ^ (y >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-    y = (y ^ (y >> 27)).wrapping_mul(0x94D049BB133111EB);
+    let mut y = x
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(counter);
+    y = (y ^ (y >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    y = (y ^ (y >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     y ^= y >> 31;
 
     format!(
         "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        (x >> 32) as u32,
-        ((x >> 16) as u16),
+        u32::try_from(x >> 32 & 0xFFFF_FFFF).unwrap_or(u32::MAX),
+        u16::try_from(x >> 16 & 0xFFFF).unwrap_or(u16::MAX),
         (x & 0x0FFF),
-        0x8000 | ((y >> 48) as u16 & 0x3FFF),
+        0x8000 | (u16::try_from(y >> 48 & 0xFFFF).unwrap_or(u16::MAX) & 0x3FFF),
         y & 0xFFFF_FFFF_FFFF
     )
 }
@@ -832,7 +900,7 @@ fn iso8601_now() -> String {
 
     // Approximate year/month/day (simplified)
     let mut year = 1970;
-    let mut remaining_days = days as i64;
+    let mut remaining_days = i64::try_from(days).unwrap_or(i64::MAX);
 
     while remaining_days >= 365 {
         let days_in_year = if is_leap_year(year) { 366 } else { 365 };
@@ -852,8 +920,8 @@ fn iso8601_now() -> String {
 
     let mut month = 1;
     for &days_in_month in &month_days {
-        if remaining_days >= days_in_month as i64 {
-            remaining_days -= days_in_month as i64;
+        if remaining_days >= i64::from(days_in_month) {
+            remaining_days -= i64::from(days_in_month);
             month += 1;
         } else {
             break;
@@ -862,13 +930,10 @@ fn iso8601_now() -> String {
 
     let day = remaining_days + 1;
 
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        year, month, day, hours, minutes, seconds
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
 }
 
-fn is_leap_year(year: i64) -> bool {
+const fn is_leap_year(year: i64) -> bool {
     (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
@@ -955,7 +1020,7 @@ mod tests {
         let mut doc = PdfADocument::new();
         doc.create_xmp_metadata(PdfALevel::A1b);
         doc.document_id = Some("test".to_string());
-        doc.uses_transparency = true;
+        doc.features.content.uses_transparency = true;
 
         let mut validator = PdfAValidator::new(PdfALevel::A1b);
         let result = validator.validate(&doc);
@@ -974,7 +1039,7 @@ mod tests {
         let mut doc = PdfADocument::new();
         doc.create_xmp_metadata(PdfALevel::A2b);
         doc.document_id = Some("test".to_string());
-        doc.uses_transparency = true;
+        doc.features.content.uses_transparency = true;
 
         let mut validator = PdfAValidator::new(PdfALevel::A2b);
         let result = validator.validate(&doc);
@@ -1004,7 +1069,10 @@ mod tests {
 
         let mut v = PdfAValidator::new(PdfALevel::A1b);
         let errs = v.validate(&doc).unwrap_err();
-        assert!(errs.iter().any(|e| e.code == PdfAErrorCode::MissingDocumentId));
+        assert!(
+            errs.iter()
+                .any(|e| e.code == PdfAErrorCode::MissingDocumentId)
+        );
     }
 
     #[test]
@@ -1032,7 +1100,10 @@ mod tests {
         );
         let mut v = PdfAValidator::new(PdfALevel::A1b);
         let errs = v.validate(&doc).unwrap_err();
-        assert!(errs.iter().any(|e| e.code == PdfAErrorCode::FontMissingCmap));
+        assert!(
+            errs.iter()
+                .any(|e| e.code == PdfAErrorCode::FontMissingCmap)
+        );
     }
 
     #[test]
@@ -1057,7 +1128,7 @@ mod tests {
     #[test]
     fn test_validator_missing_output_intent() {
         let mut doc = base_pdfa_doc(PdfALevel::A1b);
-        doc.uses_device_colors = true;
+        doc.features.content.uses_device_colors = true;
         // output_intent deliberately None.
         let mut v = PdfAValidator::new(PdfALevel::A1b);
         let errs = v.validate(&doc).unwrap_err();
@@ -1070,8 +1141,7 @@ mod tests {
     #[test]
     fn test_validator_uncalibrated_color_space() {
         let mut doc = base_pdfa_doc(PdfALevel::A1b);
-        doc.uncalibrated_colors
-            .insert("DeviceN-Foo".to_string());
+        doc.uncalibrated_colors.insert("DeviceN-Foo".to_string());
         let mut v = PdfAValidator::new(PdfALevel::A1b);
         let errs = v.validate(&doc).unwrap_err();
         assert!(
@@ -1083,7 +1153,7 @@ mod tests {
     #[test]
     fn test_validator_jpeg2000_rejected_in_a1() {
         let mut doc = base_pdfa_doc(PdfALevel::A1b);
-        doc.uses_jpeg2000 = true;
+        doc.features.compression.uses_jpeg2000 = true;
         let mut v = PdfAValidator::new(PdfALevel::A1b);
         let errs = v.validate(&doc).unwrap_err();
         assert!(
@@ -1095,7 +1165,7 @@ mod tests {
     #[test]
     fn test_validator_jpeg2000_allowed_in_a2() {
         let mut doc = base_pdfa_doc(PdfALevel::A2b);
-        doc.uses_jpeg2000 = true;
+        doc.features.compression.uses_jpeg2000 = true;
         let mut v = PdfAValidator::new(PdfALevel::A2b);
         let result = v.validate(&doc);
         assert!(
@@ -1110,7 +1180,7 @@ mod tests {
     #[test]
     fn test_validator_lzw_always_rejected() {
         let mut doc = base_pdfa_doc(PdfALevel::A2b);
-        doc.uses_lzw = true;
+        doc.features.compression.uses_lzw = true;
         let mut v = PdfAValidator::new(PdfALevel::A2b);
         let errs = v.validate(&doc).unwrap_err();
         assert!(
@@ -1134,7 +1204,7 @@ mod tests {
     #[test]
     fn test_validator_encryption_rejected() {
         let mut doc = base_pdfa_doc(PdfALevel::A1b);
-        doc.is_encrypted = true;
+        doc.features.security.is_encrypted = true;
         let mut v = PdfAValidator::new(PdfALevel::A1b);
         let errs = v.validate(&doc).unwrap_err();
         assert!(
@@ -1146,7 +1216,7 @@ mod tests {
     #[test]
     fn test_validator_javascript_rejected() {
         let mut doc = base_pdfa_doc(PdfALevel::A1b);
-        doc.has_javascript = true;
+        doc.features.security.has_javascript = true;
         let mut v = PdfAValidator::new(PdfALevel::A1b);
         let errs = v.validate(&doc).unwrap_err();
         assert!(

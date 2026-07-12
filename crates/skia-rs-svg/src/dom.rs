@@ -16,6 +16,8 @@ pub struct SvgDom {
     pub height: Scalar,
     /// View box.
     pub view_box: Option<Rect>,
+    /// `preserveAspectRatio` on the root `<svg>` (default `xMidYMid meet`).
+    pub preserve_aspect_ratio: PreserveAspectRatio,
     /// Merged stylesheet extracted from `<style>` elements during parsing.
     ///
     /// Populated by `parse_svg`. Applied automatically by `render_svg` so
@@ -26,28 +28,90 @@ pub struct SvgDom {
 
 impl SvgDom {
     /// Create a new empty SVG DOM.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Get the intrinsic size.
-    pub fn intrinsic_size(&self) -> (Scalar, Scalar) {
+    #[must_use]
+    pub const fn intrinsic_size(&self) -> (Scalar, Scalar) {
         (self.width, self.height)
     }
 
     /// Get the view box or calculate from size.
+    #[must_use]
     pub fn get_view_box(&self) -> Rect {
         self.view_box
             .unwrap_or_else(|| Rect::from_xywh(0.0, 0.0, self.width, self.height))
     }
 }
 
+/// Horizontal alignment component of `preserveAspectRatio`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AlignX {
+    /// `xMin` — align the min edge (coefficient 0.0).
+    Min,
+    /// `xMid` — center (coefficient 0.5).
+    #[default]
+    Mid,
+    /// `xMax` — align the max edge (coefficient 1.0).
+    Max,
+}
+
+/// Vertical alignment component of `preserveAspectRatio`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AlignY {
+    /// `YMin` — align the min edge (coefficient 0.0).
+    Min,
+    /// `YMid` — center (coefficient 0.5).
+    #[default]
+    Mid,
+    /// `YMax` — align the max edge (coefficient 1.0).
+    Max,
+}
+
+/// The meet-or-slice scaling behaviour of `preserveAspectRatio`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MeetOrSlice {
+    /// Uniform scale that fits the whole viewBox inside the viewport
+    /// (`min(sx, sy)`).
+    #[default]
+    Meet,
+    /// Uniform scale that covers the whole viewport (`max(sx, sy)`).
+    Slice,
+}
+
+/// `preserveAspectRatio` value (SVG 1.1 §7.8, `SkSVGPreserveAspectRatio`).
+///
+/// `align == None` selects anisotropic (non-uniform) scaling that stretches
+/// the viewBox to exactly fill the viewport; otherwise scaling is isotropic
+/// and `align`/`meet_or_slice` position the result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreserveAspectRatio {
+    /// Alignment; `None` means `preserveAspectRatio="none"`.
+    pub align: Option<(AlignX, AlignY)>,
+    /// Meet or slice.
+    pub meet_or_slice: MeetOrSlice,
+}
+
+impl Default for PreserveAspectRatio {
+    /// The initial value is `xMidYMid meet` (SVG 1.1 §7.8).
+    fn default() -> Self {
+        Self {
+            align: Some((AlignX::Mid, AlignY::Mid)),
+            meet_or_slice: MeetOrSlice::Meet,
+        }
+    }
+}
+
 /// SVG node types.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum SvgNodeKind {
     /// Root SVG element.
     Svg,
     /// Group element.
+    #[default]
     Group,
     /// Rectangle.
     Rect(SvgRect),
@@ -62,7 +126,7 @@ pub enum SvgNodeKind {
     /// Polygon.
     Polygon(Vec<Point>),
     /// Path.
-    Path(Path),
+    Path(Box<Path>),
     /// Text.
     Text(SvgText),
     /// Image.
@@ -81,13 +145,16 @@ pub enum SvgNodeKind {
     Unknown(String),
 }
 
-impl Default for SvgNodeKind {
-    fn default() -> Self {
-        Self::Group
-    }
-}
-
 /// SVG node (element in the DOM tree).
+///
+/// Presentation properties that participate in inheritance (`fill`,
+/// `stroke`, `stroke_width`, `color`, `fill_opacity`, `stroke_opacity`) are
+/// stored as `Option`: `None` means "not specified on this element, inherit
+/// from the parent presentation context". Only the root defaults are
+/// materialised (per `SkSVGPresentationAttributes::MakeInitial`) — see
+/// `render::PresentationState`. `opacity` is *not* inherited (it composites
+/// the element/group as a unit) so it stays a plain `Scalar` defaulting to
+/// `1.0`.
 #[derive(Debug, Clone, Default)]
 pub struct SvgNode {
     /// Node kind.
@@ -98,33 +165,48 @@ pub struct SvgNode {
     pub classes: Vec<String>,
     /// Transform matrix.
     pub transform: Matrix,
-    /// Fill paint.
+    /// Fill paint (`None` = inherit).
     pub fill: Option<SvgPaint>,
-    /// Stroke paint.
+    /// Stroke paint (`None` = inherit).
     pub stroke: Option<SvgPaint>,
-    /// Stroke width.
-    pub stroke_width: Scalar,
-    /// Opacity.
+    /// Stroke width (`None` = inherit).
+    pub stroke_width: Option<Scalar>,
+    /// `color` property, the source of `currentColor` (`None` = inherit).
+    pub color: Option<Color>,
+    /// Fill opacity (`None` = inherit).
+    pub fill_opacity: Option<Scalar>,
+    /// Stroke opacity (`None` = inherit).
+    pub stroke_opacity: Option<Scalar>,
+    /// Element/group opacity (not inherited; default `1.0`).
     pub opacity: Scalar,
     /// Visibility.
     pub visible: bool,
     /// Child nodes.
-    pub children: Vec<SvgNode>,
+    pub children: Vec<Self>,
     /// Custom attributes.
     pub attributes: HashMap<String, String>,
 }
 
 impl SvgNode {
     /// Create a new SVG node.
+    ///
+    /// All inherited presentation properties start unset (`None`) so that
+    /// the render walk can resolve them against the parent presentation
+    /// context. The `fill: black` initial value lives at the root of that
+    /// context, not on every node.
+    #[must_use]
     pub fn new(kind: SvgNodeKind) -> Self {
         Self {
             kind,
             id: None,
             classes: Vec::new(),
             transform: Matrix::IDENTITY,
-            fill: Some(SvgPaint::Color(Color::BLACK)),
+            fill: None,
             stroke: None,
-            stroke_width: 1.0,
+            stroke_width: None,
+            color: None,
+            fill_opacity: None,
+            stroke_opacity: None,
             opacity: 1.0,
             visible: true,
             children: Vec::new(),
@@ -133,12 +215,13 @@ impl SvgNode {
     }
 
     /// Add a child node.
-    pub fn add_child(&mut self, child: SvgNode) {
+    pub fn add_child(&mut self, child: Self) {
         self.children.push(child);
     }
 
     /// Find a node by ID.
-    pub fn find_by_id(&self, id: &str) -> Option<&SvgNode> {
+    #[must_use]
+    pub fn find_by_id(&self, id: &str) -> Option<&Self> {
         if self.id.as_deref() == Some(id) {
             return Some(self);
         }
@@ -151,6 +234,7 @@ impl SvgNode {
     }
 
     /// Get the bounds of this node.
+    #[must_use]
     pub fn bounds(&self) -> Rect {
         match &self.kind {
             SvgNodeKind::Rect(r) => Rect::from_xywh(r.x, r.y, r.width, r.height),
@@ -183,8 +267,12 @@ impl SvgNode {
 pub enum SvgPaint {
     /// Solid color.
     Color(Color),
-    /// Reference to gradient or pattern.
-    Url(String),
+    /// The `currentColor` keyword — resolves to the inherited `color`
+    /// property at paint-build time (`SkSVGColor::Type::kCurrentColor`).
+    CurrentColor,
+    /// Reference to a gradient or pattern, with an optional fallback color
+    /// used when the reference cannot be resolved (`url(#id) <color>`).
+    Url(String, Option<Color>),
     /// No paint.
     None,
 }

@@ -1,10 +1,21 @@
-//! TextBlob for positioned text runs.
+//! `TextBlob` for positioned text runs.
 //!
-//! A TextBlob contains a sequence of positioned glyphs that can be drawn efficiently.
+//! A `TextBlob` contains a sequence of positioned glyphs that can be drawn efficiently.
 
 use crate::font::Font;
 use skia_rs_core::{Point, Rect, Scalar};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+/// Monotonic source of `TextBlob` unique ids, mirroring Skia's
+/// `SkTextBlob::fUniqueID` (a process-wide atomic counter). Ids start at 1
+/// so 0 can stand for "no id".
+static NEXT_BLOB_ID: AtomicU32 = AtomicU32::new(1);
+
+#[inline]
+fn next_blob_id() -> u32 {
+    NEXT_BLOB_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 /// A run of glyphs with the same font.
 #[derive(Debug, Clone)]
@@ -21,7 +32,8 @@ pub struct GlyphRun {
 
 impl GlyphRun {
     /// Create a new glyph run.
-    pub fn new(font: Font, glyphs: Vec<u16>, positions: Vec<Point>, origin: Point) -> Self {
+    #[must_use]
+    pub const fn new(font: Font, glyphs: Vec<u16>, positions: Vec<Point>, origin: Point) -> Self {
         Self {
             glyphs,
             positions,
@@ -32,20 +44,21 @@ impl GlyphRun {
 
     /// Get the bounds of this run.
     ///
-    /// The vertical extent uses the font's ascent/descent (from real
-    /// `hhea`/`OS/2` tables when present). The horizontal extent spans
-    /// every glyph position with the right edge extended by the actual
-    /// per-glyph advance from `hmtx` — not the old `size * 0.5` guess,
-    /// which systematically under-reported width for wide glyphs and
-    /// over-reported for narrow ones.
+    /// The vertical extent uses the font's conservative bbox-based
+    /// `top`/`bottom` metrics (Skia's `fTop`/`fBottom`, derived from the
+    /// font's global bounding box), not the tighter ascent/descent — this
+    /// matches `SkTextBlob`'s run bounds, which must contain every glyph's
+    /// ink. The horizontal extent spans every glyph position with the right
+    /// edge extended by the actual per-glyph advance from `hmtx`.
+    #[must_use]
     pub fn bounds(&self) -> Rect {
         if self.positions.is_empty() {
             return Rect::EMPTY;
         }
 
         let metrics = self.font.metrics();
-        let top = self.origin.y + metrics.ascent;
-        let bottom = self.origin.y + metrics.descent;
+        let top = self.origin.y + metrics.top;
+        let bottom = self.origin.y + metrics.bottom;
 
         let mut left = self.origin.x + self.positions[0].x;
         let mut right = left;
@@ -56,8 +69,7 @@ impl GlyphRun {
             let advance = self
                 .glyphs
                 .get(i)
-                .map(|&g| self.font.glyph_advance(g))
-                .unwrap_or_else(|| self.font.size() * 0.5);
+                .map_or_else(|| self.font.size() * 0.5, |&g| self.font.glyph_advance(g));
             right = right.max(x + advance);
         }
 
@@ -74,10 +86,13 @@ pub struct TextBlob {
     runs: Vec<GlyphRun>,
     /// Cached bounds.
     bounds: Rect,
+    /// Process-wide unique id (monotonic), like `SkTextBlob::uniqueID()`.
+    unique_id: u32,
 }
 
 impl TextBlob {
     /// Create a text blob from runs.
+    #[must_use]
     pub fn from_runs(runs: Vec<GlyphRun>) -> Self {
         let bounds = if runs.is_empty() {
             Rect::EMPTY
@@ -89,18 +104,27 @@ impl TextBlob {
             bounds
         };
 
-        Self { runs, bounds }
+        Self {
+            runs,
+            bounds,
+            unique_id: next_blob_id(),
+        }
     }
 
     /// Create a simple text blob from text and font.
+    ///
+    /// Glyphs are positioned by their real per-glyph advances
+    /// (`Font::glyph_advance`) so the blob width agrees with
+    /// `Font::measure_text` — not the old uniform `size * 0.5` estimate.
+    #[must_use]
     pub fn from_text(text: &str, font: &Font, origin: Point) -> Self {
         let glyphs = font.text_to_glyphs(text);
         let mut positions = Vec::with_capacity(glyphs.len());
 
         let mut x = 0.0;
-        for _ in &glyphs {
+        for &glyph in &glyphs {
             positions.push(Point::new(x, 0.0));
-            x += font.size() * 0.5; // Simple fixed-width
+            x += font.glyph_advance(glyph);
         }
 
         let run = GlyphRun::new(font.clone(), glyphs, positions, origin);
@@ -109,27 +133,35 @@ impl TextBlob {
 
     /// Get the bounds of the text blob.
     #[inline]
-    pub fn bounds(&self) -> Rect {
+    #[must_use]
+    pub const fn bounds(&self) -> Rect {
         self.bounds
     }
 
     /// Get the glyph runs.
     #[inline]
+    #[must_use]
     pub fn runs(&self) -> &[GlyphRun] {
         &self.runs
     }
 
-    /// Get the unique ID (based on pointer).
+    /// Get the unique ID.
+    ///
+    /// Assigned from a process-wide monotonic counter at construction time,
+    /// mirroring Skia's `SkTextBlob::uniqueID()`. Stable across moves and
+    /// clones-that-rebuild — unlike a pointer address, which is reused as
+    /// blobs are freed and reallocated.
     #[inline]
-    pub fn unique_id(&self) -> usize {
-        self as *const Self as usize
+    #[must_use]
+    pub const fn unique_id(&self) -> u32 {
+        self.unique_id
     }
 }
 
 /// A reference to a text blob.
 pub type TextBlobRef = Arc<TextBlob>;
 
-/// Builder for creating TextBlobs.
+/// Builder for creating `TextBlobs`.
 pub struct TextBlobBuilder {
     runs: Vec<GlyphRun>,
     current_font: Option<Font>,
@@ -146,7 +178,8 @@ impl Default for TextBlobBuilder {
 
 impl TextBlobBuilder {
     /// Create a new text blob builder.
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             runs: Vec::new(),
             current_font: None,
@@ -191,9 +224,9 @@ impl TextBlobBuilder {
         let mut positions = Vec::with_capacity(glyphs.len());
 
         let mut x = 0.0;
-        for _ in &glyphs {
+        for &glyph in &glyphs {
             positions.push(Point::new(x, 0.0));
-            x += font.size() * 0.5;
+            x += font.glyph_advance(glyph);
         }
 
         let run = GlyphRun::new(font.clone(), glyphs, positions, origin);
@@ -244,6 +277,7 @@ impl TextBlobBuilder {
     }
 
     /// Build the text blob.
+    #[must_use]
     pub fn build(mut self) -> Option<TextBlob> {
         self.flush_run();
 
