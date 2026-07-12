@@ -6,6 +6,7 @@ use crate::image::PdfImageManager;
 use crate::pdfa::{PdfADocument, PdfAError, PdfAFontInfo, PdfALevel, PdfAValidator, XmpMetadata};
 use crate::transparency::TransparencyManager;
 use skia_rs_core::Scalar;
+use std::fmt::Write as _;
 use std::io::Write;
 
 /// Error type for PDF document operations.
@@ -516,10 +517,10 @@ impl<'a> WriteCtx<'a> {
             self.catalog_id, self.pages_id
         );
         if let Some(id) = self.metadata_id {
-            catalog.push_str(&format!(" /Metadata {id} 0 R"));
+            let _ = write!(catalog, " /Metadata {id} 0 R");
         }
         if let Some(id) = self.output_intent_id {
-            catalog.push_str(&format!(" /OutputIntents [{id} 0 R]"));
+            let _ = write!(catalog, " /OutputIntents [{id} 0 R]");
         }
         catalog.push_str(" >>\nendobj\n");
         self.write_bytes(writer, catalog.as_bytes())?;
@@ -814,47 +815,47 @@ impl<'a> WriteCtx<'a> {
             PdfFontType::Type1 => {
                 dict.push_str("/Type /Font\n");
                 dict.push_str("/Subtype /Type1\n");
-                dict.push_str(&format!("/BaseFont /{}\n", font.base_font));
+                let _ = write!(dict, "/BaseFont /{}\n", font.base_font);
                 if let Some(ref enc) = font.encoding {
-                    dict.push_str(&format!("/Encoding /{enc}\n"));
+                    let _ = write!(dict, "/Encoding /{enc}\n");
                 }
             }
             PdfFontType::TrueType => {
                 dict.push_str("/Type /Font\n");
                 dict.push_str("/Subtype /TrueType\n");
-                dict.push_str(&format!("/BaseFont /{}\n", font.pdf_base_font()));
-                dict.push_str(&format!("/FirstChar {}\n", font.first_char));
-                dict.push_str(&format!("/LastChar {}\n", font.last_char));
+                let _ = write!(dict, "/BaseFont /{}\n", font.pdf_base_font());
+                let _ = write!(dict, "/FirstChar {}\n", font.first_char);
+                let _ = write!(dict, "/LastChar {}\n", font.last_char);
 
                 dict.push_str("/Widths [");
                 for code in font.first_char..=font.last_char {
                     let w = font.widths.get(&code).copied().unwrap_or(0);
-                    dict.push_str(&format!("{w} "));
+                    let _ = write!(dict, "{w} ");
                 }
                 dict.push_str("]\n");
 
                 if let Some(desc_id) = self.font_desc_ids[i] {
-                    dict.push_str(&format!("/FontDescriptor {desc_id} 0 R\n"));
+                    let _ = write!(dict, "/FontDescriptor {desc_id} 0 R\n");
                 }
                 if let Some(ref enc) = font.encoding {
-                    dict.push_str(&format!("/Encoding /{enc}\n"));
+                    let _ = write!(dict, "/Encoding /{enc}\n");
                 }
             }
             PdfFontType::OpenTypeCff | PdfFontType::Type0 => {
                 dict.push_str("/Type /Font\n");
                 dict.push_str("/Subtype /Type0\n");
-                dict.push_str(&format!("/BaseFont /{}\n", font.pdf_base_font()));
+                let _ = write!(dict, "/BaseFont /{}\n", font.pdf_base_font());
                 dict.push_str("/Encoding /Identity-H\n");
                 // PDF 32000-1 §9.7.3: a Type0 font's glyphs come entirely
                 // from its descendant CID font — without this array the
                 // font has no outlines at all.
                 if let Some(desc_id) = self.font_descendant_ids[i] {
-                    dict.push_str(&format!("/DescendantFonts [{desc_id} 0 R]\n"));
+                    let _ = write!(dict, "/DescendantFonts [{desc_id} 0 R]\n");
                 }
             }
         }
 
-        dict.push_str(&format!("/ToUnicode {to_unicode_id} 0 R\n"));
+        let _ = write!(dict, "/ToUnicode {to_unicode_id} 0 R\n");
         dict.push_str(">>\nendobj\n");
         dict
     }

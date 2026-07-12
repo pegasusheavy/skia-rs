@@ -29,6 +29,7 @@
 //! ```
 
 use std::collections::HashSet;
+use std::fmt::Write as _;
 
 // =============================================================================
 // PDF/A Conformance Levels
@@ -296,26 +297,26 @@ impl XmpMetadata {
         xmp.push('\n');
 
         if let Some(ref title) = self.title {
-            xmp.push_str(&format!(
+            let _ = write!(xmp, 
                 r#"      <dc:title><rdf:Alt><rdf:li xml:lang="x-default">{}</rdf:li></rdf:Alt></dc:title>"#,
                 escape_xml(title)
-            ));
+            );
             xmp.push('\n');
         }
 
         if let Some(ref author) = self.author {
-            xmp.push_str(&format!(
+            let _ = write!(xmp, 
                 r"      <dc:creator><rdf:Seq><rdf:li>{}</rdf:li></rdf:Seq></dc:creator>",
                 escape_xml(author)
-            ));
+            );
             xmp.push('\n');
         }
 
         if let Some(ref subject) = self.subject {
-            xmp.push_str(&format!(
+            let _ = write!(xmp, 
                 r#"      <dc:description><rdf:Alt><rdf:li xml:lang="x-default">{}</rdf:li></rdf:Alt></dc:description>"#,
                 escape_xml(subject)
-            ));
+            );
             xmp.push('\n');
         }
 
@@ -329,24 +330,24 @@ impl XmpMetadata {
         xmp.push('\n');
 
         if let Some(ref creator) = self.creator {
-            xmp.push_str(&format!(
+            let _ = write!(xmp, 
                 r"      <xmp:CreatorTool>{}</xmp:CreatorTool>",
                 escape_xml(creator)
-            ));
+            );
             xmp.push('\n');
         }
 
         if let Some(ref create_date) = self.create_date {
-            xmp.push_str(&format!(
+            let _ = write!(xmp, 
                 r"      <xmp:CreateDate>{create_date}</xmp:CreateDate>"
-            ));
+            );
             xmp.push('\n');
         }
 
         if let Some(ref modify_date) = self.modify_date {
-            xmp.push_str(&format!(
+            let _ = write!(xmp, 
                 r"      <xmp:ModifyDate>{modify_date}</xmp:ModifyDate>"
-            ));
+            );
             xmp.push('\n');
         }
 
@@ -367,15 +368,15 @@ impl XmpMetadata {
         if let Some(level) = self.pdfa_level {
             xmp.push_str(r#"    <rdf:Description rdf:about="" xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/">"#);
             xmp.push('\n');
-            xmp.push_str(&format!(
+            let _ = write!(xmp, 
                 r"      <pdfaid:part>{}</pdfaid:part>",
                 level.part()
-            ));
+            );
             xmp.push('\n');
-            xmp.push_str(&format!(
+            let _ = write!(xmp, 
                 r"      <pdfaid:conformance>{}</pdfaid:conformance>",
                 level.conformance()
-            ));
+            );
             xmp.push('\n');
             xmp.push_str(r"    </rdf:Description>");
             xmp.push('\n');
@@ -387,16 +388,16 @@ impl XmpMetadata {
             xmp.push('\n');
 
             if let Some(ref doc_id) = self.document_id {
-                xmp.push_str(&format!(
+                let _ = write!(xmp, 
                     r"      <xmpMM:DocumentID>uuid:{doc_id}</xmpMM:DocumentID>"
-                ));
+                );
                 xmp.push('\n');
             }
 
             if let Some(ref inst_id) = self.instance_id {
-                xmp.push_str(&format!(
+                let _ = write!(xmp, 
                     r"      <xmpMM:InstanceID>uuid:{inst_id}</xmpMM:InstanceID>"
-                ));
+                );
                 xmp.push('\n');
             }
 

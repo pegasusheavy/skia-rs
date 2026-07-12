@@ -9,6 +9,7 @@
 use skia_rs_core::Scalar;
 use skia_rs_paint::BlendMode;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 /// Extended Graphics State for PDF transparency.
 #[derive(Debug, Clone, PartialEq)]
@@ -86,35 +87,35 @@ impl ExtGraphicsState {
         dict.push_str("/Type /ExtGState\n");
 
         if let Some(alpha) = self.stroke_alpha {
-            dict.push_str(&format!("/CA {alpha:.3}\n"));
+            let _ = write!(dict, "/CA {alpha:.3}\n");
         }
 
         if let Some(alpha) = self.fill_alpha {
-            dict.push_str(&format!("/ca {alpha:.3}\n"));
+            let _ = write!(dict, "/ca {alpha:.3}\n");
         }
 
         if let Some(mode) = &self.blend_mode {
-            dict.push_str(&format!("/BM /{}\n", mode.pdf_name()));
+            let _ = write!(dict, "/BM /{}\n", mode.pdf_name());
         }
 
         if let Some(mask_id) = self.soft_mask {
-            dict.push_str(&format!("/SMask {mask_id} 0 R\n"));
+            let _ = write!(dict, "/SMask {mask_id} 0 R\n");
         }
 
         if let Some(ais) = self.alpha_is_shape {
-            dict.push_str(&format!("/AIS {}\n", if ais { "true" } else { "false" }));
+            let _ = write!(dict, "/AIS {}\n", if ais { "true" } else { "false" });
         }
 
         if let Some(tk) = self.text_knockout {
-            dict.push_str(&format!("/TK {}\n", if tk { "true" } else { "false" }));
+            let _ = write!(dict, "/TK {}\n", if tk { "true" } else { "false" });
         }
 
         if let Some(op) = self.stroke_overprint {
-            dict.push_str(&format!("/OP {}\n", if op { "true" } else { "false" }));
+            let _ = write!(dict, "/OP {}\n", if op { "true" } else { "false" });
         }
 
         if let Some(op) = self.fill_overprint {
-            dict.push_str(&format!("/op {}\n", if op { "true" } else { "false" }));
+            let _ = write!(dict, "/op {}\n", if op { "true" } else { "false" });
         }
 
         dict.push_str(">>\nendobj\n");
@@ -307,18 +308,18 @@ impl SoftMask {
             SoftMaskSubtype::Luminosity => dict.push_str("/S /Luminosity\n"),
         }
 
-        dict.push_str(&format!("/G {} 0 R\n", self.group_ref));
+        let _ = write!(dict, "/G {} 0 R\n", self.group_ref);
 
         if let Some(ref backdrop) = self.backdrop {
             dict.push_str("/BC [");
             for val in backdrop {
-                dict.push_str(&format!("{val:.3} "));
+                let _ = write!(dict, "{val:.3} ");
             }
             dict.push_str("]\n");
         }
 
         if let Some(transfer_ref) = self.transfer {
-            dict.push_str(&format!("/TR {transfer_ref} 0 R\n"));
+            let _ = write!(dict, "/TR {transfer_ref} 0 R\n");
         }
 
         dict.push_str(">>\nendobj\n");

@@ -8,6 +8,7 @@ use skia_rs_core::{Color, Matrix, Point, Rect, Scalar};
 use skia_rs_paint::{BlendMode, Paint, Style};
 use skia_rs_path::{Path, PathElement};
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 
 /// A canvas that generates PDF content streams.
 ///
@@ -669,7 +670,7 @@ pub fn escape_pdf_string(s: &str) -> String {
                 // Non-printable: octal escape for each UTF-8 byte.
                 let mut buf = [0u8; 4];
                 for &byte in c.encode_utf8(&mut buf).as_bytes() {
-                    result.push_str(&format!("\\{byte:03o}"));
+                    let _ = write!(result, "\\{byte:03o}");
                 }
             }
             c => result.push(c),
@@ -758,7 +759,7 @@ pub fn utf16be_hex(s: &str) -> String {
     // UTF-16BE BOM
     out.push_str("FEFF");
     for unit in s.encode_utf16() {
-        out.push_str(&format!("{unit:04X}"));
+        let _ = write!(out, "{unit:04X}");
     }
     out
 }

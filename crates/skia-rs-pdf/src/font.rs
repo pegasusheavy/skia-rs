@@ -16,6 +16,7 @@
 
 use skia_rs_core::Scalar;
 use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
 
 pub(crate) mod subset;
 
@@ -324,14 +325,14 @@ impl PdfFont {
         let mut dict = format!("{id} 0 obj\n<<\n");
         dict.push_str("/Type /Font\n");
         dict.push_str("/Subtype /CIDFontType2\n");
-        dict.push_str(&format!("/BaseFont /{}\n", self.pdf_base_font()));
+        let _ = write!(dict, "/BaseFont /{}\n", self.pdf_base_font());
         dict.push_str(
             "/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>\n",
         );
-        dict.push_str(&format!("/FontDescriptor {font_descriptor_id} 0 R\n"));
+        let _ = write!(dict, "/FontDescriptor {font_descriptor_id} 0 R\n");
         dict.push_str("/CIDToGIDMap /Identity\n");
         dict.push_str("/DW 1000\n");
-        dict.push_str(&format!("/W {}\n", self.cid_width_array()));
+        let _ = write!(dict, "/W {}\n", self.cid_width_array());
         dict.push_str(">>\nendobj\n");
         dict
     }
@@ -365,7 +366,7 @@ impl PdfFont {
             let w = face
                 .glyph_hor_advance(ttf_parser::GlyphId(gid))
                 .map_or(0, |a| (Scalar::from(a) * scale) as u32);
-            out.push_str(&format!(" {gid} [{w}]"));
+            let _ = write!(out, " {gid} [{w}]");
         }
         out.push(']');
         out
@@ -376,25 +377,25 @@ impl PdfFont {
     pub fn to_font_descriptor(&self, id: u32, font_file_id: Option<u32>) -> String {
         let mut dict = format!("{id} 0 obj\n<<\n");
         dict.push_str("/Type /FontDescriptor\n");
-        dict.push_str(&format!("/FontName /{}\n", self.pdf_base_font()));
-        dict.push_str(&format!("/Flags {}\n", self.flags | 32)); // Non-symbolic
-        dict.push_str(&format!(
+        let _ = write!(dict, "/FontName /{}\n", self.pdf_base_font());
+        let _ = write!(dict, "/Flags {}\n", self.flags | 32); // Non-symbolic
+        let _ = write!(dict, 
             "/FontBBox [{} {} {} {}]\n",
             self.bbox[0] as i32, self.bbox[1] as i32, self.bbox[2] as i32, self.bbox[3] as i32
-        ));
-        dict.push_str(&format!("/ItalicAngle {}\n", self.italic_angle as i32));
-        dict.push_str(&format!("/Ascent {}\n", self.ascender as i32));
-        dict.push_str(&format!("/Descent {}\n", self.descender as i32));
-        dict.push_str(&format!("/CapHeight {}\n", self.cap_height as i32));
-        dict.push_str(&format!("/StemV {}\n", self.stem_v as i32));
+        );
+        let _ = write!(dict, "/ItalicAngle {}\n", self.italic_angle as i32);
+        let _ = write!(dict, "/Ascent {}\n", self.ascender as i32);
+        let _ = write!(dict, "/Descent {}\n", self.descender as i32);
+        let _ = write!(dict, "/CapHeight {}\n", self.cap_height as i32);
+        let _ = write!(dict, "/StemV {}\n", self.stem_v as i32);
 
         if let Some(file_id) = font_file_id {
             match self.font_type {
                 PdfFontType::TrueType | PdfFontType::Type0 => {
-                    dict.push_str(&format!("/FontFile2 {file_id} 0 R\n"));
+                    let _ = write!(dict, "/FontFile2 {file_id} 0 R\n");
                 }
                 PdfFontType::OpenTypeCff => {
-                    dict.push_str(&format!("/FontFile3 {file_id} 0 R\n"));
+                    let _ = write!(dict, "/FontFile3 {file_id} 0 R\n");
                 }
                 _ => {}
             }
@@ -470,18 +471,18 @@ impl PdfFont {
         // CMap bfchar entries come in blocks of at most 100.
         if is_simple {
             for chunk in simple_entries.chunks(100) {
-                cmap.push_str(&format!("{} beginbfchar\n", chunk.len()));
+                let _ = write!(cmap, "{} beginbfchar\n", chunk.len());
                 for &(code, ch) in chunk {
                     let mut buf = [0u16; 2];
                     let units = ch.encode_utf16(&mut buf);
                     let target: String = units.iter().map(|u| format!("{u:04X}")).collect();
-                    cmap.push_str(&format!("<{code:02X}> <{target}>\n"));
+                    let _ = write!(cmap, "<{code:02X}> <{target}>\n");
                 }
                 cmap.push_str("endbfchar\n");
             }
         } else {
             for chunk in entries.chunks(100) {
-                cmap.push_str(&format!("{} beginbfchar\n", chunk.len()));
+                let _ = write!(cmap, "{} beginbfchar\n", chunk.len());
                 for &(code, ch) in chunk {
                     let src_code = if code > 0xFFFF {
                         // Non-BMP — encode as surrogate pair in the source
@@ -497,7 +498,7 @@ impl PdfFont {
                     let units = ch.encode_utf16(&mut buf);
                     let target: String = units.iter().map(|u| format!("{u:04X}")).collect();
 
-                    cmap.push_str(&format!("<{src_code}> <{target}>\n"));
+                    let _ = write!(cmap, "<{src_code}> <{target}>\n");
                 }
                 cmap.push_str("endbfchar\n");
             }
