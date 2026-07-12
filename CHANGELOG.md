@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+This release lands a large conformance audit against upstream C++ Skia. It
+contains **breaking** behavior and C-ABI changes across most crates (marked
+**Breaking** below); consumers should treat it as a minor-version bump
+(target **0.3.0**) despite the 0.x line, and C consumers must rebuild against
+the regenerated headers.
+
+**Known limitations shipped in this release:**
+- **Windows raster surfaces:** `ColorType::n32()` now selects `Bgra8888` on
+  Windows (matching Skia's build-config default), but the raster backend
+  currently supports only RGBA-order 8888 buffers, so `Surface::new_raster`
+  with an N32 info (e.g. `ImageInfo::new_n32_premul`) returns `None` on
+  Windows targets. Construct surfaces with an explicit `Rgba8888` color type
+  on Windows until BGRA raster buffers are supported.
+- **PDF Type0/CID fonts:** the `/DescendantFonts` structure is emitted, but
+  drawing text through a Type0 font fails closed rather than producing output
+  (see the skia-rs-pdf section).
+
 ### Changed (skia-rs-canvas — conformance audit)
 - The raster pixel pipeline now stores **premultiplied** pixels end to end
   (`SkSurface_Raster` with `AlphaType::Premul`). Paint colors are
@@ -283,7 +300,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   channels (the surface is RGBA, not BGRA — the swap silently corrupted
   every pixel's red/blue channels) and now unpremultiplies pixels before
   handing them to `ImageData`, which expects straight (unpremultiplied)
-  alpha.
+  alpha. `WasmSurface::get_pixels` was given the same unpremultiply
+  treatment so it stays consistent with its "for ImageData" contract now
+  that surfaces store premultiplied bytes.
+- `sk_surface_read_pixels` unpremultiplies its output when the surface's
+  declared alpha type is `Unpremul` (surfaces store premultiplied bytes
+  internally, so the raw buffer no longer contradicts the declared info);
+  `sk_surface_peek_pixels`, which hands back a borrowed premultiplied
+  buffer, documents that and refuses `Unpremul`-typed surfaces.
 - `sk_surface_lock_canvas` now actually enforces its documented one-lock-
   per-surface contract: a second lock while one is outstanding returns
   null, and `sk_surface_clear`/`sk_surface_draw_*` are no-ops while the
@@ -328,6 +352,247 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now returns `None` (fails closed) instead of returning a fake `Some`
   that claimed a hardware buffer was allocated when no real
   `AHardwareBuffer_allocate` call was ever made.
+
+### Changed (skia-rs-node)
+
+- **Breaking:** `Surface.getPixels()` now returns straight
+  (unpremultiplied) RGBA. Raster surfaces switched to premultiplied
+  internal storage this release; `getPixels` unpremultiplies before
+  returning so its documented straight-alpha contract (feeding
+  `node-canvas` `ImageData`, PNG writers, etc.) is preserved. Translucent
+  pixels are unaffected in value from a caller's perspective, but any code
+  that relied on the transient premultiplied bytes should re-check.
+
+### Changed (skia-rs-core — conformance audit, Task 1)
+- `Rect::is_empty` now reports empty for any NaN coordinate (matching
+  `SkRect::isEmpty`), so NaN rects no longer survive `union`/`join`.
+- `Rect::contains_rect` returns false when either rectangle is empty.
+- `Rect::round`/`round_out`/`round_in` and `Size::to_isize_round` use Skia's
+  rounding (half toward +∞) with saturating float→int casts; NaN and
+  out-of-range values now saturate instead of becoming 0.
+- `IRect::from_xywh` uses saturating addition for the right/bottom edges.
+- `Matrix::invert` and `Matrix44::invert` use Skia's determinant thresholds
+  (double precision; reject only near-zero/zero determinants and non-finite
+  inverses); small-scale matrices such as `scale(0.005)` now invert.
+- `Matrix44::pre_translate`/`post_translate`/`pre_scale`/`post_scale` had their
+  pre/post semantics corrected to match `SkM44` (`preX` = `self * X`).
+- `RRect::from_rect_xy`/`from_oval` sort inverted rects instead of panicking,
+  scale oversized radii by a single aspect-preserving factor, and square all
+  corners when either radius is ≤ 0.
+- RGB565→RGBA8888 conversion replicates low bits, so full-scale channels map to
+  255 (e.g. 565 white is now `#FFFFFF`, previously `#F8FCF8`).
+- RGBA8888→Gray8 uses BT.709 luma coefficients (previously BT.601).
+- Premultiplication (`premultiply_color`, `premultiply_in_place`) rounds via
+  `SkMulDiv255Round` instead of truncating.
+- Per-format alpha (un)premultiplication for `Argb4444`, `Rgba1010102`,
+  `Bgra1010102`, and `R16G16B16A16Unorm` (previously corrupted by a generic
+  4-byte-RGBA path); alpha-only formats are left unchanged.
+- `ColorType::n32` returns `Rgba8888` on all platforms except Windows (`Bgra8888`),
+  matching Skia's build-config selection rather than target endianness.
+- `ColorType::has_alpha` returns false for the alpha-less `R16G16Unorm` and
+  `R16G16Float` formats.
+- `Region` canonicalizes to scanline order after `intersect` and `difference`
+  (not just `union`), so equality, `is_rect`, `rect_count`, and iteration order
+  match `SkRegion`.
+- `ImageInfo::new` accepts zero dimensions as a legal empty info (still rejects
+  negatives).
+
+### Changed (skia-rs-path — conformance audit, Task 2)
+- `Path::contains` accumulates signed winding (`SkPathPriv::Contains`): the
+  Winding rule tests `w != 0`, EvenOdd tests parity, inverse fill types are
+  XORed and short-circuit outside the (now inclusive) bounds, and every contour
+  is implicitly closed for hit-testing.
+- `Path::reverse` produces valid verb streams (`SkPathPriv::ReverseAddPath`) —
+  no trailing `Move`, no spurious/doubled `Close`; one `Close` per closed contour.
+- `Path::direction` uses the dominant-contour extreme-point cross test
+  (`ComputeFirstDirection`); `add_rect`'s CW geometry now reports CW in y-down
+  device space (previously reported CCW).
+- `Path::is_rect` recognizes the crate's own `add_rect` output (Move + 3 Lines +
+  Close) and rejects non-rectangular H/V staircases (`IsRectContour`).
+- `Path::convexity` is per-contour and verb-aware (`ComputeConvexity`): any
+  second contour is Concave; sign-change tests replace the fixed 0.001 threshold.
+- `Path::bounds` returns empty bounds for any non-finite coordinate.
+- `stroke_to_fill` strokes the closing segment of closed contours with a join at
+  every vertex and emits the inner offset ring reversed, so a stroked rect filled
+  with the Winding rule renders as a frame with an empty middle (was a filled
+  slab); curves are flattened with error-driven subdivision and the correct conic
+  form; zero-length contours emit a Round/Square cap dot.
+- `PathBuilder`: after `close()`, a line/curve injects `moveTo(last_move)`;
+  `current_point()` returns the subpath start after `close()`; repeated `close()`
+  is a no-op; consecutive `move_to` overwrite the pending Move; `add_oval` uses
+  four √2/2 conics; `add_arc` derives direction from the sweep sign and only
+  takes the oval shortcut when the start angle is a multiple of 90°; SVG `arc_to`
+  applies the x-axis-rotation to emitted geometry; zero-sweep arcs no longer
+  produce NaN control points.
+- SVG parser: smooth `S`/`T` reflection is gated on the previous command kind
+  (`S` after C/S, `T` after Q/T); numeric data directly after `Z` is a parse
+  error; the current point returns to the subpath start after `Z`.
+- `PathMeasure::get_point_at`/`get_tangent_at` pin the distance into `[0, length]`
+  (returning `None` only for NaN/empty); `get_segment` pins start/stop.
+- `DashEffect` dashes the closing segment of a closed contour continuously.
+- `CornerEffect` rounds the joint between the last and first segments of a closed
+  contour (`SkCornerPathEffect`).
+- `simplify` always runs the boolean-ops machinery so self-intersections and
+  overlaps resolve (no Union-with-empty short-circuit).
+
+### Changed (skia-rs-paint — conformance audit, Task 3)
+- Blend modes Overlay/HardLight/SoftLight add the Porter-Duff edge terms
+  `s·(1−da) + d·(1−sa)` outside the branch; SoftLight's dark-dst polynomial is
+  the upstream `16m³ − 12m² + 3m` form; ColorDodge/ColorBurn general branches
+  use the upstream `da` normalization (`BLEND_MODE(...)` in
+  `SkRasterPipeline_opts.h`).
+- `Paint::default()` now matches `SkPaint`: `stroke_width` is `0.0` (hairline,
+  was `1.0`) and `anti_alias` is `false` (was `true`).
+- `Paint::color32()` and `Paint::serialize()` round float color components to
+  the nearest byte (0.5 → 128) instead of truncating.
+- **`Shader::sample` now returns premultiplied colors** (Skia raster-pipeline
+  convention), uniformly across ColorShader, gradients, image shaders, blend/
+  compose shaders and runtime effects; `BlendMode::apply` receives premul
+  inputs from BlendShader/ComposeShader as it requires.
+- Gradient stop positions are pinned monotonic into [0, 1] (`SkTPin`) and a
+  first stop above 0 acts as an implicit stop at t=0 carrying the first color
+  (`SkGradientBaseShader::fFirstStopIsImplicit`); t below the first explicit
+  stop no longer returns the last color.
+- Two-point conical gradients pick the larger quadratic root when both
+  interpolated radii are valid (upstream well-behaved case), and now honor
+  `GradientFlags::INTERPOLATE_PREMUL`.
+- `Alpha8` image sampling decodes as black-with-alpha `(0,0,0,a)`, not white.
+- `ImageShader::sample` honors `SamplingOptions`: `FilterMode::Linear` does
+  bilinear filtering (was always nearest-neighbor).
+- Blur filters convert sigma to box radius via
+  `SkBlurMask::ConvertSigmaToRadius` (`(sigma − 0.5)/0.57735`, three-box
+  approximation) instead of truncating sigma — sigma 0.9 now blurs.
+- `BlurMaskFilter` implements `BlurStyle` Solid (src ∪ blur), Outer
+  (blur − src) and Inner (blur ∩ src) per `SkBlurMask`.
+- `ColorFilterImageFilter` unpremultiplies, applies the color matrix in
+  unpremul space, clamps and re-premultiplies (upstream
+  `SkColorFilters::Matrix` default).
+- `MatrixConvolutionImageFilter` honors its `tile_mode` (was always clamp)
+  and, when `convolve_alpha` is false, convolves unpremultiplied RGB and
+  re-premultiplies with the original alpha.
+- `TileImageFilter` fills only `dst_rect`, leaving the rest of the buffer
+  untouched.
+- Runtime effect uniforms pack tightly (offset += size, 4-byte granularity,
+  no 16-byte alignment) per `SkRuntimeEffect.cpp`; child declarations
+  (`uniform shader s;`) are children only — excluded from `uniforms()` and
+  `uniform_size()`.
+- SkSL: method-style calls parse on any postfix expression and
+  `child.eval(coord)` samples the bound child shader in the interpreter;
+  multi-component swizzle assignment (`c.rgb *= 0.5`) works; matrix±matrix,
+  matrix·scalar, scalar·matrix, vector·matrix and matrix/scalar arithmetic
+  are implemented (previously collapsed to 0); float division/modulo by zero
+  follow IEEE (±inf/NaN); `&`, `|`, `^`, `<<`, `>>` are wired into the GLSL
+  precedence chain and `half(x)` parses as a constructor.
+
+### skia-rs-pdf
+- **Breaking (visual):** fixed text rendering upside-down — the PDF page
+  CTM's `1 0 0 -1 0 height` y-flip was never compensated for glyph runs,
+  so every drawn string rendered mirrored. Text now sets the text matrix
+  to `1 0 0 -1 x y Tm` per upstream `SkPDFDevice::GlyphPositioner`.
+- **Breaking (visual):** fixed images rendering vertically flipped —
+  `draw_image` now emits the `setScale(1,-1); postTranslate(0,1)`
+  counter-flip (`w 0 0 -h x (y+h) cm`) before placement, matching
+  `SkPDFDevice::internalDrawImageRect`.
+- **Breaking:** non-ASCII text drawn against a simple (Type1/TrueType)
+  font is now encoded as single-byte WinAnsiEncoding bytes instead of an
+  (invalid, per PDF 32000-1) UTF-16BE hex string; characters outside
+  WinAnsi fall back to `?` until per-run Type0 font switching exists.
+- **Breaking:** `Path` fill type is now honored when filling/stroking —
+  `EvenOdd`/`InverseEvenOdd` paths emit `f*`/`B*` instead of always
+  `f`/`B` (nonzero winding).
+- Fixed ToUnicode CMap codespace for simple fonts: declares a 1-byte
+  codespace (`<00> <FF>`) with 2-hex-digit `bfchar` source codes instead
+  of a 2-byte range with 4-digit codes that didn't match the actual
+  content-stream byte.
+- Type0 (CID) fonts now emit a proper `/DescendantFonts` array
+  (`CIDFontType2` with `/CIDSystemInfo`, `/CIDToGIDMap /Identity`, `/W`)
+  per PDF 32000-1 §9.7.6, instead of a Type0 dict with no glyph source.
+  New `PdfFont::truetype_cid` / `PdfFontManager::register_truetype_cid`.
+  Note: only the `/DescendantFonts` *structure* is emitted; drawing text
+  through a Type0 font fails closed (the simple-font 1-byte draw path is
+  incompatible with Identity-H CID encoding) until per-glyph CID emission
+  lands.
+- Symbol/ZapfDingbats standard fonts now omit `/Encoding` so readers use
+  the font's built-in symbolic encoding, instead of incorrectly
+  declaring `/Encoding /StandardEncoding` (which has no entries for
+  their glyph names).
+- `ExtGraphicsState::cache_key` now covers `soft_mask`, `alpha_is_shape`,
+  `text_knockout`, and both overprint flags, fixing a bug where two
+  distinct ExtGStates differing only in those fields were wrongly
+  deduplicated into one cached `/ExtGState` object.
+- PDF/A OutputIntents now embed a real, valid sRGB ICC v2.1 profile
+  (`assets/srgb-v2.icc`) instead of a 9-byte placeholder string that
+  wasn't parseable ICC data at all.
+
+### skia-rs-skottie
+
+Conformance-audit fixes for the Lottie player — most real Lottie files
+previously rendered blank or static:
+
+- `as_vec2()` now accepts `Vec3` values (Bodymovin exports 3-component
+  position/anchor arrays)
+- Bezier path keyframes (`{"i","o","v","c"}`) parse into real
+  `KeyframeValue::Path` geometry and interpolate point-wise; `"sh"`
+  shapes and masks now produce real geometry instead of empty paths
+- Group `"tr"` transform items parse into a real `Transform`
+  (anchor/position/scale/rotation/skew/opacity, animated) and apply to
+  the group's children; group opacity multiplies
+- Stroke dash arrays (`"d"`) no longer collide with the shape
+  `direction` field (now a `DirectionOrDash` union); dashed strokes
+  parse and render via `DashEffect`
+- Layer transform/opacity/masks now evaluate at the unadjusted
+  composition frame; only precomp **content** gets the `st`/`sr`/`tm`
+  remap, matching upstream `Layer.cpp`/`PrecompLayer.cpp` — behavior
+  change: non-precomp layers with `st`/`sr` set (previously
+  misapplied) no longer shift
+- `"sr"` (stretch) and `"tm"` (time remap) parse and apply to precomp
+  content: `(t - st) / sr`, with `tm` (seconds) overriding when present
+- A trailing `{"t":N}`-only keyframe now inherits the previous
+  keyframe's value instead of resetting to 0
+- Fill rule `"r"` (2 = even-odd) parses and sets the path's fill type
+- Mask modes implemented via real polygon boolean ops: Add unions,
+  Subtract subtracts, Intersect intersects; `inv` and the first-mask
+  source-mode flip are honored (previously all masks behaved as a
+  plain intersect clip regardless of mode)
+- Layer parenting composes the parent transform chain (cycle-guarded)
+  — previously parent references were ignored entirely
+- Precomp layers guard against self-referential/cyclic `refId` nesting
+  (bounded recursion depth) instead of overflowing the stack
+- Trim paths (`s`/`e`/`o`/`m`) implemented via path measure, matching
+  upstream start/stop/offset/inverted resolution (previously a no-op);
+  `m:1` ("Simultaneously", upstream `kParallel`) trims each shape
+  independently and `m:2` ("Individually", `kSerial`) merges all
+  geometry and applies one trim across the combined length, per
+  `AttachTrimGeometryEffect`
+- Track mattes (`td`/`tt`): `tt` selects alpha (1), alpha-inverted (2),
+  luma (3), or luma-inverted (4) masking from the matte source (explicit
+  `tp` index, or the immediately preceding layer); `td` hides the source
+  from the main render list while still rendering it as the matte input.
+  Compositing matches upstream `sksg::MaskEffect::onRender` (outer
+  `save_layer` collects coverage — luma via a BT.709 luma-to-alpha color
+  filter — then an inner `SrcIn`/`SrcOut` `save_layer` composites the
+  consumer's content); an invisible matte source contributes zero
+  coverage (consumer fully masked out, or fully shown for inverted modes)
+- `ti`/`to` spatial bezier position interpolation: position keyframes
+  with spatial tangents interpolate along the cubic motion path
+  `(v + to) -> (v_next + ti)` by arc length (via `PathMeasure`), using
+  the eased factor as the arc-length fraction, matching upstream
+  `Vec2KeyframeAnimator`; also applied to 3-component `Vec3` positions
+  (bezier on x/y, z linear)
+- Gradient fills/strokes parse `g` (stop count + interleaved
+  pos/rgb[+alpha]), `s`/`e`, and `t` (linear/radial with highlight
+  focal point) and build a real gradient shader (previously a flat
+  gray placeholder)
+- Skew is now `Skew(tan(-radians(pin(sk, -85, 85))))` (negated,
+  pinned), matching upstream `Transform.cpp`
+- Rounded-rect corners use circular-arc cubic beziers instead of a
+  quadratic approximation, and respect `"d"` (CW/CCW) winding
+
+Not implemented in this pass (tracked as follow-ups): mask
+opacity/feather soft-alpha compositing (masks with opacity < 100% or a
+feather currently apply as a hard clip — combining Lottie's multi-mask
+per-mode boolean stack in coverage/alpha space is a materially larger
+change than the single-source track-matte compositing above).
 
 ## [0.2.6] - 2026-04-26
 
@@ -808,290 +1073,7 @@ The first public release of skia-rs, a pure Rust implementation of the Skia 2D g
 - Example code in documentation
 - Benchmark documentation (`BENCHMARK.md`)
 
----
-
-## [Unreleased]
-
-### Changed (skia-rs-core — conformance audit, Task 1)
-- `Rect::is_empty` now reports empty for any NaN coordinate (matching
-  `SkRect::isEmpty`), so NaN rects no longer survive `union`/`join`.
-- `Rect::contains_rect` returns false when either rectangle is empty.
-- `Rect::round`/`round_out`/`round_in` and `Size::to_isize_round` use Skia's
-  rounding (half toward +∞) with saturating float→int casts; NaN and
-  out-of-range values now saturate instead of becoming 0.
-- `IRect::from_xywh` uses saturating addition for the right/bottom edges.
-- `Matrix::invert` and `Matrix44::invert` use Skia's determinant thresholds
-  (double precision; reject only near-zero/zero determinants and non-finite
-  inverses); small-scale matrices such as `scale(0.005)` now invert.
-- `Matrix44::pre_translate`/`post_translate`/`pre_scale`/`post_scale` had their
-  pre/post semantics corrected to match `SkM44` (`preX` = `self * X`).
-- `RRect::from_rect_xy`/`from_oval` sort inverted rects instead of panicking,
-  scale oversized radii by a single aspect-preserving factor, and square all
-  corners when either radius is ≤ 0.
-- RGB565→RGBA8888 conversion replicates low bits, so full-scale channels map to
-  255 (e.g. 565 white is now `#FFFFFF`, previously `#F8FCF8`).
-- RGBA8888→Gray8 uses BT.709 luma coefficients (previously BT.601).
-- Premultiplication (`premultiply_color`, `premultiply_in_place`) rounds via
-  `SkMulDiv255Round` instead of truncating.
-- Per-format alpha (un)premultiplication for `Argb4444`, `Rgba1010102`,
-  `Bgra1010102`, and `R16G16B16A16Unorm` (previously corrupted by a generic
-  4-byte-RGBA path); alpha-only formats are left unchanged.
-- `ColorType::n32` returns `Rgba8888` on all platforms except Windows (`Bgra8888`),
-  matching Skia's build-config selection rather than target endianness.
-- `ColorType::has_alpha` returns false for the alpha-less `R16G16Unorm` and
-  `R16G16Float` formats.
-- `Region` canonicalizes to scanline order after `intersect` and `difference`
-  (not just `union`), so equality, `is_rect`, `rect_count`, and iteration order
-  match `SkRegion`.
-- `ImageInfo::new` accepts zero dimensions as a legal empty info (still rejects
-  negatives).
-
-### Changed (skia-rs-path — conformance audit, Task 2)
-- `Path::contains` accumulates signed winding (`SkPathPriv::Contains`): the
-  Winding rule tests `w != 0`, EvenOdd tests parity, inverse fill types are
-  XORed and short-circuit outside the (now inclusive) bounds, and every contour
-  is implicitly closed for hit-testing.
-- `Path::reverse` produces valid verb streams (`SkPathPriv::ReverseAddPath`) —
-  no trailing `Move`, no spurious/doubled `Close`; one `Close` per closed contour.
-- `Path::direction` uses the dominant-contour extreme-point cross test
-  (`ComputeFirstDirection`); `add_rect`'s CW geometry now reports CW in y-down
-  device space (previously reported CCW).
-- `Path::is_rect` recognizes the crate's own `add_rect` output (Move + 3 Lines +
-  Close) and rejects non-rectangular H/V staircases (`IsRectContour`).
-- `Path::convexity` is per-contour and verb-aware (`ComputeConvexity`): any
-  second contour is Concave; sign-change tests replace the fixed 0.001 threshold.
-- `Path::bounds` returns empty bounds for any non-finite coordinate.
-- `stroke_to_fill` strokes the closing segment of closed contours with a join at
-  every vertex and emits the inner offset ring reversed, so a stroked rect filled
-  with the Winding rule renders as a frame with an empty middle (was a filled
-  slab); curves are flattened with error-driven subdivision and the correct conic
-  form; zero-length contours emit a Round/Square cap dot.
-- `PathBuilder`: after `close()`, a line/curve injects `moveTo(last_move)`;
-  `current_point()` returns the subpath start after `close()`; repeated `close()`
-  is a no-op; consecutive `move_to` overwrite the pending Move; `add_oval` uses
-  four √2/2 conics; `add_arc` derives direction from the sweep sign and only
-  takes the oval shortcut when the start angle is a multiple of 90°; SVG `arc_to`
-  applies the x-axis-rotation to emitted geometry; zero-sweep arcs no longer
-  produce NaN control points.
-- SVG parser: smooth `S`/`T` reflection is gated on the previous command kind
-  (`S` after C/S, `T` after Q/T); numeric data directly after `Z` is a parse
-  error; the current point returns to the subpath start after `Z`.
-- `PathMeasure::get_point_at`/`get_tangent_at` pin the distance into `[0, length]`
-  (returning `None` only for NaN/empty); `get_segment` pins start/stop.
-- `DashEffect` dashes the closing segment of a closed contour continuously.
-- `CornerEffect` rounds the joint between the last and first segments of a closed
-  contour (`SkCornerPathEffect`).
-- `simplify` always runs the boolean-ops machinery so self-intersections and
-  overlaps resolve (no Union-with-empty short-circuit).
-
-### Changed (skia-rs-paint — conformance audit, Task 3)
-- Blend modes Overlay/HardLight/SoftLight add the Porter-Duff edge terms
-  `s·(1−da) + d·(1−sa)` outside the branch; SoftLight's dark-dst polynomial is
-  the upstream `16m³ − 12m² + 3m` form; ColorDodge/ColorBurn general branches
-  use the upstream `da` normalization (`BLEND_MODE(...)` in
-  `SkRasterPipeline_opts.h`).
-- `Paint::default()` now matches `SkPaint`: `stroke_width` is `0.0` (hairline,
-  was `1.0`) and `anti_alias` is `false` (was `true`).
-- `Paint::color32()` and `Paint::serialize()` round float color components to
-  the nearest byte (0.5 → 128) instead of truncating.
-- **`Shader::sample` now returns premultiplied colors** (Skia raster-pipeline
-  convention), uniformly across ColorShader, gradients, image shaders, blend/
-  compose shaders and runtime effects; `BlendMode::apply` receives premul
-  inputs from BlendShader/ComposeShader as it requires.
-- Gradient stop positions are pinned monotonic into [0, 1] (`SkTPin`) and a
-  first stop above 0 acts as an implicit stop at t=0 carrying the first color
-  (`SkGradientBaseShader::fFirstStopIsImplicit`); t below the first explicit
-  stop no longer returns the last color.
-- Two-point conical gradients pick the larger quadratic root when both
-  interpolated radii are valid (upstream well-behaved case), and now honor
-  `GradientFlags::INTERPOLATE_PREMUL`.
-- `Alpha8` image sampling decodes as black-with-alpha `(0,0,0,a)`, not white.
-- `ImageShader::sample` honors `SamplingOptions`: `FilterMode::Linear` does
-  bilinear filtering (was always nearest-neighbor).
-- Blur filters convert sigma to box radius via
-  `SkBlurMask::ConvertSigmaToRadius` (`(sigma − 0.5)/0.57735`, three-box
-  approximation) instead of truncating sigma — sigma 0.9 now blurs.
-- `BlurMaskFilter` implements `BlurStyle` Solid (src ∪ blur), Outer
-  (blur − src) and Inner (blur ∩ src) per `SkBlurMask`.
-- `ColorFilterImageFilter` unpremultiplies, applies the color matrix in
-  unpremul space, clamps and re-premultiplies (upstream
-  `SkColorFilters::Matrix` default).
-- `MatrixConvolutionImageFilter` honors its `tile_mode` (was always clamp)
-  and, when `convolve_alpha` is false, convolves unpremultiplied RGB and
-  re-premultiplies with the original alpha.
-- `TileImageFilter` fills only `dst_rect`, leaving the rest of the buffer
-  untouched.
-- Runtime effect uniforms pack tightly (offset += size, 4-byte granularity,
-  no 16-byte alignment) per `SkRuntimeEffect.cpp`; child declarations
-  (`uniform shader s;`) are children only — excluded from `uniforms()` and
-  `uniform_size()`.
-- SkSL: method-style calls parse on any postfix expression and
-  `child.eval(coord)` samples the bound child shader in the interpreter;
-  multi-component swizzle assignment (`c.rgb *= 0.5`) works; matrix±matrix,
-  matrix·scalar, scalar·matrix, vector·matrix and matrix/scalar arithmetic
-  are implemented (previously collapsed to 0); float division/modulo by zero
-  follow IEEE (±inf/NaN); `&`, `|`, `^`, `<<`, `>>` are wired into the GLSL
-  precedence chain and `half(x)` parses as a constructor.
-
-### skia-rs-pdf
-- **Breaking (visual):** fixed text rendering upside-down — the PDF page
-  CTM's `1 0 0 -1 0 height` y-flip was never compensated for glyph runs,
-  so every drawn string rendered mirrored. Text now sets the text matrix
-  to `1 0 0 -1 x y Tm` per upstream `SkPDFDevice::GlyphPositioner`.
-- **Breaking (visual):** fixed images rendering vertically flipped —
-  `draw_image` now emits the `setScale(1,-1); postTranslate(0,1)`
-  counter-flip (`w 0 0 -h x (y+h) cm`) before placement, matching
-  `SkPDFDevice::internalDrawImageRect`.
-- **Breaking:** non-ASCII text drawn against a simple (Type1/TrueType)
-  font is now encoded as single-byte WinAnsiEncoding bytes instead of an
-  (invalid, per PDF 32000-1) UTF-16BE hex string; characters outside
-  WinAnsi fall back to `?` until per-run Type0 font switching exists.
-- **Breaking:** `Path` fill type is now honored when filling/stroking —
-  `EvenOdd`/`InverseEvenOdd` paths emit `f*`/`B*` instead of always
-  `f`/`B` (nonzero winding).
-- Fixed ToUnicode CMap codespace for simple fonts: declares a 1-byte
-  codespace (`<00> <FF>`) with 2-hex-digit `bfchar` source codes instead
-  of a 2-byte range with 4-digit codes that didn't match the actual
-  content-stream byte.
-- Type0 (CID) fonts now emit a proper `/DescendantFonts` array
-  (`CIDFontType2` with `/CIDSystemInfo`, `/CIDToGIDMap /Identity`, `/W`)
-  per PDF 32000-1 §9.7.6, instead of a Type0 dict with no glyph source.
-  New `PdfFont::truetype_cid` / `PdfFontManager::register_truetype_cid`.
-- Symbol/ZapfDingbats standard fonts now omit `/Encoding` so readers use
-  the font's built-in symbolic encoding, instead of incorrectly
-  declaring `/Encoding /StandardEncoding` (which has no entries for
-  their glyph names).
-- `ExtGraphicsState::cache_key` now covers `soft_mask`, `alpha_is_shape`,
-  `text_knockout`, and both overprint flags, fixing a bug where two
-  distinct ExtGStates differing only in those fields were wrongly
-  deduplicated into one cached `/ExtGState` object.
-- PDF/A OutputIntents now embed a real, valid sRGB ICC v2.1 profile
-  (`assets/srgb-v2.icc`) instead of a 9-byte placeholder string that
-  wasn't parseable ICC data at all.
-
-### skia-rs-skottie
-
-Conformance-audit fixes for the Lottie player (Task 10) — most real
-Lottie files previously rendered blank or static:
-
-- `as_vec2()` now accepts `Vec3` values (Bodymovin exports 3-component
-  position/anchor arrays)
-- Bezier path keyframes (`{"i","o","v","c"}`) parse into real
-  `KeyframeValue::Path` geometry and interpolate point-wise; `"sh"`
-  shapes and masks now produce real geometry instead of empty paths
-- Group `"tr"` transform items parse into a real `Transform`
-  (anchor/position/scale/rotation/skew/opacity, animated) and apply to
-  the group's children; group opacity multiplies
-- Stroke dash arrays (`"d"`) no longer collide with the shape
-  `direction` field (now a `DirectionOrDash` union); dashed strokes
-  parse and render via `DashEffect`
-- Layer transform/opacity/masks now evaluate at the unadjusted
-  composition frame; only precomp **content** gets the `st`/`sr`/`tm`
-  remap, matching upstream `Layer.cpp`/`PrecompLayer.cpp` — behavior
-  change: non-precomp layers with `st`/`sr` set (previously
-  misapplied) no longer shift
-- `"sr"` (stretch) and `"tm"` (time remap) parse and apply to precomp
-  content: `(t - st) / sr`, with `tm` (seconds) overriding when present
-- A trailing `{"t":N}`-only keyframe now inherits the previous
-  keyframe's value instead of resetting to 0
-- Fill rule `"r"` (2 = even-odd) parses and sets the path's fill type
-- Mask modes implemented via real polygon boolean ops: Add unions,
-  Subtract subtracts, Intersect intersects; `inv` and the first-mask
-  source-mode flip are honored (previously all masks behaved as a
-  plain intersect clip regardless of mode)
-- Layer parenting composes the parent transform chain (cycle-guarded)
-  — previously parent references were ignored entirely
-- Trim paths (`s`/`e`/`o`/`m`) implemented via path measure, matching
-  upstream start/stop/offset/inverted resolution (previously a no-op)
-- Gradient fills/strokes parse `g` (stop count + interleaved
-  pos/rgb[+alpha]), `s`/`e`, and `t` (linear/radial with highlight
-  focal point) and build a real gradient shader (previously a flat
-  gray placeholder)
-- Skew is now `Skew(tan(-radians(pin(sk, -85, 85))))` (negated,
-  pinned), matching upstream `Transform.cpp`
-- Rounded-rect corners use circular-arc cubic beziers instead of a
-  quadratic approximation, and respect `"d"` (CW/CCW) winding
-
-Not implemented in this pass (tracked as follow-ups): mask
-opacity/feather soft-alpha compositing (masks with opacity < 100% or
-a feather currently apply as a hard clip — see the fix-round entry
-below for why this is a separate, larger piece of work than the
-matte compositing it was previously bundled with).
-
-#### Fix round (re-audit against the current branch, not v0.2.7)
-
-The above pass was developed against a stale base that predated this
-branch's `Path::contains` (signed winding, Task 2) and `Canvas::save_layer`
-(alpha/blend/color-filter compositing, Task 4) fixes. This round
-re-verifies/completes the work against the current branch:
-
-- Removed the `Path::contains` "even-odd fallback" workaround in
-  `mask::build_clip`: `Path::contains` is now conformant (signed
-  winding number, not raw crossing count), so the winding fill type
-  produced by `skia_rs_path::ops::op()` composite paths (shell + hole
-  contours) renders correctly without forcing `EvenOdd`
-- **Track mattes** (`td`/`tt`) implemented: `tt` on the consumer layer
-  selects alpha (1), alpha-inverted (2), luma (3), or luma-inverted (4)
-  masking from the matte source (explicit `tp` index, or the layer
-  immediately preceding it in the `layers` array — matching upstream
-  `LayerBuilder::buildRenderTree`'s `prev_layer_index`); `td` (bool) on
-  the source hides it from the main render list while still rendering
-  its content as the matte input. Compositing matches upstream
-  `sksg::MaskEffect::onRender` exactly: an outer `save_layer` collects
-  mask coverage (luma mode applies a BT.709 luma-to-alpha color filter
-  at composite time), then an inner `save_layer` with blend mode
-  `SrcIn`/`SrcOut` composites the consumer's own content through that
-  coverage. This required adding `Canvas::save_layer` to the skottie
-  render trait/`SkiaCanvas` wrapper (previously unimplemented, and, it
-  turns out, dead code — see below)
-- **`ti`/`to` spatial bezier position interpolation** implemented:
-  position keyframes with spatial tangents now interpolate along the
-  cubic motion path `(v + to) -> (v_next + ti)` by arc length (via
-  `PathMeasure`), using the *eased* interpolation factor as the
-  arc-length fraction — matching upstream `Vec2KeyframeAnimator`
-  (position no longer just linearly lerps between keyframe endpoints)
-- Fixed a latent, previously-untested bug found while wiring up track
-  mattes: `SkiaCanvas` (the `skia-rs-canvas`-backed `Canvas` impl) was
-  gated behind a nonexistent `canvas` Cargo feature, so it never
-  compiled and its `Canvas` trait methods (`clip_path`/`clip_rect`
-  argument count, `get_transform`/`set_transform` — which don't exist
-  on `skia_rs_canvas::Canvas`) were stale/wrong. Removed the dead
-  feature gate and fixed the method bodies against the real
-  `skia_rs_canvas::Canvas` API
-- `ti`/`to` spatial interpolation also applies to 3-component (`Vec3`)
-  position keyframes — Bodymovin's dominant export format — with the
-  bezier walk on x/y and z interpolated linearly (previously the
-  spatial branch only matched 2-component values and Vec3 positions
-  silently fell back to a linear lerp)
-- Trim mode `m:2` ("Trim Multiple Shapes: Individually", upstream
-  `kSerial` in `TrimPaths.cpp`) now merges all collected geometry into
-  a single path and applies one trim across the combined length
-  (spanning path boundaries, per `SkTrimPE`'s total-length
-  parameterization); `m:1` ("Simultaneously", `kParallel`, the
-  default) keeps the existing per-geometry trim. Note: upstream's
-  mode-to-behavior mapping is `m:1` = parallel/per-shape and `m:2` =
-  merged/serial — per `AttachTrimGeometryEffect`
-- A track matte whose source layer is not visible at the frame now
-  contributes zero coverage, matching `sksg::MaskEffect`: the consumer
-  is masked out entirely (normal modes) or shown fully (inverted
-  modes), instead of incorrectly rendering unmasked
-
-Mask opacity/feather soft compositing remains a hard clip: unlike
-track mattes (a single source composited via one alpha/luma pass),
-Lottie's mask stack combines *multiple* masks with per-mask boolean
-modes (Add/Subtract/Intersect/Difference) *before* opacity/feather
-would apply, so soft-compositing it correctly means re-deriving
-`build_clip`'s boolean algebra in coverage/alpha space (rasterize each
-mask's coverage, combine per-mode, hard-clip only 100%-opacity/no-feather
-edges) rather than a single `save_layer` alpha pass — a materially
-larger change than what shipped in this round.
-
-### Planned for v0.2.0
-- Complete wgpu GPU backend
-- Vulkan backend
-- SVG export
-- Extended codec support (BMP, ICO, HEIF)
-- Performance optimizations with SIMD
 
 [0.1.0]: https://github.com/pegasusheavy/skia-rs/releases/tag/v0.1.0
 [Unreleased]: https://github.com/pegasusheavy/skia-rs/compare/v0.1.0...HEAD
+
