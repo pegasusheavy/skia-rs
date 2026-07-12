@@ -1,7 +1,20 @@
 //! Color, mask, and image filters.
 
+use skia_rs_core::cast::{f32_to_u8_sat, round_to_i32, saturate_to_i32, scalar_from_i32};
 use skia_rs_core::{Color4f, Rect, Scalar, mul_div_255_round};
 use std::sync::Arc;
+
+/// Truncating (non-rounding), saturating `f32` -> `u8` cast.
+///
+/// Matches the `f32_to_u8_trunc(x)` idiom used throughout this
+/// file's pixel math, which truncates toward zero rather than rounding.
+/// Differs from [`f32_to_u8_sat`], which additionally rounds to the
+/// nearest integer; that rounding would change these filters' output by
+/// up to one LSB per channel, so it is not used here.
+#[inline]
+fn f32_to_u8_trunc(x: f32) -> u8 {
+    u8::try_from(saturate_to_i32(x).clamp(0, 255)).unwrap_or(0)
+}
 
 // =============================================================================
 // Serialization Kind Constants
@@ -320,7 +333,8 @@ impl MaskFilter for BlurMaskFilter {
                 for (d, &s) in mask.iter_mut().zip(src.iter()) {
                     let blur = u32::from(*d);
                     let s = u32::from(s);
-                    *d = (s + blur - u32::from(mul_div_255_round(s, blur))).min(255) as u8;
+                    let combined = (s + blur - u32::from(mul_div_255_round(s, blur))).min(255);
+                    *d = u8::try_from(combined).unwrap_or(u8::MAX);
                 }
             }
             BlurStyle::Outer => {
@@ -458,6 +472,10 @@ impl DropShadowImageFilter {
 }
 
 impl ImageFilter for DropShadowImageFilter {
+    #[allow(
+        clippy::similar_names,
+        reason = "blur_dx/blur_dy are the conventional x/y-axis pair for this offset+blur computation"
+    )]
     fn filter_bounds(&self, src: &Rect) -> Rect {
         let blur_dx = self.sigma_x * 3.0;
         let blur_dy = self.sigma_y * 3.0;
@@ -512,24 +530,28 @@ impl ImageFilter for DropShadowImageFilter {
             box_blur_vertical(&mut shadow, width, height, ry);
         }
         // 3. Colorize and offset the shadow, then composite
-        let dx = self.dx.round() as i32;
-        let dy = self.dy.round() as i32;
-        let sr = (self.color.r * 255.0).clamp(0.0, 255.0) as u8;
-        let sg = (self.color.g * 255.0).clamp(0.0, 255.0) as u8;
-        let sb = (self.color.b * 255.0).clamp(0.0, 255.0) as u8;
+        let dx = saturate_to_i32(self.dx.round());
+        let dy = saturate_to_i32(self.dy.round());
+        let sr = f32_to_u8_trunc(self.color.r * 255.0);
+        let sg = f32_to_u8_trunc(self.color.g * 255.0);
+        let sb = f32_to_u8_trunc(self.color.b * 255.0);
         let sa_mul = self.color.a.clamp(0.0, 1.0);
         let original = pixels.to_vec();
         for y in 0..height {
             for x in 0..width {
                 // Read shadow from offset position (clamp)
-                let sx = (x as i32 - dx).clamp(0, width as i32 - 1) as usize;
-                let sy = (y as i32 - dy).clamp(0, height as i32 - 1) as usize;
+                let x_i32 = i32::try_from(x).unwrap_or(i32::MAX);
+                let y_i32 = i32::try_from(y).unwrap_or(i32::MAX);
+                let width_i32 = i32::try_from(width).unwrap_or(i32::MAX);
+                let height_i32 = i32::try_from(height).unwrap_or(i32::MAX);
+                let sx = usize::try_from((x_i32 - dx).clamp(0, width_i32 - 1)).unwrap_or(0);
+                let sy = usize::try_from((y_i32 - dy).clamp(0, height_i32 - 1)).unwrap_or(0);
                 let shadow_alpha = (f32::from(shadow[sy * width + sx]) / 255.0) * sa_mul;
                 let shadow_rgba = [
-                    (f32::from(sr) * shadow_alpha) as u8,
-                    (f32::from(sg) * shadow_alpha) as u8,
-                    (f32::from(sb) * shadow_alpha) as u8,
-                    (shadow_alpha * 255.0) as u8,
+                    f32_to_u8_trunc(f32::from(sr) * shadow_alpha),
+                    f32_to_u8_trunc(f32::from(sg) * shadow_alpha),
+                    f32_to_u8_trunc(f32::from(sb) * shadow_alpha),
+                    f32_to_u8_trunc(shadow_alpha * 255.0),
                 ];
                 // Src-over: result = src + dst * (1 - src.a)
                 let idx = (y * width + x) * 4;
@@ -543,14 +565,18 @@ impl ImageFilter for DropShadowImageFilter {
                     // Composite source over shadow
                     let src_a = f32::from(original[idx + 3]) / 255.0;
                     let inv_a = 1.0 - src_a;
-                    pixels[idx] = (f32::from(original[idx]) + f32::from(shadow_rgba[0]) * inv_a)
-                        .clamp(0.0, 255.0) as u8;
-                    pixels[idx + 1] = (f32::from(original[idx + 1]) + f32::from(shadow_rgba[1]) * inv_a)
-                        .clamp(0.0, 255.0) as u8;
-                    pixels[idx + 2] = (f32::from(original[idx + 2]) + f32::from(shadow_rgba[2]) * inv_a)
-                        .clamp(0.0, 255.0) as u8;
-                    pixels[idx + 3] = (f32::from(original[idx + 3]) + f32::from(shadow_rgba[3]) * inv_a)
-                        .clamp(0.0, 255.0) as u8;
+                    pixels[idx] = f32_to_u8_trunc(
+                        f32::from(original[idx]) + f32::from(shadow_rgba[0]) * inv_a,
+                    );
+                    pixels[idx + 1] = f32_to_u8_trunc(
+                        f32::from(original[idx + 1]) + f32::from(shadow_rgba[1]) * inv_a,
+                    );
+                    pixels[idx + 2] = f32_to_u8_trunc(
+                        f32::from(original[idx + 2]) + f32::from(shadow_rgba[2]) * inv_a,
+                    );
+                    pixels[idx + 3] = f32_to_u8_trunc(
+                        f32::from(original[idx + 3]) + f32::from(shadow_rgba[3]) * inv_a,
+                    );
                 }
             }
         }
@@ -590,7 +616,8 @@ impl MaskFilter for ShaderMaskFilter {
     fn serialize(&self) -> Option<Vec<u8>> {
         let mut buf = vec![MASK_FILTER_KIND_SHADER];
         let shader_data = self.shader.serialize()?;
-        buf.extend_from_slice(&(shader_data.len() as u32).to_le_bytes());
+        let len = u32::try_from(shader_data.len()).unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
         buf.extend_from_slice(&shader_data);
         Some(buf)
     }
@@ -616,24 +643,24 @@ impl TableMaskFilter {
     pub fn gamma(gamma: Scalar) -> Self {
         let mut table = [0u8; 256];
         for (i, v) in table.iter_mut().enumerate() {
-            let normalized = i as Scalar / 255.0;
-            *v = (normalized.powf(gamma) * 255.0).round() as u8;
+            let normalized = scalar_from_i32(i32::try_from(i).unwrap_or(0)) / 255.0;
+            *v = f32_to_u8_sat(normalized.powf(gamma) * 255.0);
         }
         Self { table }
     }
 
     /// Create a clipping table.
-    #[must_use] 
+    #[must_use]
     pub fn clip(min: u8, max: u8) -> Self {
         let mut table = [0u8; 256];
         for (i, v) in table.iter_mut().enumerate() {
-            let i = i as u8;
+            let i = u8::try_from(i).unwrap_or(u8::MAX);
             *v = if i < min {
                 0
             } else if i > max {
                 255
             } else {
-                (f32::from(i - min) / f32::from(max - min) * 255.0) as u8
+                f32_to_u8_trunc(f32::from(i - min) / f32::from(max - min) * 255.0)
             };
         }
         Self { table }
@@ -747,7 +774,8 @@ impl ImageFilter for MorphologyImageFilter {
             Some(input) => {
                 let input_data = input.serialize()?;
                 buf.push(1);
-                buf.extend_from_slice(&(input_data.len() as u32).to_le_bytes());
+                let len = u32::try_from(input_data.len()).unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&input_data);
             }
             None => buf.push(0),
@@ -759,8 +787,8 @@ impl ImageFilter for MorphologyImageFilter {
         if width == 0 || height == 0 {
             return;
         }
-        let rx = self.radius_x.max(0.0).round() as usize;
-        let ry = self.radius_y.max(0.0).round() as usize;
+        let rx = usize::try_from(round_to_i32(self.radius_x.max(0.0))).unwrap_or(0);
+        let ry = usize::try_from(round_to_i32(self.radius_y.max(0.0))).unwrap_or(0);
         if rx == 0 && ry == 0 {
             return;
         }
@@ -857,14 +885,16 @@ impl ImageFilter for ColorFilterImageFilter {
         let mut buf = vec![IMAGE_FILTER_KIND_COLOR_FILTER];
         // Serialize the wrapped color filter
         let color_filter_data = self.color_filter.serialize()?;
-        buf.extend_from_slice(&(color_filter_data.len() as u32).to_le_bytes());
+        let len = u32::try_from(color_filter_data.len()).unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
         buf.extend_from_slice(&color_filter_data);
         // Serialize input filter if present
         match &self.input {
             Some(input) => {
                 let input_data = input.serialize()?;
                 buf.push(1);
-                buf.extend_from_slice(&(input_data.len() as u32).to_le_bytes());
+                let len = u32::try_from(input_data.len()).unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&input_data);
             }
             None => buf.push(0),
@@ -903,10 +933,10 @@ impl ImageFilter for ColorFilterImageFilter {
                 let fr = filtered.r.clamp(0.0, 1.0) * fa;
                 let fg = filtered.g.clamp(0.0, 1.0) * fa;
                 let fb = filtered.b.clamp(0.0, 1.0) * fa;
-                pixels[idx] = (fr * 255.0).round() as u8;
-                pixels[idx + 1] = (fg * 255.0).round() as u8;
-                pixels[idx + 2] = (fb * 255.0).round() as u8;
-                pixels[idx + 3] = (fa * 255.0).round() as u8;
+                pixels[idx] = f32_to_u8_sat(fr * 255.0);
+                pixels[idx + 1] = f32_to_u8_sat(fg * 255.0);
+                pixels[idx + 2] = f32_to_u8_sat(fb * 255.0);
+                pixels[idx + 3] = f32_to_u8_sat(fa * 255.0);
             }
         }
     }
@@ -985,14 +1015,16 @@ impl ImageFilter for DisplacementMapImageFilter {
         buf.extend_from_slice(&self.scale.to_le_bytes());
         // Serialize displacement filter
         let displacement_data = self.displacement.serialize()?;
-        buf.extend_from_slice(&(displacement_data.len() as u32).to_le_bytes());
+        let len = u32::try_from(displacement_data.len()).unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
         buf.extend_from_slice(&displacement_data);
         // Serialize color filter if present
         match &self.color {
             Some(color) => {
                 let color_data = color.serialize()?;
                 buf.push(1);
-                buf.extend_from_slice(&(color_data.len() as u32).to_le_bytes());
+                let len = u32::try_from(color_data.len()).unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&color_data);
             }
             None => buf.push(0),
@@ -1026,10 +1058,16 @@ impl ImageFilter for DisplacementMapImageFilter {
             for x in 0..width {
                 let idx = (y * width + x) * 4;
                 // Read displacement channels (0..255 maps to -1..1)
-                let dx_f = (f32::from(src[idx + x_channel_idx]) / 127.5 - 1.0) * scale;
-                let dy_f = (f32::from(src[idx + y_channel_idx]) / 127.5 - 1.0) * scale;
-                let sx = ((x as f32 + dx_f) as i32).clamp(0, width as i32 - 1) as usize;
-                let sy = ((y as f32 + dy_f) as i32).clamp(0, height as i32 - 1) as usize;
+                let disp_x = (f32::from(src[idx + x_channel_idx]) / 127.5 - 1.0) * scale;
+                let disp_y = (f32::from(src[idx + y_channel_idx]) / 127.5 - 1.0) * scale;
+                let x_i32 = i32::try_from(x).unwrap_or(i32::MAX);
+                let y_i32 = i32::try_from(y).unwrap_or(i32::MAX);
+                let width_i32 = i32::try_from(width).unwrap_or(i32::MAX);
+                let height_i32 = i32::try_from(height).unwrap_or(i32::MAX);
+                let sample_x = saturate_to_i32(scalar_from_i32(x_i32) + disp_x);
+                let sample_y = saturate_to_i32(scalar_from_i32(y_i32) + disp_y);
+                let sx = usize::try_from(sample_x.clamp(0, width_i32 - 1)).unwrap_or(0);
+                let sy = usize::try_from(sample_y.clamp(0, height_i32 - 1)).unwrap_or(0);
                 let src_idx = (sy * width + sx) * 4;
                 pixels[idx] = src[src_idx];
                 pixels[idx + 1] = src[src_idx + 1];
@@ -1185,7 +1223,8 @@ impl ImageFilter for LightingImageFilter {
             Some(input) => {
                 let input_data = input.serialize()?;
                 buf.push(1);
-                buf.extend_from_slice(&(input_data.len() as u32).to_le_bytes());
+                let len = u32::try_from(input_data.len()).unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&input_data);
             }
             None => buf.push(0),
@@ -1201,18 +1240,16 @@ impl ImageFilter for LightingImageFilter {
         // A full implementation would compute per-pixel normals from the alpha
         // channel (height field) and evaluate the lighting model (Phong, diffuse).
         // This simplified version applies uniform lighting based on surface_scale.
-        let scale = self.surface_scale.max(0.0).min(10.0);
+        let scale = self.surface_scale.clamp(0.0, 10.0);
         let factor = (1.0 + scale * 0.1).min(2.0);
         let lr = (self.light_color.r * 255.0).clamp(0.0, 255.0);
         let lg = (self.light_color.g * 255.0).clamp(0.0, 255.0);
         let lb = (self.light_color.b * 255.0).clamp(0.0, 255.0);
         for i in 0..width * height {
             let idx = i * 4;
-            pixels[idx] = ((f32::from(pixels[idx]) * factor * lr / 255.0).clamp(0.0, 255.0)) as u8;
-            pixels[idx + 1] =
-                ((f32::from(pixels[idx + 1]) * factor * lg / 255.0).clamp(0.0, 255.0)) as u8;
-            pixels[idx + 2] =
-                ((f32::from(pixels[idx + 2]) * factor * lb / 255.0).clamp(0.0, 255.0)) as u8;
+            pixels[idx] = f32_to_u8_trunc(f32::from(pixels[idx]) * factor * lr / 255.0);
+            pixels[idx + 1] = f32_to_u8_trunc(f32::from(pixels[idx + 1]) * factor * lg / 255.0);
+            pixels[idx + 2] = f32_to_u8_trunc(f32::from(pixels[idx + 2]) * factor * lb / 255.0);
         }
     }
 }
@@ -1243,9 +1280,11 @@ impl ImageFilter for ComposeImageFilter {
         let mut buf = vec![IMAGE_FILTER_KIND_COMPOSE];
         let outer_data = self.outer.serialize()?;
         let inner_data = self.inner.serialize()?;
-        buf.extend_from_slice(&(outer_data.len() as u32).to_le_bytes());
+        let len = u32::try_from(outer_data.len()).unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
         buf.extend_from_slice(&outer_data);
-        buf.extend_from_slice(&(inner_data.len() as u32).to_le_bytes());
+        let len = u32::try_from(inner_data.len()).unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
         buf.extend_from_slice(&inner_data);
         Some(buf)
     }
@@ -1285,13 +1324,15 @@ impl ImageFilter for MergeImageFilter {
 
     fn serialize(&self) -> Option<Vec<u8>> {
         let mut buf = vec![IMAGE_FILTER_KIND_MERGE];
-        buf.extend_from_slice(&(self.inputs.len() as u32).to_le_bytes());
+        let len = u32::try_from(self.inputs.len()).unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
         for input in &self.inputs {
             match input {
                 Some(filter) => {
                     let filter_data = filter.serialize()?;
                     buf.push(1);
-                    buf.extend_from_slice(&(filter_data.len() as u32).to_le_bytes());
+                    let len = u32::try_from(filter_data.len()).unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
                     buf.extend_from_slice(&filter_data);
                 }
                 None => buf.push(0),
@@ -1346,7 +1387,8 @@ impl ImageFilter for OffsetImageFilter {
             Some(input) => {
                 let input_data = input.serialize()?;
                 buf.push(1);
-                buf.extend_from_slice(&(input_data.len() as u32).to_le_bytes());
+                let len = u32::try_from(input_data.len()).unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&input_data);
             }
             None => buf.push(0),
@@ -1363,8 +1405,8 @@ impl ImageFilter for OffsetImageFilter {
             input.apply(pixels, width, height);
         }
         // Shift pixels with clamp-to-edge
-        let offset_x = self.dx.round() as i32;
-        let offset_y = self.dy.round() as i32;
+        let offset_x = saturate_to_i32(self.dx.round());
+        let offset_y = saturate_to_i32(self.dy.round());
         if offset_x == 0 && offset_y == 0 {
             return;
         }
@@ -1373,11 +1415,17 @@ impl ImageFilter for OffsetImageFilter {
         let mut copy = vec![0u8; width * height * 4];
         copy.copy_from_slice(pixels);
 
+        let width_i32 = i32::try_from(width).unwrap_or(i32::MAX);
+        let height_i32 = i32::try_from(height).unwrap_or(i32::MAX);
         // Fill with shifted pixels
         for y in 0..height {
             for x in 0..width {
-                let src_x = (x as i32 - offset_x).clamp(0, width as i32 - 1) as usize;
-                let src_y = (y as i32 - offset_y).clamp(0, height as i32 - 1) as usize;
+                let x_i32 = i32::try_from(x).unwrap_or(i32::MAX);
+                let y_i32 = i32::try_from(y).unwrap_or(i32::MAX);
+                let src_x =
+                    usize::try_from((x_i32 - offset_x).clamp(0, width_i32 - 1)).unwrap_or(0);
+                let src_y =
+                    usize::try_from((y_i32 - offset_y).clamp(0, height_i32 - 1)).unwrap_or(0);
                 let dst_idx = (y * width + x) * 4;
                 let src_idx = (src_y * width + src_x) * 4;
                 pixels[dst_idx..dst_idx + 4].copy_from_slice(&copy[src_idx..src_idx + 4]);
@@ -1403,7 +1451,11 @@ pub struct MatrixConvolutionImageFilter {
 
 impl MatrixConvolutionImageFilter {
     /// Create a matrix convolution filter.
-    #[must_use] 
+    #[must_use]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors upstream SkMatrixConvolutionImageFilter::Make's parameter list one-to-one"
+    )]
     pub fn new(
         kernel_size: (i32, i32),
         kernel: Vec<Scalar>,
@@ -1432,10 +1484,10 @@ impl ImageFilter for MatrixConvolutionImageFilter {
         let (kw, kh) = self.kernel_size;
         let (ox, oy) = self.kernel_offset;
         Rect::new(
-            src.left - (kw - ox - 1) as Scalar,
-            src.top - (kh - oy - 1) as Scalar,
-            src.right + ox as Scalar,
-            src.bottom + oy as Scalar,
+            src.left - scalar_from_i32(kw - ox - 1),
+            src.top - scalar_from_i32(kh - oy - 1),
+            src.right + scalar_from_i32(ox),
+            src.bottom + scalar_from_i32(oy),
         )
     }
 
@@ -1443,7 +1495,8 @@ impl ImageFilter for MatrixConvolutionImageFilter {
         let mut buf = vec![IMAGE_FILTER_KIND_MATRIX_CONVOLUTION];
         buf.extend_from_slice(&self.kernel_size.0.to_le_bytes());
         buf.extend_from_slice(&self.kernel_size.1.to_le_bytes());
-        buf.extend_from_slice(&(self.kernel.len() as u32).to_le_bytes());
+        let len = u32::try_from(self.kernel.len()).unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
         for v in &self.kernel {
             buf.extend_from_slice(&v.to_le_bytes());
         }
@@ -1457,7 +1510,8 @@ impl ImageFilter for MatrixConvolutionImageFilter {
             Some(input) => {
                 let input_data = input.serialize()?;
                 buf.push(1);
-                buf.extend_from_slice(&(input_data.len() as u32).to_le_bytes());
+                let len = u32::try_from(input_data.len()).unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&input_data);
             }
             None => buf.push(0),
@@ -1496,19 +1550,27 @@ impl ImageFilter for MatrixConvolutionImageFilter {
             }
         };
 
+        let width_i32 = i32::try_from(width).unwrap_or(i32::MAX);
+        let height_i32 = i32::try_from(height).unwrap_or(i32::MAX);
         for y in 0..height {
             for x in 0..width {
+                let x_i32 = i32::try_from(x).unwrap_or(i32::MAX);
+                let y_i32 = i32::try_from(y).unwrap_or(i32::MAX);
                 let mut acc = [0.0f32; 4];
                 for ky in 0..kh {
                     for kx in 0..kw {
-                        let sx = tile(x as i32 + kx - ox, width as i32);
-                        let sy = tile(y as i32 + ky - oy, height as i32);
+                        let sx = tile(x_i32 + kx - ox, width_i32);
+                        let sy = tile(y_i32 + ky - oy, height_i32);
                         let (sx, sy) = match (sx, sy) {
-                            (Some(sx), Some(sy)) => (sx as usize, sy as usize),
+                            (Some(sx), Some(sy)) => (
+                                usize::try_from(sx).unwrap_or(0),
+                                usize::try_from(sy).unwrap_or(0),
+                            ),
                             _ => continue, // Decal: transparent contribution
                         };
                         let sidx = (sy * width + sx) * 4;
-                        let kidx = (ky as usize) * (kw as usize) + kx as usize;
+                        let kidx = usize::try_from(ky).unwrap_or(0) * usize::try_from(kw).unwrap_or(0)
+                            + usize::try_from(kx).unwrap_or(0);
                         let k = self.kernel.get(kidx).copied().unwrap_or(0.0);
                         if self.convolve_alpha {
                             // Convolve the premultiplied channels directly.
@@ -1531,7 +1593,7 @@ impl ImageFilter for MatrixConvolutionImageFilter {
                 if self.convolve_alpha {
                     for c in 0..4 {
                         let v = acc[c].mul_add(gain, bias);
-                        pixels[idx + c] = v.clamp(0.0, 255.0).round() as u8;
+                        pixels[idx + c] = f32_to_u8_sat(v);
                     }
                 } else {
                     // Re-premultiply the convolved RGB with the pixel's
@@ -1539,7 +1601,7 @@ impl ImageFilter for MatrixConvolutionImageFilter {
                     let a = f32::from(src[idx + 3]) / 255.0;
                     for c in 0..3 {
                         let v = acc[c].mul_add(gain, bias).clamp(0.0, 255.0) * a;
-                        pixels[idx + c] = v.round() as u8;
+                        pixels[idx + c] = f32_to_u8_sat(v);
                     }
                     pixels[idx + 3] = src[idx + 3];
                 }
@@ -1589,7 +1651,8 @@ impl ImageFilter for TileImageFilter {
             Some(input) => {
                 let input_data = input.serialize()?;
                 buf.push(1);
-                buf.extend_from_slice(&(input_data.len() as u32).to_le_bytes());
+                let len = u32::try_from(input_data.len()).unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&input_data);
             }
             None => buf.push(0),
@@ -1603,20 +1666,21 @@ impl ImageFilter for TileImageFilter {
         }
         // Tile the src_rect region across dst_rect only (SkTileImageFilter
         // fills its destination rect, not the whole buffer).
-        let sx0 = (self.src_rect.left.max(0.0) as usize).min(width);
-        let sy0 = (self.src_rect.top.max(0.0) as usize).min(height);
-        let sx1 = (self.src_rect.right.max(0.0) as usize).min(width);
-        let sy1 = (self.src_rect.bottom.max(0.0) as usize).min(height);
+        let to_usize = |v: Scalar| usize::try_from(saturate_to_i32(v.max(0.0))).unwrap_or(0);
+        let sx0 = to_usize(self.src_rect.left).min(width);
+        let sy0 = to_usize(self.src_rect.top).min(height);
+        let sx1 = to_usize(self.src_rect.right).min(width);
+        let sy1 = to_usize(self.src_rect.bottom).min(height);
         if sx1 <= sx0 || sy1 <= sy0 {
             return;
         }
         let sw = sx1 - sx0;
         let sh = sy1 - sy0;
 
-        let dx0 = (self.dst_rect.left.max(0.0) as usize).min(width);
-        let dy0 = (self.dst_rect.top.max(0.0) as usize).min(height);
-        let dx1 = (self.dst_rect.right.max(0.0) as usize).min(width);
-        let dy1 = (self.dst_rect.bottom.max(0.0) as usize).min(height);
+        let dx0 = to_usize(self.dst_rect.left).min(width);
+        let dy0 = to_usize(self.dst_rect.top).min(height);
+        let dx1 = to_usize(self.dst_rect.right).min(width);
+        let dy1 = to_usize(self.dst_rect.bottom).min(height);
         if dx1 <= dx0 || dy1 <= dy0 {
             return;
         }
@@ -1680,7 +1744,8 @@ impl ImageFilter for BlendImageFilter {
             Some(bg) => {
                 let bg_data = bg.serialize()?;
                 buf.push(1);
-                buf.extend_from_slice(&(bg_data.len() as u32).to_le_bytes());
+                let len = u32::try_from(bg_data.len()).unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&bg_data);
             }
             None => buf.push(0),
@@ -1689,7 +1754,8 @@ impl ImageFilter for BlendImageFilter {
             Some(fg) => {
                 let fg_data = fg.serialize()?;
                 buf.push(1);
-                buf.extend_from_slice(&(fg_data.len() as u32).to_le_bytes());
+                let len = u32::try_from(fg_data.len()).unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&fg_data);
             }
             None => buf.push(0),
@@ -1769,7 +1835,8 @@ impl ImageFilter for ArithmeticImageFilter {
             Some(bg) => {
                 let bg_data = bg.serialize()?;
                 buf.push(1);
-                buf.extend_from_slice(&(bg_data.len() as u32).to_le_bytes());
+                let len = u32::try_from(bg_data.len()).unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&bg_data);
             }
             None => buf.push(0),
@@ -1778,7 +1845,8 @@ impl ImageFilter for ArithmeticImageFilter {
             Some(fg) => {
                 let fg_data = fg.serialize()?;
                 buf.push(1);
-                buf.extend_from_slice(&(fg_data.len() as u32).to_le_bytes());
+                let len = u32::try_from(fg_data.len()).unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&fg_data);
             }
             None => buf.push(0),
@@ -1828,7 +1896,7 @@ fn sigma_to_box_radius(sigma: Scalar) -> Scalar {
 /// truncating so that e.g. sigma 0.9 (radius ~0.69) still blurs.
 #[inline]
 fn sigma_to_int_box_radius(sigma: Scalar) -> usize {
-    sigma_to_box_radius(sigma).round().max(0.0) as usize
+    usize::try_from(round_to_i32(sigma_to_box_radius(sigma).max(0.0))).unwrap_or(0)
 }
 
 fn box_blur_horizontal(buf: &mut [u8], width: usize, height: usize, radius: usize) {
@@ -1836,7 +1904,7 @@ fn box_blur_horizontal(buf: &mut [u8], width: usize, height: usize, radius: usiz
         return;
     }
     let r = radius;
-    let window = (2 * r + 1) as u32;
+    let window = u32::try_from(2 * r + 1).unwrap_or(u32::MAX);
     let mut row_copy = vec![0u8; width];
     for y in 0..height {
         let row_start = y * width;
@@ -1847,8 +1915,8 @@ fn box_blur_horizontal(buf: &mut [u8], width: usize, height: usize, radius: usiz
         for i in 0..=r {
             sum += u32::from(row_copy[i.min(width - 1)]);
         }
-        sum += u32::from(row_copy[0]) * r as u32; // clamp left edge
-        buf[row_start] = (sum / window) as u8;
+        sum += u32::from(row_copy[0]) * u32::try_from(r).unwrap_or(u32::MAX); // clamp left edge
+        buf[row_start] = u8::try_from(sum / window).unwrap_or(u8::MAX);
 
         for x in 1..width {
             // Slide window: add right, remove left
@@ -1856,7 +1924,7 @@ fn box_blur_horizontal(buf: &mut [u8], width: usize, height: usize, radius: usiz
             let left_idx = if x > r { x - r - 1 } else { 0 };
             sum = sum.saturating_add(u32::from(row_copy[right_idx]));
             sum = sum.saturating_sub(u32::from(row_copy[left_idx]));
-            buf[row_start + x] = (sum / window) as u8;
+            buf[row_start + x] = u8::try_from(sum / window).unwrap_or(u8::MAX);
         }
     }
 }
@@ -1866,7 +1934,7 @@ fn box_blur_vertical(buf: &mut [u8], width: usize, height: usize, radius: usize)
         return;
     }
     let r = radius;
-    let window = (2 * r + 1) as u32;
+    let window = u32::try_from(2 * r + 1).unwrap_or(u32::MAX);
     let mut col_copy = vec![0u8; height];
     for x in 0..width {
         // Copy column
@@ -1878,15 +1946,15 @@ fn box_blur_vertical(buf: &mut [u8], width: usize, height: usize, radius: usize)
         for i in 0..=r {
             sum += u32::from(col_copy[i.min(height - 1)]);
         }
-        sum += u32::from(col_copy[0]) * r as u32;
-        buf[x] = (sum / window) as u8;
+        sum += u32::from(col_copy[0]) * u32::try_from(r).unwrap_or(u32::MAX);
+        buf[x] = u8::try_from(sum / window).unwrap_or(u8::MAX);
 
         for y in 1..height {
             let bottom_idx = (y + r).min(height - 1);
             let top_idx = if y > r { y - r - 1 } else { 0 };
             sum = sum.saturating_add(u32::from(col_copy[bottom_idx]));
             sum = sum.saturating_sub(u32::from(col_copy[top_idx]));
-            buf[y * width + x] = (sum / window) as u8;
+            buf[y * width + x] = u8::try_from(sum / window).unwrap_or(u8::MAX);
         }
     }
 }
@@ -1896,7 +1964,7 @@ fn rgba_box_blur_horizontal(pixels: &mut [u8], width: usize, height: usize, radi
         return;
     }
     let stride = width * 4;
-    let window = (2 * radius + 1) as u32;
+    let window = u32::try_from(2 * radius + 1).unwrap_or(u32::MAX);
     let mut row_copy = vec![0u8; stride];
     for y in 0..height {
         let row_start = y * stride;
@@ -1910,10 +1978,10 @@ fn rgba_box_blur_horizontal(pixels: &mut [u8], width: usize, height: usize, radi
             }
         }
         for c in 0..4 {
-            sums[c] += u32::from(row_copy[c]) * radius as u32;
+            sums[c] += u32::from(row_copy[c]) * u32::try_from(radius).unwrap_or(u32::MAX);
         }
         for c in 0..4 {
-            pixels[row_start + c] = (sums[c] / window) as u8;
+            pixels[row_start + c] = u8::try_from(sums[c] / window).unwrap_or(u8::MAX);
         }
 
         for x in 1..width {
@@ -1922,7 +1990,7 @@ fn rgba_box_blur_horizontal(pixels: &mut [u8], width: usize, height: usize, radi
             for c in 0..4 {
                 sums[c] = sums[c].saturating_add(u32::from(row_copy[right_idx + c]));
                 sums[c] = sums[c].saturating_sub(u32::from(row_copy[left_idx + c]));
-                pixels[row_start + x * 4 + c] = (sums[c] / window) as u8;
+                pixels[row_start + x * 4 + c] = u8::try_from(sums[c] / window).unwrap_or(u8::MAX);
             }
         }
     }
@@ -1933,7 +2001,7 @@ fn rgba_box_blur_vertical(pixels: &mut [u8], width: usize, height: usize, radius
         return;
     }
     let stride = width * 4;
-    let window = (2 * radius + 1) as u32;
+    let window = u32::try_from(2 * radius + 1).unwrap_or(u32::MAX);
     let mut col_copy = vec![0u8; height * 4];
     for x in 0..width {
         for y in 0..height {
@@ -1949,10 +2017,10 @@ fn rgba_box_blur_vertical(pixels: &mut [u8], width: usize, height: usize, radius
             }
         }
         for c in 0..4 {
-            sums[c] += u32::from(col_copy[c]) * radius as u32;
+            sums[c] += u32::from(col_copy[c]) * u32::try_from(radius).unwrap_or(u32::MAX);
         }
         for c in 0..4 {
-            pixels[x * 4 + c] = (sums[c] / window) as u8;
+            pixels[x * 4 + c] = u8::try_from(sums[c] / window).unwrap_or(u8::MAX);
         }
 
         for y in 1..height {
@@ -1961,7 +2029,7 @@ fn rgba_box_blur_vertical(pixels: &mut [u8], width: usize, height: usize, radius
             for c in 0..4 {
                 sums[c] = sums[c].saturating_add(u32::from(col_copy[bottom_idx + c]));
                 sums[c] = sums[c].saturating_sub(u32::from(col_copy[top_idx + c]));
-                pixels[y * stride + x * 4 + c] = (sums[c] / window) as u8;
+                pixels[y * stride + x * 4 + c] = u8::try_from(sums[c] / window).unwrap_or(u8::MAX);
             }
         }
     }
@@ -2049,6 +2117,10 @@ pub(crate) fn deserialize_color_filter(bytes: &[u8], offset: &mut usize) -> Opti
 }
 
 /// Deserialize an `ImageFilter` from bytes.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one match arm per serialized image-filter kind tag; splitting would obscure the pairing with each filter's serialize()"
+)]
 pub(crate) fn deserialize_image_filter(bytes: &[u8], offset: &mut usize) -> Option<ImageFilterRef> {
     if *offset >= bytes.len() {
         return None;
@@ -2640,8 +2712,8 @@ mod tests {
         for y in 0..5 {
             for x in 0..5 {
                 let idx = (y * 5 + x) * 4;
-                pixels[idx] = (x * 50) as u8; // R gradient horizontal
-                pixels[idx + 1] = (y * 50) as u8; // G gradient vertical
+                pixels[idx] = u8::try_from(x * 50).unwrap_or(u8::MAX); // R gradient horizontal
+                pixels[idx + 1] = u8::try_from(y * 50).unwrap_or(u8::MAX); // G gradient vertical
                 pixels[idx + 2] = 128;
                 pixels[idx + 3] = 255;
             }
@@ -2672,9 +2744,10 @@ mod tests {
             LightingImageFilter::diffuse(light, 1.0, 1.0, Color4f::new(1.0, 1.0, 1.0, 1.0), None);
         let mut pixels = vec![128u8; 25 * 4]; // gray image
         filter.apply(&mut pixels, 5, 5);
-        // Lighting should modulate the image (may brighten based on implementation)
-        // Just check it doesn't crash and produces valid output
-        assert!(pixels[0] <= 255);
+        // Lighting should modulate the image (may brighten based on implementation).
+        // `pixels[0]` is a `u8`, so simply reading it back is the smoke test:
+        // this panics on out-of-bounds access if `apply` corrupted the buffer.
+        let _ = pixels[0];
     }
 
     #[test]
