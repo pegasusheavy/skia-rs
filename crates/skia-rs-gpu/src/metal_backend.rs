@@ -197,9 +197,6 @@ pub struct MetalPixelFormatInfo {
 ///
 /// Note: `Depth24Stencil8` maps to `Depth24Unorm_Stencil8`, which is **not**
 /// supported on all Metal devices (Apple-silicon GPUs do not support it).
-/// When you have a device, prefer [`texture_format_to_metal_for_device`],
-/// which falls back to `Depth32Float_Stencil8` where the 24-bit format is
-/// unavailable.
 #[cfg(feature = "metal")]
 pub fn texture_format_to_metal(format: TextureFormat) -> MTLPixelFormat {
     match format {
@@ -213,30 +210,6 @@ pub fn texture_format_to_metal(format: TextureFormat) -> MTLPixelFormat {
         TextureFormat::Rgba32Float => MTLPixelFormat::RGBA32Float,
         TextureFormat::Depth24Stencil8 => MTLPixelFormat::Depth24Unorm_Stencil8,
         TextureFormat::Depth32Float => MTLPixelFormat::Depth32Float,
-    }
-}
-
-/// Convert TextureFormat to Metal pixel format, gating device-dependent
-/// depth/stencil formats on actual support.
-///
-/// `Depth24Unorm_Stencil8` requires `depth24Stencil8PixelFormatSupported`
-/// (true only on some Intel Macs); on Apple silicon it is unsupported, so we
-/// fall back to the universally available `Depth32Float_Stencil8`. All other
-/// formats defer to [`texture_format_to_metal`].
-#[cfg(feature = "metal")]
-pub fn texture_format_to_metal_for_device(
-    format: TextureFormat,
-    device: &DeviceRef,
-) -> MTLPixelFormat {
-    match format {
-        TextureFormat::Depth24Stencil8 => {
-            if device.d24_s8_supported() {
-                MTLPixelFormat::Depth24Unorm_Stencil8
-            } else {
-                MTLPixelFormat::Depth32Float_Stencil8
-            }
-        }
-        other => texture_format_to_metal(other),
     }
 }
 

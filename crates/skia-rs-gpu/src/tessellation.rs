@@ -273,12 +273,6 @@ impl PathTessellator {
         self.device_scale = matrix_max_scale(matrix).max(1e-4);
     }
 
-    /// Builder form of [`Self::set_view_matrix`].
-    pub fn with_view_matrix(mut self, matrix: &Matrix) -> Self {
-        self.set_view_matrix(matrix);
-        self
-    }
-
     /// Source-space flattening tolerance: device tolerance divided by the
     /// view-matrix max scale, clamped to a small positive minimum.
     fn src_tolerance(&self) -> Scalar {

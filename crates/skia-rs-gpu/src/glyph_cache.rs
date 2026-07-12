@@ -424,12 +424,6 @@ impl GlyphBatch {
             BatchValidity::Stale
         }
     }
-
-    /// Convenience: true if the batch is safe to draw against `current_generation`.
-    #[must_use]
-    pub fn is_current(&self, current_generation: u64) -> bool {
-        self.validate(current_generation) == BatchValidity::Current
-    }
 }
 
 #[cfg(test)]
@@ -587,9 +581,9 @@ mod tests {
         let generation = 7;
         let batch = GlyphBatch::new(generation);
         assert_eq!(batch.validate(generation), BatchValidity::Current);
-        assert!(batch.is_current(generation));
+        assert!(batch.validate(generation) == BatchValidity::Current);
         assert_eq!(batch.validate(generation + 1), BatchValidity::Stale);
-        assert!(!batch.is_current(generation + 1));
+        assert!(!(batch.validate(generation + 1) == BatchValidity::Current));
     }
 
     #[test]
