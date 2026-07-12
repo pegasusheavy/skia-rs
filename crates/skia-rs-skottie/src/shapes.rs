@@ -1130,13 +1130,6 @@ impl TrimPathShape {
         (start_t, stop_t, inverted)
     }
 
-    /// Get trim values at a specific frame (legacy accessor: start, end, offset).
-    pub fn values_at(&self, frame: Scalar) -> (Scalar, Scalar, Scalar) {
-        let start = self.start.value_at(frame).as_scalar().unwrap_or(0.0) / 100.0;
-        let end = self.end.value_at(frame).as_scalar().unwrap_or(100.0) / 100.0;
-        let offset = self.offset.value_at(frame).as_scalar().unwrap_or(0.0) / 360.0;
-        (start, end, offset)
-    }
 }
 
 /// Merge paths shape.

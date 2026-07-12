@@ -233,34 +233,15 @@ impl MaskGroup {
         self.masks.iter().any(|m| m.is_active(frame))
     }
 
-    /// Get all active mask paths at a frame.
-    pub fn get_mask_paths(&self, frame: Scalar) -> Vec<(Path, MaskMode, Scalar)> {
-        self.masks
-            .iter()
-            .filter(|m| m.is_active(frame))
-            .filter_map(|m| {
-                m.path_at(frame)
-                    .map(|path| (path, m.mode, m.opacity_at(frame)))
-            })
-            .collect()
-    }
-
-    /// Compute the combined mask clip path for `bounds` (the layer/comp
-    /// bounds, needed to resolve inverted masks to a finite region).
-    ///
-    /// Matches upstream `AttachMask` (`Layer.cpp`): Add unions, Subtract
-    /// subtracts (`kDstOut`), Intersect intersects, Difference xors; `inv`
-    /// inverts an individual mask's geometry (relative to `bounds`); the
-    /// *first* mask in the stack always draws in "source" mode, with its
-    /// effective inversion flipped when its own mode is Subtract.
-    pub fn compute_combined_path(&self, frame: Scalar, bounds: Rect) -> Option<Path> {
-        build_clip(&self.masks, frame, bounds)
-    }
 }
 
 /// Build the combined clip path for a set of masks at a frame.
 ///
-/// See [`MaskGroup::compute_combined_path`] for the semantics.
+/// Matches upstream `AttachMask` (`Layer.cpp`): Add unions, Subtract
+/// subtracts (`kDstOut`), Intersect intersects, Difference xors; `inv`
+/// inverts an individual mask's geometry (relative to `bounds`); the
+/// *first* mask in the stack always draws in "source" mode, with its
+/// effective inversion flipped when its own mode is Subtract.
 pub fn build_clip(masks: &[Mask], frame: Scalar, bounds: Rect) -> Option<Path> {
     let mut result: Option<Path> = None;
 
@@ -353,17 +334,12 @@ mod tests {
     }
 
     fn rect_mask(mode: MaskMode, x: Scalar, y: Scalar, w: Scalar, h: Scalar, inv: bool) -> Mask {
-        let mut builder = PathBuilder::new();
-        builder.add_rect(&skia_rs_core::Rect::from_xywh(x, y, w, h));
-        let path = builder.build();
-
         let path_data = PathData {
             vertices: vec![[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
             in_tangents: vec![[0.0, 0.0]; 4],
             out_tangents: vec![[0.0, 0.0]; 4],
             closed: true,
         };
-        let _ = path; // geometry built directly from PathData below
 
         Mask {
             name: String::new(),
