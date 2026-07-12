@@ -363,6 +363,15 @@ the regenerated headers.
   pixels are unaffected in value from a caller's perspective, but any code
   that relied on the transient premultiplied bytes should re-check.
 
+### Changed (skia-rs-python)
+
+- **Breaking:** `Surface.pixels()` now returns straight (unpremultiplied)
+  RGBA, matching its documented contract and the parallel `skia-rs-node`
+  change. Raster surfaces store premultiplied bytes internally this
+  release; `pixels()` unpremultiplies before returning, so consumers
+  feeding the buffer into NumPy/PIL/PNG writers keep correct colors for
+  translucent pixels.
+
 ### Changed (skia-rs-core — conformance audit, Task 1)
 - `Rect::is_empty` now reports empty for any NaN coordinate (matching
   `SkRect::isEmpty`), so NaN rects no longer survive `union`/`join`.
@@ -485,6 +494,14 @@ the regenerated headers.
   precedence chain and `half(x)` parses as a constructor.
 
 ### skia-rs-pdf
+- **Breaking (API):** `PdfCanvas::draw_text` and `draw_text_with_font` now
+  return `Result<(), PdfError>` instead of `()`. Conditions that previously
+  panicked are now recoverable errors: drawing through a Type0/CID font
+  (whose live per-glyph CID emission is not yet implemented) and drawing
+  with no font selected both return `Err(PdfError::Unsupported)`. A font
+  index out of range remains a `debug_assert!` (programmer error — a valid
+  index only ever comes from the canvas's own font manager). Callers must
+  now handle or propagate the `Result`.
 - **Breaking (visual):** fixed text rendering upside-down — the PDF page
   CTM's `1 0 0 -1 0 height` y-flip was never compensated for glyph runs,
   so every drawn string rendered mirrored. Text now sets the text matrix
