@@ -1,7 +1,7 @@
 //! Byte-level TrueType subsetter for PDF embedding.
 //!
 //! This subsetter prunes a TrueType font's `glyf` / `loca` tables so the
-//! emitted FontFile2 stream contains only the glyph outlines actually used
+//! emitted `FontFile2` stream contains only the glyph outlines actually used
 //! by the document (plus `.notdef` and composite-glyph dependencies), while
 //! preserving every other table unchanged. Preserving `cmap`, `hmtx`,
 //! `hhea`, `OS/2`, `post`, `name`, `head`, `maxp` lets the PDF continue to
@@ -14,7 +14,7 @@
 //! The `subsetter` crate (typst) produces output explicitly designed for
 //! CID-keyed Type0 PDF embedding: it strips `cmap` and expects the caller
 //! to provide a replacement in PDF. Our embedding path is simple TrueType
-//! with WinAnsi encoding, where the reader walks the font's own cmap — so
+//! with `WinAnsi` encoding, where the reader walks the font's own cmap — so
 //! a `subsetter` drop-in would break glyph resolution. Klippa (fontations)
 //! would work but is not yet a stable crate on crates.io.
 //!
@@ -51,9 +51,9 @@ pub enum SubsetError {
 impl core::fmt::Display for SubsetError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Malformed(why) => write!(f, "malformed font: {}", why),
+            Self::Malformed(why) => write!(f, "malformed font: {why}"),
             Self::CollectionNotSupported => write!(f, "TTC collection not supported"),
-            Self::MissingTable(t) => write!(f, "missing required table: {}", t),
+            Self::MissingTable(t) => write!(f, "missing required table: {t}"),
         }
     }
 }
@@ -69,7 +69,7 @@ impl std::error::Error for SubsetError {}
 /// the used glyphs' outlines (with zero-length entries for the rest) and
 /// the `loca` table has been rebuilt accordingly. `head.checkSumAdjustment`
 /// is zeroed — PDF readers and PDF/A validators do not require a valid
-/// checksum on embedded FontFile2 streams, and computing it correctly
+/// checksum on embedded `FontFile2` streams, and computing it correctly
 /// would require re-hashing the entire output file.
 pub fn subset_truetype(data: &[u8], used_glyphs: &BTreeSet<u16>) -> Result<Vec<u8>, SubsetError> {
     let face = read_face(data)?;
@@ -87,10 +87,10 @@ pub fn subset_truetype(data: &[u8], used_glyphs: &BTreeSet<u16>) -> Result<Vec<u
         .table_range(b"maxp")
         .ok_or(SubsetError::MissingTable("maxp"))?;
 
-    let glyf = &data[glyf_range.clone()];
-    let loca = &data[loca_range.clone()];
-    let head = &data[head_range.clone()];
-    let maxp = &data[maxp_range.clone()];
+    let glyf = &data[glyf_range];
+    let loca = &data[loca_range];
+    let head = &data[head_range];
+    let maxp = &data[maxp_range];
 
     // head.indexToLocFormat is at offset 50-51 (u16). 0 = short (u16 * 2),
     // 1 = long (u32).
@@ -239,7 +239,7 @@ fn parse_loca(loca: &[u8], long: bool, num_glyphs: usize) -> Result<Vec<u32>, Su
             read_u32_be(loca, i * 4)
         } else {
             // Short loca stores offset / 2.
-            read_u16_be(loca, i * 2) as u32 * 2
+            u32::from(read_u16_be(loca, i * 2)) * 2
         };
         out.push(off);
     }
@@ -369,7 +369,7 @@ fn write_font(sfnt_version: [u8; 4], tables: &[(Tag, Vec<u8>)]) -> Vec<u8> {
     sorted.sort_by_key(|t| t.0);
 
     let num_tables = sorted.len() as u16;
-    let entry_selector = (num_tables as f64).log2() as u16;
+    let entry_selector = f64::from(num_tables).log2() as u16;
     let search_range = (1u16 << entry_selector) * 16;
     let range_shift = num_tables * 16 - search_range;
 

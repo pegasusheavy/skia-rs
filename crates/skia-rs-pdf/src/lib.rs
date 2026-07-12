@@ -5,7 +5,7 @@
 //! - Drawing to PDF canvas
 //! - Font embedding (Type 1, TrueType)
 //! - Image embedding (JPEG, PNG)
-//! - Transparency (ExtGState, soft masks, transparency groups)
+//! - Transparency (`ExtGState`, soft masks, transparency groups)
 //! - PDF/A compliance (ISO 19005)
 
 #![warn(missing_docs)]

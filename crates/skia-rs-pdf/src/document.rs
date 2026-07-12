@@ -80,7 +80,7 @@ pub struct PdfPage {
     pub used_fonts: Vec<usize>,
     /// Image indices used by this page.
     pub used_images: Vec<usize>,
-    /// ExtGState indices used by this page.
+    /// `ExtGState` indices used by this page.
     pub used_ext_gstates: Vec<usize>,
 }
 
@@ -92,6 +92,7 @@ impl Default for PdfDocument {
 
 impl PdfDocument {
     /// Create a new PDF document.
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             metadata: PdfMetadata::default(),
@@ -110,7 +111,7 @@ impl PdfDocument {
     }
 
     /// Get mutable reference to metadata.
-    pub fn metadata_mut(&mut self) -> &mut PdfMetadata {
+    pub const fn metadata_mut(&mut self) -> &mut PdfMetadata {
         &mut self.metadata
     }
 
@@ -129,24 +130,25 @@ impl PdfDocument {
     }
 
     /// Return the active PDF/A level, if any.
+    #[must_use] 
     pub fn pdfa_level(&self) -> Option<PdfALevel> {
         self.pdfa.as_ref().map(|s| s.level)
     }
 
     /// Borrow the document's font manager for registering standard / TTF
     /// fonts ahead of time.
-    pub fn fonts_mut(&mut self) -> &mut PdfFontManager {
+    pub const fn fonts_mut(&mut self) -> &mut PdfFontManager {
         &mut self.fonts
     }
 
     /// Borrow the document's image manager for registering images ahead of
     /// time or linking RGBA image/mask pairs post-hoc.
-    pub fn images_mut(&mut self) -> &mut PdfImageManager {
+    pub const fn images_mut(&mut self) -> &mut PdfImageManager {
         &mut self.images
     }
 
     /// Borrow the document's transparency manager.
-    pub fn transparency_mut(&mut self) -> &mut TransparencyManager {
+    pub const fn transparency_mut(&mut self) -> &mut TransparencyManager {
         &mut self.transparency
     }
 
@@ -164,7 +166,7 @@ impl PdfDocument {
     }
 
     /// Allocate a new object ID.
-    fn alloc_object_id(&mut self) -> u32 {
+    const fn alloc_object_id(&mut self) -> u32 {
         let id = self.next_object_id;
         self.next_object_id += 1;
         id
@@ -207,6 +209,7 @@ impl PdfDocument {
     }
 
     /// Get the number of pages.
+    #[must_use] 
     pub fn page_count(&self) -> usize {
         self.pages.len()
     }
@@ -217,10 +220,10 @@ impl PdfDocument {
     /// 1. The PDF header (1.4 / 1.7 depending on PDF/A level).
     /// 2. Catalog, pages tree, per-page objects with fully populated
     ///    `/Resources` dictionaries (fonts, images, ext-gstates).
-    /// 3. Font dictionary, font descriptor, and (for TrueType) FontFile2
+    /// 3. Font dictionary, font descriptor, and (for TrueType) `FontFile2`
     ///    stream for every font referenced from any page.
-    /// 4. Image XObject for every image referenced from any page.
-    /// 5. ExtGState dictionary for every transparency state referenced.
+    /// 4. Image `XObject` for every image referenced from any page.
+    /// 5. `ExtGState` dictionary for every transparency state referenced.
     /// 6. For PDF/A-tagged docs: XMP metadata stream and output intent,
     ///    plus a trailer `/ID` entry derived from the document UUID.
     /// 7. The xref table and trailer.
@@ -233,7 +236,7 @@ impl PdfDocument {
         self.sync_pdfa_model();
 
         if let Err(errors) = self.validate_pdfa() {
-            let msgs = errors.iter().map(|e| format!("{}", e)).collect();
+            let msgs = errors.iter().map(|e| format!("{e}")).collect();
             return Err(PdfError::Validation(msgs));
         }
 
@@ -276,12 +279,11 @@ impl PdfDocument {
 
         // Transparency: any ExtGState with alpha < 1 or non-Normal blend.
         for gs in self.transparency.ext_gstates() {
-            let has_alpha = gs.fill_alpha.map(|a| a < 1.0).unwrap_or(false)
-                || gs.stroke_alpha.map(|a| a < 1.0).unwrap_or(false);
+            let has_alpha = gs.fill_alpha.is_some_and(|a| a < 1.0)
+                || gs.stroke_alpha.is_some_and(|a| a < 1.0);
             let has_blend = gs
                 .blend_mode
-                .map(|m| m != crate::transparency::PdfBlendMode::Normal)
-                .unwrap_or(false);
+                .is_some_and(|m| m != crate::transparency::PdfBlendMode::Normal);
             if has_alpha || has_blend {
                 state.doc.uses_transparency = true;
             }
@@ -289,7 +291,7 @@ impl PdfDocument {
     }
 
     /// Check if metadata is present.
-    fn has_metadata(&self) -> bool {
+    const fn has_metadata(&self) -> bool {
         self.metadata.title.is_some()
             || self.metadata.author.is_some()
             || self.metadata.subject.is_some()
@@ -358,21 +360,21 @@ struct WriteCtx<'a> {
     pages_id: u32,
     /// Object IDs for each font's Font dict.
     font_ids: Vec<u32>,
-    /// Object IDs for each font's FontDescriptor dict (TrueType only).
+    /// Object IDs for each font's `FontDescriptor` dict (TrueType only).
     font_desc_ids: Vec<Option<u32>>,
-    /// Object IDs for each font's FontFile2 stream (TrueType/Type0 only).
+    /// Object IDs for each font's `FontFile2` stream (TrueType/Type0 only).
     font_file_ids: Vec<Option<u32>>,
-    /// Object IDs for each font's ToUnicode stream.
+    /// Object IDs for each font's `ToUnicode` stream.
     font_tounicode_ids: Vec<u32>,
-    /// Object IDs for each Type0 font's CIDFontType2 descendant dict.
+    /// Object IDs for each Type0 font's `CIDFontType2` descendant dict.
     font_descendant_ids: Vec<Option<u32>>,
-    /// Object IDs for each image's XObject.
+    /// Object IDs for each image's `XObject`.
     image_ids: Vec<u32>,
-    /// Object IDs for each ExtGState.
+    /// Object IDs for each `ExtGState`.
     ext_gstate_ids: Vec<u32>,
     /// Object ID for the XMP metadata stream (PDF/A).
     metadata_id: Option<u32>,
-    /// Object ID for the OutputIntent dict (PDF/A).
+    /// Object ID for the `OutputIntent` dict (PDF/A).
     output_intent_id: Option<u32>,
     /// Object ID for the sRGB ICC profile stream (PDF/A).
     icc_profile_id: Option<u32>,
@@ -383,7 +385,7 @@ struct WriteCtx<'a> {
 }
 
 impl<'a> WriteCtx<'a> {
-    fn new(doc: &'a PdfDocument) -> Self {
+    const fn new(doc: &'a PdfDocument) -> Self {
         Self {
             doc,
             offsets: Vec::new(),
@@ -405,7 +407,7 @@ impl<'a> WriteCtx<'a> {
         }
     }
 
-    fn alloc(&mut self) -> u32 {
+    const fn alloc(&mut self) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
         id
@@ -502,9 +504,8 @@ impl<'a> WriteCtx<'a> {
             .doc
             .pdfa
             .as_ref()
-            .map(|s| s.level.min_pdf_version())
-            .unwrap_or("1.4");
-        let header = format!("%PDF-{}\n", version);
+            .map_or("1.4", |s| s.level.min_pdf_version());
+        let header = format!("%PDF-{version}\n");
         self.write_bytes(writer, header.as_bytes())?;
         self.write_bytes(writer, b"%\xE2\xE3\xCF\xD3\n")?; // binary marker
 
@@ -515,10 +516,10 @@ impl<'a> WriteCtx<'a> {
             self.catalog_id, self.pages_id
         );
         if let Some(id) = self.metadata_id {
-            catalog.push_str(&format!(" /Metadata {} 0 R", id));
+            catalog.push_str(&format!(" /Metadata {id} 0 R"));
         }
         if let Some(id) = self.output_intent_id {
-            catalog.push_str(&format!(" /OutputIntents [{} 0 R]", id));
+            catalog.push_str(&format!(" /OutputIntents [{id} 0 R]"));
         }
         catalog.push_str(" >>\nendobj\n");
         self.write_bytes(writer, catalog.as_bytes())?;
@@ -527,7 +528,7 @@ impl<'a> WriteCtx<'a> {
         self.offsets.push((self.pages_id, self.offset));
         let kids: String = page_ids
             .iter()
-            .map(|(pid, _)| format!("{} 0 R", pid))
+            .map(|(pid, _)| format!("{pid} 0 R"))
             .collect::<Vec<_>>()
             .join(" ");
         let pages = format!(
@@ -653,8 +654,7 @@ impl<'a> WriteCtx<'a> {
             let xmp = state
                 .doc
                 .xmp_metadata
-                .as_ref()
-                .cloned()
+                .clone()
                 .unwrap_or_else(|| {
                     let mut m = XmpMetadata::new();
                     m.pdfa_level = Some(state.level);
@@ -682,8 +682,7 @@ impl<'a> WriteCtx<'a> {
                 .expect("icc_profile_id must be set when PDF/A is enabled");
             self.offsets.push((intent_id, self.offset));
             let oi = format!(
-                "{} 0 obj\n<< /Type /OutputIntent /S /GTS_PDFA1 /OutputConditionIdentifier (sRGB IEC61966-2.1) /RegistryName (http://www.color.org) /Info (sRGB IEC61966-2.1) /DestOutputProfile {} 0 R >>\nendobj\n",
-                intent_id, icc_id
+                "{intent_id} 0 obj\n<< /Type /OutputIntent /S /GTS_PDFA1 /OutputConditionIdentifier (sRGB IEC61966-2.1) /RegistryName (http://www.color.org) /Info (sRGB IEC61966-2.1) /DestOutputProfile {icc_id} 0 R >>\nendobj\n"
             );
             self.write_bytes(writer, oi.as_bytes())?;
 
@@ -715,7 +714,7 @@ impl<'a> WriteCtx<'a> {
         let xref_offset = self.offset;
         self.write_bytes(writer, b"xref\n")?;
         let size = self.offsets.len() + 1;
-        self.write_bytes(writer, format!("0 {}\n", size).as_bytes())?;
+        self.write_bytes(writer, format!("0 {size}\n").as_bytes())?;
         self.write_bytes(writer, b"0000000000 65535 f \n")?;
 
         let mut sorted = self.offsets.clone();
@@ -726,9 +725,9 @@ impl<'a> WriteCtx<'a> {
         // happen in practice — assert in debug.
         let mut expected = 1u32;
         for (id, off) in &sorted {
-            debug_assert_eq!(*id, expected, "xref hole at {}", expected);
+            debug_assert_eq!(*id, expected, "xref hole at {expected}");
             expected += 1;
-            self.write_bytes(writer, format!("{:010} 00000 n \n", off).as_bytes())?;
+            self.write_bytes(writer, format!("{off:010} 00000 n \n").as_bytes())?;
         }
 
         // ---- Trailer ----
@@ -742,7 +741,7 @@ impl<'a> WriteCtx<'a> {
             None => generate_doc_id(),
         };
         let id_bytes = id_hex.replace('-', "").chars().take(32).collect::<String>();
-        let trailer_id_entry = format!("/ID [<{}> <{}>]", id_bytes, id_bytes);
+        let trailer_id_entry = format!("/ID [<{id_bytes}> <{id_bytes}>]");
 
         self.write_bytes(writer, b"trailer\n")?;
         let trailer = if let Some(info_id) = self.info_id {
@@ -761,7 +760,7 @@ impl<'a> WriteCtx<'a> {
         // startxref
         self.write_bytes(
             writer,
-            format!("startxref\n{}\n%%EOF\n", xref_offset).as_bytes(),
+            format!("startxref\n{xref_offset}\n%%EOF\n").as_bytes(),
         )?;
 
         Ok(())
@@ -809,7 +808,7 @@ impl<'a> WriteCtx<'a> {
     fn build_font_dict(&self, font: &PdfFont, i: usize) -> String {
         let id = self.font_ids[i];
         let to_unicode_id = self.font_tounicode_ids[i];
-        let mut dict = format!("{} 0 obj\n<<\n", id);
+        let mut dict = format!("{id} 0 obj\n<<\n");
 
         match font.font_type {
             PdfFontType::Type1 => {
@@ -817,7 +816,7 @@ impl<'a> WriteCtx<'a> {
                 dict.push_str("/Subtype /Type1\n");
                 dict.push_str(&format!("/BaseFont /{}\n", font.base_font));
                 if let Some(ref enc) = font.encoding {
-                    dict.push_str(&format!("/Encoding /{}\n", enc));
+                    dict.push_str(&format!("/Encoding /{enc}\n"));
                 }
             }
             PdfFontType::TrueType => {
@@ -830,15 +829,15 @@ impl<'a> WriteCtx<'a> {
                 dict.push_str("/Widths [");
                 for code in font.first_char..=font.last_char {
                     let w = font.widths.get(&code).copied().unwrap_or(0);
-                    dict.push_str(&format!("{} ", w));
+                    dict.push_str(&format!("{w} "));
                 }
                 dict.push_str("]\n");
 
                 if let Some(desc_id) = self.font_desc_ids[i] {
-                    dict.push_str(&format!("/FontDescriptor {} 0 R\n", desc_id));
+                    dict.push_str(&format!("/FontDescriptor {desc_id} 0 R\n"));
                 }
                 if let Some(ref enc) = font.encoding {
-                    dict.push_str(&format!("/Encoding /{}\n", enc));
+                    dict.push_str(&format!("/Encoding /{enc}\n"));
                 }
             }
             PdfFontType::OpenTypeCff | PdfFontType::Type0 => {
@@ -850,12 +849,12 @@ impl<'a> WriteCtx<'a> {
                 // from its descendant CID font — without this array the
                 // font has no outlines at all.
                 if let Some(desc_id) = self.font_descendant_ids[i] {
-                    dict.push_str(&format!("/DescendantFonts [{} 0 R]\n", desc_id));
+                    dict.push_str(&format!("/DescendantFonts [{desc_id} 0 R]\n"));
                 }
             }
         }
 
-        dict.push_str(&format!("/ToUnicode {} 0 R\n", to_unicode_id));
+        dict.push_str(&format!("/ToUnicode {to_unicode_id} 0 R\n"));
         dict.push_str(">>\nendobj\n");
         dict
     }
@@ -886,7 +885,7 @@ fn flate_compress(data: &[u8]) -> Vec<u8> {
 }
 
 /// A real, minimal sRGB ICC v2.1 profile (2576 bytes; "monitor" device
-/// class, RGB → XYZ PCS), embedded verbatim in the OutputIntent's
+/// class, RGB → XYZ PCS), embedded verbatim in the `OutputIntent`'s
 /// `/DestOutputProfile` stream for PDF/A conformance (ISO 19005 requires an
 /// actual, parseable ICC profile there — not just a plausible-looking PDF
 /// object). Provenance: the "Artifex Software sRGB ICC Profile" already
@@ -907,7 +906,7 @@ fn generate_doc_id() -> String {
         .unwrap_or_default();
     let secs = now.as_secs();
     let nanos = now.subsec_nanos();
-    format!("{:016x}{:016x}", secs, nanos as u64)
+    format!("{:016x}{:016x}", secs, u64::from(nanos))
 }
 
 #[cfg(test)]
@@ -971,8 +970,7 @@ mod tests {
         // The page's /Resources dict must reference the font.
         assert!(
             s.contains("/Font << /F1"),
-            "missing /Font in Resources: {}",
-            s
+            "missing /Font in Resources: {s}"
         );
         // The font dict itself must be emitted somewhere in the file.
         assert!(s.contains("/BaseFont /Helvetica"));
@@ -1007,13 +1005,11 @@ mod tests {
         let s = String::from_utf8_lossy(&bytes);
         assert!(
             s.contains("/XObject << /Im1"),
-            "missing /XObject in Resources: {}",
-            s
+            "missing /XObject in Resources: {s}"
         );
         assert!(
             s.contains("/ExtGState << /GS1"),
-            "missing /ExtGState: {}",
-            s
+            "missing /ExtGState: {s}"
         );
         assert!(s.contains("/Subtype /Image"));
         assert!(s.contains("/Type /ExtGState"));
@@ -1069,13 +1065,12 @@ mod tests {
                 let combined = msgs.join(" ");
                 assert!(
                     combined.contains("Transparency"),
-                    "unexpected error: {}",
-                    combined
+                    "unexpected error: {combined}"
                 );
             }
-            PdfError::Io(e) => panic!("expected validation error, got I/O error: {}", e),
+            PdfError::Io(e) => panic!("expected validation error, got I/O error: {e}"),
             PdfError::Unsupported(msg) => {
-                panic!("expected validation error, got unsupported error: {}", msg)
+                panic!("expected validation error, got unsupported error: {msg}")
             }
         }
     }

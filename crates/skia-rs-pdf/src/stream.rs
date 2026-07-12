@@ -23,21 +23,25 @@ pub struct ByteStream {
 
 impl ByteStream {
     /// Create a new byte stream.
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self { data: Vec::new() }
     }
 
     /// Create from existing data.
-    pub fn from_data(data: Vec<u8>) -> Self {
+    #[must_use] 
+    pub const fn from_data(data: Vec<u8>) -> Self {
         Self { data }
     }
 
     /// Get the data.
+    #[must_use] 
     pub fn data(&self) -> &[u8] {
         &self.data
     }
 
     /// Take the data.
+    #[must_use] 
     pub fn into_data(self) -> Vec<u8> {
         self.data
     }
@@ -102,26 +106,30 @@ pub mod page_sizes {
 
     /// Convert inches to points.
     #[inline]
+    #[must_use] 
     pub const fn inches_to_points(inches: Scalar) -> Scalar {
         inches * 72.0
     }
 
     /// Convert millimeters to points.
     #[inline]
+    #[must_use] 
     pub const fn mm_to_points(mm: Scalar) -> Scalar {
-        mm * 2.834645669
+        mm * 2.834_645_7
     }
 
     /// Convert points to inches.
     #[inline]
+    #[must_use] 
     pub const fn points_to_inches(points: Scalar) -> Scalar {
         points / 72.0
     }
 
     /// Convert points to millimeters.
     #[inline]
+    #[must_use] 
     pub const fn points_to_mm(points: Scalar) -> Scalar {
-        points / 2.834645669
+        points / 2.834_645_7
     }
 }
 

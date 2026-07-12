@@ -57,7 +57,8 @@ pub enum PdfALevel {
 
 impl PdfALevel {
     /// Get the PDF/A part number.
-    pub fn part(&self) -> u8 {
+    #[must_use] 
+    pub const fn part(&self) -> u8 {
         match self {
             Self::A1a | Self::A1b => 1,
             Self::A2a | Self::A2b | Self::A2u => 2,
@@ -66,7 +67,8 @@ impl PdfALevel {
     }
 
     /// Get the conformance level identifier.
-    pub fn conformance(&self) -> &'static str {
+    #[must_use] 
+    pub const fn conformance(&self) -> &'static str {
         match self {
             Self::A1a | Self::A2a | Self::A3a => "A",
             Self::A1b | Self::A2b | Self::A3b => "B",
@@ -75,7 +77,8 @@ impl PdfALevel {
     }
 
     /// Get the minimum PDF version required.
-    pub fn min_pdf_version(&self) -> &'static str {
+    #[must_use] 
+    pub const fn min_pdf_version(&self) -> &'static str {
         match self {
             Self::A1a | Self::A1b => "1.4",
             Self::A2a | Self::A2b | Self::A2u => "1.7",
@@ -84,27 +87,32 @@ impl PdfALevel {
     }
 
     /// Check if transparency is allowed.
-    pub fn allows_transparency(&self) -> bool {
+    #[must_use] 
+    pub const fn allows_transparency(&self) -> bool {
         !matches!(self, Self::A1a | Self::A1b)
     }
 
     /// Check if embedded files are allowed.
-    pub fn allows_embedded_files(&self) -> bool {
+    #[must_use] 
+    pub const fn allows_embedded_files(&self) -> bool {
         matches!(self, Self::A3a | Self::A3b | Self::A3u)
     }
 
     /// Check if JPEG2000 compression is allowed.
-    pub fn allows_jpeg2000(&self) -> bool {
+    #[must_use] 
+    pub const fn allows_jpeg2000(&self) -> bool {
         !matches!(self, Self::A1a | Self::A1b)
     }
 
     /// Check if Unicode text is required.
-    pub fn requires_unicode(&self) -> bool {
+    #[must_use] 
+    pub const fn requires_unicode(&self) -> bool {
         matches!(self, Self::A2u | Self::A3u)
     }
 
     /// Check if structure (tagged PDF) is required.
-    pub fn requires_structure(&self) -> bool {
+    #[must_use] 
+    pub const fn requires_structure(&self) -> bool {
         matches!(self, Self::A1a | Self::A2a | Self::A3a)
     }
 }
@@ -245,6 +253,7 @@ pub struct XmpMetadata {
 
 impl XmpMetadata {
     /// Create new XMP metadata.
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
@@ -262,12 +271,14 @@ impl XmpMetadata {
     }
 
     /// Set PDF/A level.
-    pub fn with_pdfa_level(mut self, level: PdfALevel) -> Self {
+    #[must_use] 
+    pub const fn with_pdfa_level(mut self, level: PdfALevel) -> Self {
         self.pdfa_level = Some(level);
         self
     }
 
     /// Generate XMP packet.
+    #[must_use] 
     pub fn to_xmp(&self) -> String {
         let mut xmp = String::new();
 
@@ -294,7 +305,7 @@ impl XmpMetadata {
 
         if let Some(ref author) = self.author {
             xmp.push_str(&format!(
-                r#"      <dc:creator><rdf:Seq><rdf:li>{}</rdf:li></rdf:Seq></dc:creator>"#,
+                r"      <dc:creator><rdf:Seq><rdf:li>{}</rdf:li></rdf:Seq></dc:creator>",
                 escape_xml(author)
             ));
             xmp.push('\n');
@@ -308,7 +319,7 @@ impl XmpMetadata {
             xmp.push('\n');
         }
 
-        xmp.push_str(r#"    </rdf:Description>"#);
+        xmp.push_str(r"    </rdf:Description>");
         xmp.push('\n');
 
         // XMP Basic metadata
@@ -319,7 +330,7 @@ impl XmpMetadata {
 
         if let Some(ref creator) = self.creator {
             xmp.push_str(&format!(
-                r#"      <xmp:CreatorTool>{}</xmp:CreatorTool>"#,
+                r"      <xmp:CreatorTool>{}</xmp:CreatorTool>",
                 escape_xml(creator)
             ));
             xmp.push('\n');
@@ -327,21 +338,19 @@ impl XmpMetadata {
 
         if let Some(ref create_date) = self.create_date {
             xmp.push_str(&format!(
-                r#"      <xmp:CreateDate>{}</xmp:CreateDate>"#,
-                create_date
+                r"      <xmp:CreateDate>{create_date}</xmp:CreateDate>"
             ));
             xmp.push('\n');
         }
 
         if let Some(ref modify_date) = self.modify_date {
             xmp.push_str(&format!(
-                r#"      <xmp:ModifyDate>{}</xmp:ModifyDate>"#,
-                modify_date
+                r"      <xmp:ModifyDate>{modify_date}</xmp:ModifyDate>"
             ));
             xmp.push('\n');
         }
 
-        xmp.push_str(r#"    </rdf:Description>"#);
+        xmp.push_str(r"    </rdf:Description>");
         xmp.push('\n');
 
         // PDF metadata
@@ -349,9 +358,9 @@ impl XmpMetadata {
             r#"    <rdf:Description rdf:about="" xmlns:pdf="http://ns.adobe.com/pdf/1.3/">"#,
         );
         xmp.push('\n');
-        xmp.push_str(r#"      <pdf:Producer>skia-rs 0.1.0</pdf:Producer>"#);
+        xmp.push_str(r"      <pdf:Producer>skia-rs 0.1.0</pdf:Producer>");
         xmp.push('\n');
-        xmp.push_str(r#"    </rdf:Description>"#);
+        xmp.push_str(r"    </rdf:Description>");
         xmp.push('\n');
 
         // PDF/A identification
@@ -359,16 +368,16 @@ impl XmpMetadata {
             xmp.push_str(r#"    <rdf:Description rdf:about="" xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/">"#);
             xmp.push('\n');
             xmp.push_str(&format!(
-                r#"      <pdfaid:part>{}</pdfaid:part>"#,
+                r"      <pdfaid:part>{}</pdfaid:part>",
                 level.part()
             ));
             xmp.push('\n');
             xmp.push_str(&format!(
-                r#"      <pdfaid:conformance>{}</pdfaid:conformance>"#,
+                r"      <pdfaid:conformance>{}</pdfaid:conformance>",
                 level.conformance()
             ));
             xmp.push('\n');
-            xmp.push_str(r#"    </rdf:Description>"#);
+            xmp.push_str(r"    </rdf:Description>");
             xmp.push('\n');
         }
 
@@ -379,27 +388,25 @@ impl XmpMetadata {
 
             if let Some(ref doc_id) = self.document_id {
                 xmp.push_str(&format!(
-                    r#"      <xmpMM:DocumentID>uuid:{}</xmpMM:DocumentID>"#,
-                    doc_id
+                    r"      <xmpMM:DocumentID>uuid:{doc_id}</xmpMM:DocumentID>"
                 ));
                 xmp.push('\n');
             }
 
             if let Some(ref inst_id) = self.instance_id {
                 xmp.push_str(&format!(
-                    r#"      <xmpMM:InstanceID>uuid:{}</xmpMM:InstanceID>"#,
-                    inst_id
+                    r"      <xmpMM:InstanceID>uuid:{inst_id}</xmpMM:InstanceID>"
                 ));
                 xmp.push('\n');
             }
 
-            xmp.push_str(r#"    </rdf:Description>"#);
+            xmp.push_str(r"    </rdf:Description>");
             xmp.push('\n');
         }
 
-        xmp.push_str(r#"  </rdf:RDF>"#);
+        xmp.push_str(r"  </rdf:RDF>");
         xmp.push('\n');
-        xmp.push_str(r#"</x:xmpmeta>"#);
+        xmp.push_str(r"</x:xmpmeta>");
         xmp.push('\n');
 
         // Padding for in-place updates
@@ -433,7 +440,7 @@ pub struct OutputIntent {
     pub output_condition: String,
     /// Output condition identifier type.
     pub output_condition_identifier: String,
-    /// Registry name (e.g., "http://www.color.org").
+    /// Registry name (e.g., "<http://www.color.org>").
     pub registry_name: Option<String>,
     /// Human-readable info.
     pub info: Option<String>,
@@ -443,6 +450,7 @@ pub struct OutputIntent {
 
 impl OutputIntent {
     /// Create sRGB output intent.
+    #[must_use] 
     pub fn srgb() -> Self {
         Self {
             output_condition: "sRGB IEC61966-2.1".to_string(),
@@ -454,6 +462,7 @@ impl OutputIntent {
     }
 
     /// Create FOGRA39 (coated) output intent for print.
+    #[must_use] 
     pub fn fogra39() -> Self {
         Self {
             output_condition: "FOGRA39".to_string(),
@@ -465,6 +474,7 @@ impl OutputIntent {
     }
 
     /// Create custom output intent with ICC profile.
+    #[must_use] 
     pub fn custom(condition: &str, icc_profile: Vec<u8>) -> Self {
         Self {
             output_condition: condition.to_string(),
@@ -488,7 +498,8 @@ pub struct PdfAValidator {
 
 impl PdfAValidator {
     /// Create a new validator for the specified level.
-    pub fn new(level: PdfALevel) -> Self {
+    #[must_use] 
+    pub const fn new(level: PdfALevel) -> Self {
         Self {
             level,
             errors: Vec::new(),
@@ -548,24 +559,24 @@ impl PdfAValidator {
             if !font.is_embedded {
                 self.errors.push(PdfAError {
                     code: PdfAErrorCode::FontNotEmbedded,
-                    message: format!("Font '{}' must be embedded", name),
-                    location: Some(format!("Font: {}", name)),
+                    message: format!("Font '{name}' must be embedded"),
+                    location: Some(format!("Font: {name}")),
                 });
             }
 
             if !font.has_cmap {
                 self.errors.push(PdfAError {
                     code: PdfAErrorCode::FontMissingCmap,
-                    message: format!("Font '{}' missing ToUnicode CMap", name),
-                    location: Some(format!("Font: {}", name)),
+                    message: format!("Font '{name}' missing ToUnicode CMap"),
+                    location: Some(format!("Font: {name}")),
                 });
             }
 
             if !font.has_widths {
                 self.errors.push(PdfAError {
                     code: PdfAErrorCode::FontMissingWidths,
-                    message: format!("Font '{}' missing glyph widths", name),
-                    location: Some(format!("Font: {}", name)),
+                    message: format!("Font '{name}' missing glyph widths"),
+                    location: Some(format!("Font: {name}")),
                 });
             }
         }
@@ -583,8 +594,8 @@ impl PdfAValidator {
         for color_space in &doc.uncalibrated_colors {
             self.errors.push(PdfAError {
                 code: PdfAErrorCode::UncalibratedColorSpace,
-                message: format!("Uncalibrated color space '{}' not allowed", color_space),
-                location: Some(format!("ColorSpace: {}", color_space)),
+                message: format!("Uncalibrated color space '{color_space}' not allowed"),
+                location: Some(format!("ColorSpace: {color_space}")),
             });
         }
     }
@@ -678,7 +689,7 @@ impl PdfAValidator {
 pub struct PdfAFontInfo {
     /// Font is embedded.
     pub is_embedded: bool,
-    /// Has ToUnicode CMap.
+    /// Has `ToUnicode` `CMap`.
     pub has_cmap: bool,
     /// Has glyph widths.
     pub has_widths: bool,
@@ -691,7 +702,7 @@ pub struct EmbeddedFileInfo {
     pub name: String,
     /// MIME type.
     pub mime_type: Option<String>,
-    /// AFRelationship (Source, Data, Alternative, etc.)
+    /// `AFRelationship` (Source, Data, Alternative, etc.)
     pub relationship: Option<String>,
 }
 
@@ -706,7 +717,7 @@ pub struct PdfADocument {
     pub output_intent: Option<OutputIntent>,
     /// Fonts used in document.
     pub fonts: std::collections::HashMap<String, PdfAFontInfo>,
-    /// Uses device-dependent colors (DeviceRGB, DeviceCMYK, DeviceGray).
+    /// Uses device-dependent colors (`DeviceRGB`, `DeviceCMYK`, `DeviceGray`).
     pub uses_device_colors: bool,
     /// Uncalibrated color spaces used.
     pub uncalibrated_colors: HashSet<String>,
@@ -728,6 +739,7 @@ pub struct PdfADocument {
 
 impl PdfADocument {
     /// Create a new PDF/A document model.
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
@@ -852,8 +864,8 @@ fn iso8601_now() -> String {
 
     let mut month = 1;
     for &days_in_month in &month_days {
-        if remaining_days >= days_in_month as i64 {
-            remaining_days -= days_in_month as i64;
+        if remaining_days >= i64::from(days_in_month) {
+            remaining_days -= i64::from(days_in_month);
             month += 1;
         } else {
             break;
@@ -863,12 +875,11 @@ fn iso8601_now() -> String {
     let day = remaining_days + 1;
 
     format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        year, month, day, hours, minutes, seconds
+        "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z"
     )
 }
 
-fn is_leap_year(year: i64) -> bool {
+const fn is_leap_year(year: i64) -> bool {
     (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
