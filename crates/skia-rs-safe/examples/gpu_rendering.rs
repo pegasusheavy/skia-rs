@@ -57,7 +57,7 @@ fn main() {
 
                 match context.create_surface(&props) {
                     Ok(mut surface) => {
-                        println!("\nCreated {}x{} GPU surface", width, height);
+                        println!("\nCreated {width}x{height} GPU surface");
 
                         // Clear with a gradient-like pattern (we'll do multiple clears)
                         // Since we don't have a full GPU drawing pipeline yet,
@@ -81,17 +81,17 @@ fn main() {
                             let g = pixels[1];
                             let b = pixels[2];
                             let a = pixels[3];
-                            println!("First pixel: rgba({}, {}, {}, {})", r, g, b, a);
+                            println!("First pixel: rgba({r}, {g}, {b}, {a})");
 
                             // Save to file
                             let output_path = "gpu_rendering_output.png";
                             let file =
                                 File::create(output_path).expect("Failed to create output file");
-                            let ref mut writer = BufWriter::new(file);
+                            let mut writer = BufWriter::new(file);
 
                             let img_info = ImageInfo::new(
-                                width as i32,
-                                height as i32,
+                                i32::try_from(width).expect("width fits in i32"),
+                                i32::try_from(height).expect("height fits in i32"),
                                 ColorType::Rgba8888,
                                 AlphaType::Opaque,
                             );
@@ -101,9 +101,9 @@ fn main() {
                             ) {
                                 let encoder = PngEncoder::new();
                                 encoder
-                                    .encode(&image, writer)
+                                    .encode(&image, &mut writer)
                                     .expect("Failed to encode PNG");
-                                println!("\nSaved output to: {}", output_path);
+                                println!("\nSaved output to: {output_path}");
                             }
                         } else {
                             eprintln!("Failed to read pixels from GPU surface");
@@ -115,12 +115,12 @@ fn main() {
                         println!("\nGPU operations complete");
                     }
                     Err(e) => {
-                        eprintln!("Failed to create GPU surface: {:?}", e);
+                        eprintln!("Failed to create GPU surface: {e:?}");
                     }
                 }
             }
             Err(e) => {
-                eprintln!("Failed to create GPU context: {:?}", e);
+                eprintln!("Failed to create GPU context: {e:?}");
                 eprintln!("This may be because no compatible GPU is available.");
                 eprintln!(
                     "The example will exit, but this is expected on systems without GPU support."
