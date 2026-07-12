@@ -29,6 +29,15 @@ pub enum CodecError {
 /// Result type for codec operations.
 pub type CodecResult<T> = Result<T, CodecError>;
 
+/// Largest per-dimension pixel extent accepted from untrusted encoded
+/// data, matching `SkCodec`'s guard against absurd sizes.
+const MAX_DIM: usize = 1 << 24;
+/// Largest total decoded-canvas byte size accepted from untrusted encoded
+/// data. A format's individual dimensions can each be within [`MAX_DIM`]
+/// yet still multiply out to tens of gigabytes, so this bounds the
+/// product as well.
+const MAX_CANVAS_BYTES: usize = 1 << 28; // 256 MiB
+
 /// Detected image format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ImageFormat {
@@ -159,9 +168,17 @@ impl ImageFormat {
 /// A codec that can decode images.
 pub trait ImageDecoder: Send + Sync {
     /// Decode an image from a reader.
+    ///
+    /// # Errors
+    /// Returns [`CodecError`] if the stream cannot be read or the data is
+    /// not valid for this decoder's format.
     fn decode<R: Read>(&self, reader: R) -> CodecResult<Image>;
 
     /// Decode an image from bytes.
+    ///
+    /// # Errors
+    /// Returns [`CodecError`] if `data` is not valid for this decoder's
+    /// format.
     fn decode_bytes(&self, data: &[u8]) -> CodecResult<Image> {
         self.decode(std::io::Cursor::new(data))
     }
@@ -178,9 +195,16 @@ pub trait ImageDecoder: Send + Sync {
 /// A codec that can encode images.
 pub trait ImageEncoder: Send + Sync {
     /// Encode an image to a writer.
+    ///
+    /// # Errors
+    /// Returns [`CodecError`] if the image cannot be encoded (e.g.
+    /// unsupported color type) or the writer fails.
     fn encode<W: Write>(&self, image: &Image, writer: W) -> CodecResult<()>;
 
     /// Encode an image to bytes.
+    ///
+    /// # Errors
+    /// Returns [`CodecError`] if the image cannot be encoded.
     fn encode_bytes(&self, image: &Image) -> CodecResult<Vec<u8>> {
         let mut buf = Vec::new();
         self.encode(image, &mut buf)?;
@@ -291,15 +315,19 @@ impl ImageDecoder for PngDecoder {
             .next_frame(&mut buf)
             .map_err(|e| CodecError::DecodingError(e.to_string()))?;
 
-        let width = info.width as i32;
-        let height = info.height as i32;
+        let width = i32::try_from(info.width)
+            .map_err(|_| CodecError::InvalidData("PNG width exceeds i32 range".into()))?;
+        let height = i32::try_from(info.height)
+            .map_err(|_| CodecError::InvalidData("PNG height exceeds i32 range".into()))?;
+        let width_usize = usize::try_from(info.width).unwrap_or(0);
+        let height_usize = usize::try_from(info.height).unwrap_or(0);
 
         // Convert to RGBA if necessary
         let pixels = match info.color_type {
             png::ColorType::Rgba => buf[..info.buffer_size()].to_vec(),
             png::ColorType::Rgb => {
                 let rgb = &buf[..info.buffer_size()];
-                let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+                let mut rgba = Vec::with_capacity(width_usize * height_usize * 4);
                 for chunk in rgb.chunks(3) {
                     rgba.push(chunk[0]);
                     rgba.push(chunk[1]);
@@ -310,7 +338,7 @@ impl ImageDecoder for PngDecoder {
             }
             png::ColorType::GrayscaleAlpha => {
                 let ga = &buf[..info.buffer_size()];
-                let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+                let mut rgba = Vec::with_capacity(width_usize * height_usize * 4);
                 for chunk in ga.chunks(2) {
                     rgba.push(chunk[0]);
                     rgba.push(chunk[0]);
@@ -321,7 +349,7 @@ impl ImageDecoder for PngDecoder {
             }
             png::ColorType::Grayscale => {
                 let gray = &buf[..info.buffer_size()];
-                let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+                let mut rgba = Vec::with_capacity(width_usize * height_usize * 4);
                 for &g in gray {
                     rgba.push(g);
                     rgba.push(g);
@@ -330,7 +358,9 @@ impl ImageDecoder for PngDecoder {
                 }
                 rgba
             }
-            _ => return Err(CodecError::Unsupported("Unsupported PNG color type".into())),
+            png::ColorType::Indexed => {
+                return Err(CodecError::Unsupported("Unsupported PNG color type".into()));
+            }
         };
 
         let mut info = crate::ImageInfo::new(
@@ -341,7 +371,7 @@ impl ImageDecoder for PngDecoder {
         );
         info.color_space = icc_color_space;
 
-        Image::from_raster_data_owned(info, pixels, width as usize * 4)
+        Image::from_raster_data_owned(info, pixels, width_usize * 4)
             .ok_or_else(|| CodecError::DecodingError("Failed to create image".into()))
     }
 
@@ -372,7 +402,11 @@ impl PngEncoder {
 impl ImageEncoder for PngEncoder {
     #[cfg(feature = "png")]
     fn encode<W: Write>(&self, image: &Image, writer: W) -> CodecResult<()> {
-        let mut encoder = png::Encoder::new(writer, image.width() as u32, image.height() as u32);
+        let mut encoder = png::Encoder::new(
+            writer,
+            u32::try_from(image.width()).unwrap_or(0),
+            u32::try_from(image.height()).unwrap_or(0),
+        );
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
 
@@ -463,11 +497,13 @@ impl ImageDecoder for JpegDecoder {
 
         let width = i32::from(info.width);
         let height = i32::from(info.height);
+        let width_usize = usize::from(info.width);
+        let height_usize = usize::from(info.height);
 
         // Convert to RGBA
         let rgba = match info.pixel_format {
             jpeg_decoder::PixelFormat::RGB24 => {
-                let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+                let mut rgba = Vec::with_capacity(width_usize * height_usize * 4);
                 for chunk in pixels.chunks(3) {
                     rgba.push(chunk[0]);
                     rgba.push(chunk[1]);
@@ -477,7 +513,7 @@ impl ImageDecoder for JpegDecoder {
                 rgba
             }
             jpeg_decoder::PixelFormat::L8 => {
-                let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+                let mut rgba = Vec::with_capacity(width_usize * height_usize * 4);
                 for &g in &pixels {
                     rgba.push(g);
                     rgba.push(g);
@@ -501,7 +537,7 @@ impl ImageDecoder for JpegDecoder {
         );
         img_info.color_space = icc_color_space;
 
-        Image::from_raster_data_owned(img_info, rgba, width as usize * 4)
+        Image::from_raster_data_owned(img_info, rgba, width_usize * 4)
             .ok_or_else(|| CodecError::DecodingError("Failed to create image".into()))
     }
 
@@ -580,21 +616,26 @@ impl ImageEncoder for JpegEncoder {
             }
         };
         unpremultiply_for_encode(image, &mut rgba);
-        let mut rgb = Vec::with_capacity((image.width() * image.height() * 3) as usize);
+        let width_usize = usize::try_from(image.width()).unwrap_or(0);
+        let height_usize = usize::try_from(image.height()).unwrap_or(0);
+        let rgb_capacity = width_usize
+            .checked_mul(height_usize)
+            .and_then(|n| n.checked_mul(3))
+            .ok_or_else(|| CodecError::EncodingError("image dimensions overflow".into()))?;
+        let mut rgb = Vec::with_capacity(rgb_capacity);
         for chunk in rgba.chunks_exact(4) {
             rgb.push(chunk[0]);
             rgb.push(chunk[1]);
             rgb.push(chunk[2]);
         }
 
+        let jpeg_width = u16::try_from(image.width())
+            .map_err(|_| CodecError::EncodingError("image width exceeds JPEG limit".into()))?;
+        let jpeg_height = u16::try_from(image.height())
+            .map_err(|_| CodecError::EncodingError("image height exceeds JPEG limit".into()))?;
         let encoder = jpeg_encoder::Encoder::new(&mut writer, self.quality.value());
         encoder
-            .encode(
-                &rgb,
-                image.width() as u16,
-                image.height() as u16,
-                jpeg_encoder::ColorType::Rgb,
-            )
+            .encode(&rgb, jpeg_width, jpeg_height, jpeg_encoder::ColorType::Rgb)
             .map_err(|e| CodecError::EncodingError(e.to_string()))?;
 
         Ok(())
@@ -647,6 +688,10 @@ impl GifDecoder {
     /// as `Duration::ZERO` — downstream renderers typically clamp these
     /// to a minimum of 20ms to avoid CPU-pegging animations, but that
     /// policy belongs to the renderer, not the codec.
+    ///
+    /// # Errors
+    /// Returns [`CodecError`] if `data` is not a valid GIF, contains no
+    /// frames, or a frame image cannot be built.
     #[cfg(feature = "gif")]
     pub fn decode_animated(&self, data: &[u8]) -> CodecResult<crate::AnimatedImage> {
         let mut options = gif::DecodeOptions::new();
@@ -673,8 +718,11 @@ impl GifDecoder {
                 skia_rs_core::ColorType::Rgba8888,
                 skia_rs_core::AlphaType::Unpremul,
             );
-            let image = Image::from_raster_data(&info, &frame.buffer, width as usize * 4)
-                .ok_or_else(|| CodecError::DecodingError("Failed to build frame image".into()))?;
+            let image =
+                Image::from_raster_data(&info, &frame.buffer, usize::from(frame.width) * 4)
+                    .ok_or_else(|| {
+                        CodecError::DecodingError("Failed to build frame image".into())
+                    })?;
 
             frames.push(crate::AnimationFrame {
                 image,
@@ -723,8 +771,8 @@ impl ImageDecoder for GifDecoder {
         // first frame. SkGifCodec always reports the logical-screen size as
         // the image dimensions and composites the first frame at its
         // left/top offset over a transparent canvas.
-        let canvas_width = decoder.width() as usize;
-        let canvas_height = decoder.height() as usize;
+        let canvas_width = usize::from(decoder.width());
+        let canvas_height = usize::from(decoder.height());
 
         // Reject absurd logical-screen sizes before allocating the canvas
         // buffer. The GIF header's width/height are attacker-controlled u16
@@ -734,8 +782,6 @@ impl ImageDecoder for GifDecoder {
         // guard; `MAX_CANVAS_BYTES` additionally bounds the total
         // allocation, since GIF's u16 dimensions never individually exceed
         // `MAX_DIM` but can still multiply out to tens of gigabytes.
-        const MAX_DIM: usize = 1 << 24;
-        const MAX_CANVAS_BYTES: usize = 1 << 28; // 256 MiB
         if canvas_width > MAX_DIM || canvas_height > MAX_DIM {
             return Err(CodecError::InvalidData(
                 "GIF logical screen dimensions too large".into(),
@@ -756,10 +802,10 @@ impl ImageDecoder for GifDecoder {
             .map_err(|e| CodecError::DecodingError(e.to_string()))?
             .ok_or_else(|| CodecError::DecodingError("No frames in GIF".into()))?;
 
-        let frame_width = first_frame.width as usize;
-        let frame_height = first_frame.height as usize;
-        let left = first_frame.left as usize;
-        let top = first_frame.top as usize;
+        let frame_width = usize::from(first_frame.width);
+        let frame_height = usize::from(first_frame.height);
+        let left = usize::from(first_frame.left);
+        let top = usize::from(first_frame.top);
 
         // Transparent canvas; blit the frame into place, clipping any part
         // that falls outside the logical screen.
@@ -780,8 +826,8 @@ impl ImageDecoder for GifDecoder {
         }
 
         let info = crate::ImageInfo::new(
-            canvas_width as i32,
-            canvas_height as i32,
+            i32::try_from(canvas_width).unwrap_or(i32::MAX),
+            i32::try_from(canvas_height).unwrap_or(i32::MAX),
             skia_rs_core::ColorType::Rgba8888,
             skia_rs_core::AlphaType::Unpremul,
         );
@@ -829,8 +875,12 @@ impl ImageDecoder for WebpDecoder {
             .decode()
             .ok_or_else(|| CodecError::DecodingError("Failed to decode WebP".into()))?;
 
-        let width = webp_image.width() as i32;
-        let height = webp_image.height() as i32;
+        let width = i32::try_from(webp_image.width())
+            .map_err(|_| CodecError::InvalidData("WebP width exceeds i32 range".into()))?;
+        let height = i32::try_from(webp_image.height())
+            .map_err(|_| CodecError::InvalidData("WebP height exceeds i32 range".into()))?;
+        let width_usize = usize::try_from(webp_image.width()).unwrap_or(0);
+        let height_usize = usize::try_from(webp_image.height()).unwrap_or(0);
         let has_alpha = webp_image.is_alpha();
 
         // WebP returns RGB for images without alpha and RGBA for images
@@ -841,7 +891,7 @@ impl ImageDecoder for WebpDecoder {
             src
         } else {
             // Expand RGB -> RGBA with opaque alpha.
-            let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
+            let mut rgba = Vec::with_capacity(width_usize * height_usize * 4);
             for chunk in src.chunks_exact(3) {
                 rgba.push(chunk[0]);
                 rgba.push(chunk[1]);
@@ -858,7 +908,7 @@ impl ImageDecoder for WebpDecoder {
             skia_rs_core::AlphaType::Unpremul,
         );
 
-        Image::from_raster_data_owned(info, pixels, width as usize * 4)
+        Image::from_raster_data_owned(info, pixels, width_usize * 4)
             .ok_or_else(|| CodecError::DecodingError("Failed to create image".into()))
     }
 
@@ -922,8 +972,8 @@ impl ImageEncoder for WebpEncoder {
         let pixels = image
             .peek_pixels()
             .ok_or_else(|| CodecError::EncodingError("Cannot access pixels".into()))?;
-        let width = image.width() as u32;
-        let height = image.height() as u32;
+        let width = u32::try_from(image.width()).unwrap_or(0);
+        let height = u32::try_from(image.height()).unwrap_or(0);
 
         // Convert to RGBA if needed
         let mut rgba = match image.color_type() {
@@ -948,14 +998,14 @@ impl ImageEncoder for WebpEncoder {
         // WebP stores straight alpha; unpremultiply premultiplied input.
         unpremultiply_for_encode(image, &mut rgba);
 
-        let encoder = webp::Encoder::from_rgba(&rgba, width, height);
-        let encoded = if self.lossless {
-            encoder.encode_lossless()
+        let webp_encoder = webp::Encoder::from_rgba(&rgba, width, height);
+        let webp_bytes = if self.lossless {
+            webp_encoder.encode_lossless()
         } else {
-            encoder.encode(f32::from(self.quality.value()))
+            webp_encoder.encode(f32::from(self.quality.value()))
         };
 
-        writer.write_all(&encoded).map_err(CodecError::Io)?;
+        writer.write_all(&webp_bytes).map_err(CodecError::Io)?;
         Ok(())
     }
 
@@ -1024,8 +1074,10 @@ impl ImageEncoder for BmpEncoder {
         unpremultiply_for_encode(image, &mut pixels);
         let pixels = &pixels[..];
 
-        let width = image.width() as u32;
-        let height = image.height() as u32;
+        let width = u32::try_from(image.width()).unwrap_or(0);
+        let height = u32::try_from(image.height()).unwrap_or(0);
+        let width_i32 = image.width();
+        let height_i32 = image.height();
 
         // Calculate row padding (each row must be aligned to 4 bytes)
         let row_size = (width * 4 + 3) & !3; // 32-bit BGRA, aligned
@@ -1040,8 +1092,8 @@ impl ImageEncoder for BmpEncoder {
 
         // BITMAPINFOHEADER (40 bytes)
         writer.write_all(&40u32.to_le_bytes())?; // Header size
-        writer.write_all(&(width as i32).to_le_bytes())?; // Width
-        writer.write_all(&(height as i32).to_le_bytes())?; // Height (positive = bottom-up)
+        writer.write_all(&width_i32.to_le_bytes())?; // Width
+        writer.write_all(&height_i32.to_le_bytes())?; // Height (positive = bottom-up)
         writer.write_all(&1u16.to_le_bytes())?; // Planes
         writer.write_all(&32u16.to_le_bytes())?; // Bits per pixel (32-bit BGRA)
         writer.write_all(&0u32.to_le_bytes())?; // Compression (BI_RGB = none)
@@ -1052,11 +1104,11 @@ impl ImageEncoder for BmpEncoder {
         writer.write_all(&0u32.to_le_bytes())?; // Important colors
 
         // Pixel data (bottom-to-top, BGRA)
-        let stride = width as usize * 4;
-        let row_padding = row_size as usize - stride;
+        let stride = usize::try_from(width).unwrap_or(0) * 4;
+        let row_padding = usize::try_from(row_size).unwrap_or(0) - stride;
         let padding = vec![0u8; row_padding];
 
-        for y in (0..height as usize).rev() {
+        for y in (0..usize::try_from(height).unwrap_or(0)).rev() {
             let row_start = y * stride;
             let row = &pixels[row_start..row_start + stride];
 
@@ -1090,7 +1142,7 @@ struct BitfieldMasks {
 impl BitfieldMasks {
     /// Extract `mask`'s channel out of `value` and scale it to a full 8-bit
     /// range (`round(raw * 255 / channel_max)`), matching `SkMasks`.
-    const fn sample(&self, value: u32, mask: u32) -> u8 {
+    fn sample(value: u32, mask: u32) -> u8 {
         if mask == 0 {
             return 0;
         }
@@ -1098,11 +1150,19 @@ impl BitfieldMasks {
         let bits = (mask >> shift).count_ones();
         let raw = (value & mask) >> shift;
         let max = (1u32 << bits) - 1;
-        ((raw * 255 + max / 2) / max) as u8
+        // `raw <= max` by construction, so `(raw * 255 + max/2) / max` is
+        // always in `0..=255`; `unwrap_or(255)` is an unreachable fallback.
+        u8::try_from((raw * 255 + max / 2) / max).unwrap_or(255)
     }
 }
 
 /// Decode a BMP image from bytes.
+#[allow(
+    clippy::too_many_lines,
+    reason = "BMP's several bit-depth/compression paths (24/16/8-bit, BI_BITFIELDS) read \
+    more clearly inlined in one function than split across helpers that would each need \
+    the same header/bounds context threaded through"
+)]
 fn decode_bmp(data: &[u8]) -> CodecResult<Image> {
     if data.len() < 54 {
         return Err(CodecError::InvalidData("BMP too short".into()));
@@ -1134,12 +1194,11 @@ fn decode_bmp(data: &[u8]) -> CodecResult<Image> {
     if width <= 0 || height == 0 {
         return Err(CodecError::InvalidData("Invalid BMP dimensions".into()));
     }
-    const MAX_DIM: usize = 1 << 24; // matches SkCodec's guard against absurd sizes
-    let width = width as usize;
+    let width = usize::try_from(width).unwrap_or(0);
     let (height, bottom_up) = if height < 0 {
-        (height.unsigned_abs() as usize, false)
+        (usize::try_from(height.unsigned_abs()).unwrap_or(0), false)
     } else {
-        (height as usize, true)
+        (usize::try_from(height).unwrap_or(0), true)
     };
     if width > MAX_DIM || height > MAX_DIM || width.checked_mul(height).is_none() {
         return Err(CodecError::InvalidData("BMP dimensions too large".into()));
@@ -1250,13 +1309,13 @@ fn decode_bmp(data: &[u8]) -> CodecResult<Image> {
                     if src + 1 < pixel_data.len() {
                         let value =
                             u32::from(u16::from_le_bytes([pixel_data[src], pixel_data[src + 1]]));
-                        rgba[dst] = m.sample(value, m.red);
-                        rgba[dst + 1] = m.sample(value, m.green);
-                        rgba[dst + 2] = m.sample(value, m.blue);
+                        rgba[dst] = BitfieldMasks::sample(value, m.red);
+                        rgba[dst + 1] = BitfieldMasks::sample(value, m.green);
+                        rgba[dst + 2] = BitfieldMasks::sample(value, m.blue);
                         rgba[dst + 3] = if m.alpha == 0 {
                             255
                         } else {
-                            m.sample(value, m.alpha)
+                            BitfieldMasks::sample(value, m.alpha)
                         };
                     }
                 }
@@ -1284,13 +1343,13 @@ fn decode_bmp(data: &[u8]) -> CodecResult<Image> {
                                 pixel_data[src + 2],
                                 pixel_data[src + 3],
                             ]);
-                            rgba[dst] = m.sample(value, m.red);
-                            rgba[dst + 1] = m.sample(value, m.green);
-                            rgba[dst + 2] = m.sample(value, m.blue);
+                            rgba[dst] = BitfieldMasks::sample(value, m.red);
+                            rgba[dst + 1] = BitfieldMasks::sample(value, m.green);
+                            rgba[dst + 2] = BitfieldMasks::sample(value, m.blue);
                             rgba[dst + 3] = if m.alpha == 0 {
                                 255
                             } else {
-                                m.sample(value, m.alpha)
+                                BitfieldMasks::sample(value, m.alpha)
                             };
                         } else {
                             rgba[dst] = pixel_data[src + 2]; // R
@@ -1345,8 +1404,8 @@ fn decode_bmp(data: &[u8]) -> CodecResult<Image> {
     }
 
     let info = crate::ImageInfo::new(
-        width as i32,
-        height as i32,
+        i32::try_from(width).unwrap_or(i32::MAX),
+        i32::try_from(height).unwrap_or(i32::MAX),
         skia_rs_core::ColorType::Rgba8888,
         skia_rs_core::AlphaType::Unpremul,
     );
@@ -1474,6 +1533,11 @@ fn decode_ico(data: &[u8]) -> CodecResult<Image> {
 }
 
 /// Decode a BMP from ICO format (no BITMAPFILEHEADER).
+#[allow(
+    clippy::too_many_lines,
+    reason = "ICO-embedded BMP's 32/24-bit pixel + AND-mask paths read more clearly inlined \
+    than split across helpers that would each need the same header/bounds context threaded through"
+)]
 fn decode_ico_bmp(data: &[u8]) -> CodecResult<Image> {
     if data.len() < 40 {
         return Err(CodecError::InvalidData("ICO BMP too short".into()));
@@ -1491,9 +1555,8 @@ fn decode_ico_bmp(data: &[u8]) -> CodecResult<Image> {
     if width <= 0 || height <= 0 {
         return Err(CodecError::InvalidData("Invalid ICO BMP dimensions".into()));
     }
-    const MAX_DIM: usize = 1 << 24;
-    let width = width as usize;
-    let height = height as usize / 2; // Height includes the mask
+    let width = usize::try_from(width).unwrap_or(0);
+    let height = usize::try_from(height).unwrap_or(0) / 2; // Height includes the mask
     if width == 0 || height == 0 || width > MAX_DIM || height > MAX_DIM {
         return Err(CodecError::InvalidData("Invalid ICO BMP dimensions".into()));
     }
@@ -1594,8 +1657,8 @@ fn decode_ico_bmp(data: &[u8]) -> CodecResult<Image> {
     }
 
     let info = crate::ImageInfo::new(
-        width as i32,
-        height as i32,
+        i32::try_from(width).unwrap_or(i32::MAX),
+        i32::try_from(height).unwrap_or(i32::MAX),
         skia_rs_core::ColorType::Rgba8888,
         skia_rs_core::AlphaType::Unpremul,
     );
@@ -1690,10 +1753,10 @@ fn read_wbmp_int(data: &[u8], offset: &mut usize) -> Option<u32> {
 /// Write a WBMP multi-byte integer.
 fn write_wbmp_int<W: Write>(writer: &mut W, mut value: u32) -> CodecResult<()> {
     let mut bytes = Vec::new();
-    bytes.push((value & 0x7F) as u8);
+    bytes.push(u8::try_from(value & 0x7F).unwrap_or(0));
     value >>= 7;
     while value > 0 {
-        bytes.push(0x80 | (value & 0x7F) as u8);
+        bytes.push(0x80 | u8::try_from(value & 0x7F).unwrap_or(0));
         value >>= 7;
     }
     bytes.reverse();
@@ -1739,24 +1802,26 @@ fn decode_wbmp(data: &[u8]) -> CodecResult<Image> {
     }
 
     // Calculate row size (bits rounded up to bytes)
-    let row_bytes = (width as usize).div_ceil(8);
-    let expected_size = offset + row_bytes * height as usize;
+    let width_usize = usize::try_from(width).unwrap_or(0);
+    let height_usize = usize::try_from(height).unwrap_or(0);
+    let row_bytes = width_usize.div_ceil(8);
+    let expected_size = offset + row_bytes * height_usize;
 
     if data.len() < expected_size {
         return Err(CodecError::InvalidData("WBMP data too short".into()));
     }
 
     // Decode pixels (1 = white, 0 = black)
-    let mut rgba = vec![0u8; width as usize * height as usize * 4];
+    let mut rgba = vec![0u8; width_usize * height_usize * 4];
 
-    for y in 0..height as usize {
+    for y in 0..height_usize {
         let row_start = offset + y * row_bytes;
-        for x in 0..width as usize {
+        for x in 0..width_usize {
             let byte_idx = x / 8;
             let bit_idx = 7 - (x % 8);
             let bit = (data[row_start + byte_idx] >> bit_idx) & 1;
 
-            let pixel_idx = (y * width as usize + x) * 4;
+            let pixel_idx = (y * width_usize + x) * 4;
             let value = if bit == 1 { 255 } else { 0 };
             rgba[pixel_idx] = value; // R
             rgba[pixel_idx + 1] = value; // G
@@ -1766,20 +1831,22 @@ fn decode_wbmp(data: &[u8]) -> CodecResult<Image> {
     }
 
     let info = crate::ImageInfo::new(
-        width as i32,
-        height as i32,
+        i32::try_from(width).unwrap_or(i32::MAX),
+        i32::try_from(height).unwrap_or(i32::MAX),
         skia_rs_core::ColorType::Rgba8888,
         skia_rs_core::AlphaType::Opaque,
     );
 
-    Image::from_raster_data_owned(info, rgba, width as usize * 4)
+    Image::from_raster_data_owned(info, rgba, width_usize * 4)
         .ok_or_else(|| CodecError::DecodingError("Failed to create image".into()))
 }
 
 /// Encode an image as WBMP.
 fn encode_wbmp<W: Write>(image: &Image, writer: &mut W) -> CodecResult<()> {
-    let width = image.width() as u32;
-    let height = image.height() as u32;
+    let width = u32::try_from(image.width()).unwrap_or(0);
+    let height = u32::try_from(image.height()).unwrap_or(0);
+    let width_usize = usize::try_from(width).unwrap_or(0);
+    let height_usize = usize::try_from(height).unwrap_or(0);
     let pixels = image
         .peek_pixels()
         .ok_or_else(|| CodecError::EncodingError("Cannot access pixels".into()))?;
@@ -1797,13 +1864,13 @@ fn encode_wbmp<W: Write>(image: &Image, writer: &mut W) -> CodecResult<()> {
     write_wbmp_int(writer, height)?;
 
     // Convert to 1-bit (use luminance threshold of 128)
-    let row_bytes = (width as usize).div_ceil(8);
+    let row_bytes = width_usize.div_ceil(8);
 
-    for y in 0..height as usize {
+    for y in 0..height_usize {
         let mut row_data = vec![0u8; row_bytes];
 
-        for x in 0..width as usize {
-            let pixel_idx = (y * width as usize + x) * 4;
+        for x in 0..width_usize {
+            let pixel_idx = (y * width_usize + x) * 4;
 
             // Calculate luminance
             let r = u32::from(pixels[pixel_idx]);
@@ -1845,7 +1912,10 @@ fn get_wbmp_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
     let height = read_wbmp_int(data, &mut offset)
         .ok_or_else(|| CodecError::InvalidData("Invalid WBMP height".into()))?;
 
-    Ok((width as i32, height as i32))
+    Ok((
+        i32::try_from(width).unwrap_or(i32::MAX),
+        i32::try_from(height).unwrap_or(i32::MAX),
+    ))
 }
 
 // =============================================================================
@@ -2115,6 +2185,44 @@ pub enum BayerPattern {
     Gbrg,
 }
 
+/// Pick the channel (R=0, G=1, B=2) at position (x, y) given the
+/// pattern's 2x2 top-left orientation.
+#[inline]
+fn bayer_channel_at(pattern: BayerPattern, x: usize, y: usize) -> u8 {
+    let (r, g0, g1, b) = match pattern {
+        BayerPattern::Rggb => (0u8, 1u8, 1u8, 2u8),
+        BayerPattern::Bggr => (2, 1, 1, 0),
+        BayerPattern::Grbg => (1, 0, 2, 1),
+        BayerPattern::Gbrg => (1, 2, 0, 1),
+    };
+    match (x % 2, y % 2) {
+        (0, 0) => r,
+        (1, 0) => g0,
+        (0, 1) => g1,
+        (1, 1) => b,
+        _ => unreachable!(),
+    }
+}
+
+/// Convert a pixel coordinate to `isize` for demosaic neighbor lookups,
+/// saturating (never panicking) on the practically unreachable case of a
+/// coordinate beyond `isize::MAX` — a buffer that large could not exist.
+#[inline]
+fn bayer_to_isize(v: usize) -> isize {
+    isize::try_from(v).unwrap_or(isize::MAX)
+}
+
+/// Fetch a sample at `(x, y)`, clamping out-of-range coordinates to the
+/// nearest edge pixel.
+#[inline]
+fn bayer_clamp_fetch(raw: &[u16], x: isize, y: isize, w: usize, h: usize) -> u32 {
+    let max_x = bayer_to_isize(w) - 1;
+    let max_y = bayer_to_isize(h) - 1;
+    let cx = usize::try_from(x.clamp(0, max_x)).unwrap_or(0);
+    let cy = usize::try_from(y.clamp(0, max_y)).unwrap_or(0);
+    u32::from(raw[cy * w + cx])
+}
+
 /// Bilinear demosaic a 16-bit Bayer-pattern single-channel sensor image
 /// into an 8-bit RGB buffer.
 ///
@@ -2143,58 +2251,45 @@ pub enum BayerPattern {
 /// Returns an empty vector if the input length does not match
 /// `width * height` — this keeps the helper safe to call without
 /// propagating `Result` through every RAW pipeline.
-#[must_use] 
+#[must_use]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "r/g/b/c/v name Bayer color-plane samples; matches the RGB/channel-index \
+    convention used throughout the demosaic literature and is clearer than verbose aliases"
+)]
 pub fn demosaic_bayer(raw: &[u16], width: usize, height: usize, pattern: BayerPattern) -> Vec<u8> {
     if width == 0 || height == 0 || raw.len() != width * height {
         return Vec::new();
     }
 
-    /// Pick the channel (R=0, G=1, B=2) at position (x, y) given the
-    /// pattern's 2x2 top-left orientation.
-    #[inline]
-    fn channel_at(pattern: BayerPattern, x: usize, y: usize) -> u8 {
-        let (r, g0, g1, b) = match pattern {
-            BayerPattern::Rggb => (0u8, 1u8, 1u8, 2u8),
-            BayerPattern::Bggr => (2, 1, 1, 0),
-            BayerPattern::Grbg => (1, 0, 2, 1),
-            BayerPattern::Gbrg => (1, 2, 0, 1),
-        };
-        match (x % 2, y % 2) {
-            (0, 0) => r,
-            (1, 0) => g0,
-            (0, 1) => g1,
-            (1, 1) => b,
-            _ => unreachable!(),
-        }
-    }
-
-    #[inline]
-    fn clamp_fetch(raw: &[u16], x: isize, y: isize, w: usize, h: usize) -> u32 {
-        let cx = x.clamp(0, w as isize - 1) as usize;
-        let cy = y.clamp(0, h as isize - 1) as usize;
-        u32::from(raw[cy * w + cx])
-    }
-
     let mut out = vec![0u8; width * height * 3];
 
     for y in 0..height {
+        let yi = bayer_to_isize(y);
         for x in 0..width {
-            let c = channel_at(pattern, x, y);
+            let xi = bayer_to_isize(x);
+            let c = bayer_channel_at(pattern, x, y);
             let v = u32::from(raw[y * width + x]);
 
             // Cross = direct N/S/E/W neighbors; diag = NW/NE/SW/SE.
-            let cross = (clamp_fetch(raw, x as isize - 1, y as isize, width, height)
-                + clamp_fetch(raw, x as isize + 1, y as isize, width, height)
-                + clamp_fetch(raw, x as isize, y as isize - 1, width, height)
-                + clamp_fetch(raw, x as isize, y as isize + 1, width, height))
+            let cross = (bayer_clamp_fetch(raw, xi - 1, yi, width, height)
+                + bayer_clamp_fetch(raw, xi + 1, yi, width, height)
+                + bayer_clamp_fetch(raw, xi, yi - 1, width, height)
+                + bayer_clamp_fetch(raw, xi, yi + 1, width, height))
                 / 4;
-            let diag = (clamp_fetch(raw, x as isize - 1, y as isize - 1, width, height)
-                + clamp_fetch(raw, x as isize + 1, y as isize - 1, width, height)
-                + clamp_fetch(raw, x as isize - 1, y as isize + 1, width, height)
-                + clamp_fetch(raw, x as isize + 1, y as isize + 1, width, height))
+            let diag = (bayer_clamp_fetch(raw, xi - 1, yi - 1, width, height)
+                + bayer_clamp_fetch(raw, xi + 1, yi - 1, width, height)
+                + bayer_clamp_fetch(raw, xi - 1, yi + 1, width, height)
+                + bayer_clamp_fetch(raw, xi + 1, yi + 1, width, height))
                 / 4;
-            let horiz = u32::midpoint(clamp_fetch(raw, x as isize - 1, y as isize, width, height), clamp_fetch(raw, x as isize + 1, y as isize, width, height));
-            let vert = u32::midpoint(clamp_fetch(raw, x as isize, y as isize - 1, width, height), clamp_fetch(raw, x as isize, y as isize + 1, width, height));
+            let horiz = u32::midpoint(
+                bayer_clamp_fetch(raw, xi - 1, yi, width, height),
+                bayer_clamp_fetch(raw, xi + 1, yi, width, height),
+            );
+            let vert = u32::midpoint(
+                bayer_clamp_fetch(raw, xi, yi - 1, width, height),
+                bayer_clamp_fetch(raw, xi, yi + 1, width, height),
+            );
 
             // Determine the green-axis layout: which of the two G
             // neighbor directions carries R vs B. The horizontal and
@@ -2204,8 +2299,8 @@ pub fn demosaic_bayer(raw: &[u16], width: usize, height: usize, pattern: BayerPa
             // directly so this is independent of image bounds (the
             // clamp-to-edge happens inside horiz/vert via clamp_fetch).
             let (r, g, b) = if c == 1 {
-                let horiz_ch = channel_at(pattern, x ^ 1, y);
-                let vert_ch = channel_at(pattern, x, y ^ 1);
+                let horiz_ch = bayer_channel_at(pattern, x ^ 1, y);
+                let vert_ch = bayer_channel_at(pattern, x, y ^ 1);
                 let mut r = 0u32;
                 let mut b = 0u32;
                 if horiz_ch == 0 {
@@ -2230,9 +2325,9 @@ pub fn demosaic_bayer(raw: &[u16], width: usize, height: usize, pattern: BayerPa
             // High byte of 16-bit intermediate; u32 arithmetic saturates
             // to 65535 in practice because no neighbor can exceed u16.
             let idx = (y * width + x) * 3;
-            out[idx] = (r.min(0xFFFF) >> 8) as u8;
-            out[idx + 1] = (g.min(0xFFFF) >> 8) as u8;
-            out[idx + 2] = (b.min(0xFFFF) >> 8) as u8;
+            out[idx] = u8::try_from(r.min(0xFFFF) >> 8).unwrap_or(0xFF);
+            out[idx + 1] = u8::try_from(g.min(0xFFFF) >> 8).unwrap_or(0xFF);
+            out[idx + 2] = u8::try_from(b.min(0xFFFF) >> 8).unwrap_or(0xFF);
         }
     }
 
@@ -2527,6 +2622,10 @@ fn get_raw_dimensions(_data: &[u8]) -> CodecResult<(i32, i32)> {
 // =============================================================================
 
 /// Decode an image from bytes, auto-detecting the format.
+///
+/// # Errors
+/// Returns [`CodecError::Unsupported`] if the format cannot be detected
+/// from `data`, or the detected format's decoder error otherwise.
 pub fn decode_image(data: &[u8]) -> CodecResult<Image> {
     let format = ImageFormat::from_magic(data);
 
@@ -2540,13 +2639,18 @@ pub fn decode_image(data: &[u8]) -> CodecResult<Image> {
         ImageFormat::Wbmp => WbmpDecoder::new().decode_bytes(data),
         ImageFormat::Avif => AvifDecoder::new().decode_bytes(data),
         ImageFormat::Raw => RawDecoder::new().decode_bytes(data),
-        _ => Err(CodecError::Unsupported(format!(
+        ImageFormat::Unknown => Err(CodecError::Unsupported(format!(
             "Format {format:?} not supported"
         ))),
     }
 }
 
 /// Get the image dimensions without fully decoding.
+///
+/// # Errors
+/// Returns [`CodecError::Unsupported`] if the format cannot be detected
+/// or has no dimension probe, or the detected format's probe error
+/// otherwise.
 pub fn get_image_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
     let format = ImageFormat::from_magic(data);
 
@@ -2570,8 +2674,10 @@ fn get_png_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
         return Err(CodecError::InvalidData("PNG too short".into()));
     }
 
-    let width = u32::from_be_bytes([data[16], data[17], data[18], data[19]]) as i32;
-    let height = u32::from_be_bytes([data[20], data[21], data[22], data[23]]) as i32;
+    let width = i32::try_from(u32::from_be_bytes([data[16], data[17], data[18], data[19]]))
+        .map_err(|_| CodecError::InvalidData("PNG width exceeds i32 range".into()))?;
+    let height = i32::try_from(u32::from_be_bytes([data[20], data[21], data[22], data[23]]))
+        .map_err(|_| CodecError::InvalidData("PNG height exceeds i32 range".into()))?;
 
     Ok((width, height))
 }
@@ -2645,8 +2751,11 @@ fn get_bmp_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
 
     let width = i32::from_le_bytes([data[18], data[19], data[20], data[21]]);
     // Height is signed (negative = top-down). Use `unsigned_abs` so
-    // `i32::MIN` does not panic in a debug build (`.abs()` overflows).
-    let height = i32::from_le_bytes([data[22], data[23], data[24], data[25]]).unsigned_abs() as i32;
+    // `i32::MIN` does not panic (`.abs()` would overflow); its magnitude
+    // (2^31) doesn't fit back in `i32`, so saturate to `i32::MAX` rather
+    // than wrapping back to a negative value.
+    let height_abs = i32::from_le_bytes([data[22], data[23], data[24], data[25]]).unsigned_abs();
+    let height = i32::try_from(height_abs).unwrap_or(i32::MAX);
 
     Ok((width, height))
 }
@@ -2771,18 +2880,18 @@ mod tests {
 
         // Encode to BMP
         let encoder = BmpEncoder::new();
-        let encoded = encoder.encode_bytes(&image).unwrap();
+        let bmp_bytes = encoder.encode_bytes(&image).unwrap();
 
         // Verify format detection
-        assert_eq!(ImageFormat::from_magic(&encoded), ImageFormat::Bmp);
+        assert_eq!(ImageFormat::from_magic(&bmp_bytes), ImageFormat::Bmp);
 
         // Decode back
         let decoder = BmpDecoder::new();
-        let decoded = decoder.decode_bytes(&encoded).unwrap();
+        let round_tripped = decoder.decode_bytes(&bmp_bytes).unwrap();
 
         // Verify dimensions
-        assert_eq!(decoded.width(), 2);
-        assert_eq!(decoded.height(), 2);
+        assert_eq!(round_tripped.width(), 2);
+        assert_eq!(round_tripped.height(), 2);
     }
 
     #[test]
@@ -2808,10 +2917,12 @@ mod tests {
             skia_rs_core::ColorType::Rgba8888,
             skia_rs_core::AlphaType::Unpremul,
         );
-        let row_bytes = (w as usize) * 4;
-        let mut pixels = vec![0u8; (h as usize) * row_bytes];
-        for y in 0..h as usize {
-            for x in 0..w as usize {
+        let w_usize = usize::try_from(w).unwrap();
+        let h_usize = usize::try_from(h).unwrap();
+        let row_bytes = w_usize * 4;
+        let mut pixels = vec![0u8; h_usize * row_bytes];
+        for y in 0..h_usize {
+            for x in 0..w_usize {
                 let off = y * row_bytes + x * 4;
                 let on = ((x + y) & 1) == 0;
                 pixels[off] = if on { 255 } else { 0 };
@@ -2978,19 +3089,23 @@ mod tests {
             encoder.set_repeat(Repeat::Infinite).unwrap();
 
             // Frame 0: all-black, 50ms.
-            let mut f0 = Frame::default();
-            f0.width = 2;
-            f0.height = 2;
-            f0.buffer = std::borrow::Cow::Borrowed(&[0u8; 4]);
-            f0.delay = 5; // 5 * 10ms = 50ms
+            let f0 = Frame {
+                width: 2,
+                height: 2,
+                buffer: std::borrow::Cow::Borrowed(&[0u8; 4]),
+                delay: 5, // 5 * 10ms = 50ms
+                ..Frame::default()
+            };
             encoder.write_frame(&f0).unwrap();
 
             // Frame 1: all-white, 100ms.
-            let mut f1 = Frame::default();
-            f1.width = 2;
-            f1.height = 2;
-            f1.buffer = std::borrow::Cow::Borrowed(&[1u8; 4]);
-            f1.delay = 10;
+            let f1 = Frame {
+                width: 2,
+                height: 2,
+                buffer: std::borrow::Cow::Borrowed(&[1u8; 4]),
+                delay: 10,
+                ..Frame::default()
+            };
             encoder.write_frame(&f1).unwrap();
         }
 
@@ -3203,10 +3318,10 @@ mod tests {
         // Header size 56 (V3) so an alpha mask is recognized. The 16 mask
         // bytes fill the header out to the pixel offset (14 + 56 = 70).
         let mut bmp = build_bmp_header_ex(1, 1, 32, 3, 56);
-        bmp.extend_from_slice(&0x00FF0000u32.to_le_bytes()); // red mask @54
-        bmp.extend_from_slice(&0x0000FF00u32.to_le_bytes()); // green mask @58
-        bmp.extend_from_slice(&0x000000FFu32.to_le_bytes()); // blue mask @62
-        bmp.extend_from_slice(&0xFF000000u32.to_le_bytes()); // alpha mask @66
+        bmp.extend_from_slice(&0x00FF_0000_u32.to_le_bytes()); // red mask @54
+        bmp.extend_from_slice(&0x0000_FF00_u32.to_le_bytes()); // green mask @58
+        bmp.extend_from_slice(&0x0000_00FF_u32.to_le_bytes()); // blue mask @62
+        bmp.extend_from_slice(&0xFF00_0000_u32.to_le_bytes()); // alpha mask @66
         // Pixel value 0xAABBCCDD (little-endian bytes DD CC BB AA):
         //   A=0xAA R=0xBB G=0xCC B=0xDD
         bmp.extend_from_slice(&[0xDD, 0xCC, 0xBB, 0xAA]);
@@ -3241,7 +3356,9 @@ mod tests {
     }
 
     /// `get_bmp_dimensions` must not panic on a top-down BMP whose height is
-    /// `i32::MIN` (`.abs()` would overflow).
+    /// `i32::MIN` (`.abs()` would overflow), and must not silently wrap the
+    /// magnitude back to a negative value either (`2^31` doesn't fit in
+    /// `i32`, so it saturates to `i32::MAX`).
     #[test]
     fn test_bmp_dimensions_i32_min_height() {
         let mut bmp = vec![0u8; 54];
@@ -3251,7 +3368,7 @@ mod tests {
         bmp[22..26].copy_from_slice(&i32::MIN.to_le_bytes());
         let (w, h) = get_bmp_dimensions(&bmp).unwrap();
         assert_eq!(w, 100);
-        assert_eq!(h, i32::MIN.unsigned_abs() as i32);
+        assert_eq!(h, i32::MAX);
     }
 
     /// Helper: build a minimal BITMAPFILEHEADER + BITMAPINFOHEADER for a
@@ -3385,12 +3502,14 @@ mod tests {
             let mut encoder = Encoder::new(&mut buf, 4, 4, &palette).unwrap();
             encoder.set_repeat(Repeat::Infinite).unwrap();
             // A 2x2 opaque-white frame placed at (1,1).
-            let mut f = Frame::default();
-            f.width = 2;
-            f.height = 2;
-            f.left = 1;
-            f.top = 1;
-            f.buffer = std::borrow::Cow::Borrowed(&[1u8; 4]);
+            let f = Frame {
+                width: 2,
+                height: 2,
+                left: 1,
+                top: 1,
+                buffer: std::borrow::Cow::Borrowed(&[1u8; 4]),
+                ..Frame::default()
+            };
             encoder.write_frame(&f).unwrap();
         }
 
@@ -3417,10 +3536,12 @@ mod tests {
             use gif::{Encoder, Frame};
             let palette = [0, 0, 0, 255, 255, 255];
             let mut encoder = Encoder::new(&mut buf, 6, 5, &palette).unwrap();
-            let mut f = Frame::default();
-            f.width = 2;
-            f.height = 2;
-            f.buffer = std::borrow::Cow::Borrowed(&[0u8; 4]);
+            let f = Frame {
+                width: 2,
+                height: 2,
+                buffer: std::borrow::Cow::Borrowed(&[0u8; 4]),
+                ..Frame::default()
+            };
             encoder.write_frame(&f).unwrap();
         }
         let anim = GifDecoder::new().decode_animated(&buf).unwrap();
