@@ -19,11 +19,21 @@ pub struct Surface {
 impl Surface {
     /// Create a raster surface.
     ///
-    /// The backing [`PixelBuffer`] stores premultiplied pixels in RGBA byte
-    /// order, so only RGBA-order 8888 color types are supported. Other color
-    /// types are rejected (returns `None`) rather than silently mislabeled,
-    /// matching `SkSurface::MakeRaster` returning null for an unsupported
+    /// The backing [`PixelBuffer`] always stores premultiplied pixels in
+    /// RGBA byte order, regardless of the surface's declared color type.
+    /// `Bgra8888` is accepted (needed for `ColorType::n32()` on Windows,
+    /// which resolves to `Bgra8888`): the buffer stays RGBA internally, and
+    /// R/B are swapped when copying out via
+    /// [`make_image_snapshot`](Self::make_image_snapshot) or
+    /// [`make_image_snapshot_subset`](Self::make_image_snapshot_subset), so
+    /// those snapshots observe the declared BGRA byte order. [`pixels`]
+    /// stays a zero-copy view of the physical (RGBA) buffer regardless of
+    /// declared color type — see its docs. Other color types are rejected
+    /// (returns `None`) rather than silently mislabeled, matching
+    /// `SkSurface::MakeRaster` returning null for an unsupported
     /// [`ImageInfo`].
+    ///
+    /// [`pixels`]: Self::pixels
     pub fn new_raster(info: &ImageInfo, props: Option<&SurfaceProps>) -> Option<Self> {
         use skia_rs_core::ColorType;
 
@@ -31,9 +41,15 @@ impl Surface {
             return None;
         }
 
-        // RGBA-order 8888 only (the buffer is RGBA). BGRA and narrower/wider
-        // formats are not backed by this RGBA buffer.
-        if !matches!(info.color_type, ColorType::Rgba8888 | ColorType::Srgba8888) {
+        // 8888 formats only (the buffer is 4 bytes/pixel). Rgba8888 and
+        // Srgba8888 match the buffer's native RGBA byte order exactly;
+        // Bgra8888 is accepted too, with R/B swapped when snapshotting (see
+        // `make_image_snapshot`). Narrower/wider formats are not backed by
+        // this buffer.
+        if !matches!(
+            info.color_type,
+            ColorType::Rgba8888 | ColorType::Srgba8888 | ColorType::Bgra8888
+        ) {
             return None;
         }
 
@@ -91,11 +107,21 @@ impl Surface {
     }
 
     /// Get access to the pixel data.
+    ///
+    /// This is a zero-copy view of the *physical* backing buffer, which is
+    /// always laid out in RGBA byte order (see [`new_raster`](Self::new_raster)),
+    /// regardless of the surface's declared [`ColorType`](skia_rs_core::ColorType).
+    /// For a `Bgra8888` surface, callers that need bytes in the *declared*
+    /// byte order should use [`make_image_snapshot`](Self::make_image_snapshot)
+    /// or [`make_image_snapshot_subset`](Self::make_image_snapshot_subset),
+    /// which perform the R/B swap on the copied-out bytes.
     pub fn pixels(&self) -> &[u8] {
         &self.buffer.pixels
     }
 
     /// Get mutable access to the pixel data.
+    ///
+    /// Physical RGBA byte order; see [`pixels`](Self::pixels).
     pub fn pixels_mut(&mut self) -> &mut [u8] {
         &mut self.buffer.pixels
     }
@@ -129,6 +155,15 @@ impl Surface {
         // alpha type is Unpremul, deliver unpremultiplied bytes on snapshot.
         if self.info.alpha_type == AlphaType::Unpremul {
             skia_rs_core::unpremultiply_in_place(&mut pixels);
+        }
+
+        // The buffer is always physically RGBA order; if the surface is
+        // declared Bgra8888, swap R/B so the snapshot's bytes match its
+        // declared color type. Swap is order-only (it only touches bytes 0
+        // and 2 of each pixel), so it composes independently of the
+        // premul/unpremul conversion above.
+        if self.info.color_type == skia_rs_core::ColorType::Bgra8888 {
+            skia_rs_core::swizzle_rb_in_place(&mut pixels);
         }
 
         // Carry the surface's true color/alpha type into the snapshot.
@@ -178,6 +213,12 @@ impl Surface {
         // Deliver unpremultiplied bytes when the surface is Unpremul.
         if self.info.alpha_type == AlphaType::Unpremul {
             skia_rs_core::unpremultiply_in_place(&mut pixels);
+        }
+
+        // Swap R/B for a Bgra8888-declared surface; see the equivalent step
+        // in `make_image_snapshot` for why order doesn't matter here.
+        if self.info.color_type == skia_rs_core::ColorType::Bgra8888 {
+            skia_rs_core::swizzle_rb_in_place(&mut pixels);
         }
 
         // Carry the surface's true color/alpha type into the snapshot.
@@ -302,7 +343,7 @@ pub type RasterCanvas<'a> = crate::Canvas<'a>;
 mod tests {
     use super::*;
     use skia_rs_core::{AlphaType, Color, ColorType, IRect, Point, Rect};
-    use skia_rs_paint::{Paint, Style};
+    use skia_rs_paint::{BlendMode, Paint, Style};
 
     #[test]
     fn test_surface_new_raster() {
@@ -398,6 +439,82 @@ mod tests {
         let buffer = surface.pixel_buffer();
         let pixel = buffer.get_pixel(50, 50).unwrap();
         assert_eq!(pixel.green(), 255);
+    }
+
+    #[test]
+    fn test_new_raster_accepts_bgra8888() {
+        // `ColorType::n32()` resolves to `Bgra8888` on Windows; the raster
+        // backend must accept it (composed via `new_raster_n32_premul`).
+        let info = ImageInfo::new(4, 4, ColorType::Bgra8888, AlphaType::Premul).unwrap();
+        assert!(Surface::new_raster(&info, None).is_some());
+    }
+
+    #[test]
+    fn test_bgra8888_pixels_are_raw_rgba_order() {
+        // `pixels()` is documented as a zero-copy view of the *physical*
+        // buffer, which always stores RGBA order regardless of the
+        // surface's declared color type. Drawing opaque red therefore
+        // yields [255, 0, 0, 255] in `pixels()` for both Rgba8888 and
+        // Bgra8888 surfaces; the declared-order (swapped) bytes are only
+        // available via `make_image_snapshot`.
+        let rgba_info = ImageInfo::new(4, 4, ColorType::Rgba8888, AlphaType::Premul).unwrap();
+        let mut rgba = Surface::new_raster(&rgba_info, None).unwrap();
+        rgba.canvas().clear(Color::from_argb(255, 255, 0, 0));
+        assert_eq!(&rgba.pixels()[0..4], &[255, 0, 0, 255]);
+
+        let bgra_info = ImageInfo::new(4, 4, ColorType::Bgra8888, AlphaType::Premul).unwrap();
+        let mut bgra = Surface::new_raster(&bgra_info, None).unwrap();
+        bgra.canvas().clear(Color::from_argb(255, 255, 0, 0));
+        assert_eq!(&bgra.pixels()[0..4], &[255, 0, 0, 255]);
+    }
+
+    #[cfg(feature = "codec")]
+    #[test]
+    fn test_bgra8888_snapshot_swaps_r_and_b() {
+        // The snapshot must present bytes in the surface's declared byte
+        // order: B, G, R, A for a Bgra8888 surface drawing opaque red.
+        let bgra_info = ImageInfo::new(4, 4, ColorType::Bgra8888, AlphaType::Premul).unwrap();
+        let mut bgra = Surface::new_raster(&bgra_info, None).unwrap();
+        bgra.canvas().clear(Color::from_argb(255, 255, 0, 0));
+        let img = bgra.make_image_snapshot().unwrap();
+        assert_eq!(img.info().color_type, ColorType::Bgra8888);
+        assert_eq!(&img.peek_pixels().unwrap()[0..4], &[0, 0, 255, 255]);
+
+        // The equivalent Rgba8888 surface stays byte-for-byte unchanged.
+        let rgba_info = ImageInfo::new(4, 4, ColorType::Rgba8888, AlphaType::Premul).unwrap();
+        let mut rgba = Surface::new_raster(&rgba_info, None).unwrap();
+        rgba.canvas().clear(Color::from_argb(255, 255, 0, 0));
+        let rgba_img = rgba.make_image_snapshot().unwrap();
+        assert_eq!(&rgba_img.peek_pixels().unwrap()[0..4], &[255, 0, 0, 255]);
+    }
+
+    #[cfg(feature = "codec")]
+    #[test]
+    fn test_bgra8888_unpremul_snapshot_swaps_and_unpremultiplies() {
+        // A translucent draw on an Unpremul Bgra8888 surface must come back
+        // both unpremultiplied and with R/B swapped.
+        let info = ImageInfo::new(4, 4, ColorType::Bgra8888, AlphaType::Unpremul).unwrap();
+        let mut surface = Surface::new_raster(&info, None).unwrap();
+        // 50% alpha opaque-red source drawn with Src blend so the stored
+        // (premultiplied) pixel is exactly half red, half alpha.
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_argb(128, 255, 0, 0));
+        paint.set_style(Style::Fill);
+        paint.set_blend_mode(BlendMode::Src);
+        surface
+            .canvas()
+            .draw_rect(&Rect::from_xywh(0.0, 0.0, 4.0, 4.0), &paint);
+
+        let img = surface.make_image_snapshot().unwrap();
+        assert_eq!(img.info().alpha_type, AlphaType::Unpremul);
+        assert_eq!(img.info().color_type, ColorType::Bgra8888);
+        let px = &img.peek_pixels().unwrap()[0..4];
+        // Unpremultiplied red is full-intensity (255) with alpha ~128, and
+        // B/G/R are swapped: B=0, G=0, R=255, A=128.
+        assert_eq!(px[0], 0);
+        assert_eq!(px[1], 0);
+        assert_eq!(px[2], 255);
+        assert_eq!(px[3], 128);
     }
 
     #[test]
