@@ -116,7 +116,7 @@ fn main() {
 
             // Save output
             let pixels = surface.pixels();
-            let row_bytes = width as usize * 4;
+            let row_bytes = usize::try_from(width).unwrap() * 4;
 
             let output_path = "svg_viewer_output.png";
             let file = File::create(output_path).expect("Failed to create output file");

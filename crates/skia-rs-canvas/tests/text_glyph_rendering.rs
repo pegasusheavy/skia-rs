@@ -22,6 +22,10 @@ fn demo_font(size: f32) -> Font {
 }
 
 #[test]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "pixel-count ratio in a test; precision is irrelevant"
+)]
 fn draw_string_renders_non_rectangular_glyph() {
     // Big canvas and big font — a 200pt 'A' gives us plenty of pixels to
     // sample inside vs. outside the triangular body.

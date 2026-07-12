@@ -1503,11 +1503,12 @@ impl<'a> Canvas<'a> {
 
     /// Draw a color glyph if the font carries color data for it.
     ///
-    /// Supports COLR v0 (solid-fill layers), COLR v1 (gradients + transforms
-    /// + clips + composites via `skia_rs_text::GlyphPaint`), and
-    /// SVG-in-OpenType when the `svg` feature is enabled. Returns `true`
-    /// when color-glyph rendering happened, `false` when the glyph is a
-    /// plain outline (caller should fall back to `draw_path`).
+    /// Supports COLR v0 (solid-fill layers), COLR v1 (gradients, transforms,
+    /// clips, and composites via `skia_rs_text::GlyphPaint`), and
+    /// SVG-in-OpenType when the `svg` feature is enabled.
+    ///
+    /// Returns `true` when color-glyph rendering happened, `false` when the
+    /// glyph is a plain outline (caller should fall back to `draw_path`).
     ///
     /// The base `paint` supplies alpha scaling, blend mode, anti-aliasing,
     /// and filters. The glyph's own paint data (colors, gradient stops,
@@ -1592,7 +1593,7 @@ impl<'a> Canvas<'a> {
         use skia_rs_text::GlyphPaint;
         use std::sync::Arc;
 
-        let blend = colr_composite_to_blend(composite).unwrap_or(base.blend_mode());
+        let blend = colr_composite_to_blend(composite);
 
         let mut p = base.clone();
         p.set_blend_mode(blend);
@@ -2198,6 +2199,13 @@ impl Canvas<'_> {
         for run in blob.runs() {
             let font = &run.font;
             for (i, &glyph) in run.glyphs.iter().enumerate() {
+                // `i` is a glyph index; the precision loss of the usize->f32
+                // cast is irrelevant for this fallback position estimate (only
+                // matters beyond 2^24 glyphs in a single run).
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "glyph index for a fallback position estimate"
+                )]
                 let pos = run
                     .positions
                     .get(i)
@@ -2472,7 +2480,7 @@ pub enum PointMode {
 fn stops_to_color4f(
     stops: &[skia_rs_text::GradientStop],
 ) -> (Vec<skia_rs_core::Color4f>, Vec<Scalar>) {
-    let mut sorted: Vec<_> = stops.iter().copied().collect();
+    let mut sorted: Vec<_> = stops.to_vec();
     sorted.sort_by(|a, b| {
         a.offset_f32()
             .partial_cmp(&b.offset_f32())
@@ -2493,7 +2501,7 @@ fn stops_to_color4f(
 }
 
 #[cfg(feature = "text")]
-fn extend_to_tile(extend: skia_rs_text::GradientExtend) -> skia_rs_paint::TileMode {
+const fn extend_to_tile(extend: skia_rs_text::GradientExtend) -> skia_rs_paint::TileMode {
     use skia_rs_paint::TileMode;
     match extend {
         skia_rs_text::GradientExtend::Pad => TileMode::Clamp,
@@ -2503,14 +2511,13 @@ fn extend_to_tile(extend: skia_rs_text::GradientExtend) -> skia_rs_paint::TileMo
 }
 
 #[cfg(feature = "text")]
-fn colr_composite_to_blend(
+const fn colr_composite_to_blend(
     mode: skia_rs_text::CompositeMode,
-) -> Option<skia_rs_paint::blend::BlendMode> {
+) -> skia_rs_paint::blend::BlendMode {
     use skia_rs_paint::blend::BlendMode;
     use skia_rs_text::CompositeMode as Cm;
-    // Only map the composite modes that BlendMode actually implements.
-    // SrcOver (the default) is the common case.
-    Some(match mode {
+    // Every COLR composite mode maps to a BlendMode; SrcOver is the common case.
+    match mode {
         Cm::Clear => BlendMode::Clear,
         Cm::Source => BlendMode::Src,
         Cm::Destination => BlendMode::Dst,
@@ -2539,7 +2546,7 @@ fn colr_composite_to_blend(
         Cm::Saturation => BlendMode::Saturation,
         Cm::Color => BlendMode::Color,
         Cm::Luminosity => BlendMode::Luminosity,
-    })
+    }
 }
 
 #[cfg(test)]
