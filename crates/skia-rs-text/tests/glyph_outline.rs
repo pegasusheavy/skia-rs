@@ -530,12 +530,12 @@ fn paragraph_decoration_retained_on_fragments() {
     paragraph.layout(10_000.0);
     let line = &paragraph.lines()[0];
     assert_eq!(line.fragments.len(), 2);
-    let underlines: Vec<bool> = line
+    let underline_flags: Vec<bool> = line
         .fragments
         .iter()
         .map(|f| f.style.decoration.underline)
         .collect();
-    assert_eq!(underlines, vec![false, true]);
+    assert_eq!(underline_flags, vec![false, true]);
 }
 
 // =============================================================================

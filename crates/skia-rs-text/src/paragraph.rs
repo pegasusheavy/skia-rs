@@ -8,20 +8,9 @@
 //! - Text alignment and justification
 
 use crate::font::Font;
-use crate::shaper::{ShapedGlyph, Shaper};
+use crate::shaper::{ShapedGlyph, Shaper, TextDirection};
 use crate::text_blob::{TextBlob, TextBlobBuilder};
 use skia_rs_core::{Point, Rect, Scalar};
-
-/// Text direction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[repr(u8)]
-pub enum TextDirection {
-    /// Left-to-right text.
-    #[default]
-    Ltr = 0,
-    /// Right-to-left text.
-    Rtl,
-}
 
 /// Text alignment within a paragraph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -96,7 +85,7 @@ impl Default for TextStyle {
     fn default() -> Self {
         Self {
             font: Font::default(),
-            color: 0xFF000000, // Black
+            color: 0xFF00_0000, // Black
             background_color: 0,
             decoration: TextDecoration::default(),
             letter_spacing: 0.0,
@@ -157,7 +146,8 @@ struct TextRun {
 
 impl ParagraphBuilder {
     /// Create a new paragraph builder with the given style.
-    pub fn new(style: ParagraphStyle) -> Self {
+    #[must_use] 
+    pub const fn new(style: ParagraphStyle) -> Self {
         Self {
             style,
             runs: Vec::new(),
@@ -198,6 +188,7 @@ impl ParagraphBuilder {
     }
 
     /// Build the paragraph.
+    #[must_use] 
     pub fn build(self) -> Paragraph {
         Paragraph {
             style: self.style,
@@ -220,7 +211,7 @@ pub struct Paragraph {
     laid_out: bool,
 }
 
-/// A contiguous run of glyphs on a line that share a single TextStyle.
+/// A contiguous run of glyphs on a line that share a single `TextStyle`.
 ///
 /// Each fragment carries its own font, color, background, and decoration so
 /// that `to_text_blob` (and decoration rendering) can emit the correct
@@ -265,7 +256,7 @@ pub struct TextLine {
 struct Cluster {
     /// Shaped glyphs in this cluster.
     glyphs: Vec<ShapedGlyph>,
-    /// Total advance (sum of x_advance + letter_spacing adjustments).
+    /// Total advance (sum of `x_advance` + `letter_spacing` adjustments).
     advance: Scalar,
     /// Style applied to this cluster.
     style: TextStyle,
@@ -315,7 +306,7 @@ impl Paragraph {
         self.pack_clusters_into_lines(clusters, width);
 
         // Compute final height from the last line's extent.
-        self.height = self.lines.last().map(|l| l.bounds.bottom).unwrap_or(0.0);
+        self.height = self.lines.last().map_or(0.0, |l| l.bounds.bottom);
         self.laid_out = true;
     }
 
@@ -336,11 +327,11 @@ impl Paragraph {
             if seg.is_empty() {
                 return;
             }
-            let shaped = shaper.shape_auto(seg, &run.style.font);
-            let glyphs: Vec<ShapedGlyph> = match shaped {
-                Some(runs) => runs.into_iter().flat_map(|r| r.glyphs).collect(),
-                None => fallback_shape(seg, &run.style.font),
-            };
+            let shape_result = shaper.shape_auto(seg, &run.style.font);
+            let glyphs: Vec<ShapedGlyph> = shape_result.map_or_else(
+                || fallback_shape(seg, &run.style.font),
+                |runs| runs.into_iter().flat_map(|r| r.glyphs).collect(),
+            );
             // Cluster advance includes letter_spacing between every glyph.
             // This is what the line-break loop compares against `width`,
             // so it has to agree with `build_line`'s pen-advance loop
@@ -389,11 +380,11 @@ impl Paragraph {
                 }
                 // Shape the whitespace to get real space advances.
                 let ws_text = &run.text[i..j];
-                let shaped = shaper.shape_auto(ws_text, &run.style.font);
-                let glyphs: Vec<ShapedGlyph> = match shaped {
-                    Some(runs) => runs.into_iter().flat_map(|r| r.glyphs).collect(),
-                    None => fallback_shape(ws_text, &run.style.font),
-                };
+                let shape_result = shaper.shape_auto(ws_text, &run.style.font);
+                let glyphs: Vec<ShapedGlyph> = shape_result.map_or_else(
+                    || fallback_shape(ws_text, &run.style.font),
+                    |runs| runs.into_iter().flat_map(|r| r.glyphs).collect(),
+                );
                 // Apply word_spacing once per whitespace cluster, matching
                 // the previous implementation's per-space bump.
                 let base: Scalar = glyphs.iter().map(|g| g.x_advance).sum();
@@ -416,6 +407,10 @@ impl Paragraph {
         push_visible(out, &run.text[segment_start..]);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "line-breaking/packing state machine; splitting would fragment cohesive break-decision logic"
+    )]
     fn pack_clusters_into_lines(&mut self, clusters: Vec<Cluster>, width: Scalar) {
         let mut pending: Vec<Cluster> = Vec::new();
         let mut pending_advance: Scalar = 0.0;
@@ -526,10 +521,10 @@ impl Paragraph {
         let is_rtl = matches!(self.style.text_direction, TextDirection::Rtl);
         for line in &mut self.lines {
             let offset = match align {
-                TextAlign::Left => 0.0,
                 TextAlign::Right => box_width - line.width,
                 TextAlign::Center => (box_width - line.width) / 2.0,
-                TextAlign::Justify => 0.0, // full justification not yet implemented
+                // Justify not yet implemented; falls back to left-aligned.
+                TextAlign::Left | TextAlign::Justify => 0.0,
                 TextAlign::Start => {
                     if is_rtl {
                         box_width - line.width
@@ -583,9 +578,7 @@ impl Paragraph {
             // font only when the paragraph has no runs at all.
             let m = self
                 .runs
-                .first()
-                .map(|r| r.style.font.metrics())
-                .unwrap_or_else(|| Font::default().metrics());
+                .first().map_or_else(|| Font::default().metrics(), |r| r.style.font.metrics());
             ascent = m.ascent;
             descent = m.descent;
             leading = m.leading;
@@ -605,8 +598,7 @@ impl Paragraph {
             // Merge into the last fragment when styles match.
             let can_merge = fragments
                 .last()
-                .map(|f| styles_eq(&f.style, &cluster.style))
-                .unwrap_or(false);
+                .is_some_and(|f| styles_eq(&f.style, &cluster.style));
 
             if !can_merge {
                 fragments.push(LineFragment {
@@ -665,35 +657,41 @@ impl Paragraph {
     }
 
     /// Get the laid-out width.
+    #[must_use] 
     pub fn max_intrinsic_width(&self) -> Scalar {
         self.lines
             .iter()
             .map(|l| l.width)
-            .fold(0.0f32, |a, b| a.max(b))
+            .fold(0.0f32, f32::max)
     }
 
     /// Get the laid-out height.
-    pub fn height(&self) -> Scalar {
+    #[must_use] 
+    pub const fn height(&self) -> Scalar {
         self.height
     }
 
     /// Get the number of lines.
+    #[must_use] 
     pub fn line_count(&self) -> usize {
         self.lines.len()
     }
 
     /// Get the line height for a specific line.
+    #[must_use] 
     pub fn line_height(&self, line: usize) -> Option<Scalar> {
         self.lines.get(line).map(|l| l.bounds.height())
     }
 
     /// Get the width of a specific line.
+    #[must_use] 
     pub fn line_width(&self, line: usize) -> Option<Scalar> {
         self.lines.get(line).map(|l| l.width)
     }
 
     /// Get access to the laid-out lines (for decoration rendering, hit
     /// testing, etc.).
+    #[must_use] 
     pub fn lines(&self) -> &[TextLine] {
         &self.lines
     }
@@ -703,6 +701,7 @@ impl Paragraph {
     /// Emits one glyph run per (line, fragment) so that downstream rendering
     /// can honour per-span font, color, and decoration. Glyph positions are
     /// absolute in the paragraph coordinate space.
+    #[must_use] 
     pub fn to_text_blob(&self) -> Option<TextBlob> {
         if !self.laid_out || self.lines.is_empty() {
             return None;
@@ -728,7 +727,8 @@ impl Paragraph {
     }
 
     /// Get the bounding box of the laid-out text.
-    pub fn bounds(&self) -> Rect {
+    #[must_use] 
+    pub const fn bounds(&self) -> Rect {
         Rect::from_xywh(0.0, 0.0, self.width, self.height)
     }
 }
@@ -747,7 +747,7 @@ fn fallback_shape(text: &str, font: &Font) -> Vec<ShapedGlyph> {
             let adv = font.glyph_advance(gid);
             ShapedGlyph {
                 glyph_id: GlyphId(gid),
-                cluster: i as u32,
+                cluster: u32::try_from(i).unwrap_or(u32::MAX),
                 x_advance: adv,
                 y_advance: 0.0,
                 x_offset: 0.0,
@@ -794,6 +794,7 @@ pub struct LineBreaker {
 
 impl LineBreaker {
     /// Create a new line breaker for the given text.
+    #[must_use] 
     pub fn new(text: &str) -> Self {
         let mut breaks = Vec::new();
         let mut last_was_space = false;
@@ -816,11 +817,13 @@ impl LineBreaker {
     }
 
     /// Get all break opportunities.
+    #[must_use] 
     pub fn breaks(&self) -> &[usize] {
         &self.breaks
     }
 
     /// Find the best break point before a given position.
+    #[must_use] 
     pub fn find_break_before(&self, pos: usize) -> usize {
         self.breaks
             .iter()
@@ -854,7 +857,8 @@ impl Default for Hyphenator {
 
 impl Hyphenator {
     /// Create a new hyphenator.
-    pub fn new(min_prefix: usize, min_suffix: usize) -> Self {
+    #[must_use] 
+    pub const fn new(min_prefix: usize, min_suffix: usize) -> Self {
         Self {
             min_prefix,
             min_suffix,
@@ -864,6 +868,7 @@ impl Hyphenator {
     /// Find hyphenation points in a word.
     ///
     /// Returns byte offsets where hyphens can be inserted.
+    #[must_use] 
     pub fn hyphenate(&self, word: &str) -> Vec<usize> {
         let chars: Vec<char> = word.chars().collect();
         let char_count = chars.len();
@@ -879,18 +884,17 @@ impl Hyphenator {
             byte_offset += c.len_utf8();
 
             // Simple rule: allow hyphenation between vowels and consonants
-            if i >= self.min_prefix && char_count - i - 1 >= self.min_suffix {
-                if is_vowel(c) != is_vowel(chars.get(i + 1).copied().unwrap_or('x')) {
+            if i >= self.min_prefix && char_count - i > self.min_suffix
+                && is_vowel(c) != is_vowel(chars.get(i + 1).copied().unwrap_or('x')) {
                     points.push(byte_offset);
                 }
-            }
         }
 
         points
     }
 }
 
-fn is_vowel(c: char) -> bool {
+const fn is_vowel(c: char) -> bool {
     matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u')
 }
 

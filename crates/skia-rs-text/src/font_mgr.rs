@@ -88,6 +88,7 @@ pub struct TypefaceEntry {
 
 impl DefaultFontMgr {
     /// Create a new default font manager.
+    #[must_use] 
     pub fn new() -> Self {
         let mut mgr = Self {
             families: Vec::new(),
@@ -120,16 +121,19 @@ impl DefaultFontMgr {
         style_name: &str,
         style: FontStyle,
     ) {
-        // Find or create family
-        let family = if let Some(f) = self.families.iter_mut().find(|f| f.name == family_name) {
-            f
-        } else {
-            self.families.push(FontFamily {
-                name: family_name.to_string(),
-                typefaces: Vec::new(),
+        // Find or create family.
+        let family_idx = self
+            .families
+            .iter()
+            .position(|f| f.name == family_name)
+            .unwrap_or_else(|| {
+                self.families.push(FontFamily {
+                    name: family_name.to_string(),
+                    typefaces: Vec::new(),
+                });
+                self.families.len() - 1
             });
-            self.families.last_mut().unwrap()
-        };
+        let family = &mut self.families[family_idx];
 
         family.typefaces.push(TypefaceEntry {
             typeface,
@@ -184,9 +188,8 @@ impl FontMgr for DefaultFontMgr {
                     .typefaces
                     .iter()
                     .find(|e| Arc::ptr_eq(&e.typeface, &candidate))
-                    .map(|e| e.style)
-                    .unwrap_or(style);
-                let dist = style_distance(&entry_style, &style);
+                    .map_or(style, |e| e.style);
+                let dist = style_distance(entry_style, style);
                 match &best {
                     None => best = Some((dist, candidate)),
                     Some((d, _)) if dist < *d => best = Some((dist, candidate)),
@@ -235,7 +238,7 @@ fn best_covering_typeface(
         .typefaces
         .iter()
         .filter(|entry| entry.typeface.char_to_glyph(character) != 0)
-        .min_by_key(|entry| style_distance(&entry.style, &style))
+        .min_by_key(|entry| style_distance(entry.style, style))
         .map(|entry| entry.typeface.clone())
 }
 
@@ -265,15 +268,15 @@ impl FontStyleSet for DefaultFontStyleSet {
         self.family
             .typefaces
             .iter()
-            .min_by_key(|e| style_distance(&e.style, &style))
+            .min_by_key(|e| style_distance(e.style, style))
             .map(|e| e.typeface.clone())
     }
 }
 
 /// Calculate the "distance" between two font styles for matching.
-fn style_distance(a: &FontStyle, b: &FontStyle) -> u32 {
-    let weight_diff = (a.weight.0 as i32 - b.weight.0 as i32).unsigned_abs();
-    let width_diff = (a.width.0 as i32 - b.width.0 as i32).unsigned_abs();
+fn style_distance(a: FontStyle, b: FontStyle) -> u32 {
+    let weight_diff = (i32::from(a.weight.0) - i32::from(b.weight.0)).unsigned_abs();
+    let width_diff = (i32::from(a.width.0) - i32::from(b.width.0)).unsigned_abs();
     let slant_diff = if a.slant == b.slant { 0 } else { 100 };
 
     weight_diff + width_diff * 10 + slant_diff
@@ -288,6 +291,7 @@ pub struct FontFallback {
 
 impl FontFallback {
     /// Create a new empty fallback chain.
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
@@ -316,6 +320,7 @@ impl FontFallback {
     }
 
     /// Get the fallback chain.
+    #[must_use] 
     pub fn chain(&self) -> &[TypefaceRef] {
         &self.fallback_chain
     }

@@ -1,9 +1,9 @@
-//! Text shaping using rustybuzz (HarfBuzz compatible).
+//! Text shaping using rustybuzz (`HarfBuzz` compatible).
 //!
 //! Text shaping converts a string of characters into positioned glyphs.
 
 use crate::{Font, Typeface};
-use skia_rs_core::{Point, Rect, Scalar};
+use skia_rs_core::Scalar;
 use std::sync::Arc;
 
 /// A glyph ID.
@@ -90,21 +90,25 @@ pub struct Language(pub String);
 
 impl Language {
     /// English.
+    #[must_use] 
     pub fn english() -> Self {
         Self("en".to_string())
     }
 
     /// Arabic.
+    #[must_use] 
     pub fn arabic() -> Self {
         Self("ar".to_string())
     }
 
     /// Chinese (Simplified).
+    #[must_use] 
     pub fn chinese_simplified() -> Self {
         Self("zh-Hans".to_string())
     }
 
     /// Japanese.
+    #[must_use] 
     pub fn japanese() -> Self {
         Self("ja".to_string())
     }
@@ -118,6 +122,7 @@ pub struct Features {
 
 impl Features {
     /// Create empty feature set.
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
@@ -135,12 +140,14 @@ impl Features {
     }
 
     /// Enable kerning.
+    #[must_use] 
     pub fn with_kerning(mut self) -> Self {
         self.enable("kern");
         self
     }
 
     /// Enable ligatures.
+    #[must_use] 
     pub fn with_ligatures(mut self) -> Self {
         self.enable("liga");
         self
@@ -161,18 +168,28 @@ impl Default for Shaper {
 
 impl Shaper {
     /// Create a new shaper.
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self { font_db: None }
     }
 
     /// Create a shaper with a font database for fallback.
-    pub fn with_font_db(font_db: Arc<fontdb::Database>) -> Self {
+    #[must_use]
+    pub const fn with_font_db(font_db: Arc<fontdb::Database>) -> Self {
         Self {
             font_db: Some(font_db),
         }
     }
 
+    /// Get the font database used for fallback, if any.
+    #[inline]
+    #[must_use]
+    pub const fn font_db(&self) -> Option<&Arc<fontdb::Database>> {
+        self.font_db.as_ref()
+    }
+
     /// Shape text with the given font.
+    #[must_use] 
     pub fn shape(
         &self,
         text: &str,
@@ -185,7 +202,7 @@ impl Shaper {
         let typeface = font.typeface()?;
 
         // Try to create a rustybuzz face from the typeface data
-        let face = self.create_face(typeface)?;
+        let face = Self::create_face(typeface)?;
 
         // Create buffer
         let mut buffer = rustybuzz::UnicodeBuffer::new();
@@ -218,7 +235,7 @@ impl Shaper {
         // We work in font units (rustybuzz returns unscaled positions) and
         // convert with `size / upem`, so the x conversion additionally
         // multiplies by `scale_x` and the y conversion is negated.
-        let scale = font.size() / face.units_per_em() as Scalar;
+        let scale = font.size() / skia_rs_core::cast::scalar_from_i32(face.units_per_em());
         let scale_x = scale * font.scale_x();
 
         let glyphs: Vec<ShapedGlyph> = output
@@ -226,12 +243,12 @@ impl Shaper {
             .iter()
             .zip(output.glyph_positions().iter())
             .map(|(info, pos)| ShapedGlyph {
-                glyph_id: GlyphId(info.glyph_id as u16),
+                glyph_id: GlyphId(u16::try_from(info.glyph_id).unwrap_or(u16::MAX)),
                 cluster: info.cluster,
-                x_advance: pos.x_advance as Scalar * scale_x,
-                y_advance: -(pos.y_advance as Scalar) * scale,
-                x_offset: pos.x_offset as Scalar * scale_x,
-                y_offset: -(pos.y_offset as Scalar) * scale,
+                x_advance: skia_rs_core::cast::scalar_from_i32(pos.x_advance) * scale_x,
+                y_advance: -skia_rs_core::cast::scalar_from_i32(pos.y_advance) * scale,
+                x_offset: skia_rs_core::cast::scalar_from_i32(pos.x_offset) * scale_x,
+                y_offset: -skia_rs_core::cast::scalar_from_i32(pos.y_offset) * scale,
             })
             .collect();
 
@@ -247,6 +264,7 @@ impl Shaper {
     }
 
     /// Shape text with automatic script and direction detection.
+    #[must_use] 
     pub fn shape_auto(&self, text: &str, font: &Font) -> Option<Vec<ShapedRun>> {
         // Detect direction and script
         let direction = detect_direction(text);
@@ -256,7 +274,7 @@ impl Shaper {
     }
 
     /// Create a rustybuzz Face from a typeface.
-    fn create_face<'a>(&self, typeface: &'a Typeface) -> Option<rustybuzz::Face<'a>> {
+    fn create_face(typeface: &Typeface) -> Option<rustybuzz::Face<'_>> {
         // Try to get font data
         let data = typeface.font_data()?;
         rustybuzz::Face::from_slice(data, 0)
@@ -276,7 +294,7 @@ fn detect_direction(text: &str) -> TextDirection {
     TextDirection::Ltr
 }
 
-fn is_rtl_char(ch: char) -> bool {
+const fn is_rtl_char(ch: char) -> bool {
     matches!(ch,
         '\u{0590}'..='\u{05FF}' | // Hebrew
         '\u{0600}'..='\u{06FF}' | // Arabic
@@ -286,8 +304,8 @@ fn is_rtl_char(ch: char) -> bool {
     )
 }
 
-fn is_strong_ltr_char(ch: char) -> bool {
-    ch.is_ascii_alphabetic() || matches!(ch, 'A'..='Z' | 'a'..='z')
+const fn is_strong_ltr_char(ch: char) -> bool {
+    ch.is_ascii_alphabetic() || ch.is_ascii_alphabetic()
 }
 
 /// Convert our Script to rustybuzz Script.
@@ -357,6 +375,7 @@ pub struct ParagraphLine {
 
 impl ParagraphLayout {
     /// Lay out text within a given width.
+    #[must_use] 
     pub fn layout(text: &str, font: &Font, max_width: Scalar, shaper: &Shaper) -> Option<Self> {
         let runs = shaper.shape_auto(text, font)?;
         let line_height = font.spacing();
@@ -390,8 +409,10 @@ impl ParagraphLayout {
             lines.push(current_line);
         }
 
-        let width = lines.iter().map(|l| l.width).fold(0.0f32, |a, b| a.max(b));
-        let height = lines.len() as Scalar * line_height;
+        let width = lines.iter().map(|l| l.width).fold(0.0f32, f32::max);
+        let height = skia_rs_core::cast::scalar_from_i32(
+            i32::try_from(lines.len()).unwrap_or(i32::MAX),
+        ) * line_height;
 
         Some(Self {
             lines,
