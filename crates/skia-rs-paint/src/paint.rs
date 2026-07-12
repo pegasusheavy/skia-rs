@@ -3,6 +3,7 @@
 use crate::blend::BlendMode;
 use crate::filter::{ColorFilterRef, ImageFilterRef, MaskFilterRef};
 use crate::shader::ShaderRef;
+use skia_rs_core::cast::f32_to_u8_sat;
 use skia_rs_core::{Color, Color4f, Scalar};
 use skia_rs_path::PathEffectRef;
 
@@ -10,7 +11,7 @@ use skia_rs_path::PathEffectRef;
 /// nearest (Skia's `SkColor4f::toSkColor` semantics — 0.5 maps to 128).
 #[inline]
 fn color_component_to_byte(v: Scalar) -> u8 {
-    (v * 255.0).round().clamp(0.0, 255.0) as u8
+    f32_to_u8_sat(v * 255.0)
 }
 
 /// Paint style (fill, stroke, or both).
@@ -458,7 +459,7 @@ impl Paint {
         match self.shader.as_ref().and_then(|s| s.serialize()) {
             Some(shader_data) => {
                 data.push(1); // present
-                data.extend_from_slice(&(shader_data.len() as u32).to_le_bytes());
+                data.extend_from_slice(&u32::try_from(shader_data.len()).unwrap_or(u32::MAX).to_le_bytes());
                 data.extend_from_slice(&shader_data);
             }
             None => data.push(0), // absent
@@ -468,7 +469,7 @@ impl Paint {
         match self.mask_filter.as_ref().and_then(|f| f.serialize()) {
             Some(filter_data) => {
                 data.push(1);
-                data.extend_from_slice(&(filter_data.len() as u32).to_le_bytes());
+                data.extend_from_slice(&u32::try_from(filter_data.len()).unwrap_or(u32::MAX).to_le_bytes());
                 data.extend_from_slice(&filter_data);
             }
             None => data.push(0),
@@ -478,7 +479,7 @@ impl Paint {
         match self.color_filter.as_ref().and_then(|f| f.serialize()) {
             Some(filter_data) => {
                 data.push(1);
-                data.extend_from_slice(&(filter_data.len() as u32).to_le_bytes());
+                data.extend_from_slice(&u32::try_from(filter_data.len()).unwrap_or(u32::MAX).to_le_bytes());
                 data.extend_from_slice(&filter_data);
             }
             None => data.push(0),
@@ -488,13 +489,49 @@ impl Paint {
         match self.image_filter.as_ref().and_then(|f| f.serialize()) {
             Some(filter_data) => {
                 data.push(1);
-                data.extend_from_slice(&(filter_data.len() as u32).to_le_bytes());
+                data.extend_from_slice(&u32::try_from(filter_data.len()).unwrap_or(u32::MAX).to_le_bytes());
                 data.extend_from_slice(&filter_data);
             }
             None => data.push(0),
         }
 
         data
+    }
+
+    /// Read an optional length-prefixed byte section at `*offset`, advancing
+    /// `*offset` past it.
+    ///
+    /// Returns `Ok(None)` if the section is absent (present-flag is 0 or
+    /// there is no more data), `Ok(Some(bytes))` if present and well formed,
+    /// and `Err(())` if the data is truncated/malformed.
+    fn read_optional_section<'a>(
+        data: &'a [u8],
+        offset: &mut usize,
+    ) -> Result<Option<&'a [u8]>, ()> {
+        if *offset >= data.len() {
+            return Ok(None);
+        }
+        let present = data[*offset] == 1;
+        *offset += 1;
+        if !present {
+            return Ok(None);
+        }
+        if *offset + 4 > data.len() {
+            return Err(());
+        }
+        let len = u32::from_le_bytes([
+            data[*offset],
+            data[*offset + 1],
+            data[*offset + 2],
+            data[*offset + 3],
+        ]) as usize;
+        *offset += 4;
+        if *offset + len > data.len() {
+            return Err(());
+        }
+        let bytes = &data[*offset..*offset + len];
+        *offset += len;
+        Ok(Some(bytes))
     }
 
     /// Deserialize a paint from bytes.
@@ -504,7 +541,7 @@ impl Paint {
     /// Shaders and filters are deserialized from optional trailing sections.
     /// Runtime shaders/filters (SkSL-based) do not serialize and will be `None`
     /// after deserialization.
-    #[must_use] 
+    #[must_use]
     pub fn deserialize(data: &[u8]) -> Option<Self> {
         if data.len() < 17 {
             return None;
@@ -576,114 +613,33 @@ impl Paint {
         offset += 1;
 
         // Optional trailing sections (shader, mask_filter, color_filter, image_filter)
-        // Read shader section if present
-        let shader = if offset < data.len() && data[offset] == 1 {
-            offset += 1;
-            if offset + 4 > data.len() {
-                return None;
-            }
-            let len = u32::from_le_bytes([
-                data[offset],
-                data[offset + 1],
-                data[offset + 2],
-                data[offset + 3],
-            ]) as usize;
-            offset += 4;
-            if offset + len > data.len() {
-                return None;
-            }
-            let shader_bytes = &data[offset..offset + len];
-            offset += len;
+        let shader = Self::read_optional_section(data, &mut offset)
+            .ok()?
+            .and_then(|shader_bytes| {
+                let mut shader_offset = 0;
+                crate::shader::deserialize_shader(shader_bytes, &mut shader_offset)
+            });
 
-            let mut shader_offset = 0;
-            crate::shader::deserialize_shader(shader_bytes, &mut shader_offset)
-        } else {
-            if offset < data.len() {
-                offset += 1; // skip absent flag
-            }
-            None
-        };
+        let mask_filter = Self::read_optional_section(data, &mut offset)
+            .ok()?
+            .and_then(|filter_bytes| {
+                let mut filter_offset = 0;
+                crate::filter::deserialize_mask_filter(filter_bytes, &mut filter_offset)
+            });
 
-        // MaskFilter section
-        let mask_filter = if offset < data.len() && data[offset] == 1 {
-            offset += 1;
-            if offset + 4 > data.len() {
-                return None;
-            }
-            let len = u32::from_le_bytes([
-                data[offset],
-                data[offset + 1],
-                data[offset + 2],
-                data[offset + 3],
-            ]) as usize;
-            offset += 4;
-            if offset + len > data.len() {
-                return None;
-            }
-            let filter_bytes = &data[offset..offset + len];
-            offset += len;
-            let mut filter_offset = 0;
-            crate::filter::deserialize_mask_filter(filter_bytes, &mut filter_offset)
-        } else {
-            if offset < data.len() {
-                offset += 1;
-            }
-            None
-        };
+        let color_filter = Self::read_optional_section(data, &mut offset)
+            .ok()?
+            .and_then(|filter_bytes| {
+                let mut filter_offset = 0;
+                crate::filter::deserialize_color_filter(filter_bytes, &mut filter_offset)
+            });
 
-        // ColorFilter section
-        let color_filter = if offset < data.len() && data[offset] == 1 {
-            offset += 1;
-            if offset + 4 > data.len() {
-                return None;
-            }
-            let len = u32::from_le_bytes([
-                data[offset],
-                data[offset + 1],
-                data[offset + 2],
-                data[offset + 3],
-            ]) as usize;
-            offset += 4;
-            if offset + len > data.len() {
-                return None;
-            }
-            let filter_bytes = &data[offset..offset + len];
-            offset += len;
-            let mut filter_offset = 0;
-            crate::filter::deserialize_color_filter(filter_bytes, &mut filter_offset)
-        } else {
-            if offset < data.len() {
-                offset += 1;
-            }
-            None
-        };
-
-        // ImageFilter section
-        let image_filter = if offset < data.len() && data[offset] == 1 {
-            offset += 1;
-            if offset + 4 > data.len() {
-                return None;
-            }
-            let len = u32::from_le_bytes([
-                data[offset],
-                data[offset + 1],
-                data[offset + 2],
-                data[offset + 3],
-            ]) as usize;
-            offset += 4;
-            if offset + len > data.len() {
-                return None;
-            }
-            let filter_bytes = &data[offset..offset + len];
-            offset += len;
-            let mut filter_offset = 0;
-            crate::filter::deserialize_image_filter(filter_bytes, &mut filter_offset)
-        } else {
-            if offset < data.len() {
-                offset += 1;
-            }
-            None
-        };
+        let image_filter = Self::read_optional_section(data, &mut offset)
+            .ok()?
+            .and_then(|filter_bytes| {
+                let mut filter_offset = 0;
+                crate::filter::deserialize_image_filter(filter_bytes, &mut filter_offset)
+            });
 
         Some(Self {
             color,
@@ -709,6 +665,10 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact default value check (hairline stroke width is exactly 0.0), not a computed comparison"
+    )]
     fn test_paint_defaults_match_skpaint() {
         // SkPaint.cpp: fWidth{0} (hairline) and fAntiAlias false by default.
         let paint = Paint::new();
@@ -1009,6 +969,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact byte round-trip check for serialize/deserialize, not a computed comparison"
+    )]
     fn test_paint_serialize_extreme_stroke_widths() {
         let mut paint = Paint::new();
         for w in &[0.0, 0.001, 100.0, 10_000.0, f32::MIN_POSITIVE, f32::EPSILON] {
@@ -1053,6 +1017,10 @@ mod proptests {
 
     proptest! {
         #[test]
+        #[allow(
+            clippy::float_cmp,
+            reason = "exact byte round-trip check for serialize/deserialize, not a computed comparison"
+        )]
         fn test_paint_stroke_width_round_trip(width in 0.0_f32..1e6) {
             let mut paint = Paint::new();
             paint.set_stroke_width(width);

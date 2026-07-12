@@ -234,6 +234,10 @@ impl BlendMode {
             //   d == 0  -> s*inv(da)
             //   s == sa -> s + d*inv(sa)
             //   else    -> sa*min(da, (d*sa)/(sa-s)) + s*inv(da) + d*inv(sa)
+            #[allow(
+                clippy::float_cmp,
+                reason = "faithful port of BLEND_MODE(colordodge): d==0 / s==sa are exact edge-case branches from SkRasterPipeline_opts.h, not tolerance comparisons"
+            )]
             Self::ColorDodge => separable_blend(src, dst, |s, d| {
                 let (sa, da) = (src.a, dst.a);
                 if d == 0.0 {
@@ -248,6 +252,10 @@ impl BlendMode {
             //   d == da -> d + s*inv(da)
             //   s == 0  -> d*inv(sa)
             //   else    -> sa*(da - min(da, (da-d)*sa/s)) + s*inv(da) + d*inv(sa)
+            #[allow(
+                clippy::float_cmp,
+                reason = "faithful port of BLEND_MODE(colorburn): d==da / s==0 are exact edge-case branches from SkRasterPipeline_opts.h, not tolerance comparisons"
+            )]
             Self::ColorBurn => separable_blend(src, dst, |s, d| {
                 let (sa, da) = (src.a, dst.a);
                 if d == da {
@@ -397,13 +405,13 @@ fn clip_color(c: [f32; 3]) -> [f32; 3] {
     let x = c[0].max(c[1]).max(c[2]);
     let mut out = c;
     if n < 0.0 {
-        for i in 0..3 {
-            out[i] = l + (out[i] - l) * l / (l - n).max(1e-7);
+        for v in &mut out {
+            *v = l + (*v - l) * l / (l - n).max(1e-7);
         }
     }
     if x > 1.0 {
-        for i in 0..3 {
-            out[i] = l + (out[i] - l) * (1.0 - l) / (x - l).max(1e-7);
+        for v in &mut out {
+            *v = l + (*v - l) * (1.0 - l) / (x - l).max(1e-7);
         }
     }
     out
@@ -418,19 +426,19 @@ fn set_sat(c: [f32; 3], s: f32) -> [f32; 3] {
     // Sort channels to find min, mid, max
     let mut idx = [0, 1, 2];
     idx.sort_by(|&a, &b| c[a].partial_cmp(&c[b]).unwrap_or(std::cmp::Ordering::Equal));
-    let min_i = idx[0];
+    let lo_i = idx[0];
     let mid_i = idx[1];
-    let max_i = idx[2];
+    let hi_i = idx[2];
 
     let mut out = [0.0_f32; 3];
-    if c[max_i] > c[min_i] {
-        out[mid_i] = (c[mid_i] - c[min_i]) * s / (c[max_i] - c[min_i]);
-        out[max_i] = s;
+    if c[hi_i] > c[lo_i] {
+        out[mid_i] = (c[mid_i] - c[lo_i]) * s / (c[hi_i] - c[lo_i]);
+        out[hi_i] = s;
     } else {
         out[mid_i] = 0.0;
-        out[max_i] = 0.0;
+        out[hi_i] = 0.0;
     }
-    out[min_i] = 0.0;
+    out[lo_i] = 0.0;
     out
 }
 
@@ -615,7 +623,7 @@ mod tests {
         // m = 0.375. liteDst = sqrt(m) - m = 0.2373724.
         // liteSrc = 0.15 + 0.8*0.3*liteDst = 0.2069694. Edge = 0.23. Total 0.4369694.
         let r = BlendMode::SoftLight.apply(c(0.4, 0.4, 0.4, 0.5), c(0.3, 0.3, 0.3, 0.8));
-        assert!(close(r.r, 0.4369694), "softlight lite-dst was {}", r.r);
+        assert!(close(r.r, 0.436_969_4), "softlight lite-dst was {}", r.r);
     }
 
     #[test]
