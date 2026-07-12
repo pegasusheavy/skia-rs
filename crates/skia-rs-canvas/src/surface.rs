@@ -472,33 +472,65 @@ mod tests {
     #[test]
     fn test_bgra8888_snapshot_swaps_r_and_b() {
         // The snapshot must present bytes in the surface's declared byte
-        // order: B, G, R, A for a Bgra8888 surface drawing opaque red.
+        // order. Use three distinct channel values (10, 20, 30) so that
+        // only an exact R/B swap (not e.g. a wrong-pair swap(1,2)) can
+        // satisfy the assertion: physical RGBA is [10, 20, 30, 255], and a
+        // correct swap of bytes 0/2 yields [30, 20, 10, 255].
         let bgra_info = ImageInfo::new(4, 4, ColorType::Bgra8888, AlphaType::Premul).unwrap();
         let mut bgra = Surface::new_raster(&bgra_info, None).unwrap();
-        bgra.canvas().clear(Color::from_argb(255, 255, 0, 0));
+        bgra.canvas().clear(Color::from_argb(255, 10, 20, 30));
         let img = bgra.make_image_snapshot().unwrap();
         assert_eq!(img.info().color_type, ColorType::Bgra8888);
-        assert_eq!(&img.peek_pixels().unwrap()[0..4], &[0, 0, 255, 255]);
+        assert_eq!(&img.peek_pixels().unwrap()[0..4], &[30, 20, 10, 255]);
 
         // The equivalent Rgba8888 surface stays byte-for-byte unchanged.
         let rgba_info = ImageInfo::new(4, 4, ColorType::Rgba8888, AlphaType::Premul).unwrap();
         let mut rgba = Surface::new_raster(&rgba_info, None).unwrap();
-        rgba.canvas().clear(Color::from_argb(255, 255, 0, 0));
+        rgba.canvas().clear(Color::from_argb(255, 10, 20, 30));
         let rgba_img = rgba.make_image_snapshot().unwrap();
-        assert_eq!(&rgba_img.peek_pixels().unwrap()[0..4], &[255, 0, 0, 255]);
+        assert_eq!(&rgba_img.peek_pixels().unwrap()[0..4], &[10, 20, 30, 255]);
+    }
+
+    #[cfg(feature = "codec")]
+    #[test]
+    fn test_bgra8888_snapshot_subset_swaps_r_and_b() {
+        // `make_image_snapshot_subset` must apply the same R/B swap as
+        // `make_image_snapshot` for a Bgra8888 surface. Same distinct
+        // channel values as `test_bgra8888_snapshot_swaps_r_and_b`.
+        let bgra_info = ImageInfo::new(4, 4, ColorType::Bgra8888, AlphaType::Premul).unwrap();
+        let mut bgra = Surface::new_raster(&bgra_info, None).unwrap();
+        bgra.canvas().clear(Color::from_argb(255, 10, 20, 30));
+        let sub = bgra
+            .make_image_snapshot_subset(&IRect::new(0, 0, 2, 2))
+            .unwrap();
+        assert_eq!(sub.info().color_type, ColorType::Bgra8888);
+        assert_eq!(&sub.peek_pixels().unwrap()[0..4], &[30, 20, 10, 255]);
     }
 
     #[cfg(feature = "codec")]
     #[test]
     fn test_bgra8888_unpremul_snapshot_swaps_and_unpremultiplies() {
         // A translucent draw on an Unpremul Bgra8888 surface must come back
-        // both unpremultiplied and with R/B swapped.
+        // both unpremultiplied and with R/B swapped. Use three distinct
+        // channel values (R=100, G=150, B=200) at 50% alpha (128) so only an
+        // exact R/B swap can satisfy the assertion.
+        //
+        // Expected bytes are derived from the spec (not the implementation):
+        // `premultiply_color` uses `SkMulDiv255Round`
+        // (`(c*a + 128 + ((c*a + 128) >> 8)) >> 8`), and
+        // `unpremultiply_in_place` uses rounded scale-by-`255/a`. For a=128:
+        //   R=100 -> premul 50 -> unpremul round(50 * 255/128) = 100
+        //   G=150 -> premul 75 -> unpremul round(75 * 255/128) = 149
+        //   B=200 -> premul 100 -> unpremul round(100 * 255/128) = 199
+        // The lossy round-trip (150->149, 200->199) is expected: premultiply
+        // followed by unpremultiply at fractional alpha is not always exact.
+        // After R/B swap: [199, 149, 100, 128].
         let info = ImageInfo::new(4, 4, ColorType::Bgra8888, AlphaType::Unpremul).unwrap();
         let mut surface = Surface::new_raster(&info, None).unwrap();
-        // 50% alpha opaque-red source drawn with Src blend so the stored
-        // (premultiplied) pixel is exactly half red, half alpha.
+        // 50% alpha source drawn with Src blend so the stored (premultiplied)
+        // pixel is exactly half of each channel (rounded).
         let mut paint = Paint::new();
-        paint.set_color32(Color::from_argb(128, 255, 0, 0));
+        paint.set_color32(Color::from_argb(128, 100, 150, 200));
         paint.set_style(Style::Fill);
         paint.set_blend_mode(BlendMode::Src);
         surface
@@ -509,11 +541,9 @@ mod tests {
         assert_eq!(img.info().alpha_type, AlphaType::Unpremul);
         assert_eq!(img.info().color_type, ColorType::Bgra8888);
         let px = &img.peek_pixels().unwrap()[0..4];
-        // Unpremultiplied red is full-intensity (255) with alpha ~128, and
-        // B/G/R are swapped: B=0, G=0, R=255, A=128.
-        assert_eq!(px[0], 0);
-        assert_eq!(px[1], 0);
-        assert_eq!(px[2], 255);
+        assert_eq!(px[0], 199);
+        assert_eq!(px[1], 149);
+        assert_eq!(px[2], 100);
         assert_eq!(px[3], 128);
     }
 

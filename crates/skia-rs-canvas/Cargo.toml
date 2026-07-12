@@ -31,6 +31,13 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+# Self dev-dependency enabling the optional `codec` feature so that
+# `#[cfg(feature = "codec")]` tests (e.g. BGRA snapshot tests in
+# surface.rs) run under a standalone `cargo test -p skia-rs-canvas`, not
+# just `cargo test --workspace` (where skia-rs-ffi's `codec` feature is
+# unified in via resolver-2). No cycle: skia-rs-codec does not depend on
+# skia-rs-canvas.
+skia-rs-canvas = { path = ".", features = ["codec"] }
 
 [package.metadata.docs.rs]
 all-features = true
