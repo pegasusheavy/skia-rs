@@ -386,9 +386,10 @@ impl TransparencyGroup {
     /// Generate the transparency group `XObject`.
     #[must_use] 
     pub fn to_pdf_xobject(&self, id: u32) -> Vec<u8> {
+        use std::io::Write;
+
         let mut output = Vec::new();
 
-        use std::io::Write;
         writeln!(output, "{id} 0 obj\n<<").unwrap();
         writeln!(output, "/Type /XObject").unwrap();
         writeln!(output, "/Subtype /Form").unwrap();

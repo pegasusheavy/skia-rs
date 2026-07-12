@@ -9,6 +9,7 @@
 //!   truetype` and asserting that the emitted PDF contains the font's
 //!   `FontFile2` stream, a matching `FontDescriptor`, and populated Widths.
 
+use skia_rs_core::cast::floor_to_i32;
 use skia_rs_core::{Color, Rect};
 use skia_rs_paint::Paint;
 use skia_rs_pdf::{PdfALevel, PdfDocument, StandardFont};
@@ -391,6 +392,8 @@ fn type0_font_draw_text_fails_closed() {
 /// ICC 'acsp' file signature at its spec-mandated offset (36).
 #[test]
 fn pdfa_output_intent_embeds_real_icc_profile() {
+    use std::io::Read as _;
+
     let mut doc = PdfDocument::new();
     doc.set_pdfa_conformance(PdfALevel::A2b);
     {
@@ -419,7 +422,6 @@ fn pdfa_output_intent_embeds_real_icc_profile() {
         .map(|p| stream_start + p)
         .expect("endstream not found");
 
-    use std::io::Read as _;
     let mut decoder = flate2::read::ZlibDecoder::new(&buf[stream_start..stream_end]);
     let mut icc = Vec::new();
     decoder
@@ -476,7 +478,7 @@ fn build_synthetic_ttf(num_glyphs: u16, outline_bytes: usize) -> Vec<u8> {
         while glyf.len() % 2 != 0 {
             glyf.push(0);
         }
-        offsets.push(glyf.len() as u32);
+        offsets.push(u32::try_from(glyf.len()).unwrap_or(u32::MAX));
     }
 
     // loca (long format, since glyf is already > 65K).
@@ -487,10 +489,10 @@ fn build_synthetic_ttf(num_glyphs: u16, outline_bytes: usize) -> Vec<u8> {
 
     // head: 54 bytes. Magic fields set; indexToLocFormat=1 (long loca).
     let mut head = vec![0u8; 54];
-    head[0..4].copy_from_slice(&0x00010000u32.to_be_bytes()); // version 1.0
-    head[4..8].copy_from_slice(&0x00010000u32.to_be_bytes()); // fontRevision
+    head[0..4].copy_from_slice(&0x0001_0000u32.to_be_bytes()); // version 1.0
+    head[4..8].copy_from_slice(&0x0001_0000u32.to_be_bytes()); // fontRevision
     head[8..12].copy_from_slice(&0u32.to_be_bytes()); // checkSumAdjustment
-    head[12..16].copy_from_slice(&0x5F0F3CF5u32.to_be_bytes()); // magicNumber
+    head[12..16].copy_from_slice(&0x5F0F_3CF5u32.to_be_bytes()); // magicNumber
     head[16..18].copy_from_slice(&0u16.to_be_bytes()); // flags
     head[18..20].copy_from_slice(&1024u16.to_be_bytes()); // unitsPerEm
     // created/modified (8 bytes each = 16 bytes) — leave as zero.
@@ -503,14 +505,14 @@ fn build_synthetic_ttf(num_glyphs: u16, outline_bytes: usize) -> Vec<u8> {
     // maxp v0.5 (6 bytes) is acceptable for TrueType. We use v1.0 (32
     // bytes) to match ttf-parser's expectations more fully.
     let mut maxp = vec![0u8; 32];
-    maxp[0..4].copy_from_slice(&0x00010000u32.to_be_bytes()); // version 1.0
+    maxp[0..4].copy_from_slice(&0x0001_0000u32.to_be_bytes()); // version 1.0
     maxp[4..6].copy_from_slice(&num_glyphs.to_be_bytes()); // numGlyphs
     // The remaining fields (max points, contours, etc.) can be zero for a
     // passive parser.
 
     // hhea (36 bytes).
     let mut hhea = vec![0u8; 36];
-    hhea[0..4].copy_from_slice(&0x00010000u32.to_be_bytes()); // version 1.0
+    hhea[0..4].copy_from_slice(&0x0001_0000u32.to_be_bytes()); // version 1.0
     hhea[4..6].copy_from_slice(&768i16.to_be_bytes()); // ascender
     hhea[6..8].copy_from_slice(&(-256i16).to_be_bytes()); // descender
     hhea[8..10].copy_from_slice(&0i16.to_be_bytes()); // lineGap
@@ -544,8 +546,8 @@ fn build_synthetic_ttf(num_glyphs: u16, outline_bytes: usize) -> Vec<u8> {
     let mut sorted: Vec<(&[u8; 4], Vec<u8>)> = tables;
     sorted.sort_by(|a, b| a.0.cmp(b.0));
 
-    let n = sorted.len() as u16;
-    let entry_selector = f64::from(n).log2() as u16;
+    let n = u16::try_from(sorted.len()).unwrap_or(u16::MAX);
+    let entry_selector = u16::try_from(floor_to_i32(f32::from(n).log2())).unwrap_or(0);
     let search_range = (1u16 << entry_selector) * 16;
     let range_shift = n * 16 - search_range;
 
@@ -553,7 +555,7 @@ fn build_synthetic_ttf(num_glyphs: u16, outline_bytes: usize) -> Vec<u8> {
     let mut body_offsets: Vec<u32> = Vec::with_capacity(sorted.len());
     let mut cursor = directory_size;
     for (_, body) in &sorted {
-        body_offsets.push(cursor as u32);
+        body_offsets.push(u32::try_from(cursor).unwrap_or(u32::MAX));
         cursor += body.len();
         while cursor % 4 != 0 {
             cursor += 1;
@@ -562,7 +564,7 @@ fn build_synthetic_ttf(num_glyphs: u16, outline_bytes: usize) -> Vec<u8> {
 
     let mut out = Vec::with_capacity(cursor);
     // Offset subtable (0x00010000 sfnt version).
-    out.extend_from_slice(&0x00010000u32.to_be_bytes());
+    out.extend_from_slice(&0x0001_0000u32.to_be_bytes());
     out.extend_from_slice(&n.to_be_bytes());
     out.extend_from_slice(&search_range.to_be_bytes());
     out.extend_from_slice(&entry_selector.to_be_bytes());
@@ -573,7 +575,7 @@ fn build_synthetic_ttf(num_glyphs: u16, outline_bytes: usize) -> Vec<u8> {
         // Checksum — zero is fine for a passive parser.
         out.write_all(&0u32.to_be_bytes()).unwrap();
         out.extend_from_slice(&offset.to_be_bytes());
-        out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        out.extend_from_slice(&u32::try_from(body.len()).unwrap_or(u32::MAX).to_be_bytes());
     }
 
     for (_, body) in &sorted {
@@ -611,7 +613,7 @@ fn build_minimal_cmap(num_glyphs: u16) -> Vec<u8> {
     //   reservedPad(u16)=0, startCode[seg_count], idDelta[seg_count],
     //   idRangeOffset[seg_count], glyphIdArray (empty)
     let seg_count_x2 = seg_count * 2;
-    let entry_selector_4 = f64::from(seg_count).log2() as u16;
+    let entry_selector_4 = u16::try_from(floor_to_i32(f32::from(seg_count).log2())).unwrap_or(0);
     let search_range_4 = 2 * (1u16 << entry_selector_4);
     let range_shift_4 = seg_count_x2 - search_range_4;
 
@@ -622,7 +624,7 @@ fn build_minimal_cmap(num_glyphs: u16) -> Vec<u8> {
 
     let mut sub: Vec<u8> = Vec::new();
     sub.extend_from_slice(&4u16.to_be_bytes()); // format
-    sub.extend_from_slice(&(total_len as u16).to_be_bytes());
+    sub.extend_from_slice(&u16::try_from(total_len).unwrap_or(u16::MAX).to_be_bytes());
     sub.extend_from_slice(&0u16.to_be_bytes()); // language
     sub.extend_from_slice(&seg_count_x2.to_be_bytes());
     sub.extend_from_slice(&search_range_4.to_be_bytes());

@@ -36,6 +36,8 @@
 
 use std::collections::BTreeSet;
 
+use skia_rs_core::cast::floor_to_i32;
+
 /// Subsetting failure modes.
 #[derive(Debug)]
 pub enum SubsetError {
@@ -75,16 +77,16 @@ pub fn subset_truetype(data: &[u8], used_glyphs: &BTreeSet<u16>) -> Result<Vec<u
     let face = read_face(data)?;
 
     let glyf_range = face
-        .table_range(b"glyf")
+        .table_range(*b"glyf")
         .ok_or(SubsetError::MissingTable("glyf"))?;
     let loca_range = face
-        .table_range(b"loca")
+        .table_range(*b"loca")
         .ok_or(SubsetError::MissingTable("loca"))?;
     let head_range = face
-        .table_range(b"head")
+        .table_range(*b"head")
         .ok_or(SubsetError::MissingTable("head"))?;
     let maxp_range = face
-        .table_range(b"maxp")
+        .table_range(*b"maxp")
         .ok_or(SubsetError::MissingTable("maxp"))?;
 
     let glyf = &data[glyf_range];
@@ -116,11 +118,16 @@ pub fn subset_truetype(data: &[u8], used_glyphs: &BTreeSet<u16>) -> Result<Vec<u
     let mut keep: BTreeSet<u16> = BTreeSet::new();
     keep.insert(0);
     for &gid in used_glyphs {
-        if (gid as usize) < num_glyphs {
+        if usize::from(gid) < num_glyphs {
             keep.insert(gid);
         }
     }
-    expand_composites(glyf, &glyf_offsets, &mut keep, num_glyphs as u16);
+    expand_composites(
+        glyf,
+        &glyf_offsets,
+        &mut keep,
+        u16::try_from(num_glyphs).unwrap_or(u16::MAX),
+    );
 
     // Rebuild glyf + loca. For unused glyphs we emit a zero-length slot
     // (loca[i] == loca[i+1]). For used glyphs we copy their bytes verbatim.
@@ -138,13 +145,13 @@ pub fn subset_truetype(data: &[u8], used_glyphs: &BTreeSet<u16>) -> Result<Vec<u
         } else if &tag == b"head" {
             // Zero out checkSumAdjustment (bytes 8..12) so the output is
             // well-formed even without recomputing the file checksum.
-            let mut h = data[face.table_range(&tag).unwrap()].to_vec();
+            let mut h = data[face.table_range(tag).unwrap()].to_vec();
             if h.len() >= 12 {
                 h[8..12].copy_from_slice(&[0, 0, 0, 0]);
             }
             h
         } else {
-            data[face.table_range(&tag).unwrap()].to_vec()
+            data[face.table_range(tag).unwrap()].to_vec()
         };
         tables.push((tag, body));
     }
@@ -168,8 +175,8 @@ struct TableRecord {
 }
 
 impl Face {
-    fn table_range(&self, tag: &[u8; 4]) -> Option<std::ops::Range<usize>> {
-        self.records.iter().find(|r| &r.tag == tag).map(|r| {
+    fn table_range(&self, tag: Tag) -> Option<std::ops::Range<usize>> {
+        self.records.iter().find(|r| r.tag == tag).map(|r| {
             let start = r.offset as usize;
             let end = start + r.length as usize;
             start..end
@@ -328,7 +335,7 @@ fn rebuild_glyf_and_loca(
     new_offsets.push(0);
 
     for gid in 0..num_glyphs {
-        if keep.contains(&(gid as u16)) {
+        if keep.contains(&u16::try_from(gid).unwrap_or(u16::MAX)) {
             let start = offsets[gid] as usize;
             let end = offsets[gid + 1] as usize;
             if end > start && end <= glyf.len() {
@@ -340,7 +347,7 @@ fn rebuild_glyf_and_loca(
         if !long_loca && new_glyf.len() % 2 == 1 {
             new_glyf.push(0);
         }
-        new_offsets.push(new_glyf.len() as u32);
+        new_offsets.push(u32::try_from(new_glyf.len()).unwrap_or(u32::MAX));
     }
 
     // Emit loca in the same format as the source.
@@ -352,7 +359,7 @@ fn rebuild_glyf_and_loca(
         }
     } else {
         for o in &new_offsets {
-            let half = (*o / 2) as u16;
+            let half = u16::try_from(*o / 2).unwrap_or(u16::MAX);
             new_loca.extend_from_slice(&half.to_be_bytes());
         }
     }
@@ -368,8 +375,8 @@ fn write_font(sfnt_version: [u8; 4], tables: &[(Tag, Vec<u8>)]) -> Vec<u8> {
     let mut sorted: Vec<(Tag, Vec<u8>)> = tables.to_vec();
     sorted.sort_by_key(|t| t.0);
 
-    let num_tables = sorted.len() as u16;
-    let entry_selector = f64::from(num_tables).log2() as u16;
+    let num_tables = u16::try_from(sorted.len()).unwrap_or(u16::MAX);
+    let entry_selector = u16::try_from(floor_to_i32(f32::from(num_tables).log2())).unwrap_or(0);
     let search_range = (1u16 << entry_selector) * 16;
     let range_shift = num_tables * 16 - search_range;
 
@@ -380,7 +387,7 @@ fn write_font(sfnt_version: [u8; 4], tables: &[(Tag, Vec<u8>)]) -> Vec<u8> {
     let mut body_offsets: Vec<u32> = Vec::with_capacity(sorted.len());
     let mut cursor = directory_size;
     for (_, body) in &sorted {
-        body_offsets.push(cursor as u32);
+        body_offsets.push(u32::try_from(cursor).unwrap_or(u32::MAX));
         cursor += body.len();
         // 4-byte alignment between table bodies.
         while cursor % 4 != 0 {
@@ -404,7 +411,7 @@ fn write_font(sfnt_version: [u8; 4], tables: &[(Tag, Vec<u8>)]) -> Vec<u8> {
         out.extend_from_slice(tag);
         out.extend_from_slice(&checksum.to_be_bytes());
         out.extend_from_slice(&offset.to_be_bytes());
-        out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        out.extend_from_slice(&u32::try_from(body.len()).unwrap_or(u32::MAX).to_be_bytes());
     }
 
     // Table bodies.

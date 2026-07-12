@@ -82,8 +82,7 @@ impl PdfALevel {
     pub const fn min_pdf_version(&self) -> &'static str {
         match self {
             Self::A1a | Self::A1b => "1.4",
-            Self::A2a | Self::A2b | Self::A2u => "1.7",
-            Self::A3a | Self::A3b | Self::A3u => "1.7",
+            Self::A2a | Self::A2b | Self::A2u | Self::A3a | Self::A3b | Self::A3u => "1.7",
         }
     }
 
@@ -260,12 +259,14 @@ impl XmpMetadata {
     }
 
     /// Set document title.
+    #[must_use]
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
         self
     }
 
     /// Set document author.
+    #[must_use]
     pub fn with_author(mut self, author: impl Into<String>) -> Self {
         self.author = Some(author.into());
         self
@@ -279,7 +280,11 @@ impl XmpMetadata {
     }
 
     /// Generate XMP packet.
-    #[must_use] 
+    #[must_use]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "XMP/RDF packet emitter: a single literal serialization sequence; splitting would harm fidelity/reviewability"
+    )]
     pub fn to_xmp(&self) -> String {
         let mut xmp = String::new();
 
@@ -589,7 +594,7 @@ impl PdfAValidator {
     }
 
     fn check_colors(&mut self, doc: &PdfADocument) {
-        if doc.output_intent.is_none() && doc.uses_device_colors {
+        if doc.output_intent.is_none() && doc.features.content.uses_device_colors {
             self.errors.push(PdfAError {
                 code: PdfAErrorCode::MissingOutputIntent,
                 message: "Output intent required when using device-dependent colors".to_string(),
@@ -607,7 +612,7 @@ impl PdfAValidator {
     }
 
     fn check_images(&mut self, doc: &PdfADocument) {
-        if !self.level.allows_jpeg2000() && doc.uses_jpeg2000 {
+        if !self.level.allows_jpeg2000() && doc.features.compression.uses_jpeg2000 {
             self.errors.push(PdfAError {
                 code: PdfAErrorCode::Jpeg2000NotAllowed,
                 message: "JPEG2000 compression not allowed in PDF/A-1".to_string(),
@@ -615,7 +620,7 @@ impl PdfAValidator {
             });
         }
 
-        if doc.uses_lzw {
+        if doc.features.compression.uses_lzw {
             self.errors.push(PdfAError {
                 code: PdfAErrorCode::LzwCompressionNotAllowed,
                 message: "LZW compression not allowed in PDF/A".to_string(),
@@ -625,7 +630,7 @@ impl PdfAValidator {
     }
 
     fn check_transparency(&mut self, doc: &PdfADocument) {
-        if !self.level.allows_transparency() && doc.uses_transparency {
+        if !self.level.allows_transparency() && doc.features.content.uses_transparency {
             self.errors.push(PdfAError {
                 code: PdfAErrorCode::TransparencyNotAllowed,
                 message: "Transparency not allowed in PDF/A-1".to_string(),
@@ -635,7 +640,7 @@ impl PdfAValidator {
     }
 
     fn check_structure(&mut self, doc: &PdfADocument) {
-        if self.level.requires_structure() && !doc.has_structure {
+        if self.level.requires_structure() && !doc.features.content.has_structure {
             self.errors.push(PdfAError {
                 code: PdfAErrorCode::MissingDocumentStructure,
                 message: "Tagged PDF structure required for PDF/A-a conformance".to_string(),
@@ -645,7 +650,7 @@ impl PdfAValidator {
     }
 
     fn check_security(&mut self, doc: &PdfADocument) {
-        if doc.is_encrypted {
+        if doc.features.security.is_encrypted {
             self.errors.push(PdfAError {
                 code: PdfAErrorCode::EncryptionNotAllowed,
                 message: "Encryption not allowed in PDF/A".to_string(),
@@ -653,7 +658,7 @@ impl PdfAValidator {
             });
         }
 
-        if doc.has_javascript {
+        if doc.features.security.has_javascript {
             self.errors.push(PdfAError {
                 code: PdfAErrorCode::JavaScriptNotAllowed,
                 message: "JavaScript not allowed in PDF/A".to_string(),
@@ -712,6 +717,53 @@ pub struct EmbeddedFileInfo {
     pub relationship: Option<String>,
 }
 
+/// Compression-related feature flags tracked on a [`PdfADocument`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PdfACompressionFlags {
+    /// Uses JPEG2000 compression.
+    pub uses_jpeg2000: bool,
+    /// Uses LZW compression.
+    pub uses_lzw: bool,
+}
+
+/// Content-related feature flags tracked on a [`PdfADocument`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PdfAContentFlags {
+    /// Uses device-dependent colors (`DeviceRGB`, `DeviceCMYK`, `DeviceGray`).
+    pub uses_device_colors: bool,
+    /// Uses transparency.
+    pub uses_transparency: bool,
+    /// Has tagged structure.
+    pub has_structure: bool,
+}
+
+/// Security-related feature flags tracked on a [`PdfADocument`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PdfASecurityFlags {
+    /// Is encrypted.
+    pub is_encrypted: bool,
+    /// Has JavaScript.
+    pub has_javascript: bool,
+}
+
+/// Boolean feature flags tracked on a [`PdfADocument`] for validation.
+///
+/// Grouped into three sub-structs by topic (rather than seven top-level
+/// `bool` fields on `PdfADocument`, or one seven-`bool` struct here) to keep
+/// the document model within clippy's `struct_excessive_bools` guidance at
+/// every level — these are independent, unrelated yes/no facts about the
+/// document, not a state machine, so plain bools (rather than enums) remain
+/// the clearest representation.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PdfAFeatureFlags {
+    /// Compression-related flags.
+    pub compression: PdfACompressionFlags,
+    /// Content-related flags.
+    pub content: PdfAContentFlags,
+    /// Security-related flags.
+    pub security: PdfASecurityFlags,
+}
+
 /// PDF/A document model for validation.
 #[derive(Debug, Clone, Default)]
 pub struct PdfADocument {
@@ -723,22 +775,10 @@ pub struct PdfADocument {
     pub output_intent: Option<OutputIntent>,
     /// Fonts used in document.
     pub fonts: std::collections::HashMap<String, PdfAFontInfo>,
-    /// Uses device-dependent colors (`DeviceRGB`, `DeviceCMYK`, `DeviceGray`).
-    pub uses_device_colors: bool,
     /// Uncalibrated color spaces used.
     pub uncalibrated_colors: HashSet<String>,
-    /// Uses JPEG2000 compression.
-    pub uses_jpeg2000: bool,
-    /// Uses LZW compression.
-    pub uses_lzw: bool,
-    /// Uses transparency.
-    pub uses_transparency: bool,
-    /// Has tagged structure.
-    pub has_structure: bool,
-    /// Is encrypted.
-    pub is_encrypted: bool,
-    /// Has JavaScript.
-    pub has_javascript: bool,
+    /// Boolean feature flags (device colors, compression, transparency, etc).
+    pub features: PdfAFeatureFlags,
     /// Embedded files.
     pub embedded_files: Vec<EmbeddedFileInfo>,
 }
@@ -812,7 +852,9 @@ fn uuid_v4() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
-    let nanos = now.as_nanos() as u64;
+    // Low 64 bits of the nanosecond timestamp — matches the truncating `as
+    // u64` cast this replaces (this is a PRNG seed, not a precise duration).
+    let nanos = u64::try_from(now.as_nanos() & u128::from(u64::MAX)).unwrap_or(u64::MAX);
     let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
 
     // Combine the clock and the counter through a splitmix64-style mixer
@@ -831,10 +873,10 @@ fn uuid_v4() -> String {
 
     format!(
         "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        (x >> 32) as u32,
-        ((x >> 16) as u16),
+        u32::try_from(x >> 32 & 0xFFFF_FFFF).unwrap_or(u32::MAX),
+        u16::try_from(x >> 16 & 0xFFFF).unwrap_or(u16::MAX),
         (x & 0x0FFF),
-        0x8000 | ((y >> 48) as u16 & 0x3FFF),
+        0x8000 | (u16::try_from(y >> 48 & 0xFFFF).unwrap_or(u16::MAX) & 0x3FFF),
         y & 0xFFFF_FFFF_FFFF
     )
 }
@@ -858,7 +900,7 @@ fn iso8601_now() -> String {
 
     // Approximate year/month/day (simplified)
     let mut year = 1970;
-    let mut remaining_days = days as i64;
+    let mut remaining_days = i64::try_from(days).unwrap_or(i64::MAX);
 
     while remaining_days >= 365 {
         let days_in_year = if is_leap_year(year) { 366 } else { 365 };
@@ -980,7 +1022,7 @@ mod tests {
         let mut doc = PdfADocument::new();
         doc.create_xmp_metadata(PdfALevel::A1b);
         doc.document_id = Some("test".to_string());
-        doc.uses_transparency = true;
+        doc.features.content.uses_transparency = true;
 
         let mut validator = PdfAValidator::new(PdfALevel::A1b);
         let result = validator.validate(&doc);
@@ -999,7 +1041,7 @@ mod tests {
         let mut doc = PdfADocument::new();
         doc.create_xmp_metadata(PdfALevel::A2b);
         doc.document_id = Some("test".to_string());
-        doc.uses_transparency = true;
+        doc.features.content.uses_transparency = true;
 
         let mut validator = PdfAValidator::new(PdfALevel::A2b);
         let result = validator.validate(&doc);
@@ -1088,7 +1130,7 @@ mod tests {
     #[test]
     fn test_validator_missing_output_intent() {
         let mut doc = base_pdfa_doc(PdfALevel::A1b);
-        doc.uses_device_colors = true;
+        doc.features.content.uses_device_colors = true;
         // output_intent deliberately None.
         let mut v = PdfAValidator::new(PdfALevel::A1b);
         let errs = v.validate(&doc).unwrap_err();
@@ -1113,7 +1155,7 @@ mod tests {
     #[test]
     fn test_validator_jpeg2000_rejected_in_a1() {
         let mut doc = base_pdfa_doc(PdfALevel::A1b);
-        doc.uses_jpeg2000 = true;
+        doc.features.compression.uses_jpeg2000 = true;
         let mut v = PdfAValidator::new(PdfALevel::A1b);
         let errs = v.validate(&doc).unwrap_err();
         assert!(
@@ -1125,7 +1167,7 @@ mod tests {
     #[test]
     fn test_validator_jpeg2000_allowed_in_a2() {
         let mut doc = base_pdfa_doc(PdfALevel::A2b);
-        doc.uses_jpeg2000 = true;
+        doc.features.compression.uses_jpeg2000 = true;
         let mut v = PdfAValidator::new(PdfALevel::A2b);
         let result = v.validate(&doc);
         assert!(
@@ -1140,7 +1182,7 @@ mod tests {
     #[test]
     fn test_validator_lzw_always_rejected() {
         let mut doc = base_pdfa_doc(PdfALevel::A2b);
-        doc.uses_lzw = true;
+        doc.features.compression.uses_lzw = true;
         let mut v = PdfAValidator::new(PdfALevel::A2b);
         let errs = v.validate(&doc).unwrap_err();
         assert!(
@@ -1164,7 +1206,7 @@ mod tests {
     #[test]
     fn test_validator_encryption_rejected() {
         let mut doc = base_pdfa_doc(PdfALevel::A1b);
-        doc.is_encrypted = true;
+        doc.features.security.is_encrypted = true;
         let mut v = PdfAValidator::new(PdfALevel::A1b);
         let errs = v.validate(&doc).unwrap_err();
         assert!(
@@ -1176,7 +1218,7 @@ mod tests {
     #[test]
     fn test_validator_javascript_rejected() {
         let mut doc = base_pdfa_doc(PdfALevel::A1b);
-        doc.has_javascript = true;
+        doc.features.security.has_javascript = true;
         let mut v = PdfAValidator::new(PdfALevel::A1b);
         let errs = v.validate(&doc).unwrap_err();
         assert!(

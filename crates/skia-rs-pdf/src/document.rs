@@ -284,7 +284,7 @@ impl PdfDocument {
                     | crate::image::PdfColorSpace::DeviceGray
                     | crate::image::PdfColorSpace::DeviceCMYK
             ) {
-                state.doc.uses_device_colors = true;
+                state.doc.features.content.uses_device_colors = true;
             }
         }
 
@@ -296,7 +296,7 @@ impl PdfDocument {
                 .blend_mode
                 .is_some_and(|m| m != crate::transparency::PdfBlendMode::Normal);
             if has_alpha || has_blend {
-                state.doc.uses_transparency = true;
+                state.doc.features.content.uses_transparency = true;
             }
         }
     }
@@ -435,6 +435,10 @@ impl<'a> WriteCtx<'a> {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "PDF object emitter: splitting would scatter a single serialization sequence across files, harming fidelity/reviewability"
+    )]
     fn emit<W: Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
         // Pre-allocate object ids for everything we will write, in a stable
         // order that makes forward references in the catalog easy to
@@ -747,15 +751,12 @@ impl<'a> WriteCtx<'a> {
         }
 
         // ---- Trailer ----
-        let id_hex = match self
+        let id_hex = self
             .doc
             .pdfa
             .as_ref()
             .and_then(|s| s.doc.document_id.as_ref())
-        {
-            Some(s) => s.clone(),
-            None => generate_doc_id(),
-        };
+            .map_or_else(generate_doc_id, Clone::clone);
         let id_bytes = id_hex.replace('-', "").chars().take(32).collect::<String>();
         let trailer_id_entry = format!("/ID [<{id_bytes}> <{id_bytes}>]");
 
@@ -882,10 +883,7 @@ impl<'a> WriteCtx<'a> {
 /// succeeds even with exotic fonts.
 fn subset_font_bytes(font: &PdfFont, data: &[u8]) -> Vec<u8> {
     let glyphs: std::collections::BTreeSet<u16> = font.used_glyphs.iter().copied().collect();
-    match crate::font::subset::subset_truetype(data, &glyphs) {
-        Ok(bytes) => bytes,
-        Err(_) => data.to_vec(),
-    }
+    crate::font::subset::subset_truetype(data, &glyphs).unwrap_or_else(|_| data.to_vec())
 }
 
 /// Flate-compress the given bytes. Used for stream-level compression of

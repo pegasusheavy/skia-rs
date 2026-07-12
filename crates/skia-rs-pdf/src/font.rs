@@ -14,7 +14,7 @@
 //!   working. A six-letter subset prefix is prepended to the `BaseFont` name
 //!   per PDF convention.
 
-use skia_rs_core::cast::saturate_to_i32;
+use skia_rs_core::cast::{floor_to_i32, saturate_to_i32};
 use skia_rs_core::Scalar;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
@@ -364,9 +364,9 @@ impl PdfFont {
 
         let mut out = String::from("[");
         for gid in gids {
-            let w = face
-                .glyph_hor_advance(ttf_parser::GlyphId(gid))
-                .map_or(0, |a| (Scalar::from(a) * scale) as u32);
+            let w = face.glyph_hor_advance(ttf_parser::GlyphId(gid)).map_or(0, |a| {
+                u32::try_from(floor_to_i32(Scalar::from(a) * scale)).unwrap_or(0)
+            });
             let _ = write!(out, " {gid} [{w}]");
         }
         out.push(']');
@@ -402,7 +402,7 @@ impl PdfFont {
                 PdfFontType::OpenTypeCff => {
                     let _ = writeln!(dict, "/FontFile3 {file_id} 0 R");
                 }
-                _ => {}
+                PdfFontType::Type1 => {}
             }
         }
 
@@ -485,7 +485,10 @@ impl PdfFont {
                 for &(code, ch) in chunk {
                     let mut buf = [0u16; 2];
                     let units = ch.encode_utf16(&mut buf);
-                    let target: String = units.iter().map(|u| format!("{u:04X}")).collect();
+                    let target: String = units.iter().fold(String::new(), |mut acc, u| {
+                        let _ = write!(acc, "{u:04X}");
+                        acc
+                    });
                     let _ = writeln!(cmap, "<{code:02X}> <{target}>");
                 }
                 cmap.push_str("endbfchar\n");
@@ -506,7 +509,10 @@ impl PdfFont {
                     // Target: UTF-16BE representation (surrogate pair if needed).
                     let mut buf = [0u16; 2];
                     let units = ch.encode_utf16(&mut buf);
-                    let target: String = units.iter().map(|u| format!("{u:04X}")).collect();
+                    let target: String = units.iter().fold(String::new(), |mut acc, u| {
+                        let _ = write!(acc, "{u:04X}");
+                        acc
+                    });
 
                     let _ = writeln!(cmap, "<{src_code}> <{target}>");
                 }
@@ -560,9 +566,8 @@ fn parse_truetype_metrics(data: &[u8]) -> TrueTypeMetrics {
         last_char: 126,
     };
 
-    let face = match ttf_parser::Face::parse(data, 0) {
-        Ok(face) => face,
-        Err(_) => return metrics,
+    let Ok(face) = ttf_parser::Face::parse(data, 0) else {
+        return metrics;
     };
 
     let upem = face.units_per_em();
@@ -620,7 +625,10 @@ fn parse_truetype_metrics(data: &[u8]) -> TrueTypeMetrics {
         let ch = char::from_u32(u32::from(code)).unwrap_or('\0');
         if let Some(gid) = face.glyph_index(ch) {
             if let Some(adv) = face.glyph_hor_advance(gid) {
-                metrics.widths.insert(code, (Scalar::from(adv) * scale) as u16);
+                metrics.widths.insert(
+                    code,
+                    u16::try_from(floor_to_i32(Scalar::from(adv) * scale)).unwrap_or(0),
+                );
             }
         }
     }
@@ -645,6 +653,9 @@ fn parse_truetype_metrics(data: &[u8]) -> TrueTypeMetrics {
 /// arbitrary — we derive it from a 64-bit FNV-1a hash so that two calls for
 /// the same font produce the same tag (stable across runs).
 fn subset_tag_for(data: &[u8], name: &str) -> String {
+    // Convert 64 bits into six base-26 letters.
+    const LETTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
     // FNV-1a 64.
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in data {
@@ -655,12 +666,10 @@ fn subset_tag_for(data: &[u8], name: &str) -> String {
         h ^= u64::from(b);
         h = h.wrapping_mul(0x100_0000_01b3);
     }
-    // Convert 64 bits into six base-26 letters.
-    const LETTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     let mut tag = [0u8; 6];
     let mut v = h;
     for slot in &mut tag {
-        *slot = LETTERS[(v % 26) as usize];
+        *slot = LETTERS[usize::try_from(v % 26).unwrap_or(0)];
         v /= 26;
     }
     String::from_utf8(tag.to_vec()).unwrap()

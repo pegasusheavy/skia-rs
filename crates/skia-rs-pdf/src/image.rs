@@ -37,10 +37,9 @@ impl PdfColorSpace {
     #[must_use] 
     pub const fn components(&self) -> u8 {
         match self {
-            Self::DeviceGray => 1,
+            Self::DeviceGray | Self::Indexed => 1,
             Self::DeviceRGB => 3,
             Self::DeviceCMYK => 4,
-            Self::Indexed => 1,
         }
     }
 }
@@ -294,7 +293,6 @@ fn detect_jpeg_color_space(data: &[u8]) -> PdfColorSpace {
                     let num_components = data[i + 9];
                     return match num_components {
                         1 => PdfColorSpace::DeviceGray,
-                        3 => PdfColorSpace::DeviceRGB,
                         4 => PdfColorSpace::DeviceCMYK,
                         _ => PdfColorSpace::DeviceRGB,
                     };
@@ -348,7 +346,7 @@ impl PdfImageManager {
         self.images.push(mask);
         let image_idx = self.images.len();
         // Store the mask *index* here; the writer translates to object id.
-        image.soft_mask_id = Some(mask_idx as u32);
+        image.soft_mask_id = Some(u32::try_from(mask_idx).unwrap_or(u32::MAX));
         self.images.push(image);
         (image_idx, mask_idx)
     }
@@ -455,7 +453,7 @@ mod tests {
         // The image stores the mask's *index* in soft_mask_id so that the
         // writer can translate it to the emitted object id.
         let image = m.get(image_idx).unwrap();
-        assert_eq!(image.soft_mask_id, Some(mask_idx as u32));
+        assert_eq!(image.soft_mask_id, Some(u32::try_from(mask_idx).unwrap()));
         // Mask is a mask with gray colorspace.
         let mask = m.get(mask_idx).unwrap();
         assert!(mask.is_mask);

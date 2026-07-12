@@ -341,7 +341,7 @@ impl<'a> PdfCanvas<'a> {
         // Subpath start — used to correctly advance `current` on Close.
         let mut subpath_start = Point::zero();
 
-        for element in path.iter() {
+        for element in path {
             match element {
                 PathElement::Move(p) => {
                     self.write_op(&format!("{} {} m\n", p.x, p.y));
@@ -708,7 +708,7 @@ pub fn escape_pdf_string(s: &str) -> String {
 /// Anything else (undefined `WinAnsi` slots, or codepoints outside Latin-1)
 /// returns `None`.
 #[must_use] 
-pub const fn winansi_byte(c: char) -> Option<u8> {
+pub fn winansi_byte(c: char) -> Option<u8> {
     match c {
         '\u{20}'..='\u{7E}' => Some(c as u8),
         '\u{20AC}' => Some(0x80), // EURO SIGN
@@ -738,7 +738,7 @@ pub const fn winansi_byte(c: char) -> Option<u8> {
         '\u{0153}' => Some(0x9C), // LATIN SMALL LIGATURE OE
         '\u{017E}' => Some(0x9E), // LATIN SMALL LETTER Z WITH CARON
         '\u{0178}' => Some(0x9F), // LATIN CAPITAL LETTER Y WITH DIAERESIS
-        '\u{A0}'..='\u{FF}' => Some(c as u32 as u8),
+        '\u{A0}'..='\u{FF}' => u8::try_from(u32::from(c)).ok(),
         _ => None,
     }
 }
