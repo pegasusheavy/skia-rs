@@ -365,7 +365,7 @@ impl AnimatedProperty {
     pub fn add_keyframe(&mut self, keyframe: Keyframe) {
         self.keyframes.push(keyframe);
         self.keyframes
-            .sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
+            .sort_by(|a, b| a.time.total_cmp(&b.time));
     }
 
     /// Check if this property is animated.
@@ -659,6 +659,17 @@ mod tests {
         assert_eq!(easing.evaluate(0.0), 0.0);
         assert_eq!(easing.evaluate(0.5), 0.0);
         assert_eq!(easing.evaluate(1.0), 0.0);
+    }
+
+    #[test]
+    fn test_add_keyframe_with_nan_time_does_not_panic() {
+        let mut prop = AnimatedProperty::new();
+        prop.add_keyframe(Keyframe::new(1.0, KeyframeValue::Scalar(1.0)));
+        prop.add_keyframe(Keyframe::new(f32::NAN, KeyframeValue::Scalar(2.0)));
+        prop.add_keyframe(Keyframe::new(0.5, KeyframeValue::Scalar(3.0)));
+
+        // Should not panic despite the NaN keyframe time.
+        assert_eq!(prop.keyframes.len(), 3);
     }
 
     #[test]

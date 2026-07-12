@@ -116,7 +116,7 @@ pub fn generate_gradient_texture_1d(
 
     // Ensure stops are sorted
     let mut sorted_stops = stops.to_vec();
-    sorted_stops.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap());
+    sorted_stops.sort_by(|a, b| a.position.total_cmp(&b.position));
 
     // Ensure we have at least 2 stops
     if sorted_stops.is_empty() {
@@ -167,7 +167,7 @@ pub fn generate_radial_gradient_texture(
 
     // Ensure stops are sorted
     let mut sorted_stops = stops.to_vec();
-    sorted_stops.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap());
+    sorted_stops.sort_by(|a, b| a.position.total_cmp(&b.position));
 
     if sorted_stops.is_empty() {
         sorted_stops.push(GradientStop::new(0.0, Color4f::black()));
@@ -203,7 +203,7 @@ pub fn generate_sweep_gradient_texture(
     let mut pixels = Vec::with_capacity((config.width * config.height) as usize * 4);
 
     let mut sorted_stops = stops.to_vec();
-    sorted_stops.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap());
+    sorted_stops.sort_by(|a, b| a.position.total_cmp(&b.position));
 
     if sorted_stops.is_empty() {
         sorted_stops.push(GradientStop::new(0.0, Color4f::black()));
@@ -373,6 +373,37 @@ mod tests {
 
         let stop = GradientStop::new(-0.5, Color4f::from_rgb(1.0, 0.0, 0.0));
         assert_eq!(stop.position, 0.0);
+    }
+
+    #[test]
+    fn test_gradient_sort_with_nan_position_does_not_panic() {
+        // GradientStop::new() clamps NaN to 0.0, so construct directly to
+        // bypass the constructor and exercise the sort with a NaN field.
+        let stops = vec![
+            GradientStop {
+                position: 0.5,
+                color: Color4f::from_rgb(1.0, 0.0, 0.0),
+            },
+            GradientStop {
+                position: f32::NAN,
+                color: Color4f::from_rgb(0.0, 1.0, 0.0),
+            },
+            GradientStop {
+                position: 0.2,
+                color: Color4f::from_rgb(0.0, 0.0, 1.0),
+            },
+        ];
+
+        let config = GradientTextureConfig {
+            width: 4,
+            height: 4,
+            ..Default::default()
+        };
+
+        // Should not panic despite the NaN position.
+        let _ = generate_gradient_texture_1d(&stops, GradientTileMode::Clamp, &config);
+        let _ = generate_radial_gradient_texture(&stops, GradientTileMode::Clamp, &config);
+        let _ = generate_sweep_gradient_texture(&stops, GradientTileMode::Clamp, &config);
     }
 
     #[test]
