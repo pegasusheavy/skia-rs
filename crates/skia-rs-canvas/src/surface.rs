@@ -34,6 +34,7 @@ impl Surface {
     /// [`ImageInfo`].
     ///
     /// [`pixels`]: Self::pixels
+    #[must_use]
     pub fn new_raster(info: &ImageInfo, props: Option<&SurfaceProps>) -> Option<Self> {
         use skia_rs_core::ColorType;
 
@@ -63,6 +64,7 @@ impl Surface {
     }
 
     /// Create a raster surface with specified dimensions using RGBA8888 format.
+    #[must_use]
     pub fn new_raster_n32_premul(width: i32, height: i32) -> Option<Self> {
         use skia_rs_core::{AlphaType, ColorType};
 
@@ -72,19 +74,22 @@ impl Surface {
 
     /// Get the image info.
     #[inline]
-    pub fn info(&self) -> &ImageInfo {
+    #[must_use]
+    pub const fn info(&self) -> &ImageInfo {
         &self.info
     }
 
     /// Get the width.
     #[inline]
-    pub fn width(&self) -> i32 {
+    #[must_use]
+    pub const fn width(&self) -> i32 {
         self.info.width()
     }
 
     /// Get the height.
     #[inline]
-    pub fn height(&self) -> i32 {
+    #[must_use]
+    pub const fn height(&self) -> i32 {
         self.info.height()
     }
 
@@ -115,6 +120,7 @@ impl Surface {
     /// byte order should use [`make_image_snapshot`](Self::make_image_snapshot)
     /// or [`make_image_snapshot_subset`](Self::make_image_snapshot_subset),
     /// which perform the R/B swap on the copied-out bytes.
+    #[must_use]
     pub fn pixels(&self) -> &[u8] {
         &self.buffer.pixels
     }
@@ -127,17 +133,19 @@ impl Surface {
     }
 
     /// Get the row bytes.
-    pub fn row_bytes(&self) -> usize {
+    #[must_use]
+    pub const fn row_bytes(&self) -> usize {
         self.buffer.stride
     }
 
     /// Get the pixel buffer.
-    pub fn pixel_buffer(&self) -> &PixelBuffer {
+    #[must_use]
+    pub const fn pixel_buffer(&self) -> &PixelBuffer {
         &self.buffer
     }
 
     /// Get mutable pixel buffer.
-    pub fn pixel_buffer_mut(&mut self) -> &mut PixelBuffer {
+    pub const fn pixel_buffer_mut(&mut self) -> &mut PixelBuffer {
         &mut self.buffer
     }
 
@@ -145,6 +153,7 @@ impl Surface {
     ///
     /// The returned image shares pixel data with the surface when possible.
     #[cfg(feature = "codec")]
+    #[must_use]
     pub fn make_image_snapshot(&self) -> Option<Image> {
         use skia_rs_core::AlphaType;
 
@@ -179,6 +188,7 @@ impl Surface {
 
     /// Create a snapshot of a subset of the surface.
     #[cfg(feature = "codec")]
+    #[must_use]
     pub fn make_image_snapshot_subset(&self, subset: &IRect) -> Option<Image> {
         // Validate subset bounds
         if subset.left < 0
@@ -191,8 +201,10 @@ impl Surface {
 
         let width = subset.width();
         let height = subset.height();
-        let row_bytes = (width as usize) * 4;
-        let mut pixels = vec![0u8; (height as usize) * row_bytes];
+        let width_usize = usize::try_from(width).unwrap_or(0);
+        let height_usize = usize::try_from(height).unwrap_or(0);
+        let row_bytes = width_usize * 4;
+        let mut pixels = vec![0u8; height_usize * row_bytes];
 
         // Copy subset pixels (premultiplied, RGBA order).
         for y in 0..height {
@@ -201,7 +213,7 @@ impl Surface {
                 let src_y = subset.top + y;
 
                 if let Some(color) = self.buffer.get_pixel(src_x, src_y) {
-                    let dst_offset = ((y * width + x) * 4) as usize;
+                    let dst_offset = usize::try_from((y * width + x) * 4).unwrap_or(0);
                     pixels[dst_offset] = color.red();
                     pixels[dst_offset + 1] = color.green();
                     pixels[dst_offset + 2] = color.blue();
