@@ -1,5 +1,6 @@
 //! Pixel formats and image storage.
 
+use crate::cast::f32_to_u8_sat;
 use crate::color::{AlphaType, ColorSpace, ColorType, mul_div_255_round};
 use crate::geometry::{IRect, ISize};
 use bitflags::bitflags;
@@ -67,8 +68,13 @@ pub struct ImageInfo {
 
 impl ImageInfo {
     /// Creates a new image info with the specified properties.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PixelError::InvalidDimensions`] if `width` or `height` is
+    /// negative.
     #[inline]
-    pub fn new(
+    pub const fn new(
         width: i32,
         height: i32,
         color_type: ColorType,
@@ -88,6 +94,11 @@ impl ImageInfo {
     }
 
     /// Creates image info with sRGB color space.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PixelError::InvalidDimensions`] if `width` or `height` is
+    /// negative.
     #[inline]
     pub fn new_srgb(
         width: i32,
@@ -101,8 +112,13 @@ impl ImageInfo {
     }
 
     /// Creates RGBA 8888 image info.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PixelError::InvalidDimensions`] if `width` or `height` is
+    /// negative.
     #[inline]
-    pub fn new_rgba8888(
+    pub const fn new_rgba8888(
         width: i32,
         height: i32,
         alpha_type: AlphaType,
@@ -111,8 +127,13 @@ impl ImageInfo {
     }
 
     /// Creates BGRA 8888 image info (native on little-endian).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PixelError::InvalidDimensions`] if `width` or `height` is
+    /// negative.
     #[inline]
-    pub fn new_bgra8888(
+    pub const fn new_bgra8888(
         width: i32,
         height: i32,
         alpha_type: AlphaType,
@@ -121,62 +142,96 @@ impl ImageInfo {
     }
 
     /// Creates native 32-bit image info.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PixelError::InvalidDimensions`] if `width` or `height` is
+    /// negative.
     #[inline]
-    pub fn new_n32(width: i32, height: i32, alpha_type: AlphaType) -> Result<Self, PixelError> {
+    pub const fn new_n32(width: i32, height: i32, alpha_type: AlphaType) -> Result<Self, PixelError> {
         Self::new(width, height, ColorType::n32(), alpha_type)
     }
 
     /// Creates opaque native 32-bit image info.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PixelError::InvalidDimensions`] if `width` or `height` is
+    /// negative.
     #[inline]
-    pub fn new_n32_opaque(width: i32, height: i32) -> Result<Self, PixelError> {
+    pub const fn new_n32_opaque(width: i32, height: i32) -> Result<Self, PixelError> {
         Self::new_n32(width, height, AlphaType::Opaque)
     }
 
     /// Creates premultiplied native 32-bit image info.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PixelError::InvalidDimensions`] if `width` or `height` is
+    /// negative.
     #[inline]
-    pub fn new_n32_premul(width: i32, height: i32) -> Result<Self, PixelError> {
+    pub const fn new_n32_premul(width: i32, height: i32) -> Result<Self, PixelError> {
         Self::new_n32(width, height, AlphaType::Premul)
     }
 
     /// Creates alpha-only 8-bit image info.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PixelError::InvalidDimensions`] if `width` or `height` is
+    /// negative.
     #[inline]
-    pub fn new_alpha8(width: i32, height: i32) -> Result<Self, PixelError> {
+    pub const fn new_alpha8(width: i32, height: i32) -> Result<Self, PixelError> {
         Self::new(width, height, ColorType::Alpha8, AlphaType::Premul)
     }
 
     /// Returns the image width.
     #[inline]
-    pub fn width(&self) -> i32 {
+    #[must_use]
+    pub const fn width(&self) -> i32 {
         self.dimensions.width
     }
 
     /// Returns the image height.
     #[inline]
-    pub fn height(&self) -> i32 {
+    #[must_use]
+    pub const fn height(&self) -> i32 {
         self.dimensions.height
     }
 
     /// Returns true if the image has zero area.
     #[inline]
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.dimensions.is_empty()
     }
 
     /// Returns bytes per pixel.
     #[inline]
-    pub fn bytes_per_pixel(&self) -> usize {
+    #[must_use]
+    pub const fn bytes_per_pixel(&self) -> usize {
         self.color_type.bytes_per_pixel()
     }
 
     /// Returns the minimum row bytes for this image.
     #[inline]
-    pub fn min_row_bytes(&self) -> usize {
+    #[must_use]
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "ImageInfo width is validated non-negative in ImageInfo::new; const fn cannot use TryFrom"
+    )]
+    pub const fn min_row_bytes(&self) -> usize {
         self.width() as usize * self.bytes_per_pixel()
     }
 
     /// Computes the byte size for the given row bytes.
     #[inline]
-    pub fn compute_byte_size(&self, row_bytes: usize) -> usize {
+    #[must_use]
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "height is checked > 0 above, so the cast is non-negative; const fn cannot use TryFrom"
+    )]
+    pub const fn compute_byte_size(&self, row_bytes: usize) -> usize {
         if self.height() <= 0 {
             return 0;
         }
@@ -188,24 +243,28 @@ impl ImageInfo {
 
     /// Returns the byte size using minimum row bytes.
     #[inline]
-    pub fn min_byte_size(&self) -> usize {
+    #[must_use]
+    pub const fn min_byte_size(&self) -> usize {
         self.compute_byte_size(self.min_row_bytes())
     }
 
-    /// Returns the bounds as an IRect.
+    /// Returns the bounds as an `IRect`.
     #[inline]
-    pub fn bounds(&self) -> IRect {
+    #[must_use]
+    pub const fn bounds(&self) -> IRect {
         IRect::from_size(self.dimensions)
     }
 
     /// Returns true if the alpha type is opaque.
     #[inline]
-    pub fn is_opaque(&self) -> bool {
+    #[must_use]
+    pub const fn is_opaque(&self) -> bool {
         self.alpha_type.is_opaque()
     }
 
     /// Returns a new image info with the specified alpha type.
     #[inline]
+    #[must_use]
     pub fn with_alpha_type(&self, alpha_type: AlphaType) -> Self {
         Self {
             alpha_type,
@@ -215,6 +274,7 @@ impl ImageInfo {
 
     /// Returns a new image info with the specified color type.
     #[inline]
+    #[must_use]
     pub fn with_color_type(&self, color_type: ColorType) -> Self {
         Self {
             color_type,
@@ -224,6 +284,7 @@ impl ImageInfo {
 
     /// Returns a new image info with the specified color space.
     #[inline]
+    #[must_use]
     pub fn with_color_space(&self, color_space: Option<ColorSpace>) -> Self {
         Self {
             color_space,
@@ -232,6 +293,11 @@ impl ImageInfo {
     }
 
     /// Returns a new image info with the specified dimensions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PixelError::InvalidDimensions`] if `width` or `height` is not
+    /// positive.
     #[inline]
     pub fn with_dimensions(&self, width: i32, height: i32) -> Result<Self, PixelError> {
         if width <= 0 || height <= 0 {
@@ -243,9 +309,14 @@ impl ImageInfo {
         })
     }
 
-    /// Validates that row_bytes is sufficient for this image.
+    /// Validates that `row_bytes` is sufficient for this image.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PixelError::RowBytesTooSmall`] if `row_bytes` is less than
+    /// [`min_row_bytes`](Self::min_row_bytes).
     #[inline]
-    pub fn validate_row_bytes(&self, row_bytes: usize) -> Result<(), PixelError> {
+    pub const fn validate_row_bytes(&self, row_bytes: usize) -> Result<(), PixelError> {
         let min = self.min_row_bytes();
         if row_bytes < min {
             Err(PixelError::RowBytesTooSmall {
@@ -289,6 +360,12 @@ pub struct Pixmap<'a> {
 
 impl<'a> Pixmap<'a> {
     /// Creates a new pixmap wrapping existing pixel data.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PixelError::RowBytesTooSmall`] if `row_bytes` is too small for
+    /// the image width, or [`PixelError::BufferTooSmall`] if `pixels` is shorter
+    /// than the computed byte size.
     pub fn new(info: ImageInfo, pixels: &'a [u8], row_bytes: usize) -> Result<Self, PixelError> {
         info.validate_row_bytes(row_bytes)?;
 
@@ -309,53 +386,61 @@ impl<'a> Pixmap<'a> {
 
     /// Returns the image info.
     #[inline]
-    pub fn info(&self) -> &ImageInfo {
+    #[must_use]
+    pub const fn info(&self) -> &ImageInfo {
         &self.info
     }
 
     /// Returns the raw pixel data.
     #[inline]
-    pub fn pixels(&self) -> &[u8] {
+    #[must_use]
+    pub const fn pixels(&self) -> &[u8] {
         self.pixels
     }
 
     /// Returns the row bytes.
     #[inline]
-    pub fn row_bytes(&self) -> usize {
+    #[must_use]
+    pub const fn row_bytes(&self) -> usize {
         self.row_bytes
     }
 
     /// Returns the image width.
     #[inline]
-    pub fn width(&self) -> i32 {
+    #[must_use]
+    pub const fn width(&self) -> i32 {
         self.info.width()
     }
 
     /// Returns the image height.
     #[inline]
-    pub fn height(&self) -> i32 {
+    #[must_use]
+    pub const fn height(&self) -> i32 {
         self.info.height()
     }
 
     /// Returns a pointer to the start of a row.
     #[inline]
+    #[must_use]
     pub fn row(&self, y: i32) -> Option<&[u8]> {
         if y < 0 || y >= self.height() {
             return None;
         }
-        let offset = y as usize * self.row_bytes;
+        let offset = usize::try_from(y).unwrap_or(0) * self.row_bytes;
         let end = offset + self.info.min_row_bytes();
         Some(&self.pixels[offset..end])
     }
 
     /// Returns the address of a specific pixel.
     #[inline]
+    #[must_use]
     pub fn pixel_addr(&self, x: i32, y: i32) -> Option<&[u8]> {
         if x < 0 || x >= self.width() || y < 0 || y >= self.height() {
             return None;
         }
         let bpp = self.info.bytes_per_pixel();
-        let offset = y as usize * self.row_bytes + x as usize * bpp;
+        let offset =
+            usize::try_from(y).unwrap_or(0) * self.row_bytes + usize::try_from(x).unwrap_or(0) * bpp;
         Some(&self.pixels[offset..offset + bpp])
     }
 }
@@ -379,6 +464,7 @@ pub struct Bitmap {
 
 impl Bitmap {
     /// Creates a new empty bitmap.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             info: ImageInfo::default(),
@@ -388,6 +474,11 @@ impl Bitmap {
     }
 
     /// Allocates a bitmap with the specified properties.
+    ///
+    /// # Errors
+    ///
+    /// Currently always succeeds, but returns [`Result`] for forward
+    /// compatibility with allocation-failure reporting.
     pub fn allocate(info: ImageInfo) -> Result<Self, PixelError> {
         let row_bytes = info.min_row_bytes();
         let size = info.compute_byte_size(row_bytes);
@@ -401,6 +492,11 @@ impl Bitmap {
     }
 
     /// Allocates a bitmap with custom row bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PixelError::RowBytesTooSmall`] if `row_bytes` is too small for
+    /// the image width.
     pub fn allocate_with_row_bytes(info: ImageInfo, row_bytes: usize) -> Result<Self, PixelError> {
         info.validate_row_bytes(row_bytes)?;
         let size = info.compute_byte_size(row_bytes);
@@ -415,12 +511,14 @@ impl Bitmap {
 
     /// Returns the image info.
     #[inline]
-    pub fn info(&self) -> &ImageInfo {
+    #[must_use]
+    pub const fn info(&self) -> &ImageInfo {
         &self.info
     }
 
     /// Returns the raw pixel data.
     #[inline]
+    #[must_use]
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }
@@ -433,35 +531,40 @@ impl Bitmap {
 
     /// Returns the row bytes.
     #[inline]
-    pub fn row_bytes(&self) -> usize {
+    #[must_use]
+    pub const fn row_bytes(&self) -> usize {
         self.row_bytes
     }
 
     /// Returns the image width.
     #[inline]
-    pub fn width(&self) -> i32 {
+    #[must_use]
+    pub const fn width(&self) -> i32 {
         self.info.width()
     }
 
     /// Returns the image height.
     #[inline]
-    pub fn height(&self) -> i32 {
+    #[must_use]
+    pub const fn height(&self) -> i32 {
         self.info.height()
     }
 
     /// Returns true if the bitmap has no pixels.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.pixels.is_empty()
     }
 
     /// Returns a pointer to the start of a row.
     #[inline]
+    #[must_use]
     pub fn row(&self, y: i32) -> Option<&[u8]> {
         if y < 0 || y >= self.height() {
             return None;
         }
-        let offset = y as usize * self.row_bytes;
+        let offset = usize::try_from(y).unwrap_or(0) * self.row_bytes;
         let end = offset + self.info.min_row_bytes();
         Some(&self.pixels[offset..end])
     }
@@ -472,7 +575,7 @@ impl Bitmap {
         if y < 0 || y >= self.height() {
             return None;
         }
-        let offset = y as usize * self.row_bytes;
+        let offset = usize::try_from(y).unwrap_or(0) * self.row_bytes;
         let min_row = self.info.min_row_bytes();
         let end = offset + min_row;
         Some(&mut self.pixels[offset..end])
@@ -480,6 +583,7 @@ impl Bitmap {
 
     /// Returns a read-only pixmap view.
     #[inline]
+    #[must_use]
     pub fn as_pixmap(&self) -> Pixmap<'_> {
         Pixmap {
             info: self.info.clone(),
@@ -549,6 +653,7 @@ pub struct SurfaceProps {
 impl SurfaceProps {
     /// Create new surface properties.
     #[inline]
+    #[must_use]
     pub const fn new(flags: SurfacePropsFlags, pixel_geometry: PixelGeometry) -> Self {
         Self {
             flags,
@@ -564,6 +669,13 @@ impl SurfaceProps {
 /// Convert pixels between color types.
 ///
 /// This handles common pixel format conversions used in graphics applications.
+///
+/// # Errors
+///
+/// Returns [`PixelError::InvalidDimensions`] if the source and destination
+/// dimensions differ, [`PixelError::RowBytesTooSmall`] if either `row_bytes`
+/// is too small, or [`PixelError::BufferTooSmall`] if either buffer is shorter
+/// than its computed byte size.
 pub fn convert_pixels(
     src: &[u8],
     src_info: &ImageInfo,
@@ -599,8 +711,8 @@ pub fn convert_pixels(
         });
     }
 
-    let width = src_info.width() as usize;
-    let height = src_info.height() as usize;
+    let width = usize::try_from(src_info.width()).unwrap_or(0);
+    let height = usize::try_from(src_info.height()).unwrap_or(0);
 
     // Compute alpha conversion mode once; apply per-row for cache locality.
     let alpha_conv = AlphaConversion::from_alpha_types(
@@ -637,17 +749,25 @@ enum AlphaConversion {
 impl AlphaConversion {
     fn from_alpha_types(src: AlphaType, dst: AlphaType, color_has_alpha: bool) -> Self {
         if !color_has_alpha || src == dst {
-            return AlphaConversion::None;
+            return Self::None;
         }
         match (src, dst) {
-            (AlphaType::Unpremul, AlphaType::Premul) => AlphaConversion::Premultiply,
-            (AlphaType::Premul, AlphaType::Unpremul) => AlphaConversion::Unpremultiply,
-            _ => AlphaConversion::None,
+            (AlphaType::Unpremul, AlphaType::Premul) => Self::Premultiply,
+            (AlphaType::Premul, AlphaType::Unpremul) => Self::Unpremultiply,
+            _ => Self::None,
         }
     }
 }
 
 /// Convert a single row of pixels, applying alpha conversion in the same pass.
+#[allow(
+    clippy::too_many_lines,
+    reason = "faithful port of Skia's per-format conversion switch; splitting reduces fidelity"
+)]
+#[allow(
+    clippy::suboptimal_flops,
+    reason = "BT.709 luma is a faithful port of Skia's fma-free reference arithmetic; mul_add's fused rounding diverges from Skia"
+)]
 fn convert_row(
     src: &[u8],
     src_type: ColorType,
@@ -656,7 +776,7 @@ fn convert_row(
     width: usize,
     alpha_conv: AlphaConversion,
 ) -> Result<(), PixelError> {
-    use ColorType::*;
+    use ColorType::{Rgba8888, Bgra8888, Rgb888, Rgb565, Gray8, Alpha8, RgbaF16, RgbaF16Norm, RgbaF32};
 
     // Same format - just copy
     if src_type == dst_type {
@@ -725,9 +845,9 @@ fn convert_row(
             for i in 0..width {
                 let si = i * 4;
                 let di = i * 2;
-                let r = (src[si] >> 3) as u16;
-                let g = (src[si + 1] >> 2) as u16;
-                let b = (src[si + 2] >> 3) as u16;
+                let r = u16::from(src[si] >> 3);
+                let g = u16::from(src[si + 1] >> 2);
+                let b = u16::from(src[si + 2] >> 3);
                 let pixel = (r << 11) | (g << 5) | b;
                 let bytes = pixel.to_le_bytes();
                 dst[di] = bytes[0];
@@ -737,37 +857,33 @@ fn convert_row(
 
         // Gray8 -> RGBA8888
         (Gray8, Rgba8888) => {
-            for i in 0..width {
-                let gray = src[i];
-                let di = i * 4;
-                dst[di] = gray;
-                dst[di + 1] = gray;
-                dst[di + 2] = gray;
-                dst[di + 3] = 255;
+            for (&gray, out) in src.iter().zip(dst.chunks_exact_mut(4)).take(width) {
+                out[0] = gray;
+                out[1] = gray;
+                out[2] = gray;
+                out[3] = 255;
             }
         }
 
         // RGBA8888 -> Gray8 (luminance)
         (Rgba8888, Gray8) => {
-            for i in 0..width {
-                let si = i * 4;
-                let r = src[si] as f32;
-                let g = src[si + 1] as f32;
-                let b = src[si + 2] as f32;
+            for (chunk, out) in src.chunks_exact(4).zip(dst.iter_mut()).take(width) {
+                let r = f32::from(chunk[0]);
+                let g = f32::from(chunk[1]);
+                let b = f32::from(chunk[2]);
                 // ITU-R BT.709 luma coefficients, matching Skia's
                 // bt709_luminance_or_luma_to_alpha raster-pipeline stage.
-                dst[i] = (0.2126 * r + 0.7152 * g + 0.0722 * b).round() as u8;
+                *out = f32_to_u8_sat(0.2126 * r + 0.7152 * g + 0.0722 * b);
             }
         }
 
         // Alpha8 -> RGBA8888 (white with alpha)
         (Alpha8, Rgba8888) => {
-            for i in 0..width {
-                let di = i * 4;
-                dst[di] = 255;
-                dst[di + 1] = 255;
-                dst[di + 2] = 255;
-                dst[di + 3] = src[i];
+            for (&alpha, out) in src.iter().zip(dst.chunks_exact_mut(4)).take(width) {
+                out[0] = 255;
+                out[1] = 255;
+                out[2] = 255;
+                out[3] = alpha;
             }
         }
 
@@ -802,40 +918,40 @@ fn convert_row(
         }
 
         // ---- F16 (IEEE 754 binary16) ----
-        (Rgba8888, RgbaF16) | (Rgba8888, RgbaF16Norm) => {
+        (Rgba8888, RgbaF16 | RgbaF16Norm) => {
             for i in 0..width {
                 let si = i * 4;
                 let di = i * 8;
                 for c in 0..4 {
-                    let bytes = f16_to_bytes(src[si + c] as f32 / 255.0);
+                    let bytes = f16_to_bytes(f32::from(src[si + c]) / 255.0);
                     dst[di + c * 2] = bytes[0];
                     dst[di + c * 2 + 1] = bytes[1];
                 }
             }
         }
-        (RgbaF16, Rgba8888) | (RgbaF16Norm, Rgba8888) => {
+        (RgbaF16 | RgbaF16Norm, Rgba8888) => {
             for i in 0..width {
                 let si = i * 8;
                 let di = i * 4;
                 for c in 0..4 {
                     let v = f16_from_bytes([src[si + c * 2], src[si + c * 2 + 1]]);
-                    dst[di + c] = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    dst[di + c] = f32_to_u8_sat(v * 255.0);
                 }
             }
         }
-        (Bgra8888, RgbaF16) | (Bgra8888, RgbaF16Norm) => {
+        (Bgra8888, RgbaF16 | RgbaF16Norm) => {
             for i in 0..width {
                 let si = i * 4;
                 let di = i * 8;
                 let channels = [src[si + 2], src[si + 1], src[si], src[si + 3]];
                 for c in 0..4 {
-                    let bytes = f16_to_bytes(channels[c] as f32 / 255.0);
+                    let bytes = f16_to_bytes(f32::from(channels[c]) / 255.0);
                     dst[di + c * 2] = bytes[0];
                     dst[di + c * 2 + 1] = bytes[1];
                 }
             }
         }
-        (RgbaF16, Bgra8888) | (RgbaF16Norm, Bgra8888) => {
+        (RgbaF16 | RgbaF16Norm, Bgra8888) => {
             for i in 0..width {
                 let si = i * 8;
                 let di = i * 4;
@@ -843,10 +959,10 @@ fn convert_row(
                 let g = f16_from_bytes([src[si + 2], src[si + 3]]);
                 let b = f16_from_bytes([src[si + 4], src[si + 5]]);
                 let a = f16_from_bytes([src[si + 6], src[si + 7]]);
-                dst[di] = (b.clamp(0.0, 1.0) * 255.0).round() as u8;
-                dst[di + 1] = (g.clamp(0.0, 1.0) * 255.0).round() as u8;
-                dst[di + 2] = (r.clamp(0.0, 1.0) * 255.0).round() as u8;
-                dst[di + 3] = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
+                dst[di] = f32_to_u8_sat(b * 255.0);
+                dst[di + 1] = f32_to_u8_sat(g * 255.0);
+                dst[di + 2] = f32_to_u8_sat(r * 255.0);
+                dst[di + 3] = f32_to_u8_sat(a * 255.0);
             }
         }
 
@@ -856,7 +972,7 @@ fn convert_row(
                 let si = i * 4;
                 let di = i * 16;
                 for c in 0..4 {
-                    let v = (src[si + c] as f32 / 255.0).to_le_bytes();
+                    let v = (f32::from(src[si + c]) / 255.0).to_le_bytes();
                     dst[di + c * 4..di + c * 4 + 4].copy_from_slice(&v);
                 }
             }
@@ -867,7 +983,7 @@ fn convert_row(
                 let di = i * 4;
                 for c in 0..4 {
                     let v = f32_from_le(&src[si + c * 4..si + c * 4 + 4]);
-                    dst[di + c] = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    dst[di + c] = f32_to_u8_sat(v * 255.0);
                 }
             }
         }
@@ -877,7 +993,7 @@ fn convert_row(
                 let di = i * 16;
                 let channels = [src[si + 2], src[si + 1], src[si], src[si + 3]];
                 for c in 0..4 {
-                    let v = (channels[c] as f32 / 255.0).to_le_bytes();
+                    let v = (f32::from(channels[c]) / 255.0).to_le_bytes();
                     dst[di + c * 4..di + c * 4 + 4].copy_from_slice(&v);
                 }
             }
@@ -890,10 +1006,10 @@ fn convert_row(
                 let g = f32_from_le(&src[si + 4..si + 8]);
                 let b = f32_from_le(&src[si + 8..si + 12]);
                 let a = f32_from_le(&src[si + 12..si + 16]);
-                dst[di] = (b.clamp(0.0, 1.0) * 255.0).round() as u8;
-                dst[di + 1] = (g.clamp(0.0, 1.0) * 255.0).round() as u8;
-                dst[di + 2] = (r.clamp(0.0, 1.0) * 255.0).round() as u8;
-                dst[di + 3] = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
+                dst[di] = f32_to_u8_sat(b * 255.0);
+                dst[di + 1] = f32_to_u8_sat(g * 255.0);
+                dst[di + 2] = f32_to_u8_sat(r * 255.0);
+                dst[di + 3] = f32_to_u8_sat(a * 255.0);
             }
         }
 
@@ -908,7 +1024,7 @@ fn convert_row(
                 }
             }
         }
-        (RgbaF32, RgbaF16) | (RgbaF32, RgbaF16Norm) => {
+        (RgbaF32, RgbaF16 | RgbaF16Norm) => {
             for i in 0..width {
                 let si = i * 16;
                 let di = i * 8;
@@ -944,13 +1060,17 @@ fn convert_row(
 /// operation never corrupts pixels. Alpha-only formats have no color channels
 /// and are left unchanged.
 #[inline]
+#[allow(
+    clippy::match_same_arms,
+    reason = "explicit no-op arm documents that alpha-only formats have no color channels, distinct from the unsupported catch-all"
+)]
 fn apply_alpha_conversion(
     row: &mut [u8],
     color_type: ColorType,
     width: usize,
     alpha_conv: AlphaConversion,
 ) {
-    use ColorType::*;
+    use ColorType::{Rgba8888, Bgra8888, Srgba8888, RgbaF16, RgbaF16Norm, RgbaF32, Alpha8, A16Unorm, A16Float, Argb4444, Rgba1010102, Bgra1010102, R16G16B16A16Unorm};
     let premul = match alpha_conv {
         AlphaConversion::None => return,
         AlphaConversion::Premultiply => true,
@@ -1007,31 +1127,49 @@ fn apply_alpha_norm(r: f32, g: f32, b: f32, a: f32, premul: bool) -> (f32, f32, 
 /// Rounds a normalized value in `[0, 1]` to an integer in `[0, max]`, matching
 /// Skia's `to_unorm` (round to nearest).
 #[inline]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::suboptimal_flops,
+    reason = "faithful port of Skia to_unorm: clamp to [0,max], explicit *max+0.5 round-half-up (mul_add would diverge from Skia), then saturating cast (no safe std float->uint conversion exists)"
+)]
 fn to_unorm_round(v: f32, max: f32) -> u32 {
     (v.clamp(0.0, 1.0) * max + 0.5) as u32
 }
 
 /// Per-pixel alpha conversion for `Argb4444` (16-bit `rrrr gggg bbbb aaaa`).
+#[allow(
+    clippy::many_single_char_names,
+    reason = "r, g, b, a channel names intentionally match Skia's C++ source"
+)]
 fn convert_alpha_4444(row: &mut [u8], width: usize, premul: bool) {
     for i in 0..width {
         let off = i * 2;
         let v = u16::from_le_bytes([row[off], row[off + 1]]);
-        let a4 = (v & 0xF) as u32;
-        let r = ((v >> 12) & 0xF) as f32 / 15.0;
-        let g = ((v >> 8) & 0xF) as f32 / 15.0;
-        let b = ((v >> 4) & 0xF) as f32 / 15.0;
-        let a = a4 as f32 / 15.0;
+        let a4 = v & 0xF;
+        let r = f32::from((v >> 12) & 0xF) / 15.0;
+        let g = f32::from((v >> 8) & 0xF) / 15.0;
+        let b = f32::from((v >> 4) & 0xF) / 15.0;
+        let a = f32::from(a4) / 15.0;
         let (r, g, b) = apply_alpha_norm(r, g, b, a, premul);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "four 4-bit lanes are packed into 16 bits, which always fits u16"
+        )]
         let packed = ((to_unorm_round(r, 15.0) << 12)
             | (to_unorm_round(g, 15.0) << 8)
             | (to_unorm_round(b, 15.0) << 4)
-            | a4) as u16;
+            | u32::from(a4)) as u16;
         row[off..off + 2].copy_from_slice(&packed.to_le_bytes());
     }
 }
 
 /// Per-pixel alpha conversion for the `1010102` formats (10-bit color lanes,
 /// 2-bit alpha in the top bits).
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "10-bit and 2-bit masked values are < 2^24 and convert to f32 exactly"
+)]
 fn convert_alpha_1010102(row: &mut [u8], width: usize, premul: bool) {
     for i in 0..width {
         let off = i * 4;
@@ -1052,14 +1190,18 @@ fn convert_alpha_1010102(row: &mut [u8], width: usize, premul: bool) {
 
 /// Per-pixel alpha conversion for `R16G16B16A16Unorm` (four little-endian
 /// 16-bit unorm channels, R G B A).
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "to_unorm_round with max=65535 yields a value that always fits u16"
+)]
 fn convert_alpha_16161616(row: &mut [u8], width: usize, premul: bool) {
     for i in 0..width {
         let off = i * 8;
-        let r = u16::from_le_bytes([row[off], row[off + 1]]) as f32 / 65535.0;
-        let g = u16::from_le_bytes([row[off + 2], row[off + 3]]) as f32 / 65535.0;
-        let b = u16::from_le_bytes([row[off + 4], row[off + 5]]) as f32 / 65535.0;
+        let r = f32::from(u16::from_le_bytes([row[off], row[off + 1]])) / 65535.0;
+        let g = f32::from(u16::from_le_bytes([row[off + 2], row[off + 3]])) / 65535.0;
+        let b = f32::from(u16::from_le_bytes([row[off + 4], row[off + 5]])) / 65535.0;
         let a_raw = u16::from_le_bytes([row[off + 6], row[off + 7]]);
-        let a = a_raw as f32 / 65535.0;
+        let a = f32::from(a_raw) / 65535.0;
         let (r, g, b) = apply_alpha_norm(r, g, b, a, premul);
         row[off..off + 2].copy_from_slice(&(to_unorm_round(r, 65535.0) as u16).to_le_bytes());
         row[off + 2..off + 4].copy_from_slice(&(to_unorm_round(g, 65535.0) as u16).to_le_bytes());
@@ -1078,7 +1220,12 @@ fn convert_alpha_16161616(row: &mut [u8], width: usize, premul: bool) {
 
 /// Decode a single IEEE 754 binary16 from little-endian bytes into f32.
 #[inline]
-fn f16_from_bytes(bytes: [u8; 2]) -> f32 {
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_sign_loss,
+    reason = "const fn cannot use From/TryFrom; casts are width-safe operations on IEEE-754 binary16 bit fields"
+)]
+const fn f16_from_bytes(bytes: [u8; 2]) -> f32 {
     let bits = u16::from_le_bytes(bytes);
     let sign = (bits >> 15) as u32 & 0x1;
     let exp = (bits >> 10) as u32 & 0x1f;
@@ -1103,7 +1250,7 @@ fn f16_from_bytes(bytes: [u8; 2]) -> f32 {
         // Inf / NaN
         (sign << 31) | (0xff << 23) | (mant << 13)
     } else {
-        let exp32 = (exp + (127 - 15)) as u32;
+        let exp32 = exp + (127 - 15);
         (sign << 31) | (exp32 << 23) | (mant << 13)
     };
 
@@ -1112,6 +1259,12 @@ fn f16_from_bytes(bytes: [u8; 2]) -> f32 {
 
 /// Encode an f32 as IEEE 754 binary16, little-endian. NaN/Inf preserved.
 #[inline]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "IEEE-754 binary16 encoding; every cast operates on values masked or bounded to their target bit width"
+)]
 fn f16_to_bytes(v: f32) -> [u8; 2] {
     let bits = v.to_bits();
     let sign = ((bits >> 31) & 0x1) as u16;
@@ -1147,7 +1300,7 @@ fn f16_to_bytes(v: f32) -> [u8; 2] {
             // Normal f16
             let m = (mant >> 13) as u16;
             let round_bit = ((mant >> 12) & 0x1) as u16;
-            let sticky = ((mant & 0xfff) != 0) as u16;
+            let sticky = u16::from((mant & 0xfff) != 0);
             let mut out = (sign << 15) | ((new_exp as u16) << 10) | m;
             // Round-to-nearest-even
             if round_bit == 1 && (sticky == 1 || (m & 0x1) == 1) {
@@ -1272,10 +1425,10 @@ pub fn unpremultiply_in_place(pixels: &mut [u8]) {
             chunk[1] = 0;
             chunk[2] = 0;
         } else if a < 255 {
-            let scale = 255.0 / a as f32;
-            chunk[0] = (chunk[0] as f32 * scale).round().min(255.0) as u8;
-            chunk[1] = (chunk[1] as f32 * scale).round().min(255.0) as u8;
-            chunk[2] = (chunk[2] as f32 * scale).round().min(255.0) as u8;
+            let scale = 255.0 / f32::from(a);
+            chunk[0] = f32_to_u8_sat(f32::from(chunk[0]) * scale);
+            chunk[1] = f32_to_u8_sat(f32::from(chunk[1]) * scale);
+            chunk[2] = f32_to_u8_sat(f32::from(chunk[2]) * scale);
         }
     }
 }
@@ -1286,15 +1439,15 @@ pub fn unpremultiply_in_place(pixels: &mut [u8]) {
 /// e.g. `r=3, a=128` yields 2, not 1.
 pub fn premultiply_in_place(pixels: &mut [u8]) {
     for chunk in pixels.chunks_exact_mut(4) {
-        let a = chunk[3] as u32;
+        let a = u32::from(chunk[3]);
         if a == 0 {
             chunk[0] = 0;
             chunk[1] = 0;
             chunk[2] = 0;
         } else if a < 255 {
-            chunk[0] = mul_div_255_round(chunk[0] as u32, a);
-            chunk[1] = mul_div_255_round(chunk[1] as u32, a);
-            chunk[2] = mul_div_255_round(chunk[2] as u32, a);
+            chunk[0] = mul_div_255_round(u32::from(chunk[0]), a);
+            chunk[1] = mul_div_255_round(u32::from(chunk[1]), a);
+            chunk[2] = mul_div_255_round(u32::from(chunk[2]), a);
         }
     }
 }
@@ -1411,11 +1564,11 @@ mod tests {
         //           a' = 128 (unchanged)
         assert_eq!(dst[0], 255);
         assert!(
-            (dst[1] as i32 - 127).abs() <= 1,
+            (i32::from(dst[1]) - 127).abs() <= 1,
             "green ~127, got {}",
             dst[1]
         );
-        assert!((dst[2] as i32 - 63).abs() <= 1, "blue ~63, got {}", dst[2]);
+        assert!((i32::from(dst[2]) - 63).abs() <= 1, "blue ~63, got {}", dst[2]);
         assert_eq!(dst[3], 128);
     }
 
@@ -1443,10 +1596,8 @@ mod tests {
             let bytes = f16_to_bytes(v);
             let back = f16_from_bytes(bytes);
             assert!(
-                (back - v).abs() <= (v.abs() * 1e-3 + 1e-3),
-                "f16 roundtrip of {} got {}",
-                v,
-                back
+                (back - v).abs() <= v.abs().mul_add(1e-3, 1e-3),
+                "f16 roundtrip of {v} got {back}"
             );
         }
     }
@@ -1509,10 +1660,8 @@ mod tests {
         convert_pixels(&mid, &mid_info, 8, &mut dst, &dst_info, 4).unwrap();
         for (a, b) in src.iter().zip(dst.iter()) {
             assert!(
-                (*a as i32 - *b as i32).abs() <= 1,
-                "mismatch {} vs {}",
-                a,
-                b
+                (i32::from(*a) - i32::from(*b)).abs() <= 1,
+                "mismatch {a} vs {b}"
             );
         }
     }
@@ -1528,8 +1677,8 @@ mod tests {
         let r = f32_from_le(&dst[0..4]);
         let a = f32_from_le(&dst[12..16]);
         // r should be 1.0 * (128/255) ≈ 0.502
-        assert!((r - 128.0 / 255.0).abs() < 1e-2, "premul red = {}", r);
-        assert!((a - 128.0 / 255.0).abs() < 1e-3, "alpha = {}", a);
+        assert!((r - 128.0 / 255.0).abs() < 1e-2, "premul red = {r}");
+        assert!((a - 128.0 / 255.0).abs() < 1e-3, "alpha = {a}");
     }
 
     // --- Conformance regression tests (Task 1) ---
@@ -1592,7 +1741,7 @@ mod tests {
             AlphaConversion::None,
         )
         .unwrap();
-        assert_eq!(dst[0], (0.7152 * 255.0f32).round() as u8);
+        assert_eq!(dst[0], crate::cast::f32_to_u8_sat(0.7152 * 255.0f32));
     }
 
     #[test]
@@ -1612,8 +1761,7 @@ mod tests {
         apply_alpha_conversion(&mut premul, ct, width, AlphaConversion::Premultiply);
         assert_eq!(
             premul, row,
-            "{:?}: premultiplying an opaque pixel must not change it",
-            ct
+            "{ct:?}: premultiplying an opaque pixel must not change it"
         );
     }
 

@@ -2,7 +2,24 @@
 //!
 //! This module provides Skia-compatible color types.
 
+// These three lints fire pervasively across the color-space math in this module
+// (sRGB transfer functions, RGB<->XYZ/Lab/HSL/HSV conversions, color matrices).
+// Applying their "fixes" would change numeric results or obscure the port:
+#![allow(
+    clippy::suboptimal_flops,
+    reason = "faithful port of Skia's fma-free reference arithmetic; mul_add's fused rounding diverges from Skia"
+)]
+#![allow(
+    clippy::float_cmp,
+    reason = "exact comparisons are intentional and match Skia's exact SkScalar comparison"
+)]
+#![allow(
+    clippy::many_single_char_names,
+    reason = "variable names (r, g, b, a, x, y, z, matrix coeffs) intentionally match Skia's C++ source"
+)]
+
 use crate::Scalar;
+use crate::cast::{f32_to_u8_sat, saturate_to_i32};
 use bitflags::bitflags;
 use bytemuck::{Pod, Zeroable};
 
@@ -20,80 +37,89 @@ pub struct Color(pub u32);
 impl Color {
     // Standard colors (matching Skia's SK_Color* constants)
     /// Transparent black.
-    pub const TRANSPARENT: Self = Self(0x00000000);
+    pub const TRANSPARENT: Self = Self(0x0000_0000);
     /// Opaque black.
-    pub const BLACK: Self = Self(0xFF000000);
+    pub const BLACK: Self = Self(0xFF00_0000);
     /// Dark gray.
-    pub const DKGRAY: Self = Self(0xFF444444);
+    pub const DKGRAY: Self = Self(0xFF44_4444);
     /// Gray.
-    pub const GRAY: Self = Self(0xFF888888);
+    pub const GRAY: Self = Self(0xFF88_8888);
     /// Light gray.
-    pub const LTGRAY: Self = Self(0xFFCCCCCC);
+    pub const LTGRAY: Self = Self(0xFFCC_CCCC);
     /// Opaque white.
-    pub const WHITE: Self = Self(0xFFFFFFFF);
+    pub const WHITE: Self = Self(0xFFFF_FFFF);
     /// Opaque red.
-    pub const RED: Self = Self(0xFFFF0000);
+    pub const RED: Self = Self(0xFFFF_0000);
     /// Opaque green.
-    pub const GREEN: Self = Self(0xFF00FF00);
+    pub const GREEN: Self = Self(0xFF00_FF00);
     /// Opaque blue.
-    pub const BLUE: Self = Self(0xFF0000FF);
+    pub const BLUE: Self = Self(0xFF00_00FF);
     /// Opaque yellow.
-    pub const YELLOW: Self = Self(0xFFFFFF00);
+    pub const YELLOW: Self = Self(0xFFFF_FF00);
     /// Opaque cyan.
-    pub const CYAN: Self = Self(0xFF00FFFF);
+    pub const CYAN: Self = Self(0xFF00_FFFF);
     /// Opaque magenta.
-    pub const MAGENTA: Self = Self(0xFFFF00FF);
+    pub const MAGENTA: Self = Self(0xFFFF_00FF);
 
     /// Creates a color from alpha and RGB components (0-255 each).
     #[inline]
+    #[must_use]
     pub const fn from_argb(a: u8, r: u8, g: u8, b: u8) -> Self {
         Self(((a as u32) << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32))
     }
 
     /// Creates an opaque color from RGB components (0-255 each).
     #[inline]
+    #[must_use]
     pub const fn from_rgb(r: u8, g: u8, b: u8) -> Self {
         Self::from_argb(255, r, g, b)
     }
 
     /// Extracts the alpha component (0-255).
     #[inline]
+    #[must_use]
     pub const fn alpha(&self) -> u8 {
         ((self.0 >> 24) & 0xFF) as u8
     }
 
     /// Extracts the red component (0-255).
     #[inline]
+    #[must_use]
     pub const fn red(&self) -> u8 {
         ((self.0 >> 16) & 0xFF) as u8
     }
 
     /// Extracts the green component (0-255).
     #[inline]
+    #[must_use]
     pub const fn green(&self) -> u8 {
         ((self.0 >> 8) & 0xFF) as u8
     }
 
     /// Extracts the blue component (0-255).
     #[inline]
+    #[must_use]
     pub const fn blue(&self) -> u8 {
         (self.0 & 0xFF) as u8
     }
 
     /// Sets the alpha component.
     #[inline]
+    #[must_use]
     pub const fn with_alpha(&self, a: u8) -> Self {
-        Self((self.0 & 0x00FFFFFF) | ((a as u32) << 24))
+        Self((self.0 & 0x00FF_FFFF) | ((a as u32) << 24))
     }
 
     /// Converts to Color4f.
     #[inline]
+    #[must_use]
     pub fn to_color4f(&self) -> Color4f {
         Color4f::from_color(*self)
     }
 
     /// Returns the raw u32 value.
     #[inline]
+    #[must_use]
     pub const fn as_u32(&self) -> u32 {
         self.0
     }
@@ -110,6 +136,7 @@ impl Color {
     ///
     /// Level 4 colors are converted to sRGB; out-of-gamut values are clamped.
     /// Returns `None` if the string does not match any supported form.
+    #[must_use]
     pub fn from_css(s: &str) -> Option<Self> {
         let s = s.trim();
 
@@ -206,7 +233,7 @@ impl Color {
             return None;
         }
         Some(Self::from_argb(
-            (a * 255.0).round().clamp(0.0, 255.0) as u8,
+            f32_to_u8_sat(a * 255.0),
             r,
             g,
             b,
@@ -240,9 +267,9 @@ impl Color {
         };
 
         let (rf, gf, bf) = hsl_to_rgb(h, s, l);
-        let to_u8 = |x: f32| (x * 255.0).round().clamp(0.0, 255.0) as u8;
+        let to_u8 = |x: f32| f32_to_u8_sat(x * 255.0);
         Some(Self::from_argb(
-            (a * 255.0).round().clamp(0.0, 255.0) as u8,
+            f32_to_u8_sat(a * 255.0),
             to_u8(rf),
             to_u8(gf),
             to_u8(bf),
@@ -257,13 +284,13 @@ impl Color {
     fn split_components(s: &str) -> (Vec<&str>, Option<&str>) {
         if let Some((main, alpha)) = s.split_once('/') {
             let parts: Vec<&str> = main
-                .split(|c| c == ' ' || c == ',')
+                .split([' ', ','])
                 .filter(|p| !p.is_empty())
                 .collect();
             (parts, Some(alpha.trim()))
         } else {
             let parts: Vec<&str> = s
-                .split(|c| c == ' ' || c == ',')
+                .split([' ', ','])
                 .filter(|p| !p.is_empty())
                 .collect();
             (parts, None)
@@ -275,10 +302,10 @@ impl Color {
         let s = s.trim();
         if let Some(pct) = s.strip_suffix('%') {
             let v: f32 = pct.parse().ok()?;
-            Some((v * 2.55).round().clamp(0.0, 255.0) as u8)
+            Some(f32_to_u8_sat(v * 2.55))
         } else {
             let v: f32 = s.parse().ok()?;
-            Some((v * 255.0).round().clamp(0.0, 255.0) as u8)
+            Some(f32_to_u8_sat(v * 255.0))
         }
     }
 
@@ -288,39 +315,39 @@ impl Color {
             0.0
         } else if x >= 1.0 {
             1.0
-        } else if x <= 0.0031308 {
+        } else if x <= 0.003_130_8 {
             12.92 * x
         } else {
             1.055 * x.powf(1.0 / 2.4) - 0.055
         };
-        (c * 255.0).round() as u8
+        f32_to_u8_sat(c * 255.0)
     }
 
     /// Shared plumbing for CSS Color Level 4 functional notations.
     /// Takes linear RGB components and optional alpha string, converts to
     /// sRGB u8, and assembles the final Color.
-    fn compose_level4(linear_rgb: (f32, f32, f32), alpha: Option<&str>) -> Option<Self> {
+    fn compose_level4(linear_rgb: (f32, f32, f32), alpha: Option<&str>) -> Self {
         let alpha_u8 = alpha.and_then(Self::parse_alpha).unwrap_or(255);
         let r = Self::linear_to_srgb_u8(linear_rgb.0);
         let g = Self::linear_to_srgb_u8(linear_rgb.1);
         let b = Self::linear_to_srgb_u8(linear_rgb.2);
-        Some(Self::from_argb(alpha_u8, r, g, b))
+        Self::from_argb(alpha_u8, r, g, b)
     }
 
     /// Convert Oklab to linear sRGB.
-    /// Reference: https://bottosson.github.io/posts/oklab/
+    /// Reference: <https://bottosson.github.io/posts/oklab>/
     fn oklab_to_linear_srgb(l: f32, a: f32, b: f32) -> (f32, f32, f32) {
-        let l_ = l + 0.3963377774 * a + 0.2158037573 * b;
-        let m_ = l - 0.1055613458 * a - 0.0638541728 * b;
-        let s_ = l - 0.0894841775 * a - 1.2914855480 * b;
+        let l_ = l + 0.396_337_78 * a + 0.215_803_76 * b;
+        let m_ = l - 0.105_561_346 * a - 0.063_854_17 * b;
+        let s_ = l - 0.089_484_18 * a - 1.291_485_5 * b;
 
         let l_cubed = l_ * l_ * l_;
         let m_cubed = m_ * m_ * m_;
         let s_cubed = s_ * s_ * s_;
 
-        let r = 4.0767245293 * l_cubed - 3.3072168827 * m_cubed + 0.2307590544 * s_cubed;
-        let g = -1.2681437731 * l_cubed + 2.6093323231 * m_cubed - 0.3411344290 * s_cubed;
-        let b = -0.0041119885 * l_cubed - 0.7034763098 * m_cubed + 1.7068625689 * s_cubed;
+        let r = 4.076_724_5 * l_cubed - 3.307_217 * m_cubed + 0.230_759_05 * s_cubed;
+        let g = -1.268_143_8 * l_cubed + 2.609_332_3 * m_cubed - 0.341_134_43 * s_cubed;
+        let b = -0.004_111_988_5 * l_cubed - 0.703_476_3 * m_cubed + 1.706_862_6 * s_cubed;
 
         (r, g, b)
     }
@@ -352,14 +379,14 @@ impl Color {
         let z_d50 = wz * lab_f_inverse(fz);
 
         // Bradford-adapt D50 XYZ → D65 XYZ
-        let x_d65 = 0.9555766 * x_d50 + -0.0230393 * y_d50 + 0.0631636 * z_d50;
-        let y_d65 = -0.0282895 * x_d50 + 1.0099416 * y_d50 + 0.0210077 * z_d50;
-        let z_d65 = 0.0122982 * x_d50 + -0.0204830 * y_d50 + 1.3299098 * z_d50;
+        let x_d65 = 0.955_576_6 * x_d50 + -0.023_039_3 * y_d50 + 0.063_163_6 * z_d50;
+        let y_d65 = -0.028_289_5 * x_d50 + 1.009_941_6 * y_d50 + 0.021_007_7 * z_d50;
+        let z_d65 = 0.012_298_2 * x_d50 + -0.020_483_0 * y_d50 + 1.329_909_8 * z_d50;
 
         // XYZ (D65) → linear sRGB
-        let r = 3.2404542 * x_d65 + -1.5371385 * y_d65 + -0.4985314 * z_d65;
-        let g = -0.9692660 * x_d65 + 1.8760108 * y_d65 + 0.0415560 * z_d65;
-        let b = 0.0556434 * x_d65 + -0.2040259 * y_d65 + 1.0572252 * z_d65;
+        let r = 3.240_454_2 * x_d65 + -1.537_138_5 * y_d65 + -0.498_531_4 * z_d65;
+        let g = -0.969_266 * x_d65 + 1.876_010_8 * y_d65 + 0.041_556_0 * z_d65;
+        let b = 0.055_643_4 * x_d65 + -0.204_025_9 * y_d65 + 1.057_225_2 * z_d65;
 
         (r, g, b)
     }
@@ -379,7 +406,7 @@ impl Color {
         let a: f32 = parts[1].trim().parse().ok()?;
         let b: f32 = parts[2].trim().parse().ok()?;
         let rgb = Self::oklab_to_linear_srgb(l, a, b);
-        Self::compose_level4(rgb, alpha)
+        Some(Self::compose_level4(rgb, alpha))
     }
 
     fn parse_oklab_l(s: &str) -> Option<f32> {
@@ -405,7 +432,7 @@ impl Color {
         let h: f32 = parts[2].trim().trim_end_matches("deg").parse().ok()?;
         let (l, a, b) = Self::lch_to_lab(l, c, h);
         let rgb = Self::oklab_to_linear_srgb(l, a, b);
-        Self::compose_level4(rgb, alpha)
+        Some(Self::compose_level4(rgb, alpha))
     }
 
     fn parse_lab(s: &str) -> Option<Self> {
@@ -417,7 +444,7 @@ impl Color {
         let a: f32 = parts[1].trim().parse().ok()?;
         let b: f32 = parts[2].trim().parse().ok()?;
         let rgb = Self::lab_to_linear_srgb(l, a, b);
-        Self::compose_level4(rgb, alpha)
+        Some(Self::compose_level4(rgb, alpha))
     }
 
     fn parse_lab_l(s: &str) -> Option<f32> {
@@ -439,7 +466,7 @@ impl Color {
         let h: f32 = parts[2].trim().trim_end_matches("deg").parse().ok()?;
         let (l, a, b) = Self::lch_to_lab(l, c, h);
         let rgb = Self::lab_to_linear_srgb(l, a, b);
-        Self::compose_level4(rgb, alpha)
+        Some(Self::compose_level4(rgb, alpha))
     }
 
     fn parse_hwb(s: &str) -> Option<Self> {
@@ -467,7 +494,7 @@ impl Color {
         let g = blend(hg);
         let b_ch = blend(hb);
 
-        let to_u8 = |x: f32| (x * 255.0).round().clamp(0.0, 255.0) as u8;
+        let to_u8 = |x: f32| f32_to_u8_sat(x * 255.0);
         Some(Self::from_argb(alpha_u8, to_u8(r), to_u8(g), to_u8(b_ch)))
     }
 
@@ -512,9 +539,13 @@ impl Color {
             _ => return None,
         };
 
-        Self::compose_level4(rgb, alpha)
+        Some(Self::compose_level4(rgb, alpha))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "exhaustive CSS named-color lookup table; splitting the flat match adds no clarity"
+    )]
     fn named_color(s: &str) -> Option<Self> {
         // CSS Color Level 3 named colors (subset of the X11 set).
         // Table is scanned with eq_ignore_ascii_case so callers do not need
@@ -710,9 +741,15 @@ impl From<Color> for u32 {
 /// the workspace for premultiply/blend math.
 #[inline]
 #[must_use]
-pub fn mul_div_255_round(a: u32, b: u32) -> u8 {
+pub const fn mul_div_255_round(a: u32, b: u32) -> u8 {
     let prod = a * b + 128;
-    ((prod + (prod >> 8)) >> 8) as u8
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "result is <= 255 for the documented 0..=255 input domain; preserves Skia's wrapping truncation"
+    )]
+    {
+        ((prod + (prod >> 8)) >> 8) as u8
+    }
 }
 
 /// Premultiply a color (multiply RGB by alpha).
@@ -720,8 +757,9 @@ pub fn mul_div_255_round(a: u32, b: u32) -> u8 {
 /// Returns a color where R, G, B are scaled by alpha/255, using Skia's rounded
 /// `SkMulDiv255Round` (round to nearest), not truncation.
 #[inline]
+#[must_use]
 pub fn premultiply_color(color: Color) -> Color {
-    let a = color.alpha() as u32;
+    let a = u32::from(color.alpha());
     if a == 255 {
         return color;
     }
@@ -729,24 +767,25 @@ pub fn premultiply_color(color: Color) -> Color {
         return Color::TRANSPARENT;
     }
 
-    let r = mul_div_255_round(color.red() as u32, a);
-    let g = mul_div_255_round(color.green() as u32, a);
-    let b = mul_div_255_round(color.blue() as u32, a);
+    let r = mul_div_255_round(u32::from(color.red()), a);
+    let g = mul_div_255_round(u32::from(color.green()), a);
+    let b = mul_div_255_round(u32::from(color.blue()), a);
 
     Color::from_argb(color.alpha(), r, g, b)
 }
 
 /// Unpremultiply a color (divide RGB by alpha).
 #[inline]
+#[must_use]
 pub fn unpremultiply_color(color: Color) -> Color {
-    let a = color.alpha() as u32;
+    let a = u32::from(color.alpha());
     if a == 255 || a == 0 {
         return color;
     }
 
-    let r = ((color.red() as u32 * 255 + a / 2) / a).min(255) as u8;
-    let g = ((color.green() as u32 * 255 + a / 2) / a).min(255) as u8;
-    let b = ((color.blue() as u32 * 255 + a / 2) / a).min(255) as u8;
+    let r = ((u32::from(color.red()) * 255 + a / 2) / a).min(255) as u8;
+    let g = ((u32::from(color.green()) * 255 + a / 2) / a).min(255) as u8;
+    let b = ((u32::from(color.blue()) * 255 + a / 2) / a).min(255) as u8;
 
     Color::from_argb(color.alpha(), r, g, b)
 }
@@ -754,36 +793,42 @@ pub fn unpremultiply_color(color: Color) -> Color {
 // Legacy function aliases for backwards compatibility
 /// Creates a color from alpha and RGB components (0-255 each).
 #[inline]
+#[must_use]
 pub const fn color_argb(a: u8, r: u8, g: u8, b: u8) -> Color {
     Color::from_argb(a, r, g, b)
 }
 
 /// Creates an opaque color from RGB components (0-255 each).
 #[inline]
+#[must_use]
 pub const fn color_rgb(r: u8, g: u8, b: u8) -> Color {
     Color::from_rgb(r, g, b)
 }
 
 /// Extracts the alpha component from a color.
 #[inline]
+#[must_use]
 pub const fn color_get_a(color: Color) -> u8 {
     color.alpha()
 }
 
 /// Extracts the red component from a color.
 #[inline]
+#[must_use]
 pub const fn color_get_r(color: Color) -> u8 {
     color.red()
 }
 
 /// Extracts the green component from a color.
 #[inline]
+#[must_use]
 pub const fn color_get_g(color: Color) -> u8 {
     color.green()
 }
 
 /// Extracts the blue component from a color.
 #[inline]
+#[must_use]
 pub const fn color_get_b(color: Color) -> u8 {
     color.blue()
 }
@@ -838,69 +883,79 @@ pub struct Color4f {
 impl Color4f {
     /// Creates a new color.
     #[inline]
+    #[must_use]
     pub const fn new(r: Scalar, g: Scalar, b: Scalar, a: Scalar) -> Self {
         Self { r, g, b, a }
     }
 
     /// Creates an opaque color.
     #[inline]
+    #[must_use]
     pub const fn from_rgb(r: Scalar, g: Scalar, b: Scalar) -> Self {
         Self { r, g, b, a: 1.0 }
     }
 
     /// Transparent black.
     #[inline]
+    #[must_use]
     pub const fn transparent() -> Self {
         Self::new(0.0, 0.0, 0.0, 0.0)
     }
 
     /// Opaque black.
     #[inline]
+    #[must_use]
     pub const fn black() -> Self {
         Self::new(0.0, 0.0, 0.0, 1.0)
     }
 
     /// Opaque white.
     #[inline]
+    #[must_use]
     pub const fn white() -> Self {
         Self::new(1.0, 1.0, 1.0, 1.0)
     }
 
     /// Converts from 32-bit ARGB color.
     #[inline]
+    #[must_use]
     pub fn from_color(color: Color) -> Self {
         Self {
-            r: color.red() as Scalar / 255.0,
-            g: color.green() as Scalar / 255.0,
-            b: color.blue() as Scalar / 255.0,
-            a: color.alpha() as Scalar / 255.0,
+            r: Scalar::from(color.red()) / 255.0,
+            g: Scalar::from(color.green()) / 255.0,
+            b: Scalar::from(color.blue()) / 255.0,
+            a: Scalar::from(color.alpha()) / 255.0,
         }
     }
 
     /// Converts to 32-bit ARGB color.
     #[inline]
+    #[must_use]
     pub fn to_color(&self) -> Color {
-        let a = (self.a.clamp(0.0, 1.0) * 255.0).round() as u8;
-        let r = (self.r.clamp(0.0, 1.0) * 255.0).round() as u8;
-        let g = (self.g.clamp(0.0, 1.0) * 255.0).round() as u8;
-        let b = (self.b.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let a = f32_to_u8_sat(self.a.clamp(0.0, 1.0) * 255.0);
+        let r = f32_to_u8_sat(self.r.clamp(0.0, 1.0) * 255.0);
+        let g = f32_to_u8_sat(self.g.clamp(0.0, 1.0) * 255.0);
+        let b = f32_to_u8_sat(self.b.clamp(0.0, 1.0) * 255.0);
         Color::from_argb(a, r, g, b)
     }
 
     /// Returns true if the color is opaque (alpha >= 1.0).
     #[inline]
+    #[must_use]
     pub fn is_opaque(&self) -> bool {
         self.a >= 1.0
     }
 
     /// Returns true if all components are finite.
     #[inline]
-    pub fn is_finite(&self) -> bool {
+    #[must_use]
+    pub const fn is_finite(&self) -> bool {
         self.r.is_finite() && self.g.is_finite() && self.b.is_finite() && self.a.is_finite()
     }
 
     /// Returns a premultiplied version (RGB multiplied by alpha).
     #[inline]
+    #[must_use]
     pub fn premul(&self) -> Self {
         Self {
             r: self.r * self.a,
@@ -912,6 +967,7 @@ impl Color4f {
 
     /// Returns an unpremultiplied version (RGB divided by alpha).
     #[inline]
+    #[must_use]
     pub fn unpremul(&self) -> Self {
         if self.a == 0.0 {
             Self::transparent()
@@ -927,6 +983,7 @@ impl Color4f {
 
     /// Linearly interpolates between two colors.
     #[inline]
+    #[must_use]
     pub fn lerp(&self, other: &Self, t: Scalar) -> Self {
         Self {
             r: self.r + (other.r - self.r) * t,
@@ -938,7 +995,8 @@ impl Color4f {
 
     /// Returns the color as an array [r, g, b, a].
     #[inline]
-    pub fn as_array(&self) -> [Scalar; 4] {
+    #[must_use]
+    pub const fn as_array(&self) -> [Scalar; 4] {
         [self.r, self.g, self.b, self.a]
     }
 }
@@ -981,7 +1039,8 @@ pub enum AlphaType {
 impl AlphaType {
     /// Returns true if the alpha type is opaque.
     #[inline]
-    pub fn is_opaque(self) -> bool {
+    #[must_use]
+    pub const fn is_opaque(self) -> bool {
         matches!(self, Self::Opaque)
     }
 }
@@ -1050,6 +1109,7 @@ pub enum ColorType {
 impl ColorType {
     /// Returns the number of bytes per pixel, or 0 if unknown.
     #[inline]
+    #[must_use]
     pub const fn bytes_per_pixel(self) -> usize {
         match self {
             Self::Unknown => 0,
@@ -1073,6 +1133,7 @@ impl ColorType {
 
     /// Returns true if the format has an alpha channel.
     #[inline]
+    #[must_use]
     pub const fn has_alpha(self) -> bool {
         !matches!(
             self,
@@ -1095,6 +1156,7 @@ impl ColorType {
     /// Skia selects N32 by build configuration (`SK_R32_SHIFT`), not target
     /// endianness: RGBA on every platform except Windows, which uses BGRA.
     #[inline]
+    #[must_use]
     pub const fn n32() -> Self {
         #[cfg(target_os = "windows")]
         {
@@ -1131,7 +1193,8 @@ impl Default for ColorSpace {
 impl ColorSpace {
     /// Creates the sRGB color space.
     #[inline]
-    pub fn srgb() -> Self {
+    #[must_use]
+    pub const fn srgb() -> Self {
         Self {
             transfer_fn: TransferFunction::Srgb,
             gamut: ColorGamut::Srgb,
@@ -1140,7 +1203,8 @@ impl ColorSpace {
 
     /// Creates a linear sRGB color space.
     #[inline]
-    pub fn srgb_linear() -> Self {
+    #[must_use]
+    pub const fn srgb_linear() -> Self {
         Self {
             transfer_fn: TransferFunction::Linear,
             gamut: ColorGamut::Srgb,
@@ -1149,7 +1213,8 @@ impl ColorSpace {
 
     /// Creates the Display P3 color space.
     #[inline]
-    pub fn display_p3() -> Self {
+    #[must_use]
+    pub const fn display_p3() -> Self {
         Self {
             transfer_fn: TransferFunction::Srgb,
             gamut: ColorGamut::DisplayP3,
@@ -1158,7 +1223,8 @@ impl ColorSpace {
 
     /// Returns true if this is the sRGB color space.
     #[inline]
-    pub fn is_srgb(&self) -> bool {
+    #[must_use]
+    pub const fn is_srgb(&self) -> bool {
         matches!(
             (&self.transfer_fn, &self.gamut),
             (TransferFunction::Srgb, ColorGamut::Srgb)
@@ -1167,7 +1233,8 @@ impl ColorSpace {
 
     /// Returns true if this has a linear transfer function.
     #[inline]
-    pub fn is_linear(&self) -> bool {
+    #[must_use]
+    pub const fn is_linear(&self) -> bool {
         matches!(self.transfer_fn, TransferFunction::Linear)
     }
 }
@@ -1253,6 +1320,7 @@ impl Default for IccProfile {
 
 impl IccProfile {
     /// Create a standard sRGB profile.
+    #[must_use]
     pub fn srgb() -> Self {
         Self {
             profile_class: IccProfileClass::Display,
@@ -1265,6 +1333,7 @@ impl IccProfile {
     }
 
     /// Create a Display P3 profile.
+    #[must_use]
     pub fn display_p3() -> Self {
         Self {
             profile_class: IccProfileClass::Display,
@@ -1335,8 +1404,8 @@ impl IccProfile {
 
         // Extract PCS (bytes 20-23)
         let pcs = match &data[20..24] {
-            b"XYZ " => IccPcs::Xyz,
             b"Lab " => IccPcs::Lab,
+            // `XYZ ` and any unrecognised PCS both fall back to XYZ.
             _ => IccPcs::Xyz,
         };
 
@@ -1348,10 +1417,10 @@ impl IccProfile {
         // encoding, fall back to sRGB instead of failing the whole parse.
         let embedded_color_space = icc::parse_tag_table(data)
             .and_then(|tags| {
-                let rx = icc::read_xyz_tag(&tags, data, b"rXYZ")?;
-                let gx = icc::read_xyz_tag(&tags, data, b"gXYZ")?;
-                let bx = icc::read_xyz_tag(&tags, data, b"bXYZ")?;
-                let rtrc = icc::read_trc_tag(&tags, data, b"rTRC")?;
+                let rx = icc::read_xyz_tag(&tags, data, *b"rXYZ")?;
+                let gx = icc::read_xyz_tag(&tags, data, *b"gXYZ")?;
+                let bx = icc::read_xyz_tag(&tags, data, *b"bXYZ")?;
+                let rtrc = icc::read_trc_tag(&tags, data, *b"rTRC")?;
                 let gamut = icc::classify_gamut(rx, gx, bx);
                 Some(ColorSpace {
                     transfer_fn: rtrc,
@@ -1371,17 +1440,20 @@ impl IccProfile {
     }
 
     /// Get the raw ICC profile data if available.
+    #[must_use]
     pub fn raw_data(&self) -> Option<&[u8]> {
         self.raw_data.as_deref()
     }
 
     /// Get the color space associated with this profile.
-    pub fn color_space(&self) -> &ColorSpace {
+    #[must_use]
+    pub const fn color_space(&self) -> &ColorSpace {
         &self.embedded_color_space
     }
 
     /// Check if this is an sRGB profile.
-    pub fn is_srgb(&self) -> bool {
+    #[must_use]
+    pub const fn is_srgb(&self) -> bool {
         self.embedded_color_space.is_srgb()
     }
 }
@@ -1473,8 +1545,15 @@ mod icc {
     /// Read a signed 15.16 fixed-point number (s15Fixed16Number) at `off`.
     #[inline]
     fn read_s15_16(bytes: &[u8], off: usize) -> Option<f32> {
-        let raw = read_u32_be(bytes, off)? as i32;
-        Some(raw as f32 / 65536.0)
+        // s15Fixed16Number is signed; reinterpret the raw 32-bit big-endian
+        // pattern as i32 (bit-exact, no lint-tripping value cast).
+        let raw = i32::from_ne_bytes(read_u32_be(bytes, off)?.to_ne_bytes());
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "s15Fixed16 (i32) -> f32 is inherently lossy above 2^24; matches the ICC fixed-point conversion"
+        )]
+        let val = raw as f32 / 65536.0;
+        Some(val)
     }
 
     /// Parse the tag table at byte 128. Performs bounds and sanity checks
@@ -1513,12 +1592,12 @@ mod icc {
         Some(tags)
     }
 
-    fn find_tag<'a>(tags: &'a [IccTag], sig: &[u8; 4]) -> Option<&'a IccTag> {
-        tags.iter().find(|t| &t.signature == sig)
+    fn find_tag(tags: &[IccTag], sig: [u8; 4]) -> Option<&IccTag> {
+        tags.iter().find(|t| t.signature == sig)
     }
 
     /// Read an `XYZ ` tag and return its three s15.16 components.
-    pub(super) fn read_xyz_tag(tags: &[IccTag], bytes: &[u8], sig: &[u8; 4]) -> Option<[f32; 3]> {
+    pub(super) fn read_xyz_tag(tags: &[IccTag], bytes: &[u8], sig: [u8; 4]) -> Option<[f32; 3]> {
         let tag = find_tag(tags, sig)?;
         let start = tag.offset as usize;
         let end = start.checked_add(tag.size as usize)?;
@@ -1538,7 +1617,7 @@ mod icc {
     pub(super) fn read_trc_tag(
         tags: &[IccTag],
         bytes: &[u8],
-        sig: &[u8; 4],
+        sig: [u8; 4],
     ) -> Option<TransferFunction> {
         let tag = find_tag(tags, sig)?;
         let start = tag.offset as usize;
@@ -1567,7 +1646,7 @@ mod icc {
         }
         if count == 1 {
             let raw = read_u16_be(data, 12)?;
-            let gamma = raw as f32 / 256.0;
+            let gamma = f32::from(raw) / 256.0;
             return Some(gamma_to_transfer(gamma));
         }
         // Tabulated curve. We don't store arbitrary LUTs in
@@ -1618,8 +1697,8 @@ mod icc {
                 let a = read_s15_16(data, p + 4)?;
                 let b = read_s15_16(data, p + 8)?;
                 // Expressed as the 7-param form with d = -b/a, c/e/f = 0.
-                let d = if a != 0.0 { -b / a } else { 0.0 };
-                classify_parametric(g, a, b, 0.0, d, 0.0, 0.0)
+                let d = if a == 0.0 { 0.0 } else { -b / a };
+                Some(classify_parametric(g, a, b, 0.0, d, 0.0, 0.0))
             }
             2 => {
                 if data.len() < p + 16 {
@@ -1629,8 +1708,8 @@ mod icc {
                 let a = read_s15_16(data, p + 4)?;
                 let b = read_s15_16(data, p + 8)?;
                 let c = read_s15_16(data, p + 12)?;
-                let d = if a != 0.0 { -b / a } else { 0.0 };
-                classify_parametric(g, a, b, 0.0, d, c, c)
+                let d = if a == 0.0 { 0.0 } else { -b / a };
+                Some(classify_parametric(g, a, b, 0.0, d, c, c))
             }
             3 => {
                 if data.len() < p + 20 {
@@ -1641,7 +1720,7 @@ mod icc {
                 let b = read_s15_16(data, p + 8)?;
                 let c = read_s15_16(data, p + 12)?;
                 let d = read_s15_16(data, p + 16)?;
-                classify_parametric(g, a, b, c, d, 0.0, 0.0)
+                Some(classify_parametric(g, a, b, c, d, 0.0, 0.0))
             }
             4 => {
                 if data.len() < p + 28 {
@@ -1654,7 +1733,7 @@ mod icc {
                 let d = read_s15_16(data, p + 16)?;
                 let e = read_s15_16(data, p + 20)?;
                 let f = read_s15_16(data, p + 24)?;
-                classify_parametric(g, a, b, c, d, e, f)
+                Some(classify_parametric(g, a, b, c, d, e, f))
             }
             _ => None,
         }
@@ -1689,7 +1768,7 @@ mod icc {
         d: f32,
         e: f32,
         f: f32,
-    ) -> Option<TransferFunction> {
+    ) -> TransferFunction {
         // sRGB: g=2.4, a=1/1.055, b=0.055/1.055, c=1/12.92, d=0.04045,
         // e=0, f=0. Tolerances are loose enough to accept the rounded
         // s15Fixed16 representations that real profiles emit.
@@ -1702,7 +1781,7 @@ mod icc {
             && near(e, 0.0)
             && near(f, 0.0)
         {
-            return Some(TransferFunction::Srgb);
+            return TransferFunction::Srgb;
         }
         // Rec.2020 / Rec.709: g=1/0.45 ≈ 2.222, a=1/1.099, b=0.099/1.099,
         // c=1/4.5, d=0.081, e=0, f=0.
@@ -1714,9 +1793,9 @@ mod icc {
             && near(e, 0.0)
             && near(f, 0.0)
         {
-            return Some(TransferFunction::Rec2020);
+            return TransferFunction::Rec2020;
         }
-        Some(TransferFunction::Parametric {
+        TransferFunction::Parametric {
             g,
             a,
             b,
@@ -1724,7 +1803,7 @@ mod icc {
             d,
             e,
             f,
-        })
+        }
     }
 
     /// Map D50-adapted primaries (rXYZ, gXYZ, bXYZ) to a named
@@ -1732,6 +1811,7 @@ mod icc {
     /// enough to swallow the precision loss of s15Fixed16 but tight
     /// enough to discriminate sRGB, P3, Adobe RGB, and Rec.2020.
     pub(super) fn classify_gamut(r: [f32; 3], g: [f32; 3], b: [f32; 3]) -> ColorGamut {
+        const TOL: f32 = 0.01;
         // Reference primaries, D50-adapted (via Bradford), as emitted by
         // well-known profile generators (lcms2, ArgyllCMS, Apple):
         let sets: &[(ColorGamut, [[f32; 3]; 3])] = &[
@@ -1768,7 +1848,6 @@ mod icc {
                 ],
             ),
         ];
-        const TOL: f32 = 0.01;
         for (gamut, p) in sets {
             let dr = (r[0] - p[0][0]).abs() + (r[1] - p[0][1]).abs() + (r[2] - p[0][2]).abs();
             let dg = (g[0] - p[1][0]).abs() + (g[1] - p[1][1]).abs() + (g[2] - p[1][2]).abs();
@@ -1790,6 +1869,7 @@ mod icc {
 /// The sRGB transfer function is piecewise: linear for small values,
 /// then a power curve for larger values.
 #[inline]
+#[must_use]
 pub fn srgb_to_linear(s: Scalar) -> Scalar {
     if s <= 0.04045 {
         s / 12.92
@@ -1800,8 +1880,9 @@ pub fn srgb_to_linear(s: Scalar) -> Scalar {
 
 /// Convert a single linear component to sRGB.
 #[inline]
+#[must_use]
 pub fn linear_to_srgb(l: Scalar) -> Scalar {
-    if l <= 0.0031308 {
+    if l <= 0.003_130_8 {
         l * 12.92
     } else {
         1.055 * l.powf(1.0 / 2.4) - 0.055
@@ -1810,6 +1891,7 @@ pub fn linear_to_srgb(l: Scalar) -> Scalar {
 
 /// Convert an sRGB Color4f to linear RGB.
 #[inline]
+#[must_use]
 pub fn color4f_srgb_to_linear(color: &Color4f) -> Color4f {
     Color4f {
         r: srgb_to_linear(color.r),
@@ -1821,6 +1903,7 @@ pub fn color4f_srgb_to_linear(color: &Color4f) -> Color4f {
 
 /// Convert a linear RGB Color4f to sRGB.
 #[inline]
+#[must_use]
 pub fn color4f_linear_to_srgb(color: &Color4f) -> Color4f {
     Color4f {
         r: linear_to_srgb(color.r),
@@ -1832,12 +1915,14 @@ pub fn color4f_linear_to_srgb(color: &Color4f) -> Color4f {
 
 /// Convert sRGB Color to linear RGB Color4f.
 #[inline]
+#[must_use]
 pub fn color_to_linear(color: Color) -> Color4f {
     color4f_srgb_to_linear(&Color4f::from_color(color))
 }
 
 /// Convert linear RGB Color4f to sRGB Color.
 #[inline]
+#[must_use]
 pub fn linear_to_color(color: &Color4f) -> Color {
     color4f_linear_to_srgb(color).to_color()
 }
@@ -1846,6 +1931,7 @@ pub fn linear_to_color(color: &Color4f) -> Color {
 ///
 /// H is in [0, 360), S and L are in [0, 1].
 /// Returns (R, G, B) in [0, 1].
+#[must_use]
 pub fn hsl_to_rgb(h: Scalar, s: Scalar, l: Scalar) -> (Scalar, Scalar, Scalar) {
     if s == 0.0 {
         return (l, l, l);
@@ -1889,10 +1975,11 @@ pub fn hsl_to_rgb(h: Scalar, s: Scalar, l: Scalar) -> (Scalar, Scalar, Scalar) {
 ///
 /// R, G, B are in [0, 1].
 /// Returns (H, S, L) where H is in [0, 360), S and L are in [0, 1].
+#[must_use]
 pub fn rgb_to_hsl(r: Scalar, g: Scalar, b: Scalar) -> (Scalar, Scalar, Scalar) {
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
-    let l = (max + min) / 2.0;
+    let l = f32::midpoint(max, min);
 
     if max == min {
         return (0.0, 0.0, l);
@@ -1920,6 +2007,7 @@ pub fn rgb_to_hsl(r: Scalar, g: Scalar, b: Scalar) -> (Scalar, Scalar, Scalar) {
 ///
 /// H is in [0, 360), S and V are in [0, 1].
 /// Returns (R, G, B) in [0, 1].
+#[must_use]
 pub fn hsv_to_rgb(h: Scalar, s: Scalar, v: Scalar) -> (Scalar, Scalar, Scalar) {
     if s == 0.0 {
         return (v, v, v);
@@ -1932,7 +2020,7 @@ pub fn hsv_to_rgb(h: Scalar, s: Scalar, v: Scalar) -> (Scalar, Scalar, Scalar) {
     let q = v * (1.0 - s * f);
     let t = v * (1.0 - s * (1.0 - f));
 
-    match i as i32 % 6 {
+    match saturate_to_i32(i) % 6 {
         0 => (v, t, p),
         1 => (q, v, p),
         2 => (p, v, t),
@@ -1946,6 +2034,7 @@ pub fn hsv_to_rgb(h: Scalar, s: Scalar, v: Scalar) -> (Scalar, Scalar, Scalar) {
 ///
 /// R, G, B are in [0, 1].
 /// Returns (H, S, V) where H is in [0, 360), S and V are in [0, 1].
+#[must_use]
 pub fn rgb_to_hsv(r: Scalar, g: Scalar, b: Scalar) -> (Scalar, Scalar, Scalar) {
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
@@ -1973,22 +2062,24 @@ pub fn rgb_to_hsv(r: Scalar, g: Scalar, b: Scalar) -> (Scalar, Scalar, Scalar) {
 ///
 /// R, G, B are linear values in [0, 1].
 /// Returns (X, Y, Z) where Y is luminance.
+#[must_use]
 pub fn rgb_to_xyz(r: Scalar, g: Scalar, b: Scalar) -> (Scalar, Scalar, Scalar) {
     // sRGB to XYZ matrix (D65 white point)
-    let x = r * 0.4124564 + g * 0.3575761 + b * 0.1804375;
-    let y = r * 0.2126729 + g * 0.7151522 + b * 0.0721750;
-    let z = r * 0.0193339 + g * 0.1191920 + b * 0.9503041;
+    let x = r * 0.412_456_4 + g * 0.357_576_1 + b * 0.180_437_5;
+    let y = r * 0.212_672_9 + g * 0.715_152_2 + b * 0.072_175_0;
+    let z = r * 0.019_333_9 + g * 0.119_192 + b * 0.950_304_1;
     (x, y, z)
 }
 
 /// XYZ to RGB conversion (to sRGB primaries).
 ///
 /// Returns (R, G, B) linear values.
+#[must_use]
 pub fn xyz_to_rgb(x: Scalar, y: Scalar, z: Scalar) -> (Scalar, Scalar, Scalar) {
     // XYZ to sRGB matrix (D65 white point)
-    let r = x * 3.2404542 + y * -1.5371385 + z * -0.4985314;
-    let g = x * -0.9692660 + y * 1.8760108 + z * 0.0415560;
-    let b = x * 0.0556434 + y * -0.2040259 + z * 1.0572252;
+    let r = x * 3.240_454_2 + y * -1.537_138_5 + z * -0.498_531_4;
+    let g = x * -0.969_266 + y * 1.876_010_8 + z * 0.041_556_0;
+    let b = x * 0.055_643_4 + y * -0.204_025_9 + z * 1.057_225_2;
     (r, g, b)
 }
 
@@ -1996,6 +2087,7 @@ pub fn xyz_to_rgb(x: Scalar, y: Scalar, z: Scalar) -> (Scalar, Scalar, Scalar) {
 ///
 /// R, G, B are linear values in [0, 1].
 /// Returns (L, a, b) where L is in [0, 100], a and b are approximately [-128, 128].
+#[must_use]
 pub fn rgb_to_lab(r: Scalar, g: Scalar, b: Scalar) -> (Scalar, Scalar, Scalar) {
     let (x, y, z) = rgb_to_xyz(r, g, b);
 
@@ -2005,7 +2097,7 @@ pub fn rgb_to_lab(r: Scalar, g: Scalar, b: Scalar) -> (Scalar, Scalar, Scalar) {
     let ref_z = 1.08883;
 
     let f = |t: Scalar| -> Scalar {
-        if t > 0.008856 {
+        if t > 0.008_856 {
             t.cbrt()
         } else {
             (7.787 * t) + (16.0 / 116.0)
@@ -2027,6 +2119,7 @@ pub fn rgb_to_lab(r: Scalar, g: Scalar, b: Scalar) -> (Scalar, Scalar, Scalar) {
 ///
 /// Uses D50 whitepoint with Bradford chromatic adaptation to D65 per CSS Color
 /// Level 4 spec. Returns linear (R, G, B) values in [0, 1].
+#[must_use]
 pub fn lab_to_rgb(l: Scalar, a: Scalar, b: Scalar) -> (Scalar, Scalar, Scalar) {
     Color::lab_to_linear_srgb(l, a, b)
 }
@@ -2035,10 +2128,11 @@ pub fn lab_to_rgb(l: Scalar, a: Scalar, b: Scalar) -> (Scalar, Scalar, Scalar) {
 ///
 /// Returns a value in [0, 1] representing the relative luminance.
 /// This is useful for contrast calculations.
+#[must_use]
 pub fn luminance(color: Color) -> Scalar {
-    let r = srgb_to_linear(color.red() as Scalar / 255.0);
-    let g = srgb_to_linear(color.green() as Scalar / 255.0);
-    let b = srgb_to_linear(color.blue() as Scalar / 255.0);
+    let r = srgb_to_linear(Scalar::from(color.red()) / 255.0);
+    let g = srgb_to_linear(Scalar::from(color.green()) / 255.0);
+    let b = srgb_to_linear(Scalar::from(color.blue()) / 255.0);
 
     // Rec. 709 luminance coefficients
     0.2126 * r + 0.7152 * g + 0.0722 * b
@@ -2048,6 +2142,7 @@ pub fn luminance(color: Color) -> Scalar {
 ///
 /// Returns a value >= 1.0. Higher values indicate more contrast.
 /// WCAG requires 4.5:1 for normal text, 3:1 for large text.
+#[must_use]
 pub fn contrast_ratio(color1: Color, color2: Color) -> Scalar {
     let l1 = luminance(color1);
     let l2 = luminance(color2);
@@ -2061,6 +2156,7 @@ pub fn contrast_ratio(color1: Color, color2: Color) -> Scalar {
 /// Mix two colors in linear space with a given ratio.
 ///
 /// `t` of 0.0 returns `color1`, `t` of 1.0 returns `color2`.
+#[must_use]
 pub fn mix_colors(color1: Color, color2: Color, t: Scalar) -> Color {
     let c1 = color_to_linear(color1);
     let c2 = color_to_linear(color2);
@@ -2235,11 +2331,11 @@ mod tests {
     #[test]
     fn test_srgb_linear_roundtrip() {
         // Test roundtrip conversion
-        for i in 0..=100 {
-            let s = i as f32 / 100.0;
+        for i in 0..=100u8 {
+            let s = f32::from(i) / 100.0;
             let linear = srgb_to_linear(s);
             let back = linear_to_srgb(linear);
-            assert!((s - back).abs() < 0.0001, "Roundtrip failed for {}", s);
+            assert!((s - back).abs() < 0.0001, "Roundtrip failed for {s}");
         }
     }
 
@@ -2341,15 +2437,12 @@ mod tests {
         // Fixture is Artifex Software's sRGB ICC profile (tabulated curv
         // tag spanning [0, 0xFFFF]). The tag-table parser should recover
         // sRGB primaries and classify the curv as TransferFunction::Srgb.
-        let bytes = match std::fs::read(concat!(
+        let Ok(bytes) = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/srgb.icc"
-        )) {
-            Ok(b) => b,
-            Err(_) => {
-                eprintln!("tests/fixtures/srgb.icc not available; skipping");
-                return;
-            }
+        )) else {
+            eprintln!("tests/fixtures/srgb.icc not available; skipping");
+            return;
         };
         let profile = IccProfile::from_bytes(&bytes).expect("should parse sRGB profile");
         assert_eq!(profile.color_space, IccColorSpace::Rgb);
@@ -2366,15 +2459,12 @@ mod tests {
         // Fixture is Blender's srgb_p3d65_display.icc — P3 primaries
         // with sRGB-shaped parametric TRC (para type 3). The parser
         // should report DisplayP3 gamut and a non-sRGB color space.
-        let bytes = match std::fs::read(concat!(
+        let Ok(bytes) = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/display_p3.icc"
-        )) {
-            Ok(b) => b,
-            Err(_) => {
-                eprintln!("tests/fixtures/display_p3.icc not available; skipping");
-                return;
-            }
+        )) else {
+            eprintln!("tests/fixtures/display_p3.icc not available; skipping");
+            return;
         };
         let profile = IccProfile::from_bytes(&bytes).expect("should parse P3 profile");
         assert_eq!(profile.color_space, IccColorSpace::Rgb);
@@ -2424,9 +2514,9 @@ mod tests {
         // oklch(0.5 0.1 0) = oklab(0.5 0.1 0)
         let c1 = Color::from_css("oklch(0.5 0.1 0)").unwrap();
         let c2 = Color::from_css("oklab(0.5 0.1 0)").unwrap();
-        assert!((c1.red() as i16 - c2.red() as i16).abs() <= 1);
-        assert!((c1.green() as i16 - c2.green() as i16).abs() <= 1);
-        assert!((c1.blue() as i16 - c2.blue() as i16).abs() <= 1);
+        assert!((i16::from(c1.red()) - i16::from(c2.red())).abs() <= 1);
+        assert!((i16::from(c1.green()) - i16::from(c2.green())).abs() <= 1);
+        assert!((i16::from(c1.blue()) - i16::from(c2.blue())).abs() <= 1);
     }
 
     #[test]
@@ -2450,9 +2540,9 @@ mod tests {
         // CIE Lab (100, 0, 0) should produce very-near-white in sRGB
         // under D50 + Bradford D50→D65 chromatic adaptation to sRGB.
         let (r, g, b) = lab_to_rgb(100.0, 0.0, 0.0);
-        assert!(r > 0.99, "r = {}", r);
-        assert!(g > 0.99, "g = {}", g);
-        assert!(b > 0.99, "b = {}", b);
+        assert!(r > 0.99, "r = {r}");
+        assert!(g > 0.99, "g = {g}");
+        assert!(b > 0.99, "b = {b}");
     }
 
     #[test]
@@ -2460,9 +2550,9 @@ mod tests {
         // lch(50 50 0) = lab(50 50 0)
         let c1 = Color::from_css("lch(50 50 0)").unwrap();
         let c2 = Color::from_css("lab(50 50 0)").unwrap();
-        assert!((c1.red() as i16 - c2.red() as i16).abs() <= 1);
-        assert!((c1.green() as i16 - c2.green() as i16).abs() <= 1);
-        assert!((c1.blue() as i16 - c2.blue() as i16).abs() <= 1);
+        assert!((i16::from(c1.red()) - i16::from(c2.red())).abs() <= 1);
+        assert!((i16::from(c1.green()) - i16::from(c2.green())).abs() <= 1);
+        assert!((i16::from(c1.blue()) - i16::from(c2.blue())).abs() <= 1);
     }
 
     #[test]

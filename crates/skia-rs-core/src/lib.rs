@@ -24,6 +24,7 @@
 #![warn(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 
+pub mod cast;
 pub mod color;
 pub mod geometry;
 pub mod matrix44;
@@ -55,6 +56,10 @@ pub type Scalar = f32;
 /// A trait for types that can be converted to/from Skia scalar values.
 pub trait AsScalar {
     /// Convert to scalar.
+    #[expect(
+        clippy::wrong_self_convention,
+        reason = "AsScalar is implemented only for Copy primitives; by-value self avoids a needless borrow"
+    )]
     fn as_scalar(self) -> Scalar;
 }
 
@@ -67,6 +72,10 @@ impl AsScalar for f32 {
 
 impl AsScalar for f64 {
     #[inline]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "f64→f32 is inherently lossy; std offers no non-truncating conversion"
+    )]
     fn as_scalar(self) -> Scalar {
         self as Scalar
     }
@@ -74,6 +83,10 @@ impl AsScalar for f64 {
 
 impl AsScalar for i32 {
     #[inline]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "i32→f32 loses precision above 2^24; std offers no non-lossy conversion"
+    )]
     fn as_scalar(self) -> Scalar {
         self as Scalar
     }
