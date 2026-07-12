@@ -1,6 +1,6 @@
 //! Pixel formats and image storage.
 
-use crate::color::{AlphaType, ColorSpace, ColorType};
+use crate::color::{AlphaType, ColorSpace, ColorType, mul_div_255_round};
 use crate::geometry::{IRect, ISize};
 use bitflags::bitflags;
 use thiserror::Error;
@@ -74,7 +74,9 @@ impl ImageInfo {
         color_type: ColorType,
         alpha_type: AlphaType,
     ) -> Result<Self, PixelError> {
-        if width <= 0 || height <= 0 {
+        // Skia's SkImageInfo::Make accepts zero dimensions as a legal empty
+        // info sentinel; only negative dimensions are rejected.
+        if width < 0 || height < 0 {
             return Err(PixelError::InvalidDimensions { width, height });
         }
         Ok(Self {
@@ -706,9 +708,14 @@ fn convert_row(
                 let si = i * 2;
                 let di = i * 4;
                 let pixel = u16::from_le_bytes([src[si], src[si + 1]]);
-                dst[di] = ((pixel >> 11) as u8) << 3; // R (5 bits -> 8 bits)
-                dst[di + 1] = ((pixel >> 5) as u8 & 0x3F) << 2; // G (6 bits -> 8 bits)
-                dst[di + 2] = (pixel as u8 & 0x1F) << 3; // B (5 bits -> 8 bits)
+                let r = ((pixel >> 11) & 0x1F) as u8;
+                let g = ((pixel >> 5) & 0x3F) as u8;
+                let b = (pixel & 0x1F) as u8;
+                // Replicate high bits into the low bits so full-scale maps to
+                // 255, matching Skia's SkR16ToR32 / SkG16ToG32 / SkB16ToB32.
+                dst[di] = (r << 3) | (r >> 2); // R (5 bits -> 8 bits)
+                dst[di + 1] = (g << 2) | (g >> 4); // G (6 bits -> 8 bits)
+                dst[di + 2] = (b << 3) | (b >> 2); // B (5 bits -> 8 bits)
                 dst[di + 3] = 255;
             }
         }
@@ -747,8 +754,9 @@ fn convert_row(
                 let r = src[si] as f32;
                 let g = src[si + 1] as f32;
                 let b = src[si + 2] as f32;
-                // ITU-R BT.601 luma coefficients
-                dst[i] = (0.299 * r + 0.587 * g + 0.114 * b).round() as u8;
+                // ITU-R BT.709 luma coefficients, matching Skia's
+                // bt709_luminance_or_luma_to_alpha raster-pipeline stage.
+                dst[i] = (0.2126 * r + 0.7152 * g + 0.0722 * b).round() as u8;
             }
         }
 
@@ -927,7 +935,14 @@ fn convert_row(
 }
 
 /// Apply alpha premultiply / unpremultiply to a row, dispatching on the
-/// destination color type so F16/F32 rows use float math.
+/// destination color type.
+///
+/// Each color type is handled according to its actual byte/bit layout — the
+/// generic 4-byte-RGBA path is only used for byte-aligned RGBA/BGRA formats.
+/// Packed formats (`Argb4444`, the `1010102` variants, `R16G16B16A16Unorm`) are
+/// unpacked to normalized floats, converted with rounding, and repacked so the
+/// operation never corrupts pixels. Alpha-only formats have no color channels
+/// and are left unchanged.
 #[inline]
 fn apply_alpha_conversion(
     row: &mut [u8],
@@ -936,18 +951,120 @@ fn apply_alpha_conversion(
     alpha_conv: AlphaConversion,
 ) {
     use ColorType::*;
-    match alpha_conv {
-        AlphaConversion::None => {}
-        AlphaConversion::Premultiply => match color_type {
-            RgbaF16 | RgbaF16Norm => premultiply_in_place_f16(row, width),
-            RgbaF32 => premultiply_in_place_f32(row, width),
-            _ => premultiply_in_place(row),
-        },
-        AlphaConversion::Unpremultiply => match color_type {
-            RgbaF16 | RgbaF16Norm => unpremultiply_in_place_f16(row, width),
-            RgbaF32 => unpremultiply_in_place_f32(row, width),
-            _ => unpremultiply_in_place(row),
-        },
+    let premul = match alpha_conv {
+        AlphaConversion::None => return,
+        AlphaConversion::Premultiply => true,
+        AlphaConversion::Unpremultiply => false,
+    };
+    match color_type {
+        // Byte-aligned RGBA/BGRA: color channels are bytes 0..3, alpha byte 3.
+        Rgba8888 | Bgra8888 | Srgba8888 => {
+            if premul {
+                premultiply_in_place(row);
+            } else {
+                unpremultiply_in_place(row);
+            }
+        }
+        RgbaF16 | RgbaF16Norm => {
+            if premul {
+                premultiply_in_place_f16(row, width);
+            } else {
+                unpremultiply_in_place_f16(row, width);
+            }
+        }
+        RgbaF32 => {
+            if premul {
+                premultiply_in_place_f32(row, width);
+            } else {
+                unpremultiply_in_place_f32(row, width);
+            }
+        }
+        // Alpha-only formats have no color channels to (un)premultiply.
+        Alpha8 | A16Unorm | A16Float => {}
+        Argb4444 => convert_alpha_4444(row, width, premul),
+        // Both 1010102 orderings keep alpha in the top 2 bits and all three
+        // 10-bit lanes are color, so the conversion is order-independent.
+        Rgba1010102 | Bgra1010102 => convert_alpha_1010102(row, width, premul),
+        R16G16B16A16Unorm => convert_alpha_16161616(row, width, premul),
+        // Any remaining type either has no alpha or isn't produced here.
+        _ => {}
+    }
+}
+
+/// Applies premultiply (`rgb *= a`) or unpremultiply (`rgb /= a`) to normalized
+/// color channels, matching the premul semantics of the raster pipeline.
+#[inline]
+fn apply_alpha_norm(r: f32, g: f32, b: f32, a: f32, premul: bool) -> (f32, f32, f32) {
+    if premul {
+        (r * a, g * a, b * a)
+    } else if a > 0.0 {
+        ((r / a).min(1.0), (g / a).min(1.0), (b / a).min(1.0))
+    } else {
+        (0.0, 0.0, 0.0)
+    }
+}
+
+/// Rounds a normalized value in `[0, 1]` to an integer in `[0, max]`, matching
+/// Skia's `to_unorm` (round to nearest).
+#[inline]
+fn to_unorm_round(v: f32, max: f32) -> u32 {
+    (v.clamp(0.0, 1.0) * max + 0.5) as u32
+}
+
+/// Per-pixel alpha conversion for `Argb4444` (16-bit `rrrr gggg bbbb aaaa`).
+fn convert_alpha_4444(row: &mut [u8], width: usize, premul: bool) {
+    for i in 0..width {
+        let off = i * 2;
+        let v = u16::from_le_bytes([row[off], row[off + 1]]);
+        let a4 = (v & 0xF) as u32;
+        let r = ((v >> 12) & 0xF) as f32 / 15.0;
+        let g = ((v >> 8) & 0xF) as f32 / 15.0;
+        let b = ((v >> 4) & 0xF) as f32 / 15.0;
+        let a = a4 as f32 / 15.0;
+        let (r, g, b) = apply_alpha_norm(r, g, b, a, premul);
+        let packed = ((to_unorm_round(r, 15.0) << 12)
+            | (to_unorm_round(g, 15.0) << 8)
+            | (to_unorm_round(b, 15.0) << 4)
+            | a4) as u16;
+        row[off..off + 2].copy_from_slice(&packed.to_le_bytes());
+    }
+}
+
+/// Per-pixel alpha conversion for the `1010102` formats (10-bit color lanes,
+/// 2-bit alpha in the top bits).
+fn convert_alpha_1010102(row: &mut [u8], width: usize, premul: bool) {
+    for i in 0..width {
+        let off = i * 4;
+        let v = u32::from_le_bytes([row[off], row[off + 1], row[off + 2], row[off + 3]]);
+        let a2 = (v >> 30) & 0x3;
+        let c0 = (v & 0x3FF) as f32 / 1023.0;
+        let c1 = ((v >> 10) & 0x3FF) as f32 / 1023.0;
+        let c2 = ((v >> 20) & 0x3FF) as f32 / 1023.0;
+        let a = a2 as f32 / 3.0;
+        let (c0, c1, c2) = apply_alpha_norm(c0, c1, c2, a, premul);
+        let packed = to_unorm_round(c0, 1023.0)
+            | (to_unorm_round(c1, 1023.0) << 10)
+            | (to_unorm_round(c2, 1023.0) << 20)
+            | (a2 << 30);
+        row[off..off + 4].copy_from_slice(&packed.to_le_bytes());
+    }
+}
+
+/// Per-pixel alpha conversion for `R16G16B16A16Unorm` (four little-endian
+/// 16-bit unorm channels, R G B A).
+fn convert_alpha_16161616(row: &mut [u8], width: usize, premul: bool) {
+    for i in 0..width {
+        let off = i * 8;
+        let r = u16::from_le_bytes([row[off], row[off + 1]]) as f32 / 65535.0;
+        let g = u16::from_le_bytes([row[off + 2], row[off + 3]]) as f32 / 65535.0;
+        let b = u16::from_le_bytes([row[off + 4], row[off + 5]]) as f32 / 65535.0;
+        let a_raw = u16::from_le_bytes([row[off + 6], row[off + 7]]);
+        let a = a_raw as f32 / 65535.0;
+        let (r, g, b) = apply_alpha_norm(r, g, b, a, premul);
+        row[off..off + 2].copy_from_slice(&(to_unorm_round(r, 65535.0) as u16).to_le_bytes());
+        row[off + 2..off + 4].copy_from_slice(&(to_unorm_round(g, 65535.0) as u16).to_le_bytes());
+        row[off + 4..off + 6].copy_from_slice(&(to_unorm_round(b, 65535.0) as u16).to_le_bytes());
+        // Alpha channel (bytes 6..8) is left unchanged.
     }
 }
 
@@ -1144,6 +1261,9 @@ pub fn swizzle_rb_in_place(pixels: &mut [u8]) {
 }
 
 /// Convert premultiplied alpha to unpremultiplied in place.
+///
+/// Uses Skia's rounded `SkUnPreMultiply::ApplyScale` semantics (round to
+/// nearest), matching the rounding already used by `premultiply_in_place`.
 pub fn unpremultiply_in_place(pixels: &mut [u8]) {
     for chunk in pixels.chunks_exact_mut(4) {
         let a = chunk[3];
@@ -1153,26 +1273,28 @@ pub fn unpremultiply_in_place(pixels: &mut [u8]) {
             chunk[2] = 0;
         } else if a < 255 {
             let scale = 255.0 / a as f32;
-            chunk[0] = (chunk[0] as f32 * scale).min(255.0) as u8;
-            chunk[1] = (chunk[1] as f32 * scale).min(255.0) as u8;
-            chunk[2] = (chunk[2] as f32 * scale).min(255.0) as u8;
+            chunk[0] = (chunk[0] as f32 * scale).round().min(255.0) as u8;
+            chunk[1] = (chunk[1] as f32 * scale).round().min(255.0) as u8;
+            chunk[2] = (chunk[2] as f32 * scale).round().min(255.0) as u8;
         }
     }
 }
 
 /// Convert unpremultiplied alpha to premultiplied in place.
+///
+/// Uses Skia's rounded `SkMulDiv255Round` semantics (round to nearest), so
+/// e.g. `r=3, a=128` yields 2, not 1.
 pub fn premultiply_in_place(pixels: &mut [u8]) {
     for chunk in pixels.chunks_exact_mut(4) {
-        let a = chunk[3];
+        let a = chunk[3] as u32;
         if a == 0 {
             chunk[0] = 0;
             chunk[1] = 0;
             chunk[2] = 0;
         } else if a < 255 {
-            let scale = a as f32 / 255.0;
-            chunk[0] = (chunk[0] as f32 * scale) as u8;
-            chunk[1] = (chunk[1] as f32 * scale) as u8;
-            chunk[2] = (chunk[2] as f32 * scale) as u8;
+            chunk[0] = mul_div_255_round(chunk[0] as u32, a);
+            chunk[1] = mul_div_255_round(chunk[1] as u32, a);
+            chunk[2] = mul_div_255_round(chunk[2] as u32, a);
         }
     }
 }
@@ -1399,5 +1521,138 @@ mod tests {
         // r should be 1.0 * (128/255) ≈ 0.502
         assert!((r - 128.0 / 255.0).abs() < 1e-2, "premul red = {}", r);
         assert!((a - 128.0 / 255.0).abs() < 1e-3, "alpha = {}", a);
+    }
+
+    // --- Conformance regression tests (Task 1) ---
+
+    #[test]
+    fn test_image_info_accepts_zero_dimensions() {
+        // SkImageInfo::Make(0, 0, ...) is a legal empty info.
+        let info = ImageInfo::new(0, 0, ColorType::Rgba8888, AlphaType::Premul);
+        assert!(info.is_ok(), "zero dimensions must be legal");
+        let info = info.unwrap();
+        assert_eq!(info.width(), 0);
+        assert_eq!(info.height(), 0);
+        // Negatives are still rejected.
+        assert!(ImageInfo::new(-1, 4, ColorType::Rgba8888, AlphaType::Premul).is_err());
+        assert!(ImageInfo::new(4, -1, ColorType::Rgba8888, AlphaType::Premul).is_err());
+    }
+
+    #[test]
+    fn test_rgb565_to_rgba8888_replicates_low_bits() {
+        // Full-scale 565 white (0xFFFF) must map to 255,255,255, not 248,252,248.
+        let src = 0xFFFFu16.to_le_bytes();
+        let mut dst = [0u8; 4];
+        convert_row(
+            &src,
+            ColorType::Rgb565,
+            &mut dst,
+            ColorType::Rgba8888,
+            1,
+            AlphaConversion::None,
+        )
+        .unwrap();
+        assert_eq!(dst, [255, 255, 255, 255], "565 white must be full white");
+
+        // Full-scale red channel (31) -> 255.
+        let red565 = (0x1Fu16 << 11).to_le_bytes();
+        let mut dst = [0u8; 4];
+        convert_row(
+            &red565,
+            ColorType::Rgb565,
+            &mut dst,
+            ColorType::Rgba8888,
+            1,
+            AlphaConversion::None,
+        )
+        .unwrap();
+        assert_eq!(dst, [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn test_rgba8888_to_gray8_uses_bt709() {
+        // Pure green -> 0.7152 * 255 ≈ 182.
+        let src = [0u8, 255, 0, 255];
+        let mut dst = [0u8; 1];
+        convert_row(
+            &src,
+            ColorType::Rgba8888,
+            &mut dst,
+            ColorType::Gray8,
+            1,
+            AlphaConversion::None,
+        )
+        .unwrap();
+        assert_eq!(dst[0], (0.7152 * 255.0f32).round() as u8);
+    }
+
+    #[test]
+    fn test_premultiply_in_place_rounds() {
+        // r=3, a=128 must round to 2, not truncate to 1.
+        let mut pixels = [3u8, 3, 3, 128];
+        premultiply_in_place(&mut pixels);
+        assert_eq!(pixels, [2, 2, 2, 128]);
+    }
+
+    // Helper: run a same-type premul then unpremul round-trip on an opaque
+    // pixel; alpha is full so colors must be preserved exactly.
+    fn assert_same_type_opaque_roundtrip(ct: ColorType, row: &[u8]) {
+        let bpp = ct.bytes_per_pixel();
+        let width = row.len() / bpp;
+        let mut premul = row.to_vec();
+        apply_alpha_conversion(&mut premul, ct, width, AlphaConversion::Premultiply);
+        assert_eq!(
+            premul, row,
+            "{:?}: premultiplying an opaque pixel must not change it",
+            ct
+        );
+    }
+
+    #[test]
+    fn test_apply_alpha_conversion_argb4444_no_corruption() {
+        // Opaque 4444 pixel: R=F, G=A, B=5, A=F -> 0xFA5F.
+        let px = 0xFA5Fu16.to_le_bytes();
+        assert_same_type_opaque_roundtrip(ColorType::Argb4444, &px);
+
+        // Half-alpha premultiply then unpremultiply should stay in-format and
+        // keep alpha unchanged.
+        let px = 0x8888u16.to_le_bytes(); // R=8 G=8 B=8 A=8
+        let mut buf = px.to_vec();
+        apply_alpha_conversion(&mut buf, ColorType::Argb4444, 1, AlphaConversion::Premultiply);
+        let v = u16::from_le_bytes([buf[0], buf[1]]);
+        assert_eq!(v & 0xF, 0x8, "alpha nibble must be unchanged");
+        // Premul color = round(8/15 * 8/15 * 15) = round(4.27) = 4.
+        assert_eq!((v >> 12) & 0xF, 4);
+    }
+
+    #[test]
+    fn test_apply_alpha_conversion_1010102_no_corruption() {
+        // Opaque RGBA1010102 pixel: max color, alpha=3.
+        let opaque = (0x3FFu32 | (0x3FFu32 << 10) | (0x3FFu32 << 20) | (0x3u32 << 30))
+            .to_le_bytes();
+        assert_same_type_opaque_roundtrip(ColorType::Rgba1010102, &opaque);
+        assert_same_type_opaque_roundtrip(ColorType::Bgra1010102, &opaque);
+    }
+
+    #[test]
+    fn test_apply_alpha_conversion_16161616_no_corruption() {
+        // Opaque R16G16B16A16 pixel.
+        let mut px = Vec::new();
+        for &c in &[40000u16, 20000, 10000, 65535] {
+            px.extend_from_slice(&c.to_le_bytes());
+        }
+        assert_same_type_opaque_roundtrip(ColorType::R16G16B16A16Unorm, &px);
+    }
+
+    #[test]
+    fn test_apply_alpha_conversion_alpha_only_is_noop() {
+        // Alpha-only formats have no color channels; conversion is a no-op.
+        let mut a8 = [10u8, 128, 200, 255];
+        apply_alpha_conversion(&mut a8, ColorType::Alpha8, 4, AlphaConversion::Premultiply);
+        assert_eq!(a8, [10, 128, 200, 255]);
+
+        let mut a16 = 30000u16.to_le_bytes();
+        apply_alpha_conversion(&mut a16, ColorType::A16Unorm, 1, AlphaConversion::Unpremultiply);
+        assert_eq!(u16::from_le_bytes(a16), 30000);
     }
 }

@@ -316,7 +316,9 @@ impl Region {
             }
         }
 
-        self.rects = result_rects;
+        // Canonicalize to strict scanline form so PartialEq, is_rect(),
+        // rect_count() and iteration order match SkRegion semantics.
+        self.rects = canonicalize_rects(&result_rects);
         !self.is_empty()
     }
 
@@ -378,7 +380,9 @@ impl Region {
             result_rects.extend(fragments);
         }
 
-        self.rects = result_rects;
+        // Canonicalize to strict scanline form so PartialEq, is_rect(),
+        // rect_count() and iteration order match SkRegion semantics.
+        self.rects = canonicalize_rects(&result_rects);
         !self.is_empty()
     }
 }
@@ -725,5 +729,56 @@ mod tests {
         }
         let rects = region.rects();
         assert_eq!(rects.len(), 50, "50 disjoint rects should remain 50 rects");
+    }
+
+    // --- Conformance regression tests (Task 1) ---
+
+    #[test]
+    fn test_difference_canonicalizes_scanline_order() {
+        let mut region = Region::from_rect(IRect::new(0, 0, 100, 100));
+        region.op_rect(IRect::new(25, 25, 75, 75), RegionOp::Difference);
+
+        // Iteration must be in strict top-to-bottom scanline order.
+        let rects: Vec<_> = region.iter().collect();
+        assert_eq!(rects.len(), 4);
+        for w in rects.windows(2) {
+            assert!(w[0].top <= w[1].top, "rects must be in scanline order");
+        }
+
+        // The same frame built purely from unions must compare equal, proving
+        // difference canonicalizes to the same representation.
+        let mut frame = Region::from_rect(IRect::new(0, 0, 100, 25));
+        frame.op_rect(IRect::new(0, 25, 25, 75), RegionOp::Union);
+        frame.op_rect(IRect::new(75, 25, 100, 75), RegionOp::Union);
+        frame.op_rect(IRect::new(0, 75, 100, 100), RegionOp::Union);
+        assert_eq!(region, frame, "difference must canonicalize like union");
+    }
+
+    #[test]
+    fn test_intersect_canonicalizes_scanline_order() {
+        // A complex region (two vertically disjoint rects) intersected with a
+        // spanning rect must yield canonical, scanline-ordered output.
+        let mut region = Region::from_rect(IRect::new(0, 0, 10, 10));
+        region.op_rect(IRect::new(0, 20, 10, 30), RegionOp::Union);
+        region.op_rect(IRect::new(0, 0, 10, 30), RegionOp::Intersect);
+
+        let rects: Vec<_> = region.iter().collect();
+        assert_eq!(
+            rects,
+            vec![IRect::new(0, 0, 10, 10), IRect::new(0, 20, 10, 30)]
+        );
+    }
+
+    #[test]
+    fn test_intersect_merges_to_single_rect() {
+        // Two adjacent rects whose intersection with a band should merge into a
+        // single canonical rect (is_rect true, rect_count 1).
+        let mut region = Region::from_rect(IRect::new(0, 0, 10, 10));
+        region.op_rect(IRect::new(0, 10, 10, 20), RegionOp::Union);
+        // Region is now the single merged rect [0,0,10,20].
+        region.op_rect(IRect::new(0, 0, 10, 20), RegionOp::Intersect);
+        assert!(region.is_rect(), "intersection should be a single rect");
+        assert_eq!(region.rect_count(), 1);
+        assert_eq!(region.bounds(), IRect::new(0, 0, 10, 20));
     }
 }

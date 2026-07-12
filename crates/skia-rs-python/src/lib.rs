@@ -620,7 +620,9 @@ impl Surface {
 
     /// Get pixel data as bytes (RGBA).
     fn pixels(&self) -> Vec<u8> {
-        self.inner.pixels().to_vec()
+        let mut pixels = self.inner.pixels().to_vec();
+        skia_rs_canvas::simd::unpremultiply_span(&mut pixels);
+        pixels
     }
 
     /// Save to PNG file.

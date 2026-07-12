@@ -477,6 +477,32 @@ impl<'a> Interp<'a> {
                 }
                 Value::Void
             }
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                // `child.eval(coord)` samples a bound child shader. The
+                // returned color follows the Shader::sample premul contract.
+                if method == "eval" {
+                    if let Expr::Var(name) = receiver.as_ref() {
+                        if let Some(&idx) = self.children_by_name.get(name.as_str()) {
+                            let coord = args
+                                .first()
+                                .map(|a| self.compute_expr(a))
+                                .unwrap_or(Value::Vec2([0.0, 0.0]));
+                            let xy = coord.as_vec2();
+                            if let Some(child) = self.children.get(idx) {
+                                let c = child.sample(xy[0], xy[1]);
+                                return Value::Vec4([c.r, c.g, c.b, c.a]);
+                            }
+                            // Unbound child: transparent black.
+                            return Value::Vec4([0.0, 0.0, 0.0, 0.0]);
+                        }
+                    }
+                }
+                Value::Void
+            }
             Expr::Constructor { ty, args } => {
                 let vals: Vec<Value> = args.iter().map(|a| self.compute_expr(a)).collect();
                 construct(ty, &vals)
@@ -538,30 +564,35 @@ impl<'a> Interp<'a> {
         }
     }
 
-    /// Write `value` into an lvalue expression. Supports Var targets, single
-    /// component swizzle writes (e.g. `v.x = 0.5`), and integer index writes.
+    /// Write `value` into an lvalue expression. Supports Var targets, swizzle
+    /// writes of any component count (e.g. `v.x = 0.5`, `c.rgb *= 0.5`,
+    /// `c.ba = vec2(...)`), and integer index writes.
     fn assign_to(&mut self, target: &Expr, value: Value) {
         match target {
             Expr::Var(name) => self.assign(name, value),
             Expr::Field { expr, field } => {
-                if field.len() == 1 {
-                    let base = self.compute_expr(expr);
-                    if let Some(idx) = swizzle_index(field.chars().next().unwrap()) {
-                        let mut comps: Vec<f32> = (0..base.component_count())
-                            .map(|i| base.component(i))
-                            .collect();
+                let base = self.compute_expr(expr);
+                let mut comps: Vec<f32> = (0..base.component_count())
+                    .map(|i| base.component(i))
+                    .collect();
+                // Scatter each source component into the slot named by the
+                // corresponding swizzle character.
+                for (src_i, ch) in field.chars().enumerate() {
+                    if let Some(idx) = swizzle_index(ch) {
                         if idx < comps.len() {
-                            comps[idx] = value.as_f32();
+                            comps[idx] = value.component(src_i);
                         }
-                        let new = match base.component_count() {
-                            2 => Value::Vec2([comps[0], comps[1]]),
-                            3 => Value::Vec3([comps[0], comps[1], comps[2]]),
-                            4 => Value::Vec4([comps[0], comps[1], comps[2], comps[3]]),
-                            _ => Value::Float(value.as_f32()),
-                        };
-                        self.assign_to(expr, new);
+                    } else {
+                        return; // not a swizzle lvalue
                     }
                 }
+                let new = match base.component_count() {
+                    2 => Value::Vec2([comps[0], comps[1]]),
+                    3 => Value::Vec3([comps[0], comps[1], comps[2]]),
+                    4 => Value::Vec4([comps[0], comps[1], comps[2], comps[3]]),
+                    _ => Value::Float(value.as_f32()),
+                };
+                self.assign_to(expr, new);
             }
             Expr::Index { expr, index } => {
                 let idx = self.compute_expr(index).as_i32() as usize;
@@ -669,6 +700,11 @@ fn apply_binary(op: BinaryOp, l: &Value, r: &Value) -> Value {
         }
     }
 
+    // Matrix element-wise ops: mat±mat, mat·scalar, scalar·mat, mat/scalar…
+    if let Some(v) = matrix_elementwise_op(op, l, r) {
+        return v;
+    }
+
     let lw = vec_width(l);
     let rw = vec_width(r);
     let width = lw.max(rw);
@@ -729,24 +765,14 @@ fn broadcast(v: &Value, width: usize) -> [f32; 4] {
 }
 
 fn scalar_op(op: BinaryOp, a: f32, b: f32) -> Value {
+    // Float division and modulo by zero follow IEEE 754 (±inf / NaN),
+    // matching GPU and SkSL semantics — no special-casing to 0.
     match op {
         BinaryOp::Add => Value::Float(a + b),
         BinaryOp::Sub => Value::Float(a - b),
         BinaryOp::Mul => Value::Float(a * b),
-        BinaryOp::Div => {
-            if b == 0.0 {
-                Value::Float(0.0)
-            } else {
-                Value::Float(a / b)
-            }
-        }
-        BinaryOp::Mod => {
-            if b == 0.0 {
-                Value::Float(0.0)
-            } else {
-                Value::Float(a - (a / b).floor() * b)
-            }
-        }
+        BinaryOp::Div => Value::Float(a / b),
+        BinaryOp::Mod => Value::Float(a - (a / b).floor() * b),
         _ => Value::Float(0.0),
     }
 }
@@ -779,9 +805,113 @@ fn values_equal(l: &Value, r: &Value) -> bool {
     }
 }
 
-/// Matrix multiplication: mat * mat, mat * vec.
+/// View a matrix value as (elements, dimension).
+fn mat_slice(v: &Value) -> Option<(&[f32], usize)> {
+    match v {
+        Value::Mat2(m) => Some((&m[..], 2)),
+        Value::Mat3(m) => Some((&m[..], 3)),
+        Value::Mat4(m) => Some((&m[..], 4)),
+        _ => None,
+    }
+}
+
+/// Build a matrix value of dimension `dim` from elements.
+fn mat_from_elems(dim: usize, elems: &[f32]) -> Value {
+    match dim {
+        2 => {
+            let mut out = [0.0f32; 4];
+            out.copy_from_slice(&elems[..4]);
+            Value::Mat2(out)
+        }
+        3 => {
+            let mut out = [0.0f32; 9];
+            out.copy_from_slice(&elems[..9]);
+            Value::Mat3(out)
+        }
+        _ => {
+            let mut out = [0.0f32; 16];
+            out.copy_from_slice(&elems[..16]);
+            Value::Mat4(out)
+        }
+    }
+}
+
+/// Element-wise matrix arithmetic: mat±mat and mat/mat (component-wise per
+/// GLSL), plus mat op scalar and scalar op mat for + - * /.
+/// Linear-algebra multiplication (mat·mat, mat·vec, vec·mat) lives in
+/// `mat_mul`.
+fn matrix_elementwise_op(op: BinaryOp, l: &Value, r: &Value) -> Option<Value> {
+    if !matches!(
+        op,
+        BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
+    ) {
+        return None;
+    }
+    let scalar_of = |v: &Value| -> Option<f32> {
+        match v {
+            Value::Float(f) => Some(*f),
+            Value::Int(i) => Some(*i as f32),
+            _ => None,
+        }
+    };
+    let apply = |a: f32, b: f32| -> f32 {
+        match op {
+            BinaryOp::Add => a + b,
+            BinaryOp::Sub => a - b,
+            BinaryOp::Mul => a * b,
+            _ => a / b,
+        }
+    };
+    match (mat_slice(l), mat_slice(r)) {
+        (Some((a, n)), Some((b, m))) if n == m => {
+            // mat·mat linear-algebra multiply is handled by mat_mul before
+            // we get here; +, -, / are component-wise.
+            if matches!(op, BinaryOp::Mul) {
+                return None;
+            }
+            let elems: Vec<f32> = a.iter().zip(b.iter()).map(|(&x, &y)| apply(x, y)).collect();
+            Some(mat_from_elems(n, &elems))
+        }
+        (Some((a, n)), None) => {
+            let s = scalar_of(r)?;
+            let elems: Vec<f32> = a.iter().map(|&x| apply(x, s)).collect();
+            Some(mat_from_elems(n, &elems))
+        }
+        (None, Some((b, m))) => {
+            let s = scalar_of(l)?;
+            let elems: Vec<f32> = b.iter().map(|&x| apply(s, x)).collect();
+            Some(mat_from_elems(m, &elems))
+        }
+        _ => None,
+    }
+}
+
+/// Matrix multiplication: mat * mat, mat * vec, vec * mat.
 fn mat_mul(l: &Value, r: &Value) -> Option<Value> {
     match (l, r) {
+        (Value::Vec2(v), Value::Mat2(m)) => {
+            // Row-vector times matrix: out[j] = dot(v, column_j).
+            let x = v[0] * m[0] + v[1] * m[1];
+            let y = v[0] * m[2] + v[1] * m[3];
+            Some(Value::Vec2([x, y]))
+        }
+        (Value::Vec3(v), Value::Mat3(m)) => {
+            let mut out = [0.0f32; 3];
+            for (j, slot) in out.iter_mut().enumerate() {
+                *slot = v[0] * m[j * 3] + v[1] * m[j * 3 + 1] + v[2] * m[j * 3 + 2];
+            }
+            Some(Value::Vec3(out))
+        }
+        (Value::Vec4(v), Value::Mat4(m)) => {
+            let mut out = [0.0f32; 4];
+            for (j, slot) in out.iter_mut().enumerate() {
+                *slot = v[0] * m[j * 4]
+                    + v[1] * m[j * 4 + 1]
+                    + v[2] * m[j * 4 + 2]
+                    + v[3] * m[j * 4 + 3];
+            }
+            Some(Value::Vec4(out))
+        }
         (Value::Mat2(m), Value::Vec2(v)) => {
             let x = m[0] * v[0] + m[2] * v[1];
             let y = m[1] * v[0] + m[3] * v[1];
@@ -1295,6 +1425,197 @@ mod tests {
             interp.functions.insert(f.name.clone(), f);
         }
         interp.run_function("main", vec![arg])
+    }
+
+    // --- Conformance regression tests (Task 3) ---
+
+    #[test]
+    fn multi_component_swizzle_assignment() {
+        // `c.rgb *= 0.5` must work for any swizzle lvalue.
+        let v = run_main(
+            r#"
+            vec4 main(vec2 coord) {
+                vec4 c = vec4(1.0, 0.8, 0.6, 1.0);
+                c.rgb *= 0.5;
+                return c;
+            }
+            "#,
+            Value::Vec2([0.0, 0.0]),
+        );
+        let out = v.as_vec4();
+        assert!((out[0] - 0.5).abs() < 1e-5, "r halved, got {}", out[0]);
+        assert!((out[1] - 0.4).abs() < 1e-5, "g halved, got {}", out[1]);
+        assert!((out[2] - 0.3).abs() < 1e-5, "b halved, got {}", out[2]);
+        assert!((out[3] - 1.0).abs() < 1e-5, "a untouched, got {}", out[3]);
+    }
+
+    #[test]
+    fn multi_component_swizzle_assignment_shuffled() {
+        // Swizzle writes must land in the right slots even out of order.
+        let v = run_main(
+            r#"
+            vec4 main(vec2 coord) {
+                vec4 c = vec4(0.0);
+                c.ba = vec2(0.25, 0.75);
+                return c;
+            }
+            "#,
+            Value::Vec2([0.0, 0.0]),
+        );
+        let out = v.as_vec4();
+        assert!((out[2] - 0.25).abs() < 1e-5, "b, got {}", out[2]);
+        assert!((out[3] - 0.75).abs() < 1e-5, "a, got {}", out[3]);
+        assert_eq!(out[0], 0.0);
+        assert_eq!(out[1], 0.0);
+    }
+
+    #[test]
+    fn matrix_plus_matrix() {
+        let v = run_main(
+            r#"
+            vec4 main(vec2 coord) {
+                mat2 a = mat2(1.0, 2.0, 3.0, 4.0);
+                mat2 b = mat2(0.5, 0.5, 0.5, 0.5);
+                mat2 c = a + b;
+                return vec4(c[0].x, c[0].y, c[1].x, c[1].y);
+            }
+            "#,
+            Value::Vec2([0.0, 0.0]),
+        );
+        assert_eq!(v.as_vec4(), [1.5, 2.5, 3.5, 4.5]);
+    }
+
+    #[test]
+    fn matrix_minus_matrix() {
+        let v = run_main(
+            r#"
+            vec4 main(vec2 coord) {
+                mat2 a = mat2(1.0, 2.0, 3.0, 4.0);
+                mat2 c = a - mat2(1.0, 1.0, 1.0, 1.0);
+                return vec4(c[0].x, c[0].y, c[1].x, c[1].y);
+            }
+            "#,
+            Value::Vec2([0.0, 0.0]),
+        );
+        assert_eq!(v.as_vec4(), [0.0, 1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn matrix_times_scalar_both_orders() {
+        let v = run_main(
+            r#"
+            vec4 main(vec2 coord) {
+                mat2 a = mat2(1.0, 2.0, 3.0, 4.0);
+                mat2 b = a * 2.0;
+                mat2 c = 0.5 * a;
+                return vec4(b[0].x, b[1].y, c[0].x, c[1].y);
+            }
+            "#,
+            Value::Vec2([0.0, 0.0]),
+        );
+        assert_eq!(v.as_vec4(), [2.0, 8.0, 0.5, 2.0]);
+    }
+
+    #[test]
+    fn vector_times_matrix() {
+        // Row-vector times matrix: (v * M)[i] = dot(v, M[i]) (column i).
+        let v = run_main(
+            r#"
+            vec4 main(vec2 coord) {
+                mat2 m = mat2(1.0, 2.0, 3.0, 4.0);
+                vec2 v = vec2(1.0, 1.0) * m;
+                return vec4(v.x, v.y, 0.0, 1.0);
+            }
+            "#,
+            Value::Vec2([0.0, 0.0]),
+        );
+        let out = v.as_vec4();
+        // columns are (1,2) and (3,4): dot((1,1),(1,2)) = 3, dot((1,1),(3,4)) = 7
+        assert_eq!(out[0], 3.0);
+        assert_eq!(out[1], 7.0);
+    }
+
+    #[test]
+    fn matrix_times_vector() {
+        let v = run_main(
+            r#"
+            vec4 main(vec2 coord) {
+                mat2 m = mat2(1.0, 2.0, 3.0, 4.0);
+                vec2 v = m * vec2(1.0, 1.0);
+                return vec4(v.x, v.y, 0.0, 1.0);
+            }
+            "#,
+            Value::Vec2([0.0, 0.0]),
+        );
+        let out = v.as_vec4();
+        // M*v: rows dotted with v: (1*1 + 3*1, 2*1 + 4*1) = (4, 6)
+        assert_eq!(out[0], 4.0);
+        assert_eq!(out[1], 6.0);
+    }
+
+    #[test]
+    fn float_division_by_zero_is_ieee() {
+        let v = run_main(
+            r#"
+            vec4 main(vec2 coord) {
+                float pos = 1.0 / 0.0;
+                float neg = -1.0 / 0.0;
+                float nan = 0.0 / 0.0;
+                return vec4(pos, neg, nan, 1.0);
+            }
+            "#,
+            Value::Vec2([0.0, 0.0]),
+        );
+        let out = v.as_vec4();
+        assert!(out[0].is_infinite() && out[0] > 0.0, "1/0 = +inf, got {}", out[0]);
+        assert!(out[1].is_infinite() && out[1] < 0.0, "-1/0 = -inf, got {}", out[1]);
+        assert!(out[2].is_nan(), "0/0 = NaN, got {}", out[2]);
+    }
+
+    #[test]
+    fn float_mod_by_zero_is_nan() {
+        let v = run_main(
+            "vec4 main(vec2 c) { float m = mod(1.0, 0.0); float n = 1.0 % 0.0; return vec4(m, n, 0.0, 1.0); }",
+            Value::Vec2([0.0, 0.0]),
+        );
+        let out = v.as_vec4();
+        assert!(out[1].is_nan(), "1.0 % 0.0 must be NaN, got {}", out[1]);
+    }
+
+    #[test]
+    fn bitwise_ops_parse_with_glsl_precedence() {
+        let v = run_main(
+            r#"
+            vec4 main(vec2 coord) {
+                int a = 6 & 3;        // 2
+                int b = 6 ^ 3;        // 5
+                int c = 1 << 2 | 1;   // shifts bind tighter than |: 5
+                int d = 4 >> 1 + 1;   // shifts below additive: 4 >> 2 = 1
+                return vec4(float(a), float(b), float(c), float(d));
+            }
+            "#,
+            Value::Vec2([0.0, 0.0]),
+        );
+        assert_eq!(v.as_vec4(), [2.0, 5.0, 5.0, 1.0]);
+    }
+
+    #[test]
+    fn bitwise_chain_precedence() {
+        // & above ^ above |: 6 & 3 ^ 5 | 8 == ((6 & 3) ^ 5) | 8 == 15
+        let v = run_main(
+            "vec4 main(vec2 c) { int x = 6 & 3 ^ 5 | 8; return vec4(float(x), 0.0, 0.0, 1.0); }",
+            Value::Vec2([0.0, 0.0]),
+        );
+        assert_eq!(v.as_vec4()[0], 15.0);
+    }
+
+    #[test]
+    fn half_scalar_constructor() {
+        let v = run_main(
+            "vec4 main(vec2 c) { return vec4(half(0.5), 0.0, 0.0, 1.0); }",
+            Value::Vec2([0.0, 0.0]),
+        );
+        assert!((v.as_vec4()[0] - 0.5).abs() < 1e-5);
     }
 
     #[test]

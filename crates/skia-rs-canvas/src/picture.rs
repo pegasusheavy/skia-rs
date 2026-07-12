@@ -45,9 +45,14 @@ impl Picture {
     }
 
     /// Play the picture back to a canvas.
+    ///
+    /// The canvas's CTM at the start of playback is captured so that recorded
+    /// `SetMatrix` commands compose with it (`setMatrix(initialCTM * recorded)`,
+    /// per `SkCanvasPriv`/`SkPicturePlayback`) instead of clobbering it.
     pub fn playback(&self, canvas: &mut Canvas) {
+        let initial = *canvas.total_matrix();
         for command in &self.commands {
-            command.execute(canvas);
+            command.execute_with_base(canvas, &initial);
         }
     }
 
@@ -119,6 +124,8 @@ pub enum DrawCommand {
     ClipRect {
         /// The rectangle to clip to.
         rect: Rect,
+        /// The clip operation (Intersect or Difference).
+        op: crate::ClipOp,
         /// Whether to antialias.
         anti_alias: bool,
     },
@@ -126,6 +133,8 @@ pub enum DrawCommand {
     ClipPath {
         /// The path to clip to.
         path: Path,
+        /// The clip operation (Intersect or Difference).
+        op: crate::ClipOp,
         /// Whether to antialias.
         anti_alias: bool,
     },
@@ -140,6 +149,11 @@ pub enum DrawCommand {
         color: Color,
         /// The blend mode.
         blend_mode: BlendMode,
+    },
+    /// Fill the device clip with a full paint (`SkCanvas::drawPaint`).
+    DrawPaint {
+        /// The paint to fill with.
+        paint: Paint,
     },
     /// Draw a point.
     DrawPoint {
@@ -224,7 +238,17 @@ pub enum DrawCommand {
 
 impl DrawCommand {
     /// Execute this command on a canvas.
+    ///
+    /// For a single-command replay the canvas's current CTM is the playback
+    /// start, so recorded `SetMatrix` composes with it. Multi-command playback
+    /// ([`Picture::playback`]) captures the CTM once up front instead.
     pub fn execute(&self, canvas: &mut Canvas) {
+        let base = *canvas.total_matrix();
+        self.execute_with_base(canvas, &base);
+    }
+
+    /// Execute this command with `base` as the CTM captured at playback start.
+    fn execute_with_base(&self, canvas: &mut Canvas, base: &Matrix) {
         match self {
             DrawCommand::Save => {
                 canvas.save();
@@ -256,19 +280,32 @@ impl DrawCommand {
                 canvas.concat(matrix);
             }
             DrawCommand::SetMatrix { matrix } => {
-                canvas.set_matrix(matrix);
+                // Compose with the CTM at playback start:
+                // setMatrix(initialCTM * recorded).
+                canvas.set_matrix(&base.concat(matrix));
             }
-            DrawCommand::ClipRect { rect, anti_alias } => {
-                canvas.clip_rect(rect, crate::ClipOp::Intersect, *anti_alias);
+            DrawCommand::ClipRect {
+                rect,
+                op,
+                anti_alias,
+            } => {
+                canvas.clip_rect(rect, *op, *anti_alias);
             }
-            DrawCommand::ClipPath { path, anti_alias } => {
-                canvas.clip_path(path, crate::ClipOp::Intersect, *anti_alias);
+            DrawCommand::ClipPath {
+                path,
+                op,
+                anti_alias,
+            } => {
+                canvas.clip_path(path, *op, *anti_alias);
             }
             DrawCommand::Clear { color } => {
                 canvas.clear(*color);
             }
             DrawCommand::DrawColor { color, blend_mode } => {
                 canvas.draw_color(*color, *blend_mode);
+            }
+            DrawCommand::DrawPaint { paint } => {
+                canvas.draw_paint(paint);
             }
             DrawCommand::DrawPoint { point, paint } => {
                 canvas.draw_point(*point, paint);
@@ -314,14 +351,7 @@ impl DrawCommand {
                 matrix,
                 paint,
             } => {
-                canvas.save();
-                if let Some(m) = matrix {
-                    canvas.concat(m);
-                }
-                // Note: paint is used for layer effects in a full implementation
-                let _ = paint;
-                picture.playback(canvas);
-                canvas.restore();
+                canvas.draw_picture(picture, matrix.as_ref(), paint.as_ref());
             }
         }
     }
@@ -387,10 +417,30 @@ pub struct RecordingCanvas {
 }
 
 impl RecordingCanvas {
+    /// Current save count implied by the recorded command stream.
+    ///
+    /// Mirrors `SkCanvas::getSaveCount`: starts at 1, +1 per Save/SaveLayer,
+    /// -1 per Restore (never below 1).
+    fn save_count(&self) -> usize {
+        let mut count = 1usize;
+        for cmd in &self.inner.commands {
+            match cmd {
+                DrawCommand::Save | DrawCommand::SaveLayer { .. } => count += 1,
+                DrawCommand::Restore => count = count.saturating_sub(1).max(1),
+                _ => {}
+            }
+        }
+        count
+    }
+
     /// Record a save command.
+    ///
+    /// Returns the save count **before** the save, mirroring the fixed
+    /// [`Canvas::save`](crate::Canvas::save) / `SkCanvas::save` semantics.
     pub fn save(&mut self) -> usize {
+        let prev = self.save_count();
         self.inner.commands.push(DrawCommand::Save);
-        self.inner.commands.len()
+        prev
     }
 
     /// Record a restore command.
@@ -440,18 +490,30 @@ impl RecordingCanvas {
             .push(DrawCommand::SetMatrix { matrix: *matrix });
     }
 
-    /// Record a clip rect command.
+    /// Record a clip rect command (Intersect).
     pub fn clip_rect(&mut self, rect: &Rect, anti_alias: bool) {
+        self.clip_rect_op(rect, crate::ClipOp::Intersect, anti_alias);
+    }
+
+    /// Record a clip rect command with an explicit clip op.
+    pub fn clip_rect_op(&mut self, rect: &Rect, op: crate::ClipOp, anti_alias: bool) {
         self.inner.commands.push(DrawCommand::ClipRect {
             rect: *rect,
+            op,
             anti_alias,
         });
     }
 
-    /// Record a clip path command.
+    /// Record a clip path command (Intersect).
     pub fn clip_path(&mut self, path: &Path, anti_alias: bool) {
+        self.clip_path_op(path, crate::ClipOp::Intersect, anti_alias);
+    }
+
+    /// Record a clip path command with an explicit clip op.
+    pub fn clip_path_op(&mut self, path: &Path, op: crate::ClipOp, anti_alias: bool) {
         self.inner.commands.push(DrawCommand::ClipPath {
             path: path.clone(),
+            op,
             anti_alias,
         });
     }
@@ -564,6 +626,107 @@ impl RecordingCanvas {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::raster::PixelBuffer;
+
+    #[test]
+    fn test_clip_op_recorded_and_replayed() {
+        // A Difference clip recorded through Canvas must replay as Difference,
+        // not silently as Intersect.
+        let mut commands = Vec::new();
+        {
+            let mut rec = Canvas::new_recording(&mut commands, 10, 10);
+            rec.clip_rect(
+                &Rect::from_xywh(2.0, 2.0, 6.0, 6.0),
+                crate::ClipOp::Difference,
+                false,
+            );
+            let mut paint = Paint::new();
+            paint.set_color32(Color::from_argb(255, 255, 0, 0));
+            rec.draw_rect(&Rect::from_xywh(0.0, 0.0, 10.0, 10.0), &paint);
+        }
+        let picture = Picture::new(commands, Rect::from_xywh(0.0, 0.0, 10.0, 10.0));
+
+        let mut buffer = PixelBuffer::new(10, 10);
+        {
+            let mut canvas = Canvas::new_raster(&mut buffer);
+            picture.playback(&mut canvas);
+        }
+        // Inside the difference rect: untouched (transparent).
+        assert_eq!(buffer.get_pixel(5, 5).unwrap().alpha(), 0);
+        // Outside the difference rect: red.
+        assert_eq!(buffer.get_pixel(0, 0).unwrap().red(), 255);
+    }
+
+    #[test]
+    fn test_playback_set_matrix_composes_with_initial_ctm() {
+        // SkPicturePlayback: setMatrix during playback is
+        // setMatrix(initialCTM * recorded), not an absolute replacement.
+        let mut commands = Vec::new();
+        {
+            let mut rec = Canvas::new_recording(&mut commands, 20, 20);
+            rec.set_matrix(&Matrix::translate(5.0, 0.0));
+            let mut paint = Paint::new();
+            paint.set_color32(Color::from_argb(255, 0, 255, 0));
+            rec.draw_rect(&Rect::from_xywh(0.0, 0.0, 2.0, 2.0), &paint);
+        }
+        let picture = Picture::new(commands, Rect::from_xywh(0.0, 0.0, 20.0, 20.0));
+
+        let mut buffer = PixelBuffer::new(20, 20);
+        {
+            let mut canvas = Canvas::new_raster(&mut buffer);
+            canvas.translate(10.0, 0.0);
+            picture.playback(&mut canvas);
+        }
+        // Composed: initial translate(10,0) * recorded translate(5,0) => x=15.
+        assert_eq!(buffer.get_pixel(16, 1).unwrap().green(), 255);
+        // Absolute set_matrix would have drawn at x=5..7 instead.
+        assert_eq!(buffer.get_pixel(6, 1).unwrap().green(), 0);
+    }
+
+    #[test]
+    fn test_recording_canvas_save_returns_previous_count() {
+        // RecordingCanvas::save mirrors SkCanvas semantics: initial save
+        // count 1, save() returns the pre-save value.
+        let mut recorder = PictureRecorder::new();
+        let canvas = recorder.begin_recording(Rect::from_xywh(0.0, 0.0, 10.0, 10.0));
+        assert_eq!(canvas.save(), 1);
+        assert_eq!(canvas.save(), 2);
+        canvas.restore();
+        assert_eq!(canvas.save(), 2);
+    }
+
+    #[test]
+    fn test_draw_picture_paint_applies_implicit_layer() {
+        // drawPicture(picture, matrix, paint) wraps playback in an implicit
+        // saveLayer(paint): a half-alpha paint halves the picture's opaque
+        // white over black to ~mid-gray.
+        let mut inner_cmds = Vec::new();
+        {
+            let mut rec = Canvas::new_recording(&mut inner_cmds, 4, 4);
+            let mut white = Paint::new();
+            white.set_color32(Color::from_argb(255, 255, 255, 255));
+            rec.draw_rect(&Rect::from_xywh(0.0, 0.0, 4.0, 4.0), &white);
+        }
+        let inner = Arc::new(Picture::new(
+            inner_cmds,
+            Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
+        ));
+
+        let mut buffer = PixelBuffer::new(4, 4);
+        buffer.clear(Color::from_argb(255, 0, 0, 0));
+        {
+            let mut canvas = Canvas::new_raster(&mut buffer);
+            let mut layer_paint = Paint::new();
+            layer_paint.set_alpha(0.5);
+            canvas.draw_picture(&inner, None, Some(&layer_paint));
+        }
+        let c = buffer.get_pixel(2, 2).unwrap();
+        assert!(
+            c.red() > 100 && c.red() < 160,
+            "expected ~128 via implicit save_layer, got {}",
+            c.red()
+        );
+    }
 
     #[test]
     fn test_picture_recorder() {

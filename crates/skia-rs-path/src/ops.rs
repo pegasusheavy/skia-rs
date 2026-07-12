@@ -57,11 +57,18 @@ pub fn op(path1: &Path, path2: &Path, op: PathOp) -> Option<Path> {
     PathOps::new(path1, path2, op).compute()
 }
 
-/// Simplify a path by removing overlapping regions.
+/// Simplify a path by resolving self-intersections and overlaps.
+///
+/// Always runs the boolean-ops machinery (a self-union through geo's
+/// sweep-line) rather than short-circuiting on the empty operand, so
+/// self-intersecting or overlapping input is properly resolved.
 pub fn simplify(path: &Path) -> Option<Path> {
-    // Simplification is union with self
-    let empty = Path::new();
-    op(path, &empty, PathOp::Union)
+    if path.is_empty() {
+        return Some(Path::new());
+    }
+    let polys = path_to_polygons(path, 0.5);
+    let simplified = polygon_union(&polys, &[]);
+    Some(polygons_to_path(&simplified))
 }
 
 /// Internal path operations implementation.
@@ -523,6 +530,36 @@ mod tests {
         let result = op(&empty, &empty, PathOp::Union);
         assert!(result.is_some());
         assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_simplify_resolves_self_intersection() {
+        // A bowtie/figure-eight self-intersects at (5,5). simplify() must run
+        // the ops machinery to resolve it, not short-circuit and return the
+        // input unchanged.
+        let mut b = PathBuilder::new();
+        b.move_to(0.0, 0.0);
+        b.line_to(10.0, 10.0);
+        b.line_to(10.0, 0.0);
+        b.line_to(0.0, 10.0);
+        b.close();
+        let bowtie = b.build();
+
+        let result = simplify(&bowtie).expect("simplify should succeed");
+        assert!(!result.is_empty(), "simplified bowtie must not be empty");
+        // The machinery ran: the resolved geometry differs from the raw input.
+        assert_ne!(result, bowtie, "simplify must resolve, not clone the input");
+        // A point well inside the right lobe stays filled.
+        assert!(
+            result.contains(Point::new(8.0, 5.0)),
+            "interior of a lobe should remain filled after simplify"
+        );
+    }
+
+    #[test]
+    fn test_simplify_empty_is_empty() {
+        let result = simplify(&Path::new()).expect("simplify of empty is Some");
+        assert!(result.is_empty());
     }
 
     #[test]

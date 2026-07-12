@@ -267,12 +267,14 @@ impl Animation {
 
     /// Render a specific frame.
     pub fn render_frame(&self, ctx: &mut RenderContext, frame: Scalar) {
+        ctx.set_frame_rate(self.frame_rate);
+        ctx.set_bounds(Rect::from_xywh(0.0, 0.0, self.width, self.height));
         ctx.save();
 
         // Render layers in reverse order (bottom to top)
         for layer in self.layers.iter().rev() {
             if layer.is_visible_at(frame) {
-                ctx.render_layer(layer, frame, &self.assets);
+                ctx.render_layer(layer, frame, &self.assets, &self.layers);
             }
         }
 

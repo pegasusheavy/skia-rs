@@ -133,11 +133,23 @@ impl ExtGraphicsState {
     }
 
     /// Create a unique key for caching.
+    ///
+    /// Must cover every field that affects the emitted `/ExtGState`
+    /// dictionary — omitting one (as this used to, for `soft_mask`,
+    /// `alpha_is_shape`, `text_knockout`, and the overprint flags) makes
+    /// `TransparencyManager::add_ext_gstate` wrongly dedupe two distinct
+    /// states that happen to share the same alpha/blend-mode into a single
+    /// cached object, silently dropping the other attributes.
     pub fn cache_key(&self) -> ExtGStateKey {
         ExtGStateKey {
             stroke_alpha: self.stroke_alpha.map(|a| (a * 1000.0) as i32),
             fill_alpha: self.fill_alpha.map(|a| (a * 1000.0) as i32),
             blend_mode: self.blend_mode,
+            soft_mask: self.soft_mask,
+            alpha_is_shape: self.alpha_is_shape,
+            text_knockout: self.text_knockout,
+            stroke_overprint: self.stroke_overprint,
+            fill_overprint: self.fill_overprint,
         }
     }
 }
@@ -151,6 +163,16 @@ pub struct ExtGStateKey {
     fill_alpha: Option<i32>,
     /// Blend mode.
     blend_mode: Option<PdfBlendMode>,
+    /// Soft mask object reference.
+    soft_mask: Option<u32>,
+    /// Alpha is shape (AIS).
+    alpha_is_shape: Option<bool>,
+    /// Text knockout (TK).
+    text_knockout: Option<bool>,
+    /// Overprint for stroking (OP).
+    stroke_overprint: Option<bool>,
+    /// Overprint for non-stroking (op).
+    fill_overprint: Option<bool>,
 }
 
 /// PDF blend modes.
@@ -528,6 +550,93 @@ mod tests {
         let dict = state.to_pdf_dict(6);
 
         assert!(dict.contains("/BM /Multiply"));
+    }
+
+    #[test]
+    fn test_cache_key_distinguishes_soft_mask_and_flags() {
+        let mut manager = TransparencyManager::new();
+
+        // Shared base: same alpha values throughout, so every distinction
+        // below can only come from the field under test.
+        let base = ExtGraphicsState {
+            fill_alpha: Some(0.5),
+            stroke_alpha: Some(0.5),
+            ..Default::default()
+        };
+        let idx_base = manager.add_ext_gstate(base.clone());
+        assert_eq!(manager.ext_gstates().len(), 1);
+
+        // Each variant toggles exactly ONE field away from `base`. If any
+        // one of these fields were dropped from `cache_key`, the
+        // corresponding variant would wrongly collide with `base` (or with
+        // a previous variant) and `ext_gstates().len()` would fail to grow,
+        // catching a regression on that specific field.
+        let soft_mask = ExtGraphicsState {
+            soft_mask: Some(42),
+            ..base.clone()
+        };
+        let idx_soft_mask = manager.add_ext_gstate(soft_mask);
+        assert_ne!(idx_base, idx_soft_mask, "soft_mask must affect cache_key");
+        assert_eq!(manager.ext_gstates().len(), 2);
+
+        let alpha_is_shape = ExtGraphicsState {
+            alpha_is_shape: Some(true),
+            ..base.clone()
+        };
+        let idx_alpha_is_shape = manager.add_ext_gstate(alpha_is_shape);
+        assert_ne!(
+            idx_base, idx_alpha_is_shape,
+            "alpha_is_shape must affect cache_key"
+        );
+        assert_ne!(idx_soft_mask, idx_alpha_is_shape);
+        assert_eq!(manager.ext_gstates().len(), 3);
+
+        let text_knockout = ExtGraphicsState {
+            text_knockout: Some(true),
+            ..base.clone()
+        };
+        let idx_text_knockout = manager.add_ext_gstate(text_knockout);
+        assert_ne!(
+            idx_base, idx_text_knockout,
+            "text_knockout must affect cache_key"
+        );
+        assert_ne!(idx_soft_mask, idx_text_knockout);
+        assert_ne!(idx_alpha_is_shape, idx_text_knockout);
+        assert_eq!(manager.ext_gstates().len(), 4);
+
+        let stroke_overprint = ExtGraphicsState {
+            stroke_overprint: Some(true),
+            ..base.clone()
+        };
+        let idx_stroke_overprint = manager.add_ext_gstate(stroke_overprint);
+        assert_ne!(
+            idx_base, idx_stroke_overprint,
+            "stroke_overprint must affect cache_key"
+        );
+        assert_ne!(idx_soft_mask, idx_stroke_overprint);
+        assert_ne!(idx_alpha_is_shape, idx_stroke_overprint);
+        assert_ne!(idx_text_knockout, idx_stroke_overprint);
+        assert_eq!(manager.ext_gstates().len(), 5);
+
+        let fill_overprint = ExtGraphicsState {
+            fill_overprint: Some(true),
+            ..base.clone()
+        };
+        let idx_fill_overprint = manager.add_ext_gstate(fill_overprint);
+        assert_ne!(
+            idx_base, idx_fill_overprint,
+            "fill_overprint must affect cache_key"
+        );
+        assert_ne!(idx_soft_mask, idx_fill_overprint);
+        assert_ne!(idx_alpha_is_shape, idx_fill_overprint);
+        assert_ne!(idx_text_knockout, idx_fill_overprint);
+        assert_ne!(idx_stroke_overprint, idx_fill_overprint);
+
+        // Base(1) + 5 single-field variants = 6 distinct cached entries.
+        // Any regression that drops a field from `cache_key` collapses at
+        // least one variant back into an existing entry and this count
+        // fails to reach 6.
+        assert_eq!(manager.ext_gstates().len(), 6);
     }
 
     #[test]

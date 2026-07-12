@@ -61,10 +61,14 @@ impl PathMeasure {
     }
 
     /// Get a point at a distance along the path.
+    ///
+    /// The distance is pinned to `[0, length]` (like `SkContourMeasure::getPosTan`);
+    /// `None` is only returned for NaN input or an empty path.
     pub fn get_point_at(&self, distance: Scalar) -> Option<Point> {
-        if distance < 0.0 || distance > self.total_length {
+        if distance.is_nan() || self.total_length <= 0.0 {
             return None;
         }
+        let distance = distance.clamp(0.0, self.total_length);
         let (contour, offset) = self.locate(distance)?;
         let seg = Self::segment_at(contour, offset);
         let seg_start_cum = seg.cumulative - seg.length;
@@ -80,10 +84,14 @@ impl PathMeasure {
     }
 
     /// Get the tangent (unit direction vector) at a distance along the path.
+    ///
+    /// The distance is pinned to `[0, length]` (like `SkContourMeasure::getPosTan`);
+    /// `None` is only returned for NaN input or an empty path.
     pub fn get_tangent_at(&self, distance: Scalar) -> Option<Point> {
-        if distance < 0.0 || distance > self.total_length {
+        if distance.is_nan() || self.total_length <= 0.0 {
             return None;
         }
+        let distance = distance.clamp(0.0, self.total_length);
         let (contour, offset) = self.locate(distance)?;
         let seg = Self::segment_at(contour, offset);
         let dx = seg.end.x - seg.start.x;
@@ -120,7 +128,12 @@ impl PathMeasure {
     /// constructed from line segments (curves in the source path are
     /// flattened during length computation).
     pub fn get_segment(&self, start: Scalar, end: Scalar) -> Option<Path> {
-        if start >= end || start < 0.0 || end > self.total_length {
+        // Pin start/stop into the legal range like SkContourMeasure::getSegment:
+        // clamp start up to 0 and stop down to length; reject only NaN or an
+        // inverted (start > stop) range.
+        let start = start.max(0.0);
+        let end = end.min(self.total_length);
+        if !(start < end) {
             return None;
         }
 
@@ -341,6 +354,44 @@ mod tests {
     }
 
     #[test]
+    fn test_get_point_at_pins_out_of_range() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        // Negative distance pins to the start.
+        let p = measure.get_point_at(-10.0).expect("pinned start");
+        assert!((p.x - 0.0).abs() < 0.01 && (p.y - 0.0).abs() < 0.01);
+        // Distance past the end pins to the end.
+        let p = measure.get_point_at(1000.0).expect("pinned end");
+        assert!((p.x - 100.0).abs() < 0.01 && (p.y - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_get_tangent_at_pins_out_of_range() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        assert!(measure.get_tangent_at(-5.0).is_some());
+        assert!(measure.get_tangent_at(500.0).is_some());
+    }
+
+    #[test]
+    fn test_get_segment_pins_start_stop() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        // Out-of-range start/stop are clamped rather than rejected.
+        let seg = measure.get_segment(-10.0, 1000.0).expect("clamped segment");
+        assert!(!seg.is_empty());
+    }
+
+    #[test]
     fn test_path_measure_diagonal_line() {
         let mut builder = PathBuilder::new();
         builder.move_to(0.0, 0.0);
@@ -437,13 +488,18 @@ mod tests {
 
     #[test]
     fn test_get_point_at_out_of_range() {
+        // Skia pins out-of-range distances to [0, length] and returns a point;
+        // only NaN / empty paths yield None.
         let mut builder = PathBuilder::new();
         builder.move_to(0.0, 0.0);
         builder.line_to(100.0, 0.0);
         let path = builder.build();
         let measure = PathMeasure::new(&path);
-        assert!(measure.get_point_at(-1.0).is_none());
-        assert!(measure.get_point_at(101.0).is_none());
+        let start = measure.get_point_at(-1.0).expect("pinned to start");
+        assert!((start.x - 0.0).abs() < 0.01);
+        let end = measure.get_point_at(101.0).expect("pinned to end");
+        assert!((end.x - 100.0).abs() < 0.01);
+        assert!(measure.get_point_at(Scalar::NAN).is_none());
     }
 
     #[test]
@@ -524,8 +580,20 @@ mod tests {
         let path = builder.build();
         let measure = PathMeasure::new(&path);
 
+        // Inverted range is still rejected.
         assert!(measure.get_segment(75.0, 25.0).is_none());
-        assert!(measure.get_segment(-1.0, 50.0).is_none());
-        assert!(measure.get_segment(50.0, 200.0).is_none());
+        // Out-of-range endpoints are pinned like SkContourMeasure::getSegment.
+        assert!(measure.get_segment(-1.0, 50.0).is_some());
+        assert!(measure.get_segment(50.0, 200.0).is_some());
+    }
+
+    #[test]
+    fn test_get_matrix_at() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.line_to(100.0, 0.0);
+        let path = builder.build();
+        let measure = PathMeasure::new(&path);
+        assert!(measure.get_matrix_at(50.0).is_some());
     }
 }

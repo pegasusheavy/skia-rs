@@ -1,6 +1,6 @@
 //! Color, mask, and image filters.
 
-use skia_rs_core::{Color4f, Rect, Scalar};
+use skia_rs_core::{Color4f, Rect, Scalar, mul_div_255_round};
 use std::sync::Arc;
 
 // =============================================================================
@@ -279,15 +279,50 @@ impl MaskFilter for BlurMaskFilter {
         if width == 0 || height == 0 {
             return;
         }
-        let radius = self.sigma.max(0.0) as usize;
+        // SkBlurMask::ConvertSigmaToRadius; do not truncate sigma directly.
+        let radius = sigma_to_int_box_radius(self.sigma);
         if radius == 0 {
+            // No effective blur. Per SkBlurMask::BoxBlur, Outer style then
+            // produces an empty mask; other styles keep the original.
+            if self.style == BlurStyle::Outer {
+                mask.fill(0);
+            }
             return;
         }
-        // Two-pass separable box blur (horizontal then vertical),
-        // repeated twice for a better Gaussian approximation.
-        for _ in 0..2 {
+
+        // Keep the source mask for style composition.
+        let src: Vec<u8> = mask.to_vec();
+
+        // Separable box blur (horizontal then vertical), three passes for
+        // the classic three-box Gaussian approximation.
+        for _ in 0..3 {
             box_blur_horizontal(mask, width, height, radius);
             box_blur_vertical(mask, width, height, radius);
+        }
+
+        // Compose the blur with the source per SkBlurMask's style handling.
+        match self.style {
+            BlurStyle::Normal => {}
+            BlurStyle::Solid => {
+                // src UNION blur: d = s + d - s*d (clamp_solid_with_orig).
+                for (d, &s) in mask.iter_mut().zip(src.iter()) {
+                    let blur = *d as u32;
+                    let s = s as u32;
+                    *d = (s + blur - mul_div_255_round(s, blur) as u32).min(255) as u8;
+                }
+            }
+            BlurStyle::Outer => {
+                // blur MINUS src: d = d * (1 - s) (clamp_outer_with_orig).
+                for (d, &s) in mask.iter_mut().zip(src.iter()) {
+                    *d = mul_div_255_round(*d as u32, 255 - s as u32);
+                }
+            }
+            BlurStyle::Inner => {
+                // blur INTERSECT src: d = d * s (merge_src_with_blur).
+                for (d, &s) in mask.iter_mut().zip(src.iter()) {
+                    *d = mul_div_255_round(*d as u32, s as u32);
+                }
+            }
         }
     }
 
@@ -350,12 +385,14 @@ impl ImageFilter for BlurImageFilter {
         if width == 0 || height == 0 {
             return;
         }
-        let rx = self.sigma_x.max(0.0) as usize;
-        let ry = self.sigma_y.max(0.0) as usize;
+        // SkBlurMask::ConvertSigmaToRadius; do not truncate sigma directly.
+        let rx = sigma_to_int_box_radius(self.sigma_x);
+        let ry = sigma_to_int_box_radius(self.sigma_y);
         if rx == 0 && ry == 0 {
             return;
         }
-        for _ in 0..2 {
+        // Three-box approximation of a Gaussian.
+        for _ in 0..3 {
             if rx > 0 {
                 rgba_box_blur_horizontal(pixels, width, height, rx);
             }
@@ -451,9 +488,9 @@ impl ImageFilter for DropShadowImageFilter {
         for i in 0..width * height {
             shadow[i] = pixels[i * 4 + 3];
         }
-        // 2. Blur shadow
-        let rx = self.sigma_x.max(0.0) as usize;
-        let ry = self.sigma_y.max(0.0) as usize;
+        // 2. Blur shadow (sigma converted per SkBlurMask::ConvertSigmaToRadius)
+        let rx = sigma_to_int_box_radius(self.sigma_x);
+        let ry = sigma_to_int_box_radius(self.sigma_y);
         if rx > 0 {
             box_blur_horizontal(&mut shadow, width, height, rx);
         }
@@ -822,21 +859,33 @@ impl ImageFilter for ColorFilterImageFilter {
         if let Some(ref input) = self.input {
             input.apply(pixels, width, height);
         }
-        // Apply color filter to each pixel
+        // Apply the color filter per pixel. The buffer holds premultiplied
+        // RGBA8; SkColorFilters::Matrix runs in unpremul space by default
+        // (unpremul -> matrix -> clamp -> premul).
         for y in 0..height {
             for x in 0..width {
                 let idx = (y * width + x) * 4;
-                let color = Color4f {
-                    r: pixels[idx] as f32 / 255.0,
-                    g: pixels[idx + 1] as f32 / 255.0,
-                    b: pixels[idx + 2] as f32 / 255.0,
-                    a: pixels[idx + 3] as f32 / 255.0,
+                let a = pixels[idx + 3] as f32 / 255.0;
+                let unpremul = if a > 0.0 {
+                    Color4f {
+                        r: (pixels[idx] as f32 / 255.0) / a,
+                        g: (pixels[idx + 1] as f32 / 255.0) / a,
+                        b: (pixels[idx + 2] as f32 / 255.0) / a,
+                        a,
+                    }
+                } else {
+                    Color4f::new(0.0, 0.0, 0.0, 0.0)
                 };
-                let filtered = self.color_filter.filter_color(color);
-                pixels[idx] = (filtered.r * 255.0).clamp(0.0, 255.0) as u8;
-                pixels[idx + 1] = (filtered.g * 255.0).clamp(0.0, 255.0) as u8;
-                pixels[idx + 2] = (filtered.b * 255.0).clamp(0.0, 255.0) as u8;
-                pixels[idx + 3] = (filtered.a * 255.0).clamp(0.0, 255.0) as u8;
+                let filtered = self.color_filter.filter_color(unpremul);
+                // Clamp in unpremul space, then re-premultiply.
+                let fa = filtered.a.clamp(0.0, 1.0);
+                let fr = filtered.r.clamp(0.0, 1.0) * fa;
+                let fg = filtered.g.clamp(0.0, 1.0) * fa;
+                let fb = filtered.b.clamp(0.0, 1.0) * fa;
+                pixels[idx] = (fr * 255.0).round() as u8;
+                pixels[idx + 1] = (fg * 255.0).round() as u8;
+                pixels[idx + 2] = (fb * 255.0).round() as u8;
+                pixels[idx + 3] = (fa * 255.0).round() as u8;
             }
         }
     }
@@ -1404,39 +1453,70 @@ impl ImageFilter for MatrixConvolutionImageFilter {
         let gain = self.gain;
         let bias = self.bias;
         let (ox, oy) = self.kernel_offset;
+
+        // Map a source coordinate through the tile mode. Returns None for
+        // out-of-bounds Decal taps (which contribute transparent black).
+        let tile = |v: i32, size: i32| -> Option<i32> {
+            if (0..size).contains(&v) {
+                return Some(v);
+            }
+            match self.tile_mode {
+                crate::shader::TileMode::Clamp => Some(v.clamp(0, size - 1)),
+                crate::shader::TileMode::Repeat => Some(v.rem_euclid(size)),
+                crate::shader::TileMode::Mirror => {
+                    let period = 2 * size;
+                    let m = v.rem_euclid(period);
+                    Some(if m < size { m } else { period - m - 1 })
+                }
+                crate::shader::TileMode::Decal => None,
+            }
+        };
+
         for y in 0..height {
             for x in 0..width {
                 let mut acc = [0.0f32; 4];
                 for ky in 0..kh {
                     for kx in 0..kw {
-                        let sx = (x as i32 + kx - ox).clamp(0, width as i32 - 1) as usize;
-                        let sy = (y as i32 + ky - oy).clamp(0, height as i32 - 1) as usize;
+                        let sx = tile(x as i32 + kx - ox, width as i32);
+                        let sy = tile(y as i32 + ky - oy, height as i32);
+                        let (sx, sy) = match (sx, sy) {
+                            (Some(sx), Some(sy)) => (sx as usize, sy as usize),
+                            _ => continue, // Decal: transparent contribution
+                        };
                         let sidx = (sy * width + sx) * 4;
                         let kidx = (ky as usize) * (kw as usize) + kx as usize;
                         let k = self.kernel.get(kidx).copied().unwrap_or(0.0);
-                        // Convolve alpha only if convolve_alpha is true
-                        for c in 0..3 {
-                            acc[c] += src[sidx + c] as f32 * k;
-                        }
                         if self.convolve_alpha {
-                            acc[3] += src[sidx + 3] as f32 * k;
+                            // Convolve the premultiplied channels directly.
+                            for c in 0..4 {
+                                acc[c] += src[sidx + c] as f32 * k;
+                            }
                         } else {
-                            // Keep alpha unchanged (just accumulate for average)
-                            if kx == 0 && ky == 0 {
-                                acc[3] = src[sidx + 3] as f32;
+                            // Upstream (SkKnownRuntimeEffects convolution):
+                            // convolve UNPREMULTIPLIED RGB, keep alpha.
+                            let sa = src[sidx + 3] as f32 / 255.0;
+                            if sa > 0.0 {
+                                for c in 0..3 {
+                                    acc[c] += (src[sidx + c] as f32 / sa) * k;
+                                }
                             }
                         }
                     }
                 }
                 let idx = (y * width + x) * 4;
-                for c in 0..3 {
-                    let v = acc[c] * gain + bias;
-                    pixels[idx + c] = v.clamp(0.0, 255.0) as u8;
-                }
                 if self.convolve_alpha {
-                    let v = acc[3] * gain + bias;
-                    pixels[idx + 3] = v.clamp(0.0, 255.0) as u8;
+                    for c in 0..4 {
+                        let v = acc[c] * gain + bias;
+                        pixels[idx + c] = v.clamp(0.0, 255.0).round() as u8;
+                    }
                 } else {
+                    // Re-premultiply the convolved RGB with the pixel's
+                    // original (unchanged) alpha.
+                    let a = src[idx + 3] as f32 / 255.0;
+                    for c in 0..3 {
+                        let v = (acc[c] * gain + bias).clamp(0.0, 255.0) * a;
+                        pixels[idx + c] = v.round() as u8;
+                    }
                     pixels[idx + 3] = src[idx + 3];
                 }
             }
@@ -1496,27 +1576,34 @@ impl ImageFilter for TileImageFilter {
         if width == 0 || height == 0 {
             return;
         }
-        // Tile the src_rect region across the output via modulo mapping.
+        // Tile the src_rect region across dst_rect only (SkTileImageFilter
+        // fills its destination rect, not the whole buffer).
         let sx0 = (self.src_rect.left.max(0.0) as usize).min(width);
         let sy0 = (self.src_rect.top.max(0.0) as usize).min(height);
-        let sx1 = (self.src_rect.right as usize).min(width);
-        let sy1 = (self.src_rect.bottom as usize).min(height);
+        let sx1 = (self.src_rect.right.max(0.0) as usize).min(width);
+        let sy1 = (self.src_rect.bottom.max(0.0) as usize).min(height);
         if sx1 <= sx0 || sy1 <= sy0 {
             return;
         }
         let sw = sx1 - sx0;
         let sh = sy1 - sy0;
+
+        let dx0 = (self.dst_rect.left.max(0.0) as usize).min(width);
+        let dy0 = (self.dst_rect.top.max(0.0) as usize).min(height);
+        let dx1 = (self.dst_rect.right.max(0.0) as usize).min(width);
+        let dy1 = (self.dst_rect.bottom.max(0.0) as usize).min(height);
+        if dx1 <= dx0 || dy1 <= dy0 {
+            return;
+        }
+
         let src = pixels.to_vec();
-        for y in 0..height {
-            for x in 0..width {
-                let tx = sx0 + (x % sw);
-                let ty = sy0 + (y % sh);
+        for y in dy0..dy1 {
+            for x in dx0..dx1 {
+                let tx = sx0 + ((x - dx0) % sw);
+                let ty = sy0 + ((y - dy0) % sh);
                 let src_idx = (ty * width + tx) * 4;
                 let dst_idx = (y * width + x) * 4;
-                pixels[dst_idx] = src[src_idx];
-                pixels[dst_idx + 1] = src[src_idx + 1];
-                pixels[dst_idx + 2] = src[src_idx + 2];
-                pixels[dst_idx + 3] = src[src_idx + 3];
+                pixels[dst_idx..dst_idx + 4].copy_from_slice(&src[src_idx..src_idx + 4]);
             }
         }
     }
@@ -1700,6 +1787,26 @@ pub type ImageFilterRef = Arc<dyn ImageFilter + Send + Sync>;
 // =============================================================================
 // Box Blur Helpers
 // =============================================================================
+
+/// Convert a Gaussian sigma to the box-blur radius of the three-box
+/// approximation, per `SkBlurMask::ConvertSigmaToRadius`:
+/// `radius = sigma > 0.5 ? (sigma - 0.5) / 0.57735 : 0`.
+#[inline]
+fn sigma_to_box_radius(sigma: Scalar) -> Scalar {
+    const K_BLUR_SIGMA_SCALE: Scalar = 0.57735;
+    if sigma > 0.5 {
+        (sigma - 0.5) / K_BLUR_SIGMA_SCALE
+    } else {
+        0.0
+    }
+}
+
+/// Integer box radius for the three-box passes. Rounds to nearest instead of
+/// truncating so that e.g. sigma 0.9 (radius ~0.69) still blurs.
+#[inline]
+fn sigma_to_int_box_radius(sigma: Scalar) -> usize {
+    sigma_to_box_radius(sigma).round().max(0.0) as usize
+}
 
 fn box_blur_horizontal(buf: &mut [u8], width: usize, height: usize, radius: usize) {
     if width == 0 {
@@ -2161,6 +2268,201 @@ mod tests {
         // Neighbor should brighten
         let neighbor_r = pixels[11 * 4];
         assert!(neighbor_r > 0);
+    }
+
+    // --- Conformance regression tests (Task 3) ---
+
+    #[test]
+    fn test_blur_mask_filter_small_sigma_blurs() {
+        // SkBlurMask::ConvertSigmaToRadius: radius = (sigma - 0.5) / 0.57735.
+        // sigma = 0.9 gives radius ~0.69, which must blur (the old code
+        // truncated sigma to 0 and did nothing).
+        let filter = BlurMaskFilter::new(BlurStyle::Normal, 0.9);
+        let mut mask = vec![0u8; 25];
+        mask[12] = 255;
+        filter.apply_mask(&mut mask, 5, 5);
+        assert!(mask[12] < 255, "sigma 0.9 must blur, center still {}", mask[12]);
+        assert!(mask[11] > 0, "sigma 0.9 must spread to neighbors");
+    }
+
+    #[test]
+    fn test_blur_image_filter_small_sigma_blurs() {
+        let filter = BlurImageFilter::new(0.9, 0.9, crate::shader::TileMode::Clamp);
+        let mut pixels = vec![0u8; 25 * 4];
+        for c in 0..4 {
+            pixels[12 * 4 + c] = 255;
+        }
+        filter.apply(&mut pixels, 5, 5);
+        assert!(pixels[12 * 4] < 255, "sigma 0.9 must blur the image");
+        assert!(pixels[11 * 4] > 0, "sigma 0.9 must spread to neighbors");
+    }
+
+    #[test]
+    fn test_blur_mask_filter_solid_style() {
+        // Solid = src UNION blur: the original geometry stays fully opaque,
+        // the halo spreads outward.
+        let filter = BlurMaskFilter::new(BlurStyle::Solid, 2.0);
+        let mut mask = vec![0u8; 49];
+        mask[24] = 255; // center of 7x7
+        filter.apply_mask(&mut mask, 7, 7);
+        assert_eq!(mask[24], 255, "solid keeps the source opaque");
+        assert!(mask[23] > 0, "solid still has a blur halo");
+    }
+
+    #[test]
+    fn test_blur_mask_filter_outer_style() {
+        // Outer = blur MINUS src: zero where the source was opaque, halo
+        // outside.
+        let filter = BlurMaskFilter::new(BlurStyle::Outer, 2.0);
+        let mut mask = vec![0u8; 49];
+        mask[24] = 255;
+        filter.apply_mask(&mut mask, 7, 7);
+        assert_eq!(mask[24], 0, "outer clears the source region");
+        assert!(mask[23] > 0, "outer keeps the halo outside the source");
+    }
+
+    #[test]
+    fn test_blur_mask_filter_inner_style() {
+        // Inner = blur INTERSECT src: nonzero only inside the source.
+        let filter = BlurMaskFilter::new(BlurStyle::Inner, 2.0);
+        let mut mask = vec![0u8; 49];
+        mask[24] = 255;
+        filter.apply_mask(&mut mask, 7, 7);
+        assert!(mask[24] > 0, "inner keeps blur inside the source");
+        assert!(mask[24] < 255, "inner is the blurred value, not the source");
+        assert_eq!(mask[23], 0, "inner is empty outside the source");
+    }
+
+    #[test]
+    fn test_color_filter_image_filter_unpremul_roundtrip() {
+        // Premul pixel: 50%-alpha red = (128, 0, 0, 128). The matrix runs in
+        // unpremul space (SkColorFilters::Matrix default): unpremul (1,0,0),
+        // invert -> (0,1,1), clamp, re-premul with a=0.5 -> (0,128,128,128).
+        let color_filter = Arc::new(ColorMatrixFilter::invert()) as ColorFilterRef;
+        let filter = ColorFilterImageFilter::new(color_filter, None);
+        let mut pixels = vec![128u8, 0, 0, 128];
+        filter.apply(&mut pixels, 1, 1);
+        assert_eq!(pixels[3], 128, "alpha untouched by invert");
+        assert!(pixels[0] <= 1, "r must be ~0, got {}", pixels[0]);
+        assert!(
+            (pixels[1] as i32 - 128).abs() <= 1,
+            "g must be re-premultiplied (~128), got {}",
+            pixels[1]
+        );
+        assert!(
+            (pixels[2] as i32 - 128).abs() <= 1,
+            "b must be re-premultiplied (~128), got {}",
+            pixels[2]
+        );
+    }
+
+    #[test]
+    fn test_matrix_convolution_unpremul_when_not_convolving_alpha() {
+        // 2x1 image: premul 50%-alpha red, opaque blue. 1x2 averaging kernel.
+        // With convolve_alpha = false the RGB convolution runs on
+        // unpremultiplied colors and is re-premultiplied with the original
+        // alpha: pixel 0 -> avg((1,0,0),(0,0,1)) = (.5,0,.5), a=0.5 ->
+        // premul bytes (64, 0, 64, 128).
+        let filter = MatrixConvolutionImageFilter::new(
+            (2, 1),
+            vec![0.5, 0.5],
+            1.0,
+            0.0,
+            (0, 0),
+            crate::shader::TileMode::Clamp,
+            false,
+            None,
+        );
+        let mut pixels = vec![
+            128u8, 0, 0, 128, // premul 50% red
+            0, 0, 255, 255, // opaque blue
+        ];
+        filter.apply(&mut pixels, 2, 1);
+        assert_eq!(pixels[3], 128, "alpha unchanged");
+        assert!(
+            (pixels[0] as i32 - 64).abs() <= 1,
+            "r must be premul(0.5 * a), got {}",
+            pixels[0]
+        );
+        assert!(
+            (pixels[2] as i32 - 64).abs() <= 1,
+            "b must be premul(0.5 * a) (unpremul convolve), got {}",
+            pixels[2]
+        );
+    }
+
+    #[test]
+    fn test_matrix_convolution_honors_decal_tile_mode() {
+        // 1x1 white image with a 3x1 averaging kernel centered on the pixel.
+        // Decal: out-of-bounds taps contribute transparent -> ~255/3.
+        let filter = MatrixConvolutionImageFilter::new(
+            (3, 1),
+            vec![1.0 / 3.0; 3],
+            1.0,
+            0.0,
+            (1, 0),
+            crate::shader::TileMode::Decal,
+            true,
+            None,
+        );
+        let mut pixels = vec![255u8, 255, 255, 255];
+        filter.apply(&mut pixels, 1, 1);
+        assert!(
+            pixels[0] < 100,
+            "decal tile mode must not clamp-extend the edge, got {}",
+            pixels[0]
+        );
+        // Clamp, by contrast, keeps the pixel at ~255.
+        let filter_clamp = MatrixConvolutionImageFilter::new(
+            (3, 1),
+            vec![1.0 / 3.0; 3],
+            1.0,
+            0.0,
+            (1, 0),
+            crate::shader::TileMode::Clamp,
+            true,
+            None,
+        );
+        let mut pixels = vec![255u8, 255, 255, 255];
+        filter_clamp.apply(&mut pixels, 1, 1);
+        assert!(pixels[0] > 250, "clamp extends the edge pixel");
+    }
+
+    #[test]
+    fn test_tile_image_filter_fills_only_dst_rect() {
+        // 4x4 blue buffer with a red pixel at (0,0). src_rect = unit square at
+        // origin, dst_rect = 2x2 at origin. Only dst_rect gets tiled red;
+        // pixels outside dst_rect are untouched.
+        let filter = TileImageFilter::new(
+            Rect::from_xywh(0.0, 0.0, 1.0, 1.0),
+            Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+            None,
+        );
+        let mut pixels = Vec::new();
+        for i in 0..16 {
+            if i == 0 {
+                pixels.extend_from_slice(&[255u8, 0, 0, 255]); // red
+            } else {
+                pixels.extend_from_slice(&[0u8, 0, 255, 255]); // blue
+            }
+        }
+        filter.apply(&mut pixels, 4, 4);
+        // Inside dst_rect: tiled red.
+        for (x, y) in [(0usize, 0usize), (1, 0), (0, 1), (1, 1)] {
+            let idx = (y * 4 + x) * 4;
+            assert_eq!(pixels[idx], 255, "({}, {}) inside dst_rect is red", x, y);
+        }
+        // Outside dst_rect: untouched blue.
+        for (x, y) in [(2usize, 0usize), (3, 3), (0, 2), (2, 2)] {
+            let idx = (y * 4 + x) * 4;
+            assert_eq!(
+                pixels[idx + 2],
+                255,
+                "({}, {}) outside dst_rect stays blue",
+                x,
+                y
+            );
+        }
     }
 
     #[test]

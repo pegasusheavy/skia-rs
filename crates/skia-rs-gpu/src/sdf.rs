@@ -157,7 +157,18 @@ pub fn generate_sdf_from_mask(mask: &[u8], width: u32, height: u32, spread: f32)
         //   outside pixel → positive, magnitude = distance to nearest inside
         let out_d = d_out[i].max(0.0).sqrt();
         let in_d = d_in[i].max(0.0).sqrt();
-        let signed = if mask[i] > 127 { -out_d } else { in_d };
+        // Distances above are measured to the nearest opposite-region pixel
+        // *center*. The mask edge lies between texels — roughly half a texel
+        // closer than that center — so subtract 0.5 to measure to the edge
+        // itself, matching SkDistanceFieldGen (which models the boundary
+        // between texels, `distance = 0.5 - alpha`). This places the two
+        // texels straddling an edge at -0.5 (inside) and +0.5 (outside),
+        // with the true edge at 0 exactly between them.
+        let signed = if mask[i] > 127 {
+            -(out_d - 0.5)
+        } else {
+            in_d - 0.5
+        };
         // Clamp to +/- spread so the mapping to texture texels is stable.
         sdf[i] = signed.clamp(-spread, spread);
     }
@@ -281,12 +292,22 @@ fn distance_transform_1d(f: &mut [f32]) {
 }
 
 /// Convert SDF to normalized texture data (0-255).
+///
+/// Matches `SkDistanceFieldGen::pack_distance_field_val`: **inside is high**
+/// (> 128) and outside is low, with the zero level (the edge) at 128. Skia
+/// negates the signed distance before packing, so an inside pixel (negative
+/// signed distance in this crate's convention) maps above 128. The positive
+/// side is scaled by 127/128 to avoid overflowing 255, and the byte is
+/// rounded to nearest.
 pub fn sdf_to_texture(sdf: &[f32], spread: f32) -> Vec<u8> {
+    let mag = spread.max(1e-6);
     sdf.iter()
         .map(|&d| {
-            // Map [-spread, spread] to [0, 1], then to [0, 255]
-            let normalized = (d / spread + 1.0) * 0.5;
-            (normalized.clamp(0.0, 1.0) * 255.0).round() as u8
+            // Negate: inside (d < 0) -> positive -> high byte. Clamp the
+            // positive range to mag*127/128 (Skia) so it never rounds to 256.
+            let shifted = (-d).clamp(-mag, mag * 127.0 / 128.0) + mag;
+            let byte = (shifted / (2.0 * mag) * 256.0).round();
+            byte.clamp(0.0, 255.0) as u8
         })
         .collect()
 }
@@ -554,14 +575,18 @@ mod tests {
     }
 
     #[test]
-    fn test_sdf_to_texture() {
+    fn test_sdf_to_texture_inside_is_high() {
+        // Per SkDistanceFieldGen: inside (negative signed distance) packs to
+        // HIGH bytes (>128); the edge (0) is at 128; outside is low.
         let sdf = vec![-8.0, 0.0, 8.0];
         let texture = sdf_to_texture(&sdf, 8.0);
 
         assert_eq!(texture.len(), 3);
-        assert_eq!(texture[0], 0); // -spread -> 0
-        assert_eq!(texture[1], 128); // 0 -> 0.5 -> 128
-        assert_eq!(texture[2], 255); // +spread -> 255
+        assert_eq!(texture[0], 255, "fully inside -> high");
+        assert_eq!(texture[1], 128, "edge -> 128");
+        assert_eq!(texture[2], 0, "fully outside -> low");
+        // Monotonic: inside strictly greater than outside.
+        assert!(texture[0] > texture[1] && texture[1] > texture[2]);
     }
 
     #[test]
@@ -660,15 +685,54 @@ mod tests {
         mask[16 * w + 16] = 255; // single interior pixel
 
         let sdf = generate_sdf_from_mask(&mask, w as u32, h as u32, 100.0);
-        // The inside pixel has nearest outside at distance 1 → SDF = -1.
+        // The inside pixel has nearest outside at distance 1; with the
+        // half-texel edge correction the signed distance is -(1 - 0.5) = -0.5.
         assert!(
-            (sdf[16 * w + 16] + 1.0).abs() < 1e-4,
-            "expected -1, got {}",
+            (sdf[16 * w + 16] + 0.5).abs() < 1e-4,
+            "expected -0.5, got {}",
             sdf[16 * w + 16]
         );
-        // A pixel three away (outside) has distance-to-inside = 3 → SDF = 3.
+        // A pixel three away (outside): distance-to-inside 3 -> 3 - 0.5 = 2.5.
         let three_away = sdf[16 * w + 19];
-        assert!((three_away - 3.0).abs() < 1e-4, "expected ~3, got {}", three_away);
+        assert!((three_away - 2.5).abs() < 1e-4, "expected ~2.5, got {}", three_away);
+    }
+
+    #[test]
+    fn test_sdf_edge_offset_straddles_zero() {
+        // Regression: the two texels straddling a mask edge must sit at
+        // -0.5 (inside) and +0.5 (outside), i.e. the edge is at 0 between
+        // them (half-texel offset correction).
+        let w = 8;
+        let h = 8;
+        let mut mask = vec![0u8; w * h];
+        for y in 0..h {
+            for x in 4..w {
+                mask[y * w + x] = 255; // right half filled
+            }
+        }
+        let sdf = generate_sdf_from_mask(&mask, w as u32, h as u32, 10.0);
+        // Column 4 is the first inside column; column 3 is the last outside.
+        let inside_edge = sdf[3 * w + 4];
+        let outside_edge = sdf[3 * w + 3];
+        assert!((inside_edge + 0.5).abs() < 1e-4, "inside edge ~ -0.5, got {inside_edge}");
+        assert!((outside_edge - 0.5).abs() < 1e-4, "outside edge ~ +0.5, got {outside_edge}");
+    }
+
+    #[test]
+    fn test_generate_sdf_from_mask_packs_inside_high() {
+        // End-to-end: a filled region must pack to HIGH texels, background low.
+        let w = 8;
+        let h = 8;
+        let mut mask = vec![0u8; w * h];
+        for y in 2..6 {
+            for x in 2..6 {
+                mask[y * w + x] = 255;
+            }
+        }
+        let sdf = generate_sdf_from_mask(&mask, w as u32, h as u32, 8.0);
+        let tex = sdf_to_texture(&sdf, 8.0);
+        assert!(tex[3 * w + 3] > 128, "inside texel must be high");
+        assert!(tex[0] < 128, "outside texel must be low");
     }
 
     #[test]

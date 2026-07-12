@@ -177,6 +177,55 @@ impl DashEffect {
     }
 }
 
+impl DashEffect {
+    /// Dash a single line segment `from -> to`, advancing the dash state
+    /// (`is_on`, `interval_idx`, `remaining_in_interval`) across it. Used for
+    /// both explicit line segments and the synthesized closing edge so the dash
+    /// distance advances continuously (upstream `SkDashPath::InternalFilter`).
+    fn dash_line(
+        &self,
+        builder: &mut PathBuilder,
+        from: Point,
+        to: Point,
+        is_on: &mut bool,
+        interval_idx: &mut usize,
+        remaining_in_interval: &mut Scalar,
+    ) {
+        let segment_length = from.distance(&to);
+        if segment_length <= 0.0 {
+            return;
+        }
+        let mut t = 0.0;
+        while t < 1.0 {
+            let remaining_segment = segment_length * (1.0 - t);
+
+            if *remaining_in_interval >= remaining_segment {
+                if *is_on {
+                    builder.line_to(to.x, to.y);
+                }
+                *remaining_in_interval -= remaining_segment;
+                t = 1.0;
+            } else {
+                let dt = *remaining_in_interval / segment_length;
+                let mid = Point::new(
+                    from.x + (to.x - from.x) * (t + dt),
+                    from.y + (to.y - from.y) * (t + dt),
+                );
+                if *is_on {
+                    builder.line_to(mid.x, mid.y);
+                }
+                *interval_idx = (*interval_idx + 1) % self.intervals.len();
+                *is_on = *interval_idx % 2 == 0;
+                *remaining_in_interval = self.intervals[*interval_idx];
+                if *is_on {
+                    builder.move_to(mid.x, mid.y);
+                }
+                t += dt;
+            }
+        }
+    }
+}
+
 impl PathEffect for DashEffect {
     fn apply(&self, path: &Path) -> Option<Path> {
         if path.is_empty() {
@@ -233,54 +282,30 @@ impl PathEffect for DashEffect {
                     }
                 }
                 PathElement::Line(end) => {
-                    let segment_length = current_pos.distance(&end);
-                    let mut t = 0.0;
-
-                    while t < 1.0 {
-                        let remaining_segment = segment_length * (1.0 - t);
-
-                        if remaining_in_interval >= remaining_segment {
-                            // Finish this segment
-                            if is_on {
-                                builder.line_to(end.x, end.y);
-                            }
-                            remaining_in_interval -= remaining_segment;
-                            t = 1.0;
-                        } else {
-                            // Partial segment
-                            let dt = remaining_in_interval / segment_length;
-                            let mid = Point::new(
-                                current_pos.x + (end.x - current_pos.x) * (t + dt),
-                                current_pos.y + (end.y - current_pos.y) * (t + dt),
-                            );
-
-                            if is_on {
-                                builder.line_to(mid.x, mid.y);
-                            }
-
-                            // Move to next interval
-                            interval_idx = (interval_idx + 1) % self.intervals.len();
-                            is_on = interval_idx % 2 == 0;
-                            remaining_in_interval = self.intervals[interval_idx];
-
-                            if is_on {
-                                builder.move_to(mid.x, mid.y);
-                            }
-
-                            t += dt;
-                        }
-                    }
-
+                    self.dash_line(
+                        &mut builder,
+                        current_pos,
+                        end,
+                        &mut is_on,
+                        &mut interval_idx,
+                        &mut remaining_in_interval,
+                    );
                     current_pos = end;
                 }
                 PathElement::Close => {
-                    // Handle closing line if needed
+                    // Dash the closing edge continuously (advancing the dash
+                    // distance across it), not solid/dropped.
                     if current_pos != contour_start {
-                        let segment_length = current_pos.distance(&contour_start);
-                        if segment_length > 0.0 && is_on {
-                            builder.line_to(contour_start.x, contour_start.y);
-                        }
+                        self.dash_line(
+                            &mut builder,
+                            current_pos,
+                            contour_start,
+                            &mut is_on,
+                            &mut interval_idx,
+                            &mut remaining_in_interval,
+                        );
                     }
+                    current_pos = contour_start;
                 }
                 // For curves, we approximate with lines (simplified)
                 PathElement::Quad(ctrl, end) => {
@@ -357,86 +382,169 @@ impl CornerEffect {
     }
 }
 
+/// Which verb kind was last processed (for the corner-effect state machine).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CornerVerb {
+    None,
+    Move,
+    Line,
+    Curve,
+    Close,
+}
+
+/// Compute the corner step vector for the segment `a -> b`.
+///
+/// Returns `true` if a straight middle segment should be drawn (i.e. the
+/// segment is longer than `2 * radius`), matching `ComputeStep`.
+fn corner_compute_step(a: Point, b: Point, radius: Scalar, step: &mut Point) -> bool {
+    let dist = a.distance(&b);
+    let mut s = Point::new(b.x - a.x, b.y - a.y);
+    if dist <= radius * 2.0 {
+        s.x *= 0.5;
+        s.y *= 0.5;
+        *step = s;
+        false
+    } else {
+        let f = radius / dist;
+        s.x *= f;
+        s.y *= f;
+        *step = s;
+        true
+    }
+}
+
+/// Whether the contour starting at `move_idx` is closed (contains a `Close`
+/// before the next `Move`).
+fn corner_contour_is_closed(elements: &[PathElement], move_idx: usize) -> bool {
+    for e in &elements[move_idx + 1..] {
+        match e {
+            PathElement::Move(_) => return false,
+            PathElement::Close => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 impl PathEffect for CornerEffect {
     fn apply(&self, path: &Path) -> Option<Path> {
-        if path.is_empty() {
+        if path.is_empty() || self.radius <= 0.0 {
             return None;
         }
 
-        let mut builder = PathBuilder::new();
-        let elements: Vec<_> = path.iter().collect();
+        // Faithful port of SkCornerPathEffectImpl::onFilterPath: rounds every
+        // corner including the joint between the last and first segments of a
+        // closed contour, and starts a closed contour's output at the first
+        // segment's rounded start (moveTo + step).
+        let radius = self.radius;
+        let mut dst = PathBuilder::new();
+        let elements: Vec<PathElement> = path.iter().collect();
 
-        let mut i = 0;
-        while i < elements.len() {
-            match elements[i] {
+        let mut prev_verb = CornerVerb::None;
+        let mut move_to = Point::zero();
+        let mut last_corner = Point::zero();
+        let mut first_step = Point::zero();
+        let mut step = Point::zero();
+        let mut prev_is_valid = true;
+        let mut current = Point::zero();
+
+        for (i, elem) in elements.iter().enumerate() {
+            let cur_verb;
+            match *elem {
                 PathElement::Move(p) => {
-                    builder.move_to(p.x, p.y);
-                    i += 1;
+                    // Close out the previous (open) contour.
+                    if prev_verb == CornerVerb::Line {
+                        dst.line_to(last_corner.x, last_corner.y);
+                    }
+                    if corner_contour_is_closed(&elements, i) {
+                        move_to = p;
+                        prev_is_valid = false;
+                    } else {
+                        dst.move_to(p.x, p.y);
+                        prev_is_valid = true;
+                    }
+                    current = p;
+                    cur_verb = CornerVerb::Move;
                 }
                 PathElement::Line(end) => {
-                    // Look ahead for corner
-                    let prev_end = if i > 0 {
-                        get_end_point(&elements[i - 1])
+                    let a = current;
+                    let b = end;
+                    let draw_segment = corner_compute_step(a, b, radius, &mut step);
+                    if !prev_is_valid {
+                        dst.move_to(move_to.x + step.x, move_to.y + step.y);
+                        prev_is_valid = true;
                     } else {
-                        None
-                    };
-
-                    let next_start = if i + 1 < elements.len() {
-                        get_end_point(&elements[i + 1])
-                    } else {
-                        None
-                    };
-
-                    if let (Some(start), Some(next)) = (prev_end, next_start) {
-                        // Round the corner at 'end'
-                        let v1 = Point::new(start.x - end.x, start.y - end.y);
-                        let v2 = Point::new(next.x - end.x, next.y - end.y);
-
-                        let len1 = v1.length();
-                        let len2 = v2.length();
-
-                        if len1 > 0.0 && len2 > 0.0 {
-                            let radius = self.radius.min(len1 / 2.0).min(len2 / 2.0);
-
-                            let t1 = Point::new(
-                                end.x + v1.x / len1 * radius,
-                                end.y + v1.y / len1 * radius,
-                            );
-                            let t2 = Point::new(
-                                end.x + v2.x / len2 * radius,
-                                end.y + v2.y / len2 * radius,
-                            );
-
-                            builder.line_to(t1.x, t1.y);
-                            builder.quad_to(end.x, end.y, t2.x, t2.y);
-                        } else {
-                            builder.line_to(end.x, end.y);
-                        }
-                    } else {
-                        builder.line_to(end.x, end.y);
+                        dst.quad_to(a.x, a.y, a.x + step.x, a.y + step.y);
                     }
-                    i += 1;
+                    if draw_segment {
+                        dst.line_to(b.x - step.x, b.y - step.y);
+                    }
+                    last_corner = b;
+                    current = end;
+                    cur_verb = CornerVerb::Line;
                 }
                 PathElement::Quad(ctrl, end) => {
-                    builder.quad_to(ctrl.x, ctrl.y, end.x, end.y);
-                    i += 1;
+                    if !prev_is_valid {
+                        dst.move_to(current.x, current.y);
+                        prev_is_valid = true;
+                    }
+                    dst.quad_to(ctrl.x, ctrl.y, end.x, end.y);
+                    last_corner = end;
+                    first_step = Point::zero();
+                    current = end;
+                    cur_verb = CornerVerb::Curve;
                 }
                 PathElement::Conic(ctrl, end, w) => {
-                    builder.conic_to(ctrl.x, ctrl.y, end.x, end.y, w);
-                    i += 1;
+                    if !prev_is_valid {
+                        dst.move_to(current.x, current.y);
+                        prev_is_valid = true;
+                    }
+                    dst.conic_to(ctrl.x, ctrl.y, end.x, end.y, w);
+                    last_corner = end;
+                    first_step = Point::zero();
+                    current = end;
+                    cur_verb = CornerVerb::Curve;
                 }
-                PathElement::Cubic(ctrl1, ctrl2, end) => {
-                    builder.cubic_to(ctrl1.x, ctrl1.y, ctrl2.x, ctrl2.y, end.x, end.y);
-                    i += 1;
+                PathElement::Cubic(c1, c2, end) => {
+                    if !prev_is_valid {
+                        dst.move_to(current.x, current.y);
+                        prev_is_valid = true;
+                    }
+                    dst.cubic_to(c1.x, c1.y, c2.x, c2.y, end.x, end.y);
+                    last_corner = end;
+                    first_step = Point::zero();
+                    current = end;
+                    cur_verb = CornerVerb::Curve;
                 }
                 PathElement::Close => {
-                    builder.close();
-                    i += 1;
+                    if first_step.x != 0.0 || first_step.y != 0.0 {
+                        dst.quad_to(
+                            last_corner.x,
+                            last_corner.y,
+                            last_corner.x + first_step.x,
+                            last_corner.y + first_step.y,
+                        );
+                    }
+                    dst.close();
+                    prev_is_valid = false;
+                    current = move_to;
+                    cur_verb = CornerVerb::Close;
                 }
             }
+
+            // Capture the first segment's step so the closing joint can be
+            // rounded back toward the contour start.
+            if prev_verb == CornerVerb::Move {
+                first_step = step;
+            }
+            prev_verb = cur_verb;
         }
 
-        Some(builder.build())
+        if prev_is_valid {
+            dst.line_to(last_corner.x, last_corner.y);
+        }
+
+        Some(dst.build())
     }
 
     fn effect_kind(&self) -> PathEffectKind {
@@ -814,17 +922,6 @@ impl PathEffect for SumEffect {
 // =============================================================================
 // Helper Functions
 // =============================================================================
-
-fn get_end_point(element: &PathElement) -> Option<Point> {
-    match element {
-        PathElement::Move(p) => Some(*p),
-        PathElement::Line(p) => Some(*p),
-        PathElement::Quad(_, p) => Some(*p),
-        PathElement::Conic(_, p, _) => Some(*p),
-        PathElement::Cubic(_, _, p) => Some(*p),
-        PathElement::Close => None,
-    }
-}
 
 fn quadratic_point(p0: Point, p1: Point, p2: Point, t: Scalar) -> Point {
     let mt = 1.0 - t;
@@ -1247,6 +1344,30 @@ mod tests {
     }
 
     #[test]
+    fn test_dash_closing_segment_is_dashed_continuously() {
+        use crate::PathMeasure;
+        // A closed 10x10 square (perimeter 40) dashed [5 on, 5 off] must be
+        // dashed continuously across the closing edge, giving 4 on-segments of
+        // length 5 each => total drawn length 20.
+        let mut b = PathBuilder::new();
+        b.move_to(0.0, 0.0);
+        b.line_to(10.0, 0.0);
+        b.line_to(10.0, 10.0);
+        b.line_to(0.0, 10.0);
+        b.close();
+        let square = b.build();
+
+        let effect = DashEffect::new(vec![5.0, 5.0], 0.0).unwrap();
+        let dashed = effect.apply(&square).unwrap();
+        let drawn = PathMeasure::new(&dashed).length();
+        assert!(
+            (drawn - 20.0).abs() < 1.0,
+            "closing edge must be dashed continuously: expected ~20 drawn units, got {}",
+            drawn
+        );
+    }
+
+    #[test]
     fn test_dash_effect_on_curve_produces_dashes_along_curve() {
         // A long quadratic curve with a 10-on/10-off dash.
         // Dash transitions should occur along the curve, not just at endpoints.
@@ -1272,6 +1393,29 @@ mod tests {
     fn test_corner_effect() {
         let corner = CornerEffect::new(5.0).unwrap();
         assert_eq!(corner.radius(), 5.0);
+    }
+
+    #[test]
+    fn test_corner_effect_rounds_closed_contour_joint() {
+        // A closed square with all four corners (including the closing joint
+        // between the last and first segments) must be rounded => 4 quads.
+        let mut b = PathBuilder::new();
+        b.move_to(0.0, 0.0);
+        b.line_to(40.0, 0.0);
+        b.line_to(40.0, 40.0);
+        b.line_to(0.0, 40.0);
+        b.line_to(0.0, 0.0);
+        b.close();
+        let square = b.build();
+
+        let corner = CornerEffect::new(5.0).unwrap();
+        let rounded = corner.apply(&square).unwrap();
+        let quads = rounded
+            .iter()
+            .filter(|e| matches!(e, PathElement::Quad(_, _)))
+            .count();
+        assert_eq!(quads, 4, "all four corners of a closed contour must be rounded");
+        assert!(rounded.is_closed(), "rounded closed contour stays closed");
     }
 
     #[test]

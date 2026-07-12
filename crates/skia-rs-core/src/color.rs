@@ -693,9 +693,23 @@ impl From<Color> for u32 {
     }
 }
 
+/// Computes `a * b / 255` with rounding, matching Skia's `SkMulDiv255Round`
+/// (`(a*b + 128)` then `(prod + (prod >> 8)) >> 8`).
+///
+/// Both inputs must be in `0..=255`. This is the single canonical
+/// implementation of the rounded byte-domain multiply-divide used across
+/// the workspace for premultiply/blend math.
+#[inline]
+#[must_use]
+pub fn mul_div_255_round(a: u32, b: u32) -> u8 {
+    let prod = a * b + 128;
+    ((prod + (prod >> 8)) >> 8) as u8
+}
+
 /// Premultiply a color (multiply RGB by alpha).
 ///
-/// Returns a color where R, G, B are scaled by alpha/255.
+/// Returns a color where R, G, B are scaled by alpha/255, using Skia's rounded
+/// `SkMulDiv255Round` (round to nearest), not truncation.
 #[inline]
 pub fn premultiply_color(color: Color) -> Color {
     let a = color.alpha() as u32;
@@ -706,9 +720,9 @@ pub fn premultiply_color(color: Color) -> Color {
         return Color::TRANSPARENT;
     }
 
-    let r = (color.red() as u32 * a / 255) as u8;
-    let g = (color.green() as u32 * a / 255) as u8;
-    let b = (color.blue() as u32 * a / 255) as u8;
+    let r = mul_div_255_round(color.red() as u32, a);
+    let g = mul_div_255_round(color.green() as u32, a);
+    let b = mul_div_255_round(color.blue() as u32, a);
 
     Color::from_argb(color.alpha(), r, g, b)
 }
@@ -1061,19 +1075,23 @@ impl ColorType {
                 | Self::Gray8
                 | Self::R8Unorm
                 | Self::R8Unorm2
+                | Self::R16G16Unorm
+                | Self::R16G16Float
         )
     }
 
-    /// Returns the native 32-bit RGBA format for the current platform.
+    /// Returns the native 32-bit color format for the current platform,
+    /// matching Skia's `kN32_SkColorType`.
+    ///
+    /// Skia selects N32 by build configuration (`SK_R32_SHIFT`), not target
+    /// endianness: RGBA on every platform except Windows, which uses BGRA.
     #[inline]
     pub const fn n32() -> Self {
-        // On little-endian (most platforms), BGRA is native.
-        // This matches how Skia determines kN32_SkColorType.
-        #[cfg(target_endian = "little")]
+        #[cfg(target_os = "windows")]
         {
             Self::Bgra8888
         }
-        #[cfg(target_endian = "big")]
+        #[cfg(not(target_os = "windows"))]
         {
             Self::Rgba8888
         }
@@ -2530,5 +2548,45 @@ mod tests {
         // rec2020 and prophoto-rgb not supported
         assert!(Color::from_css("color(rec2020 1 0 0)").is_none());
         assert!(Color::from_css("color(prophoto-rgb 1 0 0)").is_none());
+    }
+
+    // --- Conformance regression tests (Task 1) ---
+
+    #[test]
+    fn test_premultiply_rounds() {
+        // r=3, a=128 must round to 2 (SkMulDiv255Round), not truncate to 1.
+        let c = Color::from_argb(128, 3, 3, 3);
+        let premul = premultiply_color(c);
+        assert_eq!(premul.red(), 2);
+        assert_eq!(premul.green(), 2);
+        assert_eq!(premul.blue(), 2);
+        assert_eq!(premul.alpha(), 128);
+    }
+
+    #[test]
+    fn test_mul_div_255_round_matches_skia() {
+        // (a*b + 128) then (prod + (prod>>8)) >> 8.
+        assert_eq!(mul_div_255_round(255, 255), 255);
+        assert_eq!(mul_div_255_round(0, 128), 0);
+        assert_eq!(mul_div_255_round(3, 128), 2);
+        assert_eq!(mul_div_255_round(128, 128), 64);
+    }
+
+    #[test]
+    fn test_has_alpha_rg_formats_are_opaque() {
+        // R16G16 formats are alpha-less RG formats (SkImageInfoPriv.h).
+        assert!(!ColorType::R16G16Unorm.has_alpha());
+        assert!(!ColorType::R16G16Float.has_alpha());
+        // Sanity: an RGBA format still has alpha.
+        assert!(ColorType::Rgba8888.has_alpha());
+    }
+
+    #[test]
+    fn test_n32_platform_selection() {
+        // Skia selects N32 by build config: RGBA everywhere except Windows.
+        #[cfg(target_os = "windows")]
+        assert_eq!(ColorType::n32(), ColorType::Bgra8888);
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(ColorType::n32(), ColorType::Rgba8888);
     }
 }

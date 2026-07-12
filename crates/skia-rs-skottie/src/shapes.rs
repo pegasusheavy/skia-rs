@@ -109,8 +109,7 @@ impl ShapeGroup {
 
         for item in &model.items {
             if item.shape_type == "tr" {
-                // Transform item - shape transforms use a simplified structure
-                group.transform = Some(Transform::default());
+                group.transform = Some(Transform::from_shape_lottie(item));
             } else if let Some(shape) = Shape::from_lottie(item) {
                 group.shapes.push(shape);
             }
@@ -191,7 +190,11 @@ impl RectangleShape {
                 .as_ref()
                 .map(AnimatedProperty::from_lottie)
                 .unwrap_or_default(),
-            direction: model.direction.unwrap_or(1),
+            direction: model
+                .direction
+                .as_ref()
+                .and_then(|d| d.as_direction())
+                .unwrap_or(1),
         }
     }
 
@@ -215,29 +218,77 @@ impl RectangleShape {
         let top = pos[1] - half_h;
 
         let mut builder = PathBuilder::new();
+        let right = left + size[0];
+        let bottom = top + size[1];
+        // "d": 3 => CCW, everything else (default 1) => CW, matching
+        // upstream `RectangleGeometryAdapter` (Rectangle.cpp).
+        let ccw = self.direction == 3;
 
         if roundness > 0.0 {
             let r = roundness.min(half_w).min(half_h);
+            // Circular-arc corners via cubic beziers (matches SkRRect's
+            // approximation), not the coarser quadratic approximation.
+            const KAPPA: Scalar = 0.552_284_8;
+            let k = r * KAPPA;
 
-            builder.move_to(left + r, top);
-            builder.line_to(left + size[0] - r, top);
-            builder.quad_to(left + size[0], top, left + size[0], top + r);
-            builder.line_to(left + size[0], top + size[1] - r);
-            builder.quad_to(
-                left + size[0],
-                top + size[1],
-                left + size[0] - r,
-                top + size[1],
-            );
-            builder.line_to(left + r, top + size[1]);
-            builder.quad_to(left, top + size[1], left, top + size[1] - r);
-            builder.line_to(left, top + r);
-            builder.quad_to(left, top, left + r, top);
+            if !ccw {
+                builder.move_to(left + r, top);
+                builder.line_to(right - r, top);
+                builder.cubic_to(right - r + k, top, right, top + r - k, right, top + r);
+                builder.line_to(right, bottom - r);
+                builder.cubic_to(
+                    right,
+                    bottom - r + k,
+                    right - r + k,
+                    bottom,
+                    right - r,
+                    bottom,
+                );
+                builder.line_to(left + r, bottom);
+                builder.cubic_to(
+                    left + r - k,
+                    bottom,
+                    left,
+                    bottom - r + k,
+                    left,
+                    bottom - r,
+                );
+                builder.line_to(left, top + r);
+                builder.cubic_to(left, top + r - k, left + r - k, top, left + r, top);
+            } else {
+                builder.move_to(left + r, top);
+                builder.cubic_to(left + r - k, top, left, top + r - k, left, top + r);
+                builder.line_to(left, bottom - r);
+                builder.cubic_to(
+                    left,
+                    bottom - r + k,
+                    left + r - k,
+                    bottom,
+                    left + r,
+                    bottom,
+                );
+                builder.line_to(right - r, bottom);
+                builder.cubic_to(
+                    right - r + k,
+                    bottom,
+                    right,
+                    bottom - r + k,
+                    right,
+                    bottom - r,
+                );
+                builder.line_to(right, top + r);
+                builder.cubic_to(right, top + r - k, right - r + k, top, right - r, top);
+            }
+        } else if !ccw {
+            builder.move_to(left, top);
+            builder.line_to(right, top);
+            builder.line_to(right, bottom);
+            builder.line_to(left, bottom);
         } else {
             builder.move_to(left, top);
-            builder.line_to(left + size[0], top);
-            builder.line_to(left + size[0], top + size[1]);
-            builder.line_to(left, top + size[1]);
+            builder.line_to(left, bottom);
+            builder.line_to(right, bottom);
+            builder.line_to(right, top);
         }
 
         builder.close();
@@ -273,7 +324,11 @@ impl EllipseShape {
                 .as_ref()
                 .map(AnimatedProperty::from_lottie)
                 .unwrap_or_default(),
-            direction: model.direction.unwrap_or(1),
+            direction: model
+                .direction
+                .as_ref()
+                .and_then(|d| d.as_direction())
+                .unwrap_or(1),
         }
     }
 
@@ -333,7 +388,11 @@ impl PathShape {
                 .as_ref()
                 .map(AnimatedProperty::from_lottie)
                 .unwrap_or_default(),
-            direction: model.direction.unwrap_or(1),
+            direction: model
+                .direction
+                .as_ref()
+                .and_then(|d| d.as_direction())
+                .unwrap_or(1),
         }
     }
 
@@ -471,7 +530,11 @@ impl PolystarShape {
                 .as_ref()
                 .map(AnimatedProperty::from_lottie)
                 .unwrap_or_default(),
-            direction: model.direction.unwrap_or(1),
+            direction: model
+                .direction
+                .as_ref()
+                .and_then(|d| d.as_direction())
+                .unwrap_or(1),
         }
     }
 
@@ -558,7 +621,15 @@ impl FillShape {
                 .as_ref()
                 .map(AnimatedProperty::from_lottie)
                 .unwrap_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(100.0))),
-            fill_rule: 1,
+            // "fl" shapes reuse the "r" key (roundness on "rc" shapes) for
+            // fill rule: 1 = non-zero (default), 2 = even-odd.
+            fill_rule: model
+                .roundness
+                .as_ref()
+                .map(|v| AnimatedProperty::from_lottie(v).value_at(0.0))
+                .and_then(|v| v.as_scalar())
+                .map(|v| v.round() as i32)
+                .unwrap_or(1),
         }
     }
 
@@ -571,6 +642,15 @@ impl FillShape {
             .unwrap_or([0.0, 0.0, 0.0, 1.0]);
         let opacity = self.opacity.value_at(frame).as_scalar().unwrap_or(100.0) / 100.0;
         Color4f::new(c[0], c[1], c[2], c[3] * opacity)
+    }
+
+    /// Get the `skia_rs_path::FillType` for this fill's rule.
+    pub fn path_fill_type(&self) -> skia_rs_path::FillType {
+        if self.fill_rule == 2 {
+            skia_rs_path::FillType::EvenOdd
+        } else {
+            skia_rs_path::FillType::Winding
+        }
     }
 }
 
@@ -634,8 +714,36 @@ impl StrokeShape {
             line_cap,
             line_join,
             miter_limit: model.miter_limit.unwrap_or(4.0),
-            dashes: Vec::new(),
-            dash_offset: AnimatedProperty::default(),
+            dashes: Self::parse_dashes(model),
+            dash_offset: Self::parse_dash_offset(model),
+        }
+    }
+
+    /// Parse the dash intervals from the "d" array (excluding the trailing
+    /// offset element), matching upstream `DashAdapter`
+    /// (`FillStroke.cpp`): an arbitrary number of on/off intervals followed
+    /// by a single trailing offset entry.
+    fn parse_dashes(model: &ShapeModel) -> Vec<AnimatedProperty> {
+        let Some(elems) = model.direction.as_ref().and_then(|d| d.as_dashes()) else {
+            return Vec::new();
+        };
+        if elems.len() <= 1 {
+            return Vec::new();
+        }
+        elems[..elems.len() - 1]
+            .iter()
+            .map(|e| AnimatedProperty::from_lottie(&e.value))
+            .collect()
+    }
+
+    /// Parse the trailing dash offset element.
+    fn parse_dash_offset(model: &ShapeModel) -> AnimatedProperty {
+        let Some(elems) = model.direction.as_ref().and_then(|d| d.as_dashes()) else {
+            return AnimatedProperty::default();
+        };
+        match elems.last() {
+            Some(last) if elems.len() > 1 => AnimatedProperty::from_lottie(&last.value),
+            _ => AnimatedProperty::default(),
         }
     }
 
@@ -653,6 +761,24 @@ impl StrokeShape {
     /// Get the stroke width at a specific frame.
     pub fn width_at(&self, frame: Scalar) -> Scalar {
         self.width.value_at(frame).as_scalar().unwrap_or(1.0)
+    }
+
+    /// Get the resolved dash intervals (on/off pairs) at a frame, if dashed.
+    pub fn dash_intervals_at(&self, frame: Scalar) -> Option<Vec<Scalar>> {
+        if self.dashes.is_empty() {
+            return None;
+        }
+        Some(
+            self.dashes
+                .iter()
+                .map(|d| d.value_at(frame).as_scalar().unwrap_or(0.0))
+                .collect(),
+        )
+    }
+
+    /// Get the dash phase/offset at a frame.
+    pub fn dash_offset_at(&self, frame: Scalar) -> Scalar {
+        self.dash_offset.value_at(frame).as_scalar().unwrap_or(0.0)
     }
 }
 
@@ -673,6 +799,10 @@ pub struct GradientFillShape {
     pub color_count: i32,
     /// Opacity (0-100).
     pub opacity: AnimatedProperty,
+    /// Radial gradient highlight length (-100..100, percent of start->end).
+    pub highlight_length: AnimatedProperty,
+    /// Radial gradient highlight angle (degrees).
+    pub highlight_angle: AnimatedProperty,
 }
 
 impl GradientFillShape {
@@ -706,7 +836,24 @@ impl GradientFillShape {
                 .as_ref()
                 .map(AnimatedProperty::from_lottie)
                 .unwrap_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(100.0))),
+            highlight_length: model
+                .gradient_highlight_length
+                .as_ref()
+                .map(AnimatedProperty::from_lottie)
+                .unwrap_or_default(),
+            // "a" is reused for group anchor elsewhere; on "gf"/"gs" shapes
+            // it's the radial gradient highlight angle.
+            highlight_angle: model
+                .transform
+                .as_ref()
+                .map(AnimatedProperty::from_lottie)
+                .unwrap_or_default(),
         }
+    }
+
+    /// Resolve the color stops at a frame.
+    pub fn stops_at(&self, frame: Scalar) -> Vec<(Scalar, Color4f)> {
+        resolve_gradient_stops(&self.colors, self.color_count, frame)
     }
 }
 
@@ -733,11 +880,28 @@ pub struct GradientStrokeShape {
     pub line_cap: StrokeCap,
     /// Line join.
     pub line_join: StrokeJoin,
+    /// Radial gradient highlight length (-100..100, percent of start->end).
+    pub highlight_length: AnimatedProperty,
+    /// Radial gradient highlight angle (degrees).
+    pub highlight_angle: AnimatedProperty,
 }
 
 impl GradientStrokeShape {
     /// Parse from Lottie model.
     pub fn from_lottie(model: &ShapeModel) -> Self {
+        let line_cap = match model.line_cap.unwrap_or(2) {
+            1 => StrokeCap::Butt,
+            2 => StrokeCap::Round,
+            3 => StrokeCap::Square,
+            _ => StrokeCap::Round,
+        };
+        let line_join = match model.line_join.unwrap_or(2) {
+            1 => StrokeJoin::Miter,
+            2 => StrokeJoin::Round,
+            3 => StrokeJoin::Bevel,
+            _ => StrokeJoin::Round,
+        };
+
         Self {
             name: model.name.clone(),
             gradient_type: model.gradient_type.unwrap_or(1),
@@ -771,10 +935,128 @@ impl GradientStrokeShape {
                 .as_ref()
                 .map(AnimatedProperty::from_lottie)
                 .unwrap_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(1.0))),
-            line_cap: StrokeCap::Round,
-            line_join: StrokeJoin::Round,
+            line_cap,
+            line_join,
+            highlight_length: model
+                .gradient_highlight_length
+                .as_ref()
+                .map(AnimatedProperty::from_lottie)
+                .unwrap_or_default(),
+            highlight_angle: model
+                .transform
+                .as_ref()
+                .map(AnimatedProperty::from_lottie)
+                .unwrap_or_default(),
         }
     }
+
+    /// Resolve the color stops at a frame.
+    pub fn stops_at(&self, frame: Scalar) -> Vec<(Scalar, Color4f)> {
+        resolve_gradient_stops(&self.colors, self.color_count, frame)
+    }
+}
+
+/// Resolve a Lottie gradient's consolidated stop table into `(t, color)`
+/// pairs. The raw table holds `color_count` color records (`t,r,g,b`)
+/// followed by an implicit number of opacity records (`t,a`); this merges
+/// the two channel streams by position, matching (approximately) upstream
+/// `GradientAdapter::onSync` (`Gradient.cpp`).
+fn resolve_gradient_stops(
+    colors: &AnimatedProperty,
+    color_count: i32,
+    frame: Scalar,
+) -> Vec<(Scalar, Color4f)> {
+    let value = colors.value_at(frame);
+    let raw: Vec<Scalar> = value
+        .as_float_array()
+        .map(|v| v.to_vec())
+        .or_else(|| value.as_color().map(|c| c.to_vec()))
+        .unwrap_or_default();
+
+    let c_count = color_count.max(0) as usize;
+    let c_size = (c_count * 4).min(raw.len());
+    let color_stops: Vec<(Scalar, [Scalar; 3])> = (0..c_count)
+        .filter(|i| i * 4 + 3 < c_size)
+        .map(|i| {
+            let base = i * 4;
+            (raw[base], [raw[base + 1], raw[base + 2], raw[base + 3]])
+        })
+        .collect();
+
+    let opacity_raw = &raw[c_size..];
+    let o_count = opacity_raw.len() / 2;
+    let opacity_stops: Vec<(Scalar, Scalar)> =
+        (0..o_count).map(|i| (opacity_raw[i * 2], opacity_raw[i * 2 + 1])).collect();
+
+    if color_stops.is_empty() && opacity_stops.is_empty() {
+        return Vec::new();
+    }
+
+    let sample_color = |t: Scalar| -> [Scalar; 3] {
+        if color_stops.is_empty() {
+            return [0.0, 0.0, 0.0];
+        }
+        if t <= color_stops[0].0 {
+            return color_stops[0].1;
+        }
+        for w in color_stops.windows(2) {
+            if t <= w[1].0 {
+                let f = if w[1].0 > w[0].0 {
+                    (t - w[0].0) / (w[1].0 - w[0].0)
+                } else {
+                    0.0
+                };
+                return [
+                    w[0].1[0] + (w[1].1[0] - w[0].1[0]) * f,
+                    w[0].1[1] + (w[1].1[1] - w[0].1[1]) * f,
+                    w[0].1[2] + (w[1].1[2] - w[0].1[2]) * f,
+                ];
+            }
+        }
+        color_stops.last().unwrap().1
+    };
+    let sample_opacity = |t: Scalar| -> Scalar {
+        if opacity_stops.is_empty() {
+            return 1.0;
+        }
+        if t <= opacity_stops[0].0 {
+            return opacity_stops[0].1;
+        }
+        for w in opacity_stops.windows(2) {
+            if t <= w[1].0 {
+                let f = if w[1].0 > w[0].0 {
+                    (t - w[0].0) / (w[1].0 - w[0].0)
+                } else {
+                    0.0
+                };
+                return w[0].1 + (w[1].1 - w[0].1) * f;
+            }
+        }
+        opacity_stops.last().unwrap().1
+    };
+
+    let mut positions: Vec<Scalar> = color_stops
+        .iter()
+        .map(|s| s.0)
+        .chain(opacity_stops.iter().map(|s| s.0))
+        .collect();
+    // `total_cmp` (rather than `partial_cmp().unwrap()`) tolerates a NaN
+    // offset reachable via degenerate keyframe interpolation instead of
+    // panicking.
+    positions.sort_by(f32::total_cmp);
+    positions.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+    if positions.is_empty() {
+        positions = vec![0.0, 1.0];
+    }
+
+    positions
+        .into_iter()
+        .map(|t| {
+            let c = sample_color(t);
+            let a = sample_opacity(t);
+            (t, Color4f::new(c[0], c[1], c[2], a))
+        })
+        .collect()
 }
 
 /// Trim paths shape.
@@ -794,11 +1076,16 @@ pub struct TrimPathShape {
 
 impl TrimPathShape {
     /// Parse from Lottie model.
+    ///
+    /// "tm" shapes reuse the generic `ShapeModel` fields: `size` ("s") is
+    /// trim start, the dedicated `trim_end` ("e") field is trim end, and
+    /// `opacity` ("o") is the offset (degrees) — matching how the shared
+    /// struct is overloaded by shape type across this module.
     pub fn from_lottie(model: &ShapeModel) -> Self {
         Self {
             name: model.name.clone(),
             start: model
-                .trim_start
+                .size
                 .as_ref()
                 .map(AnimatedProperty::from_lottie)
                 .unwrap_or_default(),
@@ -808,7 +1095,7 @@ impl TrimPathShape {
                 .map(AnimatedProperty::from_lottie)
                 .unwrap_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(100.0))),
             offset: model
-                .trim_offset
+                .opacity
                 .as_ref()
                 .map(AnimatedProperty::from_lottie)
                 .unwrap_or_default(),
@@ -816,13 +1103,33 @@ impl TrimPathShape {
         }
     }
 
-    /// Get trim values at a specific frame.
-    pub fn values_at(&self, frame: Scalar) -> (Scalar, Scalar, Scalar) {
+    /// Get the resolved `(start, end, inverted)` trim interval at a frame,
+    /// both in `0..=1`, matching upstream `TrimEffectAdapter::onSync`
+    /// (`modules/skottie/src/layers/shapelayer/TrimPaths.cpp`).
+    pub fn resolved_at(&self, frame: Scalar) -> (Scalar, Scalar, bool) {
         let start = self.start.value_at(frame).as_scalar().unwrap_or(0.0) / 100.0;
         let end = self.end.value_at(frame).as_scalar().unwrap_or(100.0) / 100.0;
         let offset = self.offset.value_at(frame).as_scalar().unwrap_or(0.0) / 360.0;
-        (start, end, offset)
+
+        let mut start_t = start.min(end) + offset;
+        let mut stop_t = start.max(end) + offset;
+        let mut inverted = false;
+
+        if stop_t - start_t < 1.0 {
+            start_t -= start_t.floor();
+            stop_t -= stop_t.floor();
+            if start_t > stop_t {
+                std::mem::swap(&mut start_t, &mut stop_t);
+                inverted = true;
+            }
+        } else {
+            start_t = 0.0;
+            stop_t = 1.0;
+        }
+
+        (start_t, stop_t, inverted)
     }
+
 }
 
 /// Merge paths shape.
@@ -904,10 +1211,9 @@ pub struct ShapeTransform {
 impl ShapeTransform {
     /// Parse from Lottie model.
     pub fn from_lottie(model: &ShapeModel) -> Self {
-        // Shape transforms store data differently than layer transforms
         Self {
             name: model.name.clone(),
-            transform: Transform::default(),
+            transform: Transform::from_shape_lottie(model),
         }
     }
 }
@@ -915,6 +1221,25 @@ impl ShapeTransform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_resolve_gradient_stops_with_nan_offset_does_not_panic() {
+        // A degenerate stop table with a NaN offset (reachable via
+        // degenerate keyframe interpolation) must not panic when the
+        // consolidated position list is sorted.
+        let colors = AnimatedProperty::static_value(KeyframeValue::FloatArray(vec![
+            f32::NAN,
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+        ]));
+        let stops = resolve_gradient_stops(&colors, 2, 0.0);
+        assert_eq!(stops.len(), 2);
+    }
 
     #[test]
     fn test_rectangle_path() {
@@ -957,5 +1282,75 @@ mod tests {
         assert_eq!(color.g, 0.0);
         assert_eq!(color.b, 0.0);
         assert_eq!(color.a, 0.5); // 50% opacity
+    }
+
+    #[test]
+    fn test_fill_rule_even_odd_parses_from_r_field() {
+        let json = r#"{"ty":"fl","r":2,"c":{"a":0,"k":[1,0,0,1]},"o":{"a":0,"k":100}}"#;
+        let model: ShapeModel = serde_json::from_str(json).unwrap();
+        let fill = FillShape::from_lottie(&model);
+        assert_eq!(fill.fill_rule, 2);
+        assert_eq!(fill.path_fill_type(), skia_rs_path::FillType::EvenOdd);
+    }
+
+    #[test]
+    fn test_stroke_dash_array_parses_intervals_and_offset() {
+        // "d": [dash, gap, offset] - two intervals + trailing offset.
+        let json = r#"{"ty":"st","c":{"a":0,"k":[0,0,0,1]},"w":{"a":0,"k":2},
+            "d":[
+                {"n":"d","nm":"dash","v":{"a":0,"k":10}},
+                {"n":"g","nm":"gap","v":{"a":0,"k":5}},
+                {"n":"o","nm":"offset","v":{"a":0,"k":3}}
+            ]}"#;
+        let model: ShapeModel = serde_json::from_str(json).unwrap();
+        let stroke = StrokeShape::from_lottie(&model);
+
+        let intervals = stroke.dash_intervals_at(0.0).unwrap();
+        assert_eq!(intervals, vec![10.0, 5.0]);
+        assert_eq!(stroke.dash_offset_at(0.0), 3.0);
+    }
+
+    #[test]
+    fn test_rectangle_direction_field_not_confused_with_dash() {
+        // "d": 3 on a rectangle is a direction, not a dash array.
+        let json = r#"{"ty":"rc","p":{"a":0,"k":[0,0]},"s":{"a":0,"k":[10,10]},"d":3}"#;
+        let model: ShapeModel = serde_json::from_str(json).unwrap();
+        let rect = RectangleShape::from_lottie(&model);
+        assert_eq!(rect.direction, 3);
+    }
+
+    #[test]
+    fn test_gradient_stops_resolve_color_and_opacity() {
+        // 2 color stops (t,r,g,b) + 1 opacity stop (t,a): red@0, blue@1, alpha 0.5@0.
+        let raw = vec![0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.5];
+        let colors = AnimatedProperty::static_value(KeyframeValue::FloatArray(raw));
+        let stops = resolve_gradient_stops(&colors, 2, 0.0);
+
+        assert!(stops.len() >= 2);
+        assert_eq!(stops[0].0, 0.0);
+        assert_eq!(stops[0].1.r, 1.0);
+        assert_eq!(stops[0].1.a, 0.5);
+        assert_eq!(stops.last().unwrap().1.b, 1.0);
+    }
+
+    #[test]
+    fn test_rounded_rect_uses_cubic_arcs() {
+        let rect = RectangleShape {
+            name: "test".to_string(),
+            position: AnimatedProperty::static_value(KeyframeValue::Vec2([50.0, 50.0])),
+            size: AnimatedProperty::static_value(KeyframeValue::Vec2([100.0, 80.0])),
+            roundness: AnimatedProperty::static_value(KeyframeValue::Scalar(10.0)),
+            direction: 1,
+        };
+        let path = rect.to_path(0.0).unwrap();
+        // Corners should be built from cubic curves, not quads.
+        let has_cubic = path
+            .iter()
+            .any(|e| matches!(e, skia_rs_path::PathElement::Cubic(..)));
+        let has_quad = path
+            .iter()
+            .any(|e| matches!(e, skia_rs_path::PathElement::Quad(..)));
+        assert!(has_cubic);
+        assert!(!has_quad);
     }
 }

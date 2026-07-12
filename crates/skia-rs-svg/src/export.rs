@@ -488,27 +488,32 @@ fn export_common_attrs(output: &mut String, node: &SvgNode, options: &SvgExportO
         export_transform_attr(output, &node.transform, options);
     }
 
-    // Fill
+    // Fill. `None` means the property is unspecified (inherited), so emit
+    // nothing; an explicit `SvgPaint::None` serializes as `fill="none"`.
     if let Some(ref fill) = node.fill {
         let fill_str = format_paint(fill);
         if fill_str != "black" || options.include_defaults {
             write!(output, " fill=\"{}\"", fill_str).unwrap();
         }
-    } else {
-        output.push_str(" fill=\"none\"");
     }
 
     // Stroke
     if let Some(ref stroke) = node.stroke {
         write!(output, " stroke=\"{}\"", format_paint(stroke)).unwrap();
 
-        if node.stroke_width != 1.0 || options.include_defaults {
-            write!(
-                output,
-                " stroke-width=\"{}\"",
-                format_scalar(node.stroke_width, options.precision)
-            )
-            .unwrap();
+        match node.stroke_width {
+            Some(sw) if sw != 1.0 || options.include_defaults => {
+                write!(
+                    output,
+                    " stroke-width=\"{}\"",
+                    format_scalar(sw, options.precision)
+                )
+                .unwrap();
+            }
+            None if options.include_defaults => {
+                output.push_str(" stroke-width=\"1\"");
+            }
+            _ => {}
         }
     }
 
@@ -639,9 +644,14 @@ fn export_points_attr(
 }
 
 fn export_path_data(path: &skia_rs_path::Path, options: &SvgExportOptions) -> String {
+    use skia_rs_core::Point;
     use skia_rs_path::PathElement;
 
     let mut data = String::new();
+    // Track the current point so conics can be subdivided from their true
+    // start; also remember the last move for `Z` handling.
+    let mut current = Point::new(0.0, 0.0);
+    let mut subpath_start = Point::new(0.0, 0.0);
 
     for elem in path.iter() {
         match elem {
@@ -653,6 +663,8 @@ fn export_path_data(path: &skia_rs_path::Path, options: &SvgExportOptions) -> St
                     format_scalar(p.y, options.precision)
                 )
                 .unwrap();
+                current = p;
+                subpath_start = p;
             }
             PathElement::Line(p) => {
                 write!(
@@ -662,6 +674,7 @@ fn export_path_data(path: &skia_rs_path::Path, options: &SvgExportOptions) -> St
                     format_scalar(p.y, options.precision)
                 )
                 .unwrap();
+                current = p;
             }
             PathElement::Quad(p1, p2) => {
                 write!(
@@ -673,19 +686,25 @@ fn export_path_data(path: &skia_rs_path::Path, options: &SvgExportOptions) -> St
                     format_scalar(p2.y, options.precision)
                 )
                 .unwrap();
+                current = p2;
             }
-            PathElement::Conic(p1, p2, _w) => {
-                // Conics aren't directly supported in SVG, approximate with quad
-                // For now, output as quad (lossy)
-                write!(
-                    data,
-                    "Q{} {} {} {}",
-                    format_scalar(p1.x, options.precision),
-                    format_scalar(p1.y, options.precision),
-                    format_scalar(p2.x, options.precision),
-                    format_scalar(p2.y, options.precision)
-                )
-                .unwrap();
+            PathElement::Conic(p1, p2, w) => {
+                // SVG has no conic primitive. Subdivide into a quad spline
+                // via SkConic::chopIntoQuadsPOW2-equivalent math (see
+                // `conic_to_quads`) instead of dropping the weight with a
+                // single naive quad, which distorts the curve.
+                for (ctrl, end) in conic_to_quads(current, p1, p2, w) {
+                    write!(
+                        data,
+                        "Q{} {} {} {}",
+                        format_scalar(ctrl.x, options.precision),
+                        format_scalar(ctrl.y, options.precision),
+                        format_scalar(end.x, options.precision),
+                        format_scalar(end.y, options.precision)
+                    )
+                    .unwrap();
+                }
+                current = p2;
             }
             PathElement::Cubic(p1, p2, p3) => {
                 write!(
@@ -699,14 +718,84 @@ fn export_path_data(path: &skia_rs_path::Path, options: &SvgExportOptions) -> St
                     format_scalar(p3.y, options.precision)
                 )
                 .unwrap();
+                current = p3;
             }
             PathElement::Close => {
                 data.push('Z');
+                current = subpath_start;
             }
         }
     }
 
     data
+}
+
+/// Subdivide a single conic (rational quadratic) into a spline of ordinary
+/// quads, returning each quad's `(control, end)` pair. Port of
+/// `SkConic::computeQuadPOW2` + `chopIntoQuadsPOW2` (SkGeometry.cpp) at a
+/// fixed tolerance of 0.25, matching Skia's default conic→quad conversion.
+fn conic_to_quads(
+    start: skia_rs_core::Point,
+    ctrl: skia_rs_core::Point,
+    end: skia_rs_core::Point,
+    w: f32,
+) -> Vec<(skia_rs_core::Point, skia_rs_core::Point)> {
+    use skia_rs_core::Point;
+
+    // Degenerate/invalid weight: a single quad through the control point.
+    if !w.is_finite() || w <= 0.0 {
+        return vec![(ctrl, end)];
+    }
+
+    // computeQuadPOW2 with tol = 0.25.
+    const TOL: f32 = 0.25;
+    const MAX_POW2: i32 = 5;
+    let a = w - 1.0;
+    let k = a / (4.0 * (2.0 + a));
+    let ex = k * (start.x - 2.0 * ctrl.x + end.x);
+    let ey = k * (start.y - 2.0 * ctrl.y + end.y);
+    let mut error = (ex * ex + ey * ey).sqrt();
+    let mut pow2 = 0;
+    while pow2 < MAX_POW2 {
+        if error <= TOL {
+            break;
+        }
+        error *= 0.25;
+        pow2 += 1;
+    }
+
+    // Recursive chop to 2^pow2 quads, emitting (ctrl, end) for each.
+    fn subdivide(
+        p0: skia_rs_core::Point,
+        p1: skia_rs_core::Point,
+        p2: skia_rs_core::Point,
+        w: f32,
+        level: i32,
+        out: &mut Vec<(skia_rs_core::Point, skia_rs_core::Point)>,
+    ) {
+        if level == 0 {
+            out.push((p1, p2));
+            return;
+        }
+        // SkConic::chop: split at the parametric midpoint.
+        let scale = 1.0 / (1.0 + w);
+        let t0 = Point::new(p0.x * scale, p0.y * scale);
+        let t1 = Point::new(p1.x * (w * scale), p1.y * (w * scale));
+        let t2 = Point::new(p2.x * scale, p2.y * scale);
+        let cp1 = Point::new(t0.x + t1.x, t0.y + t1.y);
+        let cp3 = Point::new(t1.x + t2.x, t1.y + t2.y);
+        let cp2 = Point::new(
+            0.5 * t0.x + t1.x + 0.5 * t2.x,
+            0.5 * t0.y + t1.y + 0.5 * t2.y,
+        );
+        let new_w = (0.5 + w * 0.5).sqrt();
+        subdivide(p0, cp1, cp2, new_w, level - 1, out);
+        subdivide(cp2, cp3, p2, new_w, level - 1, out);
+    }
+
+    let mut out = Vec::with_capacity(1 << pow2);
+    subdivide(start, ctrl, end, w, pow2, &mut out);
+    out
 }
 
 fn export_gradient_attrs(output: &mut String, spread: &SpreadMethod, units: &GradientUnits) {
@@ -760,7 +849,11 @@ fn export_gradient_stop(
 fn format_paint(paint: &SvgPaint) -> String {
     match paint {
         SvgPaint::Color(color) => format_color(color),
-        SvgPaint::Url(url) => format!("url({})", url),
+        SvgPaint::CurrentColor => "currentColor".to_string(),
+        SvgPaint::Url(url, fallback) => match fallback {
+            Some(color) => format!("url({}) {}", url, format_color(color)),
+            None => format!("url({})", url),
+        },
         SvgPaint::None => "none".to_string(),
     }
 }
@@ -829,6 +922,58 @@ mod tests {
         let svg = export_svg(&dom);
         assert!(svg.contains("<rect"));
         assert!(svg.contains("fill=\"#ff0000\""));
+    }
+
+    #[test]
+    fn test_conic_to_quads_subdivides_high_weight() {
+        use skia_rs_core::Point;
+        // A high-weight conic exceeds the single-quad error tolerance, so
+        // computeQuadPOW2 subdivides it into a power-of-two quad spline. A
+        // naive single-quad export would instead drop the weight entirely.
+        let start = Point::new(0.0, 0.0);
+        let ctrl = Point::new(1.0, 2.0);
+        let end = Point::new(2.0, 0.0);
+        let quads = conic_to_quads(start, ctrl, end, 8.0);
+        assert!(
+            quads.len() >= 2,
+            "high-weight conic subdivided, got {} quad(s)",
+            quads.len()
+        );
+        // The spline is a power-of-two count and preserves the endpoints.
+        assert!(quads.len().is_power_of_two());
+        let last_end = quads.last().unwrap().1;
+        assert!((last_end.x - end.x).abs() < 1e-4 && (last_end.y - end.y).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_conic_to_quads_low_weight_single_quad() {
+        use skia_rs_core::Point;
+        // A near-quadratic conic (weight ~ 1) is within tolerance and
+        // collapses to a single quad through the control point — matching
+        // SkConic::computeQuadPOW2 returning pow2 = 0.
+        let quads = conic_to_quads(
+            Point::new(0.0, 0.0),
+            Point::new(1.0, 1.0),
+            Point::new(2.0, 0.0),
+            1.0,
+        );
+        assert_eq!(quads.len(), 1);
+        assert_eq!(quads[0].0, Point::new(1.0, 1.0));
+        assert_eq!(quads[0].1, Point::new(2.0, 0.0));
+    }
+
+    #[test]
+    fn test_export_conic_emits_quad_spline() {
+        use skia_rs_path::PathBuilder;
+        // Build a path with a conic and export it; the data must contain a
+        // Q command (subdivided), not silently drop the curve.
+        let mut b = PathBuilder::new();
+        b.move_to(1.0, 0.0);
+        b.conic_to(1.0, 1.0, 0.0, 1.0, std::f32::consts::FRAC_1_SQRT_2);
+        let path = b.build();
+        let data = export_path_data(&path, &SvgExportOptions::default());
+        assert!(data.starts_with('M'));
+        assert!(data.contains('Q'), "conic exported as quad(s): {}", data);
     }
 
     #[test]

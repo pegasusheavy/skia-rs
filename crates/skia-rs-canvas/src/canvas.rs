@@ -98,13 +98,11 @@ impl std::fmt::Debug for Backing<'_> {
 struct Layer {
     /// Offscreen pixel buffer holding this layer's contents.
     buffer: PixelBuffer,
-    /// Bounds in the enclosing canvas coordinate space, or `None` if the
-    /// layer covers the whole canvas.
-    ///
-    /// `bounds.left, bounds.top` is the offset at which the layer's local
-    /// origin sits inside its parent. Layer-local coordinates are
-    /// canvas coordinates minus this offset.
-    bounds: Option<Rect>,
+    /// Rounded **device-space** origin of the buffer: buffer pixel (0, 0)
+    /// sits at this device pixel. The same origin is used while drawing
+    /// into the layer and when compositing it back, so draw and composite
+    /// share one convention.
+    device_origin: (i32, i32),
     /// Paint controlling how the layer composites back onto the parent.
     /// `None` means use a default [`Paint`] (opaque [`BlendMode::SrcOver`]).
     paint: Option<Paint>,
@@ -233,6 +231,11 @@ impl<'a> Canvas<'a> {
     }
 
     /// Save the current state.
+    ///
+    /// Returns the save count **before** this save (`SkCanvas::save` returns
+    /// `getSaveCount() - 1`; a fresh canvas has save count 1). Pass the
+    /// returned value to [`restore_to_count`](Self::restore_to_count) to undo
+    /// this save.
     pub fn save(&mut self) -> usize {
         let matrix = *self.matrix_stack.last().unwrap();
         self.matrix_stack.push(matrix);
@@ -241,7 +244,7 @@ impl<'a> Canvas<'a> {
         if let Backing::Recording(commands) = &mut self.backing {
             commands.push(DrawCommand::Save);
         }
-        self.save_count
+        self.save_count - 1
     }
 
     /// Save the current state with a layer.
@@ -278,24 +281,43 @@ impl<'a> Canvas<'a> {
         // Only raster backings allocate an offscreen layer — Recording and
         // Null have no pixels to composite.
         if matches!(self.backing, Backing::Raster(_)) {
-            let (w, h) = match bounds {
-                Some(b) => (b.width().ceil() as i32, b.height().ceil() as i32),
-                None => (self.width, self.height),
+            // `rec.bounds` is a CONTENT HINT in **local** space
+            // (SkCanvas::saveLayer): map it through the CTM to device space,
+            // intersect with the current clip and the device bounds, round,
+            // and size the layer buffer from that. No bounds -> the clip.
+            let ctm = *self.matrix_stack.last().unwrap();
+            let device_full =
+                Rect::from_xywh(0.0, 0.0, self.width as Scalar, self.height as Scalar);
+            let clip_bounds = self.clip_stack.bounds();
+            let hinted = match bounds {
+                Some(b) => ctm.map_rect(&b).intersect(&clip_bounds),
+                None => Some(clip_bounds),
             };
-            let buffer = PixelBuffer::new(w.max(1), h.max(1));
+            let device_rect = hinted
+                .and_then(|r| r.intersect(&device_full))
+                .map(|r| r.round())
+                .unwrap_or(IRect::new(0, 0, 0, 0));
+
+            let (w, h) = (
+                device_rect.width().max(0),
+                device_rect.height().max(0),
+            );
+            let buffer = PixelBuffer::new(w, h);
             // INIT_WITH_PREVIOUS is left unimplemented here — the buffer is
             // left fully transparent. Pre-seeding from the parent is left
             // as a follow-up because it requires reading back and mapping
             // bounds between coordinate spaces.
             self.layer_stack.push(Layer {
                 buffer,
-                bounds,
+                device_origin: (device_rect.left, device_rect.top),
                 paint,
                 save_count_when_pushed: self.save_count,
             });
         }
 
-        self.save_count
+        // Like save(): return the count BEFORE the save
+        // (SkCanvas::saveLayer returns getSaveCount() - 1).
+        self.save_count - 1
     }
 
     /// Restore to the previous state.
@@ -330,30 +352,37 @@ impl<'a> Canvas<'a> {
     }
 
     /// Composite a popped [`Layer`] back onto the enclosing target (the
-    /// next layer below, or the base [`Backing::Raster`] buffer). Uses the
-    /// layer paint's alpha (scaling the source alpha) and blend mode.
+    /// next layer below, or the base [`Backing::Raster`] buffer).
+    ///
+    /// The composite goes **through the current clip** (per-pixel coverage)
+    /// and applies the layer paint's alpha, blend mode, and color filter.
+    /// (An image filter, if present, is not yet applied here.)
     fn composite_layer(&mut self, layer: Layer) {
         let paint = layer.paint.unwrap_or_default();
         let blend_mode = paint.blend_mode();
-        // Layer paint alpha scales the source alpha per-pixel. Stored as
-        // [0.0, 1.0] in Paint — clamp defensively.
+        // Layer paint alpha scales the (premultiplied) source per-pixel.
         let layer_alpha = paint.alpha().clamp(0.0, 1.0);
-        let (offset_x, offset_y) = match layer.bounds {
-            Some(b) => (b.left.floor() as i32, b.top.floor() as i32),
-            None => (0, 0),
-        };
+        let color_filter = paint.color_filter().cloned();
+        let (offset_x, offset_y) = layer.device_origin;
+
+        // The clip stack lives in a disjoint field, so we can query it while
+        // holding the mutable target borrow below.
+        let clip_stack = &self.clip_stack;
 
         // Borrow the target buffer: either the next layer below (parent
         // layer) or the base raster backing. Recording/Null backings have
-        // no pixels to composite into.
-        let target: &mut PixelBuffer = if let Some(parent) = self.layer_stack.last_mut() {
-            &mut parent.buffer
-        } else {
-            match &mut self.backing {
-                Backing::Raster(buf) => *buf,
-                _ => return,
-            }
-        };
+        // no pixels to composite into. Parent layers have their own device
+        // origin to subtract when writing.
+        let (target, (tox, toy)): (&mut PixelBuffer, (i32, i32)) =
+            if let Some(parent) = self.layer_stack.last_mut() {
+                let origin = parent.device_origin;
+                (&mut parent.buffer, origin)
+            } else {
+                match &mut self.backing {
+                    Backing::Raster(buf) => (*buf, (0, 0)),
+                    _ => return,
+                }
+            };
 
         let src_buf = &layer.buffer;
         let src_w = src_buf.width;
@@ -361,37 +390,69 @@ impl<'a> Canvas<'a> {
 
         for y in 0..src_h {
             let dy = offset_y + y;
-            if dy < 0 || dy >= target.height {
-                continue;
-            }
             for x in 0..src_w {
                 let dx = offset_x + x;
-                if dx < 0 || dx >= target.width {
-                    continue;
-                }
                 let src_offset = (y as usize) * src_buf.stride + (x as usize) * 4;
                 let sr = src_buf.pixels[src_offset];
                 let sg = src_buf.pixels[src_offset + 1];
                 let sb = src_buf.pixels[src_offset + 2];
                 let sa_raw = src_buf.pixels[src_offset + 3];
-                if sa_raw == 0 && matches!(
-                    blend_mode,
-                    skia_rs_paint::BlendMode::SrcOver | skia_rs_paint::BlendMode::DstOver
-                ) {
+                if sa_raw == 0
+                    && matches!(
+                        blend_mode,
+                        skia_rs_paint::BlendMode::SrcOver | skia_rs_paint::BlendMode::DstOver
+                    )
+                    && color_filter.is_none()
+                {
                     // Fully transparent pixels contribute nothing under
                     // over-style blends; skip to avoid pointless work.
                     continue;
                 }
-                // Scale source alpha by the layer paint alpha.
-                let scaled_a = ((sa_raw as f32) * layer_alpha).round().clamp(0.0, 255.0) as u8;
-                let src = Color::from_argb(scaled_a, sr, sg, sb);
-                target.blend_pixel(dx, dy, src, blend_mode);
+
+                // Composite through the current clip.
+                let clip_cov = clip_stack.get_coverage(dx, dy);
+                if clip_cov == 0 {
+                    continue;
+                }
+
+                // Layer pixels are PREMULTIPLIED.
+                let mut src = Color::from_argb(sa_raw, sr, sg, sb);
+
+                // Color filters operate on unpremultiplied color.
+                if let Some(cf) = &color_filter {
+                    let unpremul = skia_rs_core::unpremultiply_color(src);
+                    let filtered = cf.filter_color(skia_rs_core::Color4f::from_color(unpremul));
+                    let clamped = skia_rs_core::Color4f::new(
+                        filtered.r.clamp(0.0, 1.0),
+                        filtered.g.clamp(0.0, 1.0),
+                        filtered.b.clamp(0.0, 1.0),
+                        filtered.a.clamp(0.0, 1.0),
+                    );
+                    src = skia_rs_core::premultiply_color(clamped.to_color());
+                }
+
+                // Scale all four premultiplied channels by paint alpha and
+                // the clip coverage.
+                let scale = layer_alpha * (clip_cov as f32 / 255.0);
+                let s = |v: u8| (v as f32 * scale).round().clamp(0.0, 255.0) as u8;
+                let src = Color::from_argb(
+                    s(src.alpha()),
+                    s(src.red()),
+                    s(src.green()),
+                    s(src.blue()),
+                );
+                target.blend_pixel(dx - tox, dy - toy, src, blend_mode);
             }
         }
     }
 
     /// Restore to a specific save count.
+    ///
+    /// Like `SkCanvas::restoreToCount`, `count` is clamped to 1 (the initial
+    /// save count), so passing 0 restores everything instead of looping
+    /// forever.
     pub fn restore_to_count(&mut self, count: usize) {
+        let count = count.max(1);
         while self.save_count > count {
             self.restore();
         }
@@ -465,16 +526,31 @@ impl<'a> Canvas<'a> {
     }
 
     /// Clip to a rectangle.
+    ///
+    /// Under a rotated/skewed CTM the mapped rect is a quad, so the clip is
+    /// applied as a path; `map_rect` (which would clip to the quad's
+    /// bounding box) is only used for axis-aligned CTMs.
     pub fn clip_rect(&mut self, rect: &Rect, op: ClipOp, do_anti_alias: bool) {
-        let transformed = self.total_matrix().map_rect(rect);
+        let matrix = *self.total_matrix();
         let device_bounds = IRect::new(0, 0, self.width, self.height);
 
-        self.clip_stack
-            .clip_rect_with_op(&transformed, op, &device_bounds, do_anti_alias);
+        if matrix.skew_x() == 0.0 && matrix.skew_y() == 0.0 {
+            let transformed = matrix.map_rect(rect);
+            self.clip_stack
+                .clip_rect_with_op(&transformed, op, &device_bounds, do_anti_alias);
+        } else {
+            let mut b = skia_rs_path::PathBuilder::new();
+            b.add_rect(rect);
+            let mut quad = b.build();
+            quad.transform(&matrix);
+            self.clip_stack
+                .clip_path_with_op(&quad, &device_bounds, op, do_anti_alias);
+        }
 
         if let Backing::Recording(commands) = &mut self.backing {
             commands.push(DrawCommand::ClipRect {
                 rect: *rect,
+                op,
                 anti_alias: do_anti_alias,
             });
         }
@@ -494,6 +570,7 @@ impl<'a> Canvas<'a> {
         if let Backing::Recording(commands) = &mut self.backing {
             commands.push(DrawCommand::ClipPath {
                 path: path.clone(),
+                op,
                 anti_alias: do_anti_alias,
             });
         }
@@ -519,22 +596,21 @@ impl<'a> Canvas<'a> {
         let clip_stack = self.clip_stack.clone();
 
         // An active layer takes priority over the base backing. The layer
-        // buffer is sized to the layer's bounds, so we pre-compose a
-        // translation that maps canvas coordinates to layer-local
-        // coordinates (buffer origin sits at bounds.left, bounds.top).
+        // buffer is positioned at its device origin, so we pre-compose a
+        // translation mapping device coordinates to buffer coordinates and
+        // tell the rasterizer the origin so device-space clip queries and
+        // device-rect fills stay aligned.
         if let Some(layer) = self.layer_stack.last_mut() {
-            let (ox, oy) = match layer.bounds {
-                Some(b) => (b.left, b.top),
-                None => (0.0, 0.0),
-            };
-            let adjusted = if ox == 0.0 && oy == 0.0 {
+            let (ox, oy) = layer.device_origin;
+            let adjusted = if (ox, oy) == (0, 0) {
                 matrix
             } else {
-                Matrix::translate(-ox, -oy).concat(&matrix)
+                Matrix::translate(-(ox as Scalar), -(oy as Scalar)).concat(&matrix)
             };
             let mut raster = Rasterizer::new(&mut layer.buffer);
             raster.set_matrix(&adjusted);
             raster.set_clip_stack(clip_stack);
+            raster.set_origin(ox, oy);
             return Some(f(&mut raster));
         }
 
@@ -552,40 +628,82 @@ impl<'a> Canvas<'a> {
     // Draw methods
     // =========================================================================
 
-    /// Clear the canvas with a color.
-    ///
-    /// If a layer is active (pushed by [`save_layer`](Self::save_layer)),
-    /// only the top layer's buffer is cleared; the enclosing buffer is
-    /// untouched. This matches Skia semantics: clear affects the current
-    /// drawing target, not the root surface.
-    pub fn clear(&mut self, color: Color) {
-        if let Some(layer) = self.layer_stack.last_mut() {
-            layer.buffer.clear(color);
+    /// Fill the current **device clip** with `paint`, regardless of the CTM
+    /// (`SkDraw::drawPaint`). Shaders still sample through the CTM. Pixels
+    /// outside the clip (including complex/AA clips) are untouched via the
+    /// blitter's per-pixel clip coverage.
+    fn fill_device_clip(&mut self, paint: &Paint) {
+        let clip_rect = self.clip_stack.bounds();
+        if clip_rect.is_empty() {
             return;
         }
+        self.with_rasterizer(|raster| raster.fill_device_rect(&clip_rect, paint));
+    }
+
+    /// Clear the canvas with a color.
+    ///
+    /// `SkCanvas::clear` is `drawColor(color, SkBlendMode::kSrc)`: it only
+    /// affects the **device clip**. If a layer is active (pushed by
+    /// [`save_layer`](Self::save_layer)), the clear goes to the layer.
+    pub fn clear(&mut self, color: Color) {
         match &mut self.backing {
-            Backing::Raster(buffer) => buffer.clear(color),
-            Backing::Recording(commands) => commands.push(DrawCommand::Clear { color }),
+            Backing::Recording(commands) => {
+                commands.push(DrawCommand::Clear { color });
+                return;
+            }
+            Backing::Null => return,
+            Backing::Raster(_) => {}
+        }
+
+        // Fast path: full-device rect clip and no layer — bulk clear.
+        if self.layer_stack.is_empty() {
+            let full = Rect::from_xywh(0.0, 0.0, self.width as Scalar, self.height as Scalar);
+            if let crate::clip::ClipState::Rect(r) = self.clip_stack.current() {
+                if r.left <= full.left
+                    && r.top <= full.top
+                    && r.right >= full.right
+                    && r.bottom >= full.bottom
+                {
+                    if let Backing::Raster(buffer) = &mut self.backing {
+                        buffer.clear(color);
+                        return;
+                    }
+                }
+            }
+        }
+
+        let mut paint = Paint::new();
+        paint.set_color32(color);
+        paint.set_blend_mode(skia_rs_paint::BlendMode::Src);
+        self.fill_device_clip(&paint);
+    }
+
+    /// Draw a color over the device clip, regardless of the CTM.
+    pub fn draw_color(&mut self, color: Color, blend_mode: skia_rs_paint::BlendMode) {
+        match &mut self.backing {
+            Backing::Raster(_) => {
+                let mut paint = Paint::new();
+                paint.set_color32(color);
+                paint.set_blend_mode(blend_mode);
+                self.fill_device_clip(&paint);
+            }
+            Backing::Recording(commands) => {
+                commands.push(DrawCommand::DrawColor { color, blend_mode });
+            }
             Backing::Null => {}
         }
     }
 
-    /// Draw a color.
-    pub fn draw_color(&mut self, color: Color, blend_mode: skia_rs_paint::BlendMode) {
+    /// Fill the device clip with the full paint (shader, blend mode, alpha),
+    /// like `SkCanvas::drawPaint`. The clip is honored per pixel; the CTM
+    /// only affects shader sampling, not the filled geometry.
+    pub fn draw_paint(&mut self, paint: &Paint) {
         match &mut self.backing {
-            Backing::Raster(_) => {
-                let width = self.width;
-                let height = self.height;
-                self.with_rasterizer(|raster| {
-                    let mut paint = Paint::new();
-                    paint.set_color32(color);
-                    paint.set_blend_mode(blend_mode);
-                    let rect = Rect::from_xywh(0.0, 0.0, width as Scalar, height as Scalar);
-                    raster.fill_rect(&rect, &paint);
-                });
-            }
+            Backing::Raster(_) => self.fill_device_clip(paint),
             Backing::Recording(commands) => {
-                commands.push(DrawCommand::DrawColor { color, blend_mode });
+                commands.push(DrawCommand::DrawPaint {
+                    paint: paint.clone(),
+                });
             }
             Backing::Null => {}
         }
@@ -617,8 +735,28 @@ impl<'a> Canvas<'a> {
         }
         match mode {
             PointMode::Points => {
-                for &p in points {
-                    self.draw_point(p, paint);
+                // SkDraw::drawPoints: with a positive stroke width, each
+                // point is a width-sized square (butt/square cap) or circle
+                // (round cap). Width 0 stays a hairline point.
+                let width = paint.stroke_width();
+                if width <= 0.0 {
+                    for &p in points {
+                        self.draw_point(p, paint);
+                    }
+                } else {
+                    let half = width / 2.0;
+                    let mut fill = paint.clone();
+                    fill.set_style(skia_rs_paint::Style::Fill);
+                    if paint.stroke_cap() == skia_rs_paint::StrokeCap::Round {
+                        for &p in points {
+                            self.draw_circle(p, half, &fill);
+                        }
+                    } else {
+                        for &p in points {
+                            let r = Rect::from_xywh(p.x - half, p.y - half, width, width);
+                            self.draw_rect(&r, &fill);
+                        }
+                    }
                 }
             }
             PointMode::Lines => {
@@ -786,14 +924,30 @@ impl<'a> Canvas<'a> {
         &mut self,
         picture: &crate::Picture,
         matrix: Option<&Matrix>,
-        _paint: Option<&Paint>,
+        paint: Option<&Paint>,
     ) {
-        self.save();
+        // SkCanvas::onDrawPicture: a non-null paint wraps the playback in an
+        // implicit saveLayer(bounds=cullRect, paint); otherwise a plain save.
+        let restore_count = if let Some(p) = paint {
+            let bounds = picture.cull_rect();
+            let rec = SaveLayerRec {
+                bounds: if bounds.is_empty() {
+                    None
+                } else {
+                    Some(&bounds)
+                },
+                paint: Some(p),
+                flags: SaveLayerFlags::NONE,
+            };
+            self.save_layer(&rec)
+        } else {
+            self.save()
+        };
         if let Some(m) = matrix {
             self.concat(m);
         }
         picture.playback(self);
-        self.restore();
+        self.restore_to_count(restore_count);
     }
 
     // =========================================================================
@@ -1373,11 +1527,12 @@ impl<'a> Canvas<'a> {
             } => {
                 let (colors, positions) = stops_to_color4f(stops);
                 let tile = extend_to_tile(*extend);
-                let to_deg = |r: f32| r.to_degrees();
+                // `start_angle`/`end_angle` are already in degrees (matching
+                // SkShaders::SweepGradient), so pass them straight through.
                 let g = SweepGradient::new(
                     *center,
-                    to_deg(*start_angle),
-                    to_deg(*end_angle),
+                    *start_angle,
+                    *end_angle,
                     colors,
                     Some(positions),
                     tile,
@@ -1441,9 +1596,18 @@ impl<'a> Canvas<'a> {
         let src_rect = src
             .cloned()
             .unwrap_or_else(|| skia_rs_core::IRect::new(0, 0, image.width(), image.height()));
+        if dst.is_empty() || src_rect.width() <= 0 || src_rect.height() <= 0 {
+            return;
+        }
 
         let matrix = *self.total_matrix();
+        let Some(inverse) = matrix.invert() else {
+            return;
+        };
         let clip = self.clip_bounds();
+        // The mapped dst under rotation is a quad; iterate its device AABB
+        // and test membership by mapping each pixel center back to local
+        // space, so rotation and complex clips both work.
         let transformed_dst = matrix.map_rect(dst);
         let visible_dst = match transformed_dst.intersect(&clip) {
             Some(r) => r,
@@ -1456,23 +1620,26 @@ impl<'a> Canvas<'a> {
         let blend_mode = paint
             .map(|p| p.blend_mode())
             .unwrap_or(skia_rs_paint::BlendMode::SrcOver);
-        let alpha = paint.map(|p| p.alpha()).unwrap_or(1.0);
+        // Paint alpha is applied exactly ONCE (to all four premultiplied
+        // channels).
+        let alpha = paint.map(|p| p.alpha().clamp(0.0, 1.0)).unwrap_or(1.0);
+        let image_is_premul = image.alpha_type() == skia_rs_core::AlphaType::Premul;
 
         let dst_x_start = visible_dst.left.floor() as i32;
         let dst_x_end = visible_dst.right.ceil() as i32;
         let dst_y_start = visible_dst.top.floor() as i32;
         let dst_y_end = visible_dst.bottom.ceil() as i32;
 
+        // The clip stack lives in a disjoint field; query it while holding
+        // the mutable buffer borrow below.
+        let clip_stack = &self.clip_stack;
+
         // Route pixel writes to the top layer buffer if one is active, else
-        // to the base raster backing. Layer buffers are in layer-local
-        // coords (canvas coord minus bounds origin), so apply the same
-        // offset subtraction used in with_rasterizer.
+        // to the base raster backing. Layer buffers sit at their device
+        // origin.
         let (buffer, buf_offset_x, buf_offset_y): (&mut PixelBuffer, i32, i32) =
             if let Some(layer) = self.layer_stack.last_mut() {
-                let (ox, oy) = match layer.bounds {
-                    Some(b) => (b.left.floor() as i32, b.top.floor() as i32),
-                    None => (0, 0),
-                };
+                let (ox, oy) = layer.device_origin;
                 (&mut layer.buffer, ox, oy)
             } else {
                 match &mut self.backing {
@@ -1483,30 +1650,55 @@ impl<'a> Canvas<'a> {
 
         for dst_y in dst_y_start..dst_y_end {
             for dst_x in dst_x_start..dst_x_end {
-                let rel_x = (dst_x as Scalar - transformed_dst.left) * scale_x;
-                let rel_y = (dst_y as Scalar - transformed_dst.top) * scale_y;
+                // Per-pixel clip (handles path/AA/difference clips).
+                let clip_cov = clip_stack.get_coverage(dst_x, dst_y);
+                if clip_cov == 0 {
+                    continue;
+                }
 
-                let src_x = (src_rect.left as Scalar + rel_x) as i32;
-                let src_y = (src_rect.top as Scalar + rel_y) as i32;
+                // Map the device pixel center back to local space and check
+                // quad membership there (exact under rotation).
+                let local =
+                    inverse.map_point(Point::new(dst_x as Scalar + 0.5, dst_y as Scalar + 0.5));
+                if local.x < dst.left
+                    || local.x >= dst.right
+                    || local.y < dst.top
+                    || local.y >= dst.bottom
+                {
+                    continue;
+                }
 
+                let src_x = (src_rect.left as Scalar + (local.x - dst.left) * scale_x) as i32;
+                let src_y = (src_rect.top as Scalar + (local.y - dst.top) * scale_y) as i32;
                 if src_x < 0 || src_x >= image.width() || src_y < 0 || src_y >= image.height() {
                     continue;
                 }
 
                 if let Some(src_color) = image.read_pixel(src_x, src_y) {
-                    let mut color = Color::from_argb(
-                        (src_color.a * alpha * 255.0) as u8,
-                        (src_color.r * 255.0) as u8,
-                        (src_color.g * 255.0) as u8,
-                        (src_color.b * 255.0) as u8,
+                    // Convert to premultiplied bytes for the premul pipeline.
+                    let premul4 = if image_is_premul {
+                        src_color
+                    } else {
+                        src_color.premul()
+                    };
+                    // Apply paint alpha once and the clip coverage, both on
+                    // the premultiplied color.
+                    let scale = alpha * (clip_cov as f32 / 255.0);
+                    let to_byte =
+                        |v: f32| (v * scale * 255.0).round().clamp(0.0, 255.0) as u8;
+                    let color = Color::from_argb(
+                        to_byte(premul4.a),
+                        to_byte(premul4.r),
+                        to_byte(premul4.g),
+                        to_byte(premul4.b),
                     );
 
-                    if alpha < 1.0 {
-                        let a = (color.alpha() as f32 * alpha) as u8;
-                        color = Color::from_argb(a, color.red(), color.green(), color.blue());
-                    }
-
-                    buffer.blend_pixel(dst_x - buf_offset_x, dst_y - buf_offset_y, color, blend_mode);
+                    buffer.blend_pixel(
+                        dst_x - buf_offset_x,
+                        dst_y - buf_offset_y,
+                        color,
+                        blend_mode,
+                    );
                 }
             }
         }
@@ -1723,6 +1915,11 @@ impl<'a> Canvas<'a> {
     }
 
     /// Draw a single filled triangle with per-vertex color interpolation.
+    ///
+    /// Both flat and interpolated triangles use the same coverage rule
+    /// (pixel-center barycentric test), the clip is applied per pixel, paint
+    /// alpha modulates the vertex colors, and the blended color is
+    /// premultiplied for the premul pixel pipeline.
     fn draw_triangle(
         &mut self,
         p0: Point,
@@ -1733,12 +1930,13 @@ impl<'a> Canvas<'a> {
         c2: Option<Color>,
         paint: &Paint,
     ) {
+        // The clip stack lives in a disjoint field; query it while holding
+        // the mutable buffer borrow below.
+        let clip_stack = &self.clip_stack;
+
         let (buffer, buf_offset_x, buf_offset_y): (&mut PixelBuffer, i32, i32) =
             if let Some(layer) = self.layer_stack.last_mut() {
-                let (ox, oy) = match layer.bounds {
-                    Some(b) => (b.left.floor() as i32, b.top.floor() as i32),
-                    None => (0, 0),
-                };
+                let (ox, oy) = layer.device_origin;
                 (&mut layer.buffer, ox, oy)
             } else {
                 match &mut self.backing {
@@ -1748,122 +1946,80 @@ impl<'a> Canvas<'a> {
             };
 
         let blend_mode = paint.blend_mode();
+        let paint_alpha = paint.alpha().clamp(0.0, 1.0);
 
-        // Convert to Color4f for interpolation
+        // Vertex colors (or the paint color), modulated by paint alpha.
         let default_color = paint.color32().to_color4f();
-        let col0 = c0.map(|c| c.to_color4f()).unwrap_or(default_color);
-        let col1 = c1.map(|c| c.to_color4f()).unwrap_or(default_color);
-        let col2 = c2.map(|c| c.to_color4f()).unwrap_or(default_color);
-
-        // Check if all colors are the same - use fast path
+        let modulate = |c: skia_rs_core::Color4f| {
+            skia_rs_core::Color4f::new(c.r, c.g, c.b, c.a * paint_alpha)
+        };
+        let col0 = modulate(c0.map(|c| c.to_color4f()).unwrap_or(default_color));
+        let col1 = modulate(c1.map(|c| c.to_color4f()).unwrap_or(default_color));
+        let col2 = modulate(c2.map(|c| c.to_color4f()).unwrap_or(default_color));
         let uniform = c0 == c1 && c1 == c2;
+        let uniform_color = skia_rs_core::premultiply_color(col0.to_color());
 
-        if uniform {
-            // Fast path: flat shading
-            let color = c0.unwrap_or_else(|| paint.color32());
-            let mut verts = [(p0.x, p0.y), (p1.x, p1.y), (p2.x, p2.y)];
-            verts.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        // Bounding box.
+        let min_x = p0.x.min(p1.x).min(p2.x).floor() as i32;
+        let max_x = p0.x.max(p1.x).max(p2.x).ceil() as i32;
+        let min_y = p0.y.min(p1.y).min(p2.y).floor() as i32;
+        let max_y = p0.y.max(p1.y).max(p2.y).ceil() as i32;
 
-            let (x0, y0) = verts[0];
-            let (x1, y1) = verts[1];
-            let (x2, y2) = verts[2];
+        let denom = (p1.y - p2.y) * (p0.x - p2.x) + (p2.x - p1.x) * (p0.y - p2.y);
+        if denom.abs() < 1e-7 {
+            return; // degenerate triangle
+        }
 
-            let inv_slope_02 = if (y2 - y0).abs() > 0.001 {
-                (x2 - x0) / (y2 - y0)
-            } else {
-                0.0
-            };
-            let inv_slope_01 = if (y1 - y0).abs() > 0.001 {
-                (x1 - x0) / (y1 - y0)
-            } else {
-                0.0
-            };
-            let inv_slope_12 = if (y2 - y1).abs() > 0.001 {
-                (x2 - x1) / (y2 - y1)
-            } else {
-                0.0
-            };
+        for y in min_y..max_y {
+            for x in min_x..max_x {
+                let px = x as Scalar + 0.5;
+                let py = y as Scalar + 0.5;
 
-            let y_start = y0.ceil() as i32;
-            let y_mid = y1.ceil() as i32;
-            let y_end = y2.ceil() as i32;
+                // Barycentric coordinates at the pixel center.
+                let w0 = ((p1.y - p2.y) * (px - p2.x) + (p2.x - p1.x) * (py - p2.y)) / denom;
+                let w1 = ((p2.y - p0.y) * (px - p2.x) + (p0.x - p2.x) * (py - p2.y)) / denom;
+                let w2 = 1.0 - w0 - w1;
+                if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                    continue;
+                }
 
-            for y in y_start..y_mid {
-                let x_left = x0 + (y as Scalar - y0) * inv_slope_02;
-                let x_right = x0 + (y as Scalar - y0) * inv_slope_01;
+                // Per-pixel clip.
+                let clip_cov = clip_stack.get_coverage(x, y);
+                if clip_cov == 0 {
+                    continue;
+                }
 
-                let (xa, xb) = if x_left < x_right {
-                    (x_left, x_right)
+                let mut color = if uniform {
+                    uniform_color
                 } else {
-                    (x_right, x_left)
+                    let r = col0.r * w0 + col1.r * w1 + col2.r * w2;
+                    let g = col0.g * w0 + col1.g * w1 + col2.g * w2;
+                    let b = col0.b * w0 + col1.b * w1 + col2.b * w2;
+                    let a = col0.a * w0 + col1.a * w1 + col2.a * w2;
+                    skia_rs_core::premultiply_color(
+                        skia_rs_core::Color4f::new(
+                            r.clamp(0.0, 1.0),
+                            g.clamp(0.0, 1.0),
+                            b.clamp(0.0, 1.0),
+                            a.clamp(0.0, 1.0),
+                        )
+                        .to_color(),
+                    )
                 };
 
-                for x in (xa.ceil() as i32)..(xb.floor() as i32) {
-                    buffer.blend_pixel(x - buf_offset_x, y - buf_offset_y, color, blend_mode);
+                if clip_cov < 255 {
+                    let s = |v: u8| {
+                        ((v as u32 * clip_cov as u32 + 128) * 257 >> 16) as u8
+                    };
+                    color = Color::from_argb(
+                        s(color.alpha()),
+                        s(color.red()),
+                        s(color.green()),
+                        s(color.blue()),
+                    );
                 }
-            }
 
-            for y in y_mid..y_end {
-                let x_left = x0 + (y as Scalar - y0) * inv_slope_02;
-                let x_right = x1 + (y as Scalar - y1) * inv_slope_12;
-
-                let (xa, xb) = if x_left < x_right {
-                    (x_left, x_right)
-                } else {
-                    (x_right, x_left)
-                };
-
-                for x in (xa.ceil() as i32)..(xb.floor() as i32) {
-                    buffer.blend_pixel(x - buf_offset_x, y - buf_offset_y, color, blend_mode);
-                }
-            }
-        } else {
-            // Slow path: barycentric interpolation
-            // Compute bounding box
-            let min_x = p0.x.min(p1.x).min(p2.x).floor() as i32;
-            let max_x = p0.x.max(p1.x).max(p2.x).ceil() as i32;
-            let min_y = p0.y.min(p1.y).min(p2.y).floor() as i32;
-            let max_y = p0.y.max(p1.y).max(p2.y).ceil() as i32;
-
-            // Compute triangle edge vectors
-            let denom = (p1.y - p2.y) * (p0.x - p2.x) + (p2.x - p1.x) * (p0.y - p2.y);
-            if denom.abs() < 1e-7 {
-                return; // degenerate triangle
-            }
-
-            for y in min_y..=max_y {
-                for x in min_x..=max_x {
-                    let px = x as Scalar + 0.5;
-                    let py = y as Scalar + 0.5;
-
-                    // Compute barycentric coordinates
-                    let w0 = ((p1.y - p2.y) * (px - p2.x) + (p2.x - p1.x) * (py - p2.y)) / denom;
-                    let w1 = ((p2.y - p0.y) * (px - p2.x) + (p0.x - p2.x) * (py - p2.y)) / denom;
-                    let w2 = 1.0 - w0 - w1;
-
-                    // Check if point is inside triangle
-                    if w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0 {
-                        // Interpolate color components
-                        let r = col0.r * w0 + col1.r * w1 + col2.r * w2;
-                        let g = col0.g * w0 + col1.g * w1 + col2.g * w2;
-                        let b = col0.b * w0 + col1.b * w1 + col2.b * w2;
-                        let a = col0.a * w0 + col1.a * w1 + col2.a * w2;
-
-                        // Convert back to Color
-                        let r_u8 = (r * 255.0).clamp(0.0, 255.0) as u8;
-                        let g_u8 = (g * 255.0).clamp(0.0, 255.0) as u8;
-                        let b_u8 = (b * 255.0).clamp(0.0, 255.0) as u8;
-                        let a_u8 = (a * 255.0).clamp(0.0, 255.0) as u8;
-                        let color = Color::from_argb(a_u8, r_u8, g_u8, b_u8);
-
-                        buffer.blend_pixel(
-                            x - buf_offset_x,
-                            y - buf_offset_y,
-                            color,
-                            blend_mode,
-                        );
-                    }
-                }
+                buffer.blend_pixel(x - buf_offset_x, y - buf_offset_y, color, blend_mode);
             }
         }
     }
@@ -1924,16 +2080,34 @@ pub enum VertexMode {
 
 fn build_round_rect_path(rect: &Rect, rx: Scalar, ry: Scalar) -> Path {
     use skia_rs_path::PathBuilder;
+
     let mut builder = PathBuilder::new();
+    if rx <= 0.0 || ry <= 0.0 || rect.is_empty() {
+        builder.add_rect(rect);
+        return builder.build();
+    }
+
+    // SkRRect::setRectXY: when the radii exceed half the rect dimensions,
+    // BOTH are scaled down by the same factor so the corner arcs still fit.
+    let scale = (rect.width() / (2.0 * rx))
+        .min(rect.height() / (2.0 * ry))
+        .min(1.0);
+    let rx = rx * scale;
+    let ry = ry * scale;
+
+    // Quarter-circle conics of weight sqrt(2)/2 — the exact circular-arc
+    // geometry Skia uses for round rect corners.
+    const W: Scalar = std::f32::consts::FRAC_1_SQRT_2;
+
     builder.move_to(rect.left + rx, rect.top);
     builder.line_to(rect.right - rx, rect.top);
-    builder.quad_to(rect.right, rect.top, rect.right, rect.top + ry);
+    builder.conic_to(rect.right, rect.top, rect.right, rect.top + ry, W);
     builder.line_to(rect.right, rect.bottom - ry);
-    builder.quad_to(rect.right, rect.bottom, rect.right - rx, rect.bottom);
+    builder.conic_to(rect.right, rect.bottom, rect.right - rx, rect.bottom, W);
     builder.line_to(rect.left + rx, rect.bottom);
-    builder.quad_to(rect.left, rect.bottom, rect.left, rect.bottom - ry);
+    builder.conic_to(rect.left, rect.bottom, rect.left, rect.bottom - ry, W);
     builder.line_to(rect.left, rect.top + ry);
-    builder.quad_to(rect.left, rect.top, rect.left + rx, rect.top);
+    builder.conic_to(rect.left, rect.top, rect.left + rx, rect.top, W);
     builder.close();
     builder.build()
 }
@@ -1944,43 +2118,54 @@ fn build_arc_path(
     sweep_angle: Scalar,
     use_center: bool,
 ) -> Path {
-    use skia_rs_path::PathBuilder;
-
-    let center = Point::new(
-        (oval.left + oval.right) / 2.0,
-        (oval.top + oval.bottom) / 2.0,
-    );
-    let rx = oval.width() / 2.0;
-    let ry = oval.height() / 2.0;
-
-    let start_rad = start_angle.to_radians();
-    let end_rad = (start_angle + sweep_angle).to_radians();
-
-    let start_x = center.x + rx * start_rad.cos();
-    let start_y = center.y + ry * start_rad.sin();
+    use skia_rs_path::{PathBuilder, PathElement};
 
     let mut builder = PathBuilder::new();
-
-    if use_center {
-        builder.move_to(center.x, center.y);
-        builder.line_to(start_x, start_y);
-    } else {
-        builder.move_to(start_x, start_y);
+    if oval.is_empty() || sweep_angle == 0.0 {
+        return builder.build();
     }
 
-    let steps = ((sweep_angle.abs() / 10.0).ceil() as usize).max(4);
-    for i in 1..=steps {
-        let t = i as Scalar / steps as Scalar;
-        let angle = start_rad + (end_rad - start_rad) * t;
-        let x = center.x + rx * angle.cos();
-        let y = center.y + ry * angle.sin();
-        builder.line_to(x, y);
+    // SkPathPriv::CreateDrawArcPath: |sweep| >= 360 draws the complete oval
+    // regardless of the start angle.
+    if sweep_angle.abs() >= 360.0 {
+        builder.add_oval(oval);
+        return builder.build();
     }
 
-    if use_center {
-        builder.close();
+    // Curve-segment arc geometry from the path crate (Task 2), not
+    // polylines.
+    let mut arc_builder = PathBuilder::new();
+    arc_builder.add_arc(oval, start_angle, sweep_angle);
+    let arc_path = arc_builder.build();
+
+    if !use_center {
+        return arc_path;
     }
 
+    // Wedge: center -> arc start -> arc -> close.
+    let center = oval.center();
+    builder.move_to(center.x, center.y);
+    for element in arc_path.iter() {
+        match element {
+            PathElement::Move(p) => {
+                builder.line_to(p.x, p.y);
+            }
+            PathElement::Line(p) => {
+                builder.line_to(p.x, p.y);
+            }
+            PathElement::Quad(c, p) => {
+                builder.quad_to(c.x, c.y, p.x, p.y);
+            }
+            PathElement::Conic(c, p, w) => {
+                builder.conic_to(c.x, c.y, p.x, p.y, w);
+            }
+            PathElement::Cubic(c1, c2, p) => {
+                builder.cubic_to(c1.x, c1.y, c2.x, c2.y, p.x, p.y);
+            }
+            PathElement::Close => {}
+        }
+    }
+    builder.close();
     builder.build()
 }
 
@@ -2083,11 +2268,23 @@ impl RSXform {
     }
 
     /// Convert to a matrix.
+    ///
+    /// `SkMatrix::setRSXform` layout — tx/ty go in the translation slots
+    /// (applied **last**):
+    ///
+    /// ```text
+    /// [ scos  -ssin  tx ]
+    /// [ ssin   scos  ty ]
+    /// [    0      0   1 ]
+    /// ```
     pub fn to_matrix(&self) -> Matrix {
-        let rotation_scale = Matrix::rotate(self.ssin.atan2(self.scos));
-        let scale = (self.scos * self.scos + self.ssin * self.ssin).sqrt();
-        let scaled = rotation_scale.concat(&Matrix::scale(scale, scale));
-        scaled.concat(&Matrix::translate(self.tx, self.ty))
+        Matrix {
+            values: [
+                self.scos, -self.ssin, self.tx, //
+                self.ssin, self.scos, self.ty, //
+                0.0, 0.0, 1.0,
+            ],
+        }
     }
 }
 
@@ -2198,6 +2395,7 @@ fn colr_composite_to_blend(
 mod tests {
     use super::*;
     use skia_rs_core::{Color, Rect};
+    use skia_rs_paint::Style;
 
     #[test]
     fn test_null_canvas_discards_draws() {
@@ -2258,18 +2456,24 @@ mod tests {
         // Clip to the triangle path
         c.clip_path(&triangle, ClipOp::Intersect, false);
 
-        // The clip bounds should match the triangle's bounds
+        // The clip bounds should closely match the triangle's bounds. Scan
+        // conversion samples pixel centers, so each edge may be up to ~1.5px
+        // inside the analytic bounds (the apex row has a sub-pixel span).
         let clip_bounds = c.clip_bounds();
         let path_bounds = triangle.bounds();
-        assert!((clip_bounds.left - path_bounds.left).abs() < 1.0);
-        assert!((clip_bounds.top - path_bounds.top).abs() < 1.0);
-        assert!((clip_bounds.right - path_bounds.right).abs() < 1.0);
-        assert!((clip_bounds.bottom - path_bounds.bottom).abs() < 1.0);
+        assert!((clip_bounds.left - path_bounds.left).abs() <= 1.5);
+        assert!((clip_bounds.top - path_bounds.top).abs() <= 1.5);
+        assert!((clip_bounds.right - path_bounds.right).abs() <= 1.5);
+        assert!((clip_bounds.bottom - path_bounds.bottom).abs() <= 1.5);
 
-        // Points inside the triangle bounds but outside the triangle itself
-        // would be rejected by a proper path clip (though we can't easily test
-        // pixel coverage without a raster backing, we've verified the path is
-        // stored in ClipStack rather than collapsed to a rect).
+        // The clip must hold the actual path geometry: points inside the
+        // triangle's bounds but outside the triangle are rejected.
+        assert!(!c.quick_reject(&Rect::from_xywh(45.0, 50.0, 2.0, 2.0)));
+        // quick_reject only tests bounds, so probe the clip stack directly.
+        assert!(
+            !c.clip_stack.contains(81, 13),
+            "corner inside bounds but outside triangle must be clipped"
+        );
     }
 
     #[test]
@@ -2495,7 +2699,8 @@ mod tests {
         let returned = canvas.save_layer(&SaveLayerRec::default());
         let during = canvas.save_count();
         assert_eq!(during, before + 1);
-        assert_eq!(returned, during);
+        // SkCanvas::saveLayer returns getSaveCount() - 1 (the pre-save count).
+        assert_eq!(returned, before);
         canvas.restore();
         assert_eq!(canvas.save_count(), before);
     }
@@ -3072,6 +3277,397 @@ mod tests {
     // T-1: Matrix stack operation tests
     // =========================================================================
 
+    // =========================================================================
+    // Conformance-audit regression tests (Task 4, canvas-level)
+    // =========================================================================
+
+    #[test]
+    fn test_rsxform_to_matrix_translation_applied_last() {
+        // SkMatrix::setRSXform layout: [scos, -ssin, tx; ssin, scos, ty].
+        // tx/ty are the translation slots applied LAST: a 90-degree rotation
+        // (scos=0, ssin=1) with translation (10, 20) maps (1, 0) to
+        // (0*1 - 1*0 + 10, 1*1 + 0*0 + 20) = (10, 21).
+        let xform = RSXform {
+            scos: 0.0,
+            ssin: 1.0,
+            tx: 10.0,
+            ty: 20.0,
+        };
+        let m = xform.to_matrix();
+        let p = m.map_point(Point::new(1.0, 0.0));
+        assert!((p.x - 10.0).abs() < 1e-4, "x: {}", p.x);
+        assert!((p.y - 21.0).abs() < 1e-4, "y: {}", p.y);
+    }
+
+    #[test]
+    fn test_draw_arc_full_sweep_draws_full_oval() {
+        // |sweep| >= 360 fills the complete oval regardless of start angle
+        // (SkPathPriv::CreateDrawArcPath).
+        let mut buffer = PixelBuffer::new(60, 60);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_argb(255, 255, 0, 0));
+        canvas.draw_arc(
+            &Rect::from_xywh(10.0, 10.0, 40.0, 40.0),
+            45.0,
+            360.0,
+            false,
+            &paint,
+        );
+        drop(canvas);
+        // All four oval extremes must be covered (a partial arc from 45 deg
+        // would leave some of them empty).
+        assert_eq!(buffer.get_pixel(30, 12).unwrap().red(), 255);
+        assert_eq!(buffer.get_pixel(30, 47).unwrap().red(), 255);
+        assert_eq!(buffer.get_pixel(12, 30).unwrap().red(), 255);
+        assert_eq!(buffer.get_pixel(47, 30).unwrap().red(), 255);
+        assert_eq!(buffer.get_pixel(30, 30).unwrap().red(), 255);
+    }
+
+    #[test]
+    fn test_draw_round_rect_clamps_radii() {
+        // SkRRect::setRectXY: radii exceeding half the rect dimensions are
+        // scaled down uniformly. rx=ry=50 on a 20x20 rect clamps to 10:
+        // the result is a circle inscribed in the rect.
+        let mut buffer = PixelBuffer::new(60, 60);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_argb(255, 0, 255, 0));
+        canvas.draw_round_rect(&Rect::from_xywh(20.0, 20.0, 20.0, 20.0), 50.0, 50.0, &paint);
+        drop(canvas);
+        // Center covered.
+        assert_eq!(buffer.get_pixel(30, 30).unwrap().green(), 255);
+        // Rect corner NOT covered (rounded away with radius 10).
+        assert_eq!(buffer.get_pixel(21, 21).unwrap().alpha(), 0);
+        // Edge midpoints covered.
+        assert_eq!(buffer.get_pixel(30, 21).unwrap().green(), 255);
+        assert_eq!(buffer.get_pixel(21, 30).unwrap().green(), 255);
+    }
+
+    #[test]
+    fn test_clear_respects_device_clip() {
+        // SkCanvas::clear is drawColor(color, kSrc): it only affects the
+        // device clip.
+        let mut buffer = PixelBuffer::new(20, 20);
+        buffer.clear(Color::from_argb(255, 0, 0, 255)); // blue background
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        canvas.clip_rect(
+            &Rect::from_xywh(0.0, 0.0, 10.0, 20.0),
+            ClipOp::Intersect,
+            false,
+        );
+        canvas.clear(Color::from_argb(255, 255, 0, 0)); // red
+        drop(canvas);
+        // Left half (inside clip): red.
+        assert_eq!(buffer.get_pixel(5, 10).unwrap().red(), 255);
+        assert_eq!(buffer.get_pixel(5, 10).unwrap().blue(), 0);
+        // Right half (outside clip): still blue.
+        assert_eq!(buffer.get_pixel(15, 10).unwrap().blue(), 255);
+        assert_eq!(buffer.get_pixel(15, 10).unwrap().red(), 0);
+    }
+
+    #[test]
+    fn test_draw_color_fills_clip_regardless_of_ctm() {
+        // draw_color fills the device clip even under a wild CTM.
+        let mut buffer = PixelBuffer::new(20, 20);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        canvas.rotate(37.0);
+        canvas.translate(1000.0, -500.0);
+        canvas.draw_color(
+            Color::from_argb(255, 0, 255, 0),
+            skia_rs_paint::BlendMode::SrcOver,
+        );
+        drop(canvas);
+        for &(x, y) in &[(0, 0), (19, 19), (10, 10), (19, 0)] {
+            assert_eq!(
+                buffer.get_pixel(x, y).unwrap().green(),
+                255,
+                "({}, {}) must be filled regardless of the CTM",
+                x,
+                y
+            );
+        }
+    }
+
+    #[test]
+    fn test_draw_paint_fills_clip_with_shader_through_ctm() {
+        use skia_rs_paint::shader::{TileMode, shaders};
+
+        // draw_paint fills the clip; its shader is still transformed by the
+        // CTM (local space). Gradient black->white over local x [0, 10],
+        // CTM translate(10, 0): device x=10 is the black end.
+        let shader = shaders::linear_gradient(
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            vec![
+                skia_rs_core::Color4f::new(0.0, 0.0, 0.0, 1.0),
+                skia_rs_core::Color4f::new(1.0, 1.0, 1.0, 1.0),
+            ],
+            None,
+            TileMode::Clamp,
+        );
+        let mut buffer = PixelBuffer::new(30, 10);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        canvas.translate(10.0, 0.0);
+        let mut paint = Paint::new();
+        paint.set_shader(Some(shader));
+        canvas.draw_paint(&paint);
+        drop(canvas);
+        // Whole clip is filled (even x < 10, where local x is negative and
+        // the clamped gradient is black).
+        assert_eq!(buffer.get_pixel(2, 5).unwrap().alpha(), 255);
+        assert!(buffer.get_pixel(2, 5).unwrap().red() < 30);
+        // Device x=10 -> local 0 (black); device x=19.5 -> local ~9.5 (bright).
+        assert!(buffer.get_pixel(10, 5).unwrap().red() < 40);
+        assert!(buffer.get_pixel(19, 5).unwrap().red() > 200);
+    }
+
+    #[test]
+    fn test_clip_rect_rotated_ctm_clips_actual_quad() {
+        // clip_rect under a rotated CTM must clip to the rotated quad, not
+        // its AABB.
+        let mut buffer = PixelBuffer::new(100, 100);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        canvas.translate(50.0, 50.0);
+        canvas.rotate(45.0);
+        canvas.translate(-50.0, -50.0);
+        canvas.clip_rect(
+            &Rect::from_xywh(20.0, 20.0, 60.0, 60.0),
+            ClipOp::Intersect,
+            false,
+        );
+        // Draw a full-canvas rect in device space.
+        canvas.reset_matrix();
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_argb(255, 255, 0, 0));
+        canvas.draw_rect(&Rect::from_xywh(0.0, 0.0, 100.0, 100.0), &paint);
+        drop(canvas);
+        // Center of the rotated clip: filled.
+        assert_eq!(buffer.get_pixel(50, 50).unwrap().red(), 255);
+        // AABB corner outside the rotated quad: clipped.
+        assert_eq!(
+            buffer.get_pixel(25, 25).unwrap().alpha(),
+            0,
+            "AABB corner outside the rotated clip quad must stay clipped"
+        );
+        // Quad vertex direction: inside.
+        assert_eq!(buffer.get_pixel(50, 15).unwrap().red(), 255);
+    }
+
+    #[test]
+    fn test_draw_points_points_mode_draws_width_sized_squares() {
+        // SkDraw::drawPoints: Points mode with stroke width w draws a w x w
+        // square (butt/square cap) centered on each point.
+        let mut buffer = PixelBuffer::new(40, 40);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_argb(255, 255, 0, 0));
+        paint.set_style(Style::Stroke);
+        paint.set_stroke_width(10.0);
+        canvas.draw_points(PointMode::Points, &[Point::new(20.0, 20.0)], &paint);
+        drop(canvas);
+        // 10x10 square centered at (20, 20): [15, 25).
+        assert_eq!(buffer.get_pixel(16, 16).unwrap().red(), 255);
+        assert_eq!(buffer.get_pixel(24, 24).unwrap().red(), 255);
+        assert_eq!(buffer.get_pixel(20, 20).unwrap().red(), 255);
+        assert_eq!(buffer.get_pixel(13, 20).unwrap().alpha(), 0);
+        assert_eq!(buffer.get_pixel(27, 20).unwrap().alpha(), 0);
+    }
+
+    #[test]
+    fn test_draw_points_points_mode_round_cap_draws_circles() {
+        let mut buffer = PixelBuffer::new(40, 40);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        let mut paint = Paint::new();
+        paint.set_color32(Color::from_argb(255, 255, 0, 0));
+        paint.set_style(Style::Stroke);
+        paint.set_stroke_width(10.0);
+        paint.set_stroke_cap(skia_rs_paint::StrokeCap::Round);
+        canvas.draw_points(PointMode::Points, &[Point::new(20.0, 20.0)], &paint);
+        drop(canvas);
+        // Circle radius 5 centered at (20, 20): center and axis points in.
+        assert_eq!(buffer.get_pixel(20, 20).unwrap().red(), 255);
+        assert_eq!(buffer.get_pixel(24, 20).unwrap().red(), 255);
+        // The square's corner pixel (15, 15) has center distance ~6.4 from
+        // (20, 20): inside the 10x10 square but outside the circle.
+        assert_eq!(
+            buffer.get_pixel(15, 15).unwrap().alpha(),
+            0,
+            "round cap points are circles, not squares"
+        );
+    }
+
+    #[test]
+    fn test_save_layer_bounds_are_local_space_hint() {
+        // SkCanvas::saveLayer bounds are a content hint in LOCAL space:
+        // with CTM translate(10, 10) and bounds (0,0,4,4), content drawn at
+        // local (0..4) lands at device (10..14) after restore.
+        let mut buffer = PixelBuffer::new(20, 20);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        canvas.translate(10.0, 10.0);
+        let bounds = Rect::from_xywh(0.0, 0.0, 4.0, 4.0);
+        let rec = SaveLayerRec {
+            bounds: Some(&bounds),
+            paint: None,
+            flags: SaveLayerFlags::NONE,
+        };
+        canvas.save_layer(&rec);
+        let mut red = Paint::new();
+        red.set_color32(Color::from_argb(255, 255, 0, 0));
+        canvas.draw_rect(&Rect::from_xywh(0.0, 0.0, 4.0, 4.0), &red);
+        canvas.restore();
+        drop(canvas);
+
+        // Device (10..14): red.
+        assert_eq!(buffer.get_pixel(11, 11).unwrap().red(), 255);
+        assert_eq!(buffer.get_pixel(13, 13).unwrap().red(), 255);
+        // Device (0..4): untouched — the bounds are local, not device.
+        assert_eq!(
+            buffer.get_pixel(1, 1).unwrap().alpha(),
+            0,
+            "layer bounds must be mapped through the CTM"
+        );
+    }
+
+    #[test]
+    fn test_composite_layer_through_clip() {
+        // A clip narrower than the layer must clip the composite: clearing
+        // inside a layer touches the whole layer buffer, but only the
+        // clipped part reaches the base on restore.
+        let mut buffer = PixelBuffer::new(20, 20);
+        buffer.clear(Color::from_argb(255, 0, 0, 255)); // blue base
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        canvas.clip_rect(
+            &Rect::from_xywh(0.0, 0.0, 10.0, 20.0),
+            ClipOp::Intersect,
+            false,
+        );
+        canvas.save_layer(&SaveLayerRec::default());
+        canvas.clear(Color::from_argb(255, 255, 0, 0)); // red into the layer
+        canvas.restore();
+        drop(canvas);
+
+        // Inside the clip: red composed onto the base.
+        assert_eq!(buffer.get_pixel(5, 10).unwrap().red(), 255);
+        // Outside the clip: base untouched.
+        assert_eq!(buffer.get_pixel(15, 10).unwrap().blue(), 255);
+        assert_eq!(buffer.get_pixel(15, 10).unwrap().red(), 0);
+    }
+
+    #[test]
+    fn test_composite_layer_applies_color_filter() {
+        use skia_rs_paint::filter::ColorMatrixFilter;
+        use std::sync::Arc;
+
+        // A layer paint with an inverting color filter must filter the
+        // layer contents during composite: white -> black.
+        let mut buffer = PixelBuffer::new(8, 8);
+        buffer.clear(Color::from_argb(255, 0, 0, 255)); // blue base
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        let mut layer_paint = Paint::new();
+        layer_paint.set_color_filter(Some(Arc::new(ColorMatrixFilter::invert())));
+        let rec = SaveLayerRec {
+            bounds: None,
+            paint: Some(&layer_paint),
+            flags: SaveLayerFlags::NONE,
+        };
+        canvas.save_layer(&rec);
+        let mut white = Paint::new();
+        white.set_color32(Color::from_argb(255, 255, 255, 255));
+        canvas.draw_rect(&Rect::from_xywh(0.0, 0.0, 8.0, 8.0), &white);
+        canvas.restore();
+        drop(canvas);
+
+        let c = buffer.get_pixel(4, 4).unwrap();
+        assert_eq!(
+            (c.red(), c.green(), c.blue()),
+            (0, 0, 0),
+            "invert color filter must run at composite: {:?}",
+            c
+        );
+        assert_eq!(c.alpha(), 255);
+    }
+
+    #[test]
+    fn test_draw_vertices_respects_clip_and_paint_alpha() {
+        // draw_vertices must clip per pixel and apply paint alpha to vertex
+        // colors.
+        let mut buffer = PixelBuffer::new(20, 20);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        canvas.clip_rect(
+            &Rect::from_xywh(0.0, 0.0, 10.0, 20.0),
+            ClipOp::Intersect,
+            false,
+        );
+        let mut paint = Paint::new();
+        paint.set_alpha(0.5);
+        let positions = [
+            Point::new(0.0, 0.0),
+            Point::new(20.0, 0.0),
+            Point::new(0.0, 20.0),
+        ];
+        let colors = [Color::WHITE, Color::WHITE, Color::WHITE];
+        canvas.draw_vertices(VertexMode::Triangles, &positions, Some(&colors), &paint);
+        drop(canvas);
+
+        // Inside triangle and clip: white at 50% alpha, premul => ~128.
+        let inside = buffer.get_pixel(3, 3).unwrap();
+        assert!(
+            inside.alpha() > 120 && inside.alpha() < 136,
+            "paint alpha must modulate vertex colors, got {:?}",
+            inside
+        );
+        assert_eq!(inside.red(), inside.alpha(), "premultiplied white");
+        // Inside triangle but outside the clip: untouched.
+        assert_eq!(
+            buffer.get_pixel(14, 2).unwrap().alpha(),
+            0,
+            "vertices must be clipped per pixel"
+        );
+    }
+
+    #[cfg(feature = "codec")]
+    #[test]
+    fn test_draw_image_rect_applies_alpha_once_and_clips() {
+        // A 50%-alpha paint on an opaque white image must produce ~50%
+        // contribution (128), not 25% (64, alpha applied twice), and the
+        // draw must respect the clip.
+        let info = skia_rs_codec::ImageInfo::new(
+            4,
+            4,
+            skia_rs_core::ColorType::Rgba8888,
+            skia_rs_core::AlphaType::Premul,
+        );
+        let pixels = vec![255u8; 4 * 4 * 4]; // opaque white
+        let image = skia_rs_codec::Image::from_raster_data_owned(info, pixels, 16).unwrap();
+
+        let mut buffer = PixelBuffer::new(20, 20);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        canvas.clip_rect(
+            &Rect::from_xywh(0.0, 0.0, 10.0, 20.0),
+            ClipOp::Intersect,
+            false,
+        );
+        let mut paint = Paint::new();
+        paint.set_alpha(0.5);
+        canvas.draw_image_rect(
+            &image,
+            None,
+            &Rect::from_xywh(0.0, 0.0, 16.0, 16.0),
+            Some(&paint),
+        );
+        drop(canvas);
+
+        let c = buffer.get_pixel(5, 5).unwrap();
+        assert!(
+            c.alpha() > 120 && c.alpha() < 136,
+            "paint alpha must be applied exactly once, got {:?}",
+            c
+        );
+        // Outside the clip: untouched.
+        assert_eq!(buffer.get_pixel(12, 5).unwrap().alpha(), 0);
+    }
+
     #[test]
     fn test_save_count_increments_and_restore_decrements() {
         let mut buffer = PixelBuffer::new(10, 10);
@@ -3099,6 +3695,40 @@ mod tests {
         assert_eq!(canvas.save_count(), base + 3);
         canvas.restore_to_count(base);
         assert_eq!(canvas.save_count(), base);
+    }
+
+    #[test]
+    fn test_restore_to_count_clamps_below_one() {
+        // SkCanvas::restoreToCount clamps count < 1 to 1 — must terminate and
+        // leave the canvas at save count 1 (previously infinite-looped).
+        let mut buffer = PixelBuffer::new(10, 10);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        canvas.save();
+        canvas.save();
+        canvas.restore_to_count(0);
+        assert_eq!(canvas.save_count(), 1);
+        // And again with an already-minimal stack: still terminates.
+        canvas.restore_to_count(0);
+        assert_eq!(canvas.save_count(), 1);
+    }
+
+    #[test]
+    fn test_save_returns_previous_save_count() {
+        // SkCanvas::save returns getSaveCount() - 1, i.e. the count BEFORE
+        // the save. Fresh canvas: getSaveCount() == 1, save() returns 1 and
+        // the count becomes 2. restore_to_count(returned) undoes that save.
+        let mut buffer = PixelBuffer::new(10, 10);
+        let mut canvas = Canvas::new_raster(&mut buffer);
+        assert_eq!(canvas.save_count(), 1);
+        let ret = canvas.save();
+        assert_eq!(ret, 1, "save() must return the pre-save count");
+        assert_eq!(canvas.save_count(), 2);
+        canvas.translate(3.0, 0.0);
+        canvas.restore_to_count(ret);
+        assert_eq!(canvas.save_count(), 1);
+        // The translate was undone by restoring to the returned count.
+        let p = canvas.total_matrix().map_point(Point::new(0.0, 0.0));
+        assert_eq!(p.x, 0.0);
     }
 
     #[test]

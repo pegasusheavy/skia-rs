@@ -210,12 +210,17 @@ impl BlendMode {
 
             // --- Separable blend modes (RGB via f, alpha via src-over) ---
             BlendMode::Screen => separable_blend(src, dst, |s, d| s + d - s * d),
+            // Upstream BLEND_MODE(overlay):
+            //   s*inv(da) + d*inv(sa)
+            //     + if_then_else(two(d) <= da, two(s*d), sa*da - two((da-d)*(sa-s)))
             BlendMode::Overlay => separable_blend(src, dst, |s, d| {
-                if 2.0 * d <= dst.a {
-                    2.0 * s * d
-                } else {
-                    src.a * dst.a - 2.0 * (dst.a - d) * (src.a - s)
-                }
+                s * (1.0 - dst.a)
+                    + d * (1.0 - src.a)
+                    + if 2.0 * d <= dst.a {
+                        2.0 * s * d
+                    } else {
+                        src.a * dst.a - 2.0 * (dst.a - d) * (src.a - s)
+                    }
             }),
             BlendMode::Darken => separable_blend(src, dst, |s, d| {
                 (s * dst.a).min(d * src.a) + s * (1.0 - dst.a) + d * (1.0 - src.a)
@@ -223,34 +228,45 @@ impl BlendMode {
             BlendMode::Lighten => separable_blend(src, dst, |s, d| {
                 (s * dst.a).max(d * src.a) + s * (1.0 - dst.a) + d * (1.0 - src.a)
             }),
+            // Upstream BLEND_MODE(colordodge):
+            //   d == 0  -> s*inv(da)
+            //   s == sa -> s + d*inv(sa)
+            //   else    -> sa*min(da, (d*sa)/(sa-s)) + s*inv(da) + d*inv(sa)
             BlendMode::ColorDodge => separable_blend(src, dst, |s, d| {
+                let (sa, da) = (src.a, dst.a);
                 if d == 0.0 {
-                    s * (1.0 - dst.a)
-                } else if s == src.a {
-                    src.a * dst.a + s * (1.0 - dst.a) + d * (1.0 - src.a)
+                    s * (1.0 - da)
+                } else if s == sa {
+                    s + d * (1.0 - sa)
                 } else {
-                    let factor = (d * src.a) / (src.a - s).max(1e-7);
-                    (src.a * dst.a * factor.min(1.0))
-                        + s * (1.0 - dst.a)
-                        + d * (1.0 - src.a)
+                    sa * da.min((d * sa) / (sa - s)) + s * (1.0 - da) + d * (1.0 - sa)
                 }
             }),
+            // Upstream BLEND_MODE(colorburn):
+            //   d == da -> d + s*inv(da)
+            //   s == 0  -> d*inv(sa)
+            //   else    -> sa*(da - min(da, (da-d)*sa/s)) + s*inv(da) + d*inv(sa)
             BlendMode::ColorBurn => separable_blend(src, dst, |s, d| {
-                if d == dst.a {
-                    src.a * dst.a + s * (1.0 - dst.a) + d * (1.0 - src.a)
+                let (sa, da) = (src.a, dst.a);
+                if d == da {
+                    d + s * (1.0 - da)
                 } else if s == 0.0 {
-                    d * (1.0 - src.a)
+                    d * (1.0 - sa)
                 } else {
-                    let factor = 1.0 - ((dst.a - d) * src.a / s).min(1.0);
-                    src.a * dst.a * factor + s * (1.0 - dst.a) + d * (1.0 - src.a)
+                    sa * (da - da.min((da - d) * sa / s)) + s * (1.0 - da) + d * (1.0 - sa)
                 }
             }),
+            // Upstream BLEND_MODE(hardlight):
+            //   s*inv(da) + d*inv(sa)
+            //     + if_then_else(two(s) <= sa, two(s*d), sa*da - two((da-d)*(sa-s)))
             BlendMode::HardLight => separable_blend(src, dst, |s, d| {
-                if 2.0 * s <= src.a {
-                    2.0 * s * d
-                } else {
-                    src.a * dst.a - 2.0 * (src.a - s) * (dst.a - d)
-                }
+                s * (1.0 - dst.a)
+                    + d * (1.0 - src.a)
+                    + if 2.0 * s <= src.a {
+                        2.0 * s * d
+                    } else {
+                        src.a * dst.a - 2.0 * (src.a - s) * (dst.a - d)
+                    }
             }),
             BlendMode::SoftLight => separable_blend(src, dst, |s, d| soft_light_channel(s, d, src.a, dst.a)),
             BlendMode::Difference => separable_blend(src, dst, |s, d| {
@@ -300,17 +316,25 @@ where
 }
 
 fn soft_light_channel(s: f32, d: f32, sa: f32, da: f32) -> f32 {
-    // W3C compositing Level 1 soft-light formula
-    if 2.0 * s <= sa {
-        d - (sa - 2.0 * s) * d * (da - d) / da.max(1e-7)
-    } else if 4.0 * d <= da {
-        let di = if da > 0.0 { d / da } else { 0.0 };
-        let m = 16.0 * di * di * di - 12.0 * di * di - 3.0 * di;
-        d * sa + (2.0 * s - sa) * (m * da - d)
-    } else {
-        let di = if da > 0.0 { d / da } else { 0.0 };
-        d * sa + (2.0 * s - sa) * (di.sqrt() * da - d)
-    }
+    // Matches upstream BLEND_MODE(softlight) in SkRasterPipeline_opts.h:
+    //   m  = da > 0 ? d/da : 0
+    //   darkSrc = d*(sa + (2s - sa)*(1 - m))              // 2s <= sa
+    //   darkDst = (m4*m4 + m4)*(m - 1) + 7m               // == 16m^3 - 12m^2 + 3m
+    //   liteDst = sqrt(m) - m
+    //   liteSrc = d*sa + da*(2s - sa) * (4d <= da ? darkDst : liteDst)
+    //   result  = s*inv(da) + d*inv(sa) + (2s <= sa ? darkSrc : liteSrc)
+    let m = if da > 0.0 { d / da } else { 0.0 };
+    let s2 = 2.0 * s;
+    let m4 = 4.0 * m;
+
+    let dark_src = d * (sa + (s2 - sa) * (1.0 - m));
+    let dark_dst = (m4 * m4 + m4) * (m - 1.0) + 7.0 * m;
+    let lite_dst = m.sqrt() - m;
+    let lite_src = d * sa
+        + da * (s2 - sa)
+            * if 4.0 * d <= da { dark_dst } else { lite_dst };
+
+    s * (1.0 - da) + d * (1.0 - sa) + if s2 <= sa { dark_src } else { lite_src }
 }
 
 #[derive(Clone, Copy)]
@@ -505,6 +529,123 @@ mod tests {
         let result = BlendMode::Screen.apply(src, dst);
         assert!(close(result.r, 0.5));
         assert!(close(result.g, 0.5));
+    }
+
+    // --- Conformance regression tests against SkRasterPipeline_opts.h ---
+    //
+    // All separable blend-mode expectations below are hand-evaluated from the
+    // upstream BLEND_MODE(...) channel formulas on premultiplied inputs.
+
+    #[test]
+    fn test_overlay_adds_porter_duff_edge_terms() {
+        // Upstream: s*inv(da) + d*inv(sa) + branch.
+        // s = 0.4, sa = 0.5, d = 0.1, da = 0.5.
+        // Branch: 2d = 0.2 <= da -> 2sd = 0.08. Edge: 0.4*0.5 + 0.1*0.5 = 0.25.
+        let src = c(0.4, 0.4, 0.4, 0.5);
+        let dst = c(0.1, 0.1, 0.1, 0.5);
+        let r = BlendMode::Overlay.apply(src, dst);
+        assert!(close(r.r, 0.33), "overlay dark-dst channel was {}", r.r);
+
+        // Other branch: s = 0.1, d = 0.4 -> 2d > da:
+        // sa*da - 2*(da-d)*(sa-s) = 0.25 - 2*0.1*0.4 = 0.17; + edge 0.25 = 0.42.
+        let src = c(0.1, 0.1, 0.1, 0.5);
+        let dst = c(0.4, 0.4, 0.4, 0.5);
+        let r = BlendMode::Overlay.apply(src, dst);
+        assert!(close(r.r, 0.42), "overlay lite-dst channel was {}", r.r);
+    }
+
+    #[test]
+    fn test_hardlight_adds_porter_duff_edge_terms() {
+        // s = 0.4, sa = 0.5, d = 0.1, da = 0.5. 2s = 0.8 > sa ->
+        // sa*da - 2*(sa-s)*(da-d) = 0.25 - 2*0.1*0.4 = 0.17; + edge 0.25 = 0.42.
+        let src = c(0.4, 0.4, 0.4, 0.5);
+        let dst = c(0.1, 0.1, 0.1, 0.5);
+        let r = BlendMode::HardLight.apply(src, dst);
+        assert!(close(r.r, 0.42), "hardlight lite-src channel was {}", r.r);
+    }
+
+    #[test]
+    fn test_colordodge_general_branch_da_normalization() {
+        // Upstream: sa*min(da, d*sa/(sa-s)) + s*inv(da) + d*inv(sa).
+        // s = 0.2, sa = 0.5, d = 0.3, da = 0.8:
+        // d*sa/(sa-s) = 0.5; min(0.8, 0.5) = 0.5; sa*0.5 = 0.25.
+        // Edge: 0.2*0.2 + 0.3*0.5 = 0.19. Total = 0.44.
+        let src = c(0.2, 0.2, 0.2, 0.5);
+        let dst = c(0.3, 0.3, 0.3, 0.8);
+        let r = BlendMode::ColorDodge.apply(src, dst);
+        assert!(close(r.r, 0.44), "colordodge general channel was {}", r.r);
+    }
+
+    #[test]
+    fn test_colorburn_general_branch_da_normalization() {
+        // Upstream: sa*(da - min(da, (da-d)*sa/s)) + s*inv(da) + d*inv(sa).
+        // s = 0.4, sa = 0.5, d = 0.3, da = 0.8:
+        // (da-d)*sa/s = 0.625; min(0.8, 0.625) = 0.625; sa*(0.8-0.625) = 0.0875.
+        // Edge: 0.4*0.2 + 0.3*0.5 = 0.23. Total = 0.3175.
+        let src = c(0.4, 0.4, 0.4, 0.5);
+        let dst = c(0.3, 0.3, 0.3, 0.8);
+        let r = BlendMode::ColorBurn.apply(src, dst);
+        assert!(close(r.r, 0.3175), "colorburn general channel was {}", r.r);
+    }
+
+    #[test]
+    fn test_softlight_matches_upstream_polynomial() {
+        // Case 1 (dark src): s = 0.2, sa = 0.5 (2s <= sa), d = 0.1, da = 0.8.
+        // m = 0.125. darkSrc = d*(sa + (2s-sa)*(1-m)) = 0.1*(0.5 - 0.1*0.875)
+        //          = 0.04125. Edge = 0.2*0.2 + 0.1*0.5 = 0.09. Total 0.13125.
+        let r = BlendMode::SoftLight.apply(c(0.2, 0.2, 0.2, 0.5), c(0.1, 0.1, 0.1, 0.8));
+        assert!(close(r.r, 0.13125), "softlight dark-src was {}", r.r);
+
+        // Case 2 (light src, dark dst): s = 0.4, sa = 0.5, d = 0.1, da = 0.8.
+        // m = 0.125, m4 = 0.5. darkDst = (m4^2 + m4)*(m-1) + 7m
+        //   = 0.75*(-0.875) + 0.875 = 0.21875  (== 16m^3 - 12m^2 + 3m).
+        // liteSrc = d*sa + da*(2s-sa)*darkDst = 0.05 + 0.8*0.3*0.21875 = 0.1025.
+        // Edge = 0.4*0.2 + 0.1*0.5 = 0.13. Total 0.2325.
+        let r = BlendMode::SoftLight.apply(c(0.4, 0.4, 0.4, 0.5), c(0.1, 0.1, 0.1, 0.8));
+        assert!(close(r.r, 0.2325), "softlight dark-dst was {}", r.r);
+
+        // Case 3 (light src, light dst): s = 0.4, sa = 0.5, d = 0.3, da = 0.8.
+        // m = 0.375. liteDst = sqrt(m) - m = 0.2373724.
+        // liteSrc = 0.15 + 0.8*0.3*liteDst = 0.2069694. Edge = 0.23. Total 0.4369694.
+        let r = BlendMode::SoftLight.apply(c(0.4, 0.4, 0.4, 0.5), c(0.3, 0.3, 0.3, 0.8));
+        assert!(close(r.r, 0.4369694), "softlight lite-dst was {}", r.r);
+    }
+
+    #[test]
+    fn test_separable_modes_over_transparent_dst_return_src() {
+        // With da = 0 every upstream separable formula reduces to s.
+        let src = c(0.4, 0.3, 0.2, 0.5);
+        let dst = c(0.0, 0.0, 0.0, 0.0);
+        for i in 14..=24u8 {
+            let mode = BlendMode::from_u8(i).unwrap();
+            let r = mode.apply(src, dst);
+            assert!(
+                colors_close(r, src),
+                "{:?} over transparent dst was {:?}, want src {:?}",
+                mode,
+                r,
+                src
+            );
+        }
+    }
+
+    #[test]
+    fn test_separable_modes_with_transparent_src_return_dst() {
+        // With sa = 0 (and thus s = 0) every upstream separable formula
+        // reduces to d.
+        let src = c(0.0, 0.0, 0.0, 0.0);
+        let dst = c(0.4, 0.3, 0.2, 0.5);
+        for i in 14..=24u8 {
+            let mode = BlendMode::from_u8(i).unwrap();
+            let r = mode.apply(src, dst);
+            assert!(
+                colors_close(r, dst),
+                "{:?} with transparent src was {:?}, want dst {:?}",
+                mode,
+                r,
+                dst
+            );
+        }
     }
 
     #[test]

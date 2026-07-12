@@ -225,6 +225,9 @@ impl Path {
             return Rect::EMPTY;
         }
 
+        // Track finiteness like SkPath::isFinite / computeBounds: any non-finite
+        // coordinate yields empty bounds (upstream accumulates min/max and checks
+        // the accumulator for finiteness at the end).
         let mut min_x = self.points[0].x;
         let mut min_y = self.points[0].y;
         let mut max_x = min_x;
@@ -235,6 +238,10 @@ impl Path {
             min_y = min_y.min(p.y);
             max_x = max_x.max(p.x);
             max_y = max_y.max(p.y);
+        }
+
+        if !(min_x.is_finite() && min_y.is_finite() && max_x.is_finite() && max_y.is_finite()) {
+            return Rect::EMPTY;
         }
 
         Rect::new(min_x, min_y, max_x, max_y)
@@ -293,54 +300,27 @@ impl Path {
     }
 
     /// Check if the path represents a rectangle.
+    ///
+    /// Ported from `SkPathPriv::IsRectContour` (single contour, `allowPartial =
+    /// false`) with the `trivial_rect` fast-path: accepts the crate's own
+    /// `add_rect` output (Move + 3 Lines + Close) and rejects non-rectangular
+    /// horizontal/vertical staircases by counting direction changes and
+    /// validating closure.
     pub fn is_rect(&self) -> Option<Rect> {
-        // A rectangle has: Move, Line, Line, Line, Line, Close (or just 4 lines)
-        if self.verbs.len() < 5 {
+        if self.verbs.len() < 4 || self.points.len() < 4 {
             return None;
         }
-
-        let mut line_count = 0;
-        let mut has_close = false;
-
-        for verb in &self.verbs {
-            match verb {
-                Verb::Move => {}
-                Verb::Line => line_count += 1,
-                Verb::Close => has_close = true,
-                _ => return None,
+        // Only line segments are allowed (kLine segment mask).
+        for v in &self.verbs {
+            if matches!(v, Verb::Quad | Verb::Conic | Verb::Cubic) {
+                return None;
             }
         }
 
-        if line_count != 4 || !has_close {
-            return None;
+        if let Some(r) = trivial_rect(&self.points, &self.verbs) {
+            return Some(r);
         }
-
-        // Check if points form a rectangle
-        if self.points.len() < 5 {
-            return None;
-        }
-
-        let p0 = self.points[0];
-        let p1 = self.points[1];
-        let p2 = self.points[2];
-        let p3 = self.points[3];
-        let p4 = self.points[4];
-
-        // Check for axis-aligned rectangle
-        let is_horizontal_1 = (p0.y - p1.y).abs() < 0.001;
-        let is_vertical_2 = (p1.x - p2.x).abs() < 0.001;
-        let is_horizontal_3 = (p2.y - p3.y).abs() < 0.001;
-        let is_vertical_4 = (p3.x - p4.x).abs() < 0.001;
-
-        if is_horizontal_1 && is_vertical_2 && is_horizontal_3 && is_vertical_4 {
-            let left = p0.x.min(p1.x).min(p2.x).min(p3.x);
-            let top = p0.y.min(p1.y).min(p2.y).min(p3.y);
-            let right = p0.x.max(p1.x).max(p2.x).max(p3.x);
-            let bottom = p0.y.max(p1.y).max(p2.y).max(p3.y);
-            return Some(Rect::new(left, top, right, bottom));
-        }
-
-        None
+        is_rect_contour(&self.points, &self.verbs)
     }
 
     /// Returns true if this path is a simple oval (ellipse).
@@ -410,44 +390,99 @@ impl Path {
     }
 
     /// Get the convexity of the path.
+    ///
+    /// Ported from `SkPathPriv::ComputeConvexity`: per-contour and verb-aware.
+    /// Any second contour is Concave; convexity along a single contour is
+    /// determined by cross-product direction changes (including the closing
+    /// edges) via the `Convexicator`, with no fixed magnitude threshold.
     pub fn convexity(&self) -> PathConvexity {
         let cached = PathConvexity::from_u8(self.convexity.load(Ordering::Relaxed));
         if cached != PathConvexity::Unknown {
             return cached;
         }
 
-        // Simple convexity check based on cross product signs
-        if self.points.len() < 3 {
-            let result = PathConvexity::Convex;
-            self.convexity.store(result as u8, Ordering::Relaxed);
-            return result;
+        let result = self.compute_convexity();
+        self.convexity.store(result as u8, Ordering::Relaxed);
+        result
+    }
+
+    fn compute_convexity(&self) -> PathConvexity {
+        // Count trailing Move verbs to trim (like trim_trailing_moves).
+        let mut vb_count = self.verbs.len();
+        while vb_count > 0 && self.verbs[vb_count - 1] == Verb::Move {
+            vb_count -= 1;
+        }
+        if vb_count == 0 {
+            return PathConvexity::Convex; // degenerate
         }
 
-        let mut sign = 0i32;
-        let n = self.points.len();
+        // Quick concave test by counting direction-sign changes.
+        if convex::is_concave_by_sign(&self.points) {
+            return PathConvexity::Concave;
+        }
 
-        for i in 0..n {
-            let p0 = self.points[i];
-            let p1 = self.points[(i + 1) % n];
-            let p2 = self.points[(i + 2) % n];
+        let mut contour_count = 0;
+        let mut needs_close = false;
+        let mut state = convex::Convexicator::new();
 
-            let cross = (p1.x - p0.x) * (p2.y - p1.y) - (p1.y - p0.y) * (p2.x - p1.x);
+        for elem in self.iter().take(vb_count) {
+            let is_move = matches!(elem, PathElement::Move(_));
 
-            if cross.abs() > 0.001 {
-                let current_sign = if cross > 0.0 { 1 } else { -1 };
-                if sign == 0 {
-                    sign = current_sign;
-                } else if sign != current_sign {
-                    let result = PathConvexity::Concave;
-                    self.convexity.store(result as u8, Ordering::Relaxed);
-                    return result;
+            if contour_count == 0 {
+                if let PathElement::Move(p) = elem {
+                    state.set_move_pt(p);
+                } else {
+                    contour_count += 1;
+                    needs_close = true;
                 }
+            }
+
+            if contour_count == 1 {
+                match elem {
+                    PathElement::Close | PathElement::Move(_) => {
+                        if !state.close() {
+                            return PathConvexity::Concave;
+                        }
+                        needs_close = false;
+                        contour_count += 1;
+                    }
+                    PathElement::Line(p) => {
+                        if !state.add_pt(p) {
+                            return PathConvexity::Concave;
+                        }
+                    }
+                    PathElement::Quad(c, e) | PathElement::Conic(c, e, _) => {
+                        if !state.add_pt(c) || !state.add_pt(e) {
+                            return PathConvexity::Concave;
+                        }
+                    }
+                    PathElement::Cubic(c1, c2, e) => {
+                        if !state.add_pt(c1) || !state.add_pt(c2) || !state.add_pt(e) {
+                            return PathConvexity::Concave;
+                        }
+                    }
+                }
+            } else if contour_count >= 2 && !is_move {
+                // The first contour has closed; any drawing verb means multiple
+                // contours, which cannot be convex.
+                return PathConvexity::Concave;
             }
         }
 
-        let result = PathConvexity::Convex;
-        self.convexity.store(result as u8, Ordering::Relaxed);
-        result
+        if needs_close && !state.close() {
+            return PathConvexity::Concave;
+        }
+
+        match state.first_direction() {
+            convex::FirstDir::Unknown => {
+                if state.reversals() >= 3 {
+                    PathConvexity::Concave
+                } else {
+                    PathConvexity::Convex // kConvex_Degenerate
+                }
+            }
+            _ => PathConvexity::Convex,
+        }
     }
 
     /// Check if the path is convex.
@@ -456,71 +491,165 @@ impl Path {
         self.convexity() == PathConvexity::Convex
     }
 
-    /// Get the direction of the first contour.
+    /// Get the first direction of the path.
+    ///
+    /// Ported from `SkPathPriv::ComputeFirstDirection`: loops over all contours
+    /// and keeps the cross product of the contour that contains the global
+    /// y-max (bottom-most point in y-down device space); `cross > 0 => CW`.
     pub fn direction(&self) -> Option<PathDirection> {
-        if self.points.len() < 3 {
+        if self.points.is_empty() {
+            return None;
+        }
+        let bounds = self.bounds();
+        if bounds == Rect::EMPTY {
             return None;
         }
 
-        // Calculate signed area using shoelace formula
-        let mut signed_area = 0.0;
-        let n = self.points.len();
+        // initialize with our logical y-min (top)
+        let mut ymax = bounds.top;
+        let mut ymax_cross = 0.0f32;
 
-        for i in 0..n {
-            let p0 = self.points[i];
-            let p1 = self.points[(i + 1) % n];
-            signed_area += (p1.x - p0.x) * (p1.y + p0.y);
+        for (start, end) in self.contour_point_ranges() {
+            let pts = &self.points[start..end];
+            let n = pts.len();
+            if n < 3 {
+                continue;
+            }
+            let index = find_max_y(pts);
+            if pts[index].y < ymax {
+                continue;
+            }
+
+            // If there is more than 1 distinct point at the y-max, take the
+            // x-min and x-max of them and subtract to compute the direction.
+            let cross = if pts[(index + 1) % n].y == pts[index].y {
+                let (min_index, max_index) = find_min_max_x_at_y(pts, index);
+                if min_index == max_index {
+                    try_crossprod(pts, index)
+                } else {
+                    (min_index as Scalar) - (max_index as Scalar)
+                }
+            } else {
+                try_crossprod(pts, index)
+            };
+
+            if cross != 0.0 {
+                ymax = pts[index].y;
+                ymax_cross = cross;
+            }
         }
 
-        if signed_area.abs() < 0.001 {
-            return None;
-        }
-
-        Some(if signed_area > 0.0 {
-            PathDirection::CW
+        if ymax_cross == 0.0 {
+            None
+        } else if ymax_cross > 0.0 {
+            Some(PathDirection::CW)
         } else {
-            PathDirection::CCW
-        })
+            Some(PathDirection::CCW)
+        }
+    }
+
+    /// Return `(start, end)` point-index ranges, one per contour (Move..next Move).
+    fn contour_point_ranges(&self) -> Vec<(usize, usize)> {
+        let mut ranges = Vec::new();
+        let mut pt = 0usize;
+        let mut contour_start: Option<usize> = None;
+        for &v in &self.verbs {
+            match v {
+                Verb::Move => {
+                    if let Some(s) = contour_start.take() {
+                        ranges.push((s, pt));
+                    }
+                    contour_start = Some(pt);
+                    pt += 1;
+                }
+                Verb::Line => pt += 1,
+                Verb::Quad | Verb::Conic => pt += 2,
+                Verb::Cubic => pt += 3,
+                Verb::Close => {}
+            }
+        }
+        if let Some(s) = contour_start {
+            ranges.push((s, pt));
+        }
+        ranges
     }
 
     /// Reverse the path direction.
+    ///
+    /// Ported from `SkPathPriv::ReverseAddPath`: walks contours back-to-front,
+    /// emitting `Move` first, points in reverse order with per-verb point-count
+    /// handling, and preserving one `Close` per originally-closed contour.
     pub fn reverse(&mut self) {
         if self.verbs.is_empty() {
             return;
         }
 
-        // Reverse points
-        self.points.reverse();
+        let mut nv: SmallVec<[Verb; 16]> = SmallVec::new();
+        let mut np: SmallVec<[Point; 32]> = SmallVec::new();
+        let mut nw: SmallVec<[Scalar; 4]> = SmallVec::new();
 
-        // Reverse conic weights
-        self.conic_weights.reverse();
+        let mut p: isize = self.points.len() as isize;
+        let mut wi: isize = self.conic_weights.len() as isize;
+        let mut need_move = true;
+        let mut need_close = false;
 
-        // Reverse verbs (keeping structure)
-        // This is a simplified implementation
-        let mut new_verbs = SmallVec::new();
-        let mut i = self.verbs.len();
+        let mut vi = self.verbs.len();
+        while vi > 0 {
+            vi -= 1;
+            let v = self.verbs[vi];
+            let n = v.point_count() as isize;
 
-        while i > 0 {
-            i -= 1;
-            match self.verbs[i] {
+            if need_move {
+                p -= 1;
+                let mp = self.points[p as usize];
+                nv.push(Verb::Move);
+                np.push(mp);
+                need_move = false;
+            }
+            p -= n;
+            match v {
                 Verb::Move => {
-                    if !new_verbs.is_empty() {
-                        new_verbs.push(Verb::Close);
+                    if need_close {
+                        nv.push(Verb::Close);
+                        need_close = false;
                     }
-                    new_verbs.push(Verb::Move);
+                    need_move = true;
+                    p += 1;
+                }
+                Verb::Line => {
+                    nv.push(Verb::Line);
+                    np.push(self.points[p as usize]);
+                }
+                Verb::Quad => {
+                    nv.push(Verb::Quad);
+                    np.push(self.points[(p + 1) as usize]);
+                    np.push(self.points[p as usize]);
+                }
+                Verb::Conic => {
+                    wi -= 1;
+                    nv.push(Verb::Conic);
+                    np.push(self.points[(p + 1) as usize]);
+                    np.push(self.points[p as usize]);
+                    nw.push(self.conic_weights[wi as usize]);
+                }
+                Verb::Cubic => {
+                    nv.push(Verb::Cubic);
+                    np.push(self.points[(p + 2) as usize]);
+                    np.push(self.points[(p + 1) as usize]);
+                    np.push(self.points[p as usize]);
                 }
                 Verb::Close => {
-                    // Skip, will be added before next Move
+                    need_close = true;
                 }
-                v => new_verbs.push(v),
             }
         }
-
-        if !new_verbs.is_empty() && self.is_closed() {
-            new_verbs.push(Verb::Close);
+        if need_close {
+            nv.push(Verb::Close);
         }
 
-        self.verbs = new_verbs;
+        self.verbs = nv;
+        self.points = np;
+        self.conic_weights = nw;
         self.bounds = None;
         self.convexity.store(PathConvexity::Unknown as u8, Ordering::Relaxed);
     }
@@ -555,84 +684,116 @@ impl Path {
         }
     }
 
-    /// Check if a point is inside the path (using fill rule).
+    /// Check if a point is inside the path (using the fill rule).
+    ///
+    /// Ported from `SkPathPriv::Contains`: accumulates **signed** winding
+    /// (+1/-1 per crossing direction) via `winding_line` on each edge, treats
+    /// every contour as implicitly closed for hit-testing (like
+    /// `SkPathEdgeIter`), uses inclusive bounds for the early-out, and XORs the
+    /// result with the inverse-fill flag.
     pub fn contains(&self, point: Point) -> bool {
-        use crate::flatten::{flatten_cubic_adaptive, flatten_conic_adaptive, flatten_quad_adaptive};
+        use crate::flatten::{flatten_conic_adaptive, flatten_cubic_adaptive, flatten_quad_adaptive};
 
-        // Ray casting algorithm
-        if !self.bounds().contains(point) {
-            return false;
+        let is_inverse = self.fill_type.is_inverse();
+        if self.is_empty() {
+            return is_inverse;
         }
 
-        let mut crossings = 0;
+        let bounds = self.bounds();
+        if bounds == Rect::EMPTY || !contains_inclusive(&bounds, point) {
+            return is_inverse;
+        }
+
+        let x = point.x;
+        let y = point.y;
+        let mut w = 0i32;
+        let mut on_curve_count = 0i32;
+
         let mut current = Point::zero();
         let mut contour_start = Point::zero();
+        let mut needs_close_line = false;
         const TOL: Scalar = 0.1;
         let mut pts: Vec<Point> = Vec::with_capacity(32);
 
         for element in self.iter() {
             match element {
                 PathElement::Move(p) => {
+                    if needs_close_line {
+                        w += winding_line(current, contour_start, x, y, &mut on_curve_count);
+                        needs_close_line = false;
+                    }
                     current = p;
                     contour_start = p;
                 }
                 PathElement::Line(end) => {
-                    if ray_crosses_segment(point, current, end) {
-                        crossings += 1;
-                    }
+                    w += winding_line(current, end, x, y, &mut on_curve_count);
                     current = end;
+                    needs_close_line = true;
                 }
                 PathElement::Quad(ctrl, end) => {
                     pts.clear();
                     flatten_quad_adaptive(&mut pts, current, ctrl, end, TOL);
                     let mut prev = current;
                     for pt in &pts {
-                        if ray_crosses_segment(point, prev, *pt) {
-                            crossings += 1;
-                        }
+                        w += winding_line(prev, *pt, x, y, &mut on_curve_count);
                         prev = *pt;
                     }
                     current = end;
+                    needs_close_line = true;
                 }
-                PathElement::Conic(ctrl, end, w) => {
+                PathElement::Conic(ctrl, end, weight) => {
                     pts.clear();
-                    flatten_conic_adaptive(&mut pts, current, ctrl, end, w, TOL);
+                    flatten_conic_adaptive(&mut pts, current, ctrl, end, weight, TOL);
                     let mut prev = current;
                     for pt in &pts {
-                        if ray_crosses_segment(point, prev, *pt) {
-                            crossings += 1;
-                        }
+                        w += winding_line(prev, *pt, x, y, &mut on_curve_count);
                         prev = *pt;
                     }
                     current = end;
+                    needs_close_line = true;
                 }
                 PathElement::Cubic(c1, c2, end) => {
                     pts.clear();
                     flatten_cubic_adaptive(&mut pts, current, c1, c2, end, TOL);
                     let mut prev = current;
                     for pt in &pts {
-                        if ray_crosses_segment(point, prev, *pt) {
-                            crossings += 1;
-                        }
+                        w += winding_line(prev, *pt, x, y, &mut on_curve_count);
                         prev = *pt;
                     }
                     current = end;
+                    needs_close_line = true;
                 }
                 PathElement::Close => {
-                    if ray_crosses_segment(point, current, contour_start) {
-                        crossings += 1;
+                    if needs_close_line {
+                        w += winding_line(current, contour_start, x, y, &mut on_curve_count);
+                        needs_close_line = false;
                     }
                     current = contour_start;
                 }
             }
         }
-
-        match self.fill_type {
-            FillType::Winding => crossings != 0,
-            FillType::EvenOdd => crossings % 2 != 0,
-            FillType::InverseWinding => crossings == 0,
-            FillType::InverseEvenOdd => crossings % 2 == 0,
+        if needs_close_line {
+            w += winding_line(current, contour_start, x, y, &mut on_curve_count);
         }
+
+        let even_odd_fill = matches!(self.fill_type, FillType::EvenOdd | FillType::InverseEvenOdd);
+        if even_odd_fill {
+            w &= 1;
+        }
+        if w != 0 {
+            return !is_inverse;
+        }
+        if on_curve_count <= 1 {
+            return (on_curve_count != 0) ^ is_inverse;
+        }
+        if (on_curve_count & 1) != 0 || even_odd_fill {
+            return ((on_curve_count & 1) != 0) ^ is_inverse;
+        }
+        // Winding fill with the point touching an even number of curves: upstream
+        // resolves coincidence via tangent comparison. With flattened curves an
+        // exact even on-curve hit is essentially unreachable; treat as a boundary
+        // touch (inside for non-inverse fills).
+        !is_inverse
     }
 
     /// Returns the tight bounding rectangle of this path.
@@ -817,21 +978,504 @@ impl Path {
     }
 }
 
-/// Check if a horizontal ray from point crosses the segment.
-fn ray_crosses_segment(point: Point, p0: Point, p1: Point) -> bool {
-    // Ensure p0 is below p1
-    let (p0, p1) = if p0.y <= p1.y { (p0, p1) } else { (p1, p0) };
+/// Returns the first pt with the maximum Y coordinate (ported from `find_max_y`).
+fn find_max_y(pts: &[Point]) -> usize {
+    let mut max = pts[0].y;
+    let mut first_index = 0;
+    for (i, p) in pts.iter().enumerate().skip(1) {
+        if p.y > max {
+            max = p.y;
+            first_index = i;
+        }
+    }
+    first_index
+}
 
-    // Check if point is in y-range of segment
-    if point.y < p0.y || point.y >= p1.y {
-        return false;
+/// Find a point different from `pts[index]`, moving by `inc` (ported from `find_diff_pt`).
+fn find_diff_pt(pts: &[Point], index: usize, inc: usize) -> usize {
+    let n = pts.len();
+    let mut i = index;
+    loop {
+        i = (i + inc) % n;
+        if i == index {
+            break;
+        }
+        if pts[index] != pts[i] {
+            break;
+        }
+    }
+    i
+}
+
+/// From `index` moving forward, find the xmin and xmax of contiguous same-Y points.
+/// Returns `(min_index, max_index)` (ported from `find_min_max_x_at_y`).
+fn find_min_max_x_at_y(pts: &[Point], index: usize) -> (usize, usize) {
+    let n = pts.len();
+    let y = pts[index].y;
+    let mut min = pts[index].x;
+    let mut max = min;
+    let mut min_index = index;
+    let mut max_index = index;
+    for i in (index + 1)..n {
+        if pts[i].y != y {
+            break;
+        }
+        let x = pts[i].x;
+        if x < min {
+            min = x;
+            min_index = i;
+        } else if x > max {
+            max = x;
+            max_index = i;
+        }
+    }
+    (min_index, max_index)
+}
+
+/// cross product of (p1 - p0) and (p2 - p0) (ported from `cross_prod`, f64 promotion).
+fn cross_prod(p0: Point, p1: Point, p2: Point) -> Scalar {
+    let cross = (p1.x - p0.x) * (p2.y - p0.y) - (p1.y - p0.y) * (p2.x - p0.x);
+    if cross == 0.0 {
+        let p0x = p0.x as f64;
+        let p0y = p0.y as f64;
+        let p1x = p1.x as f64;
+        let p1y = p1.y as f64;
+        let p2x = p2.x as f64;
+        let p2y = p2.y as f64;
+        return ((p1x - p0x) * (p2y - p0y) - (p1y - p0y) * (p2x - p0x)) as Scalar;
+    }
+    cross
+}
+
+/// The `TRY_CROSSPROD` path from `ComputeFirstDirection`.
+fn try_crossprod(pts: &[Point], index: usize) -> Scalar {
+    let n = pts.len();
+    let prev = find_diff_pt(pts, index, n - 1);
+    if prev == index {
+        return 0.0;
+    }
+    let next = find_diff_pt(pts, index, 1);
+    let mut cross = cross_prod(pts[prev], pts[index], pts[next]);
+    if cross == 0.0 && pts[prev].y == pts[index].y && pts[next].y == pts[index].y {
+        cross = pts[index].x - pts[next].x;
+    }
+    cross
+}
+
+/// Ported from `rect_make_dir`: encode an axis-aligned edge direction (0..3).
+#[inline]
+fn rect_make_dir(dx: Scalar, dy: Scalar) -> i32 {
+    ((dx != 0.0) as i32) | (((dx > 0.0 || dy > 0.0) as i32) << 1)
+}
+
+/// Build a sorted rect spanning two corner points.
+#[inline]
+fn rect_from_corners(a: Point, b: Point) -> Rect {
+    Rect::new(a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y))
+}
+
+/// Fast-path port of `trivial_rect`: exactly Move, Line, Line, Line, Close
+/// over 4 points forming three right corners.
+fn trivial_rect(pts: &[Point], vbs: &[Verb]) -> Option<Rect> {
+    const TRIVIAL: [Verb; 5] = [Verb::Move, Verb::Line, Verb::Line, Verb::Line, Verb::Close];
+    if pts.len() != 4 || vbs.len() != TRIVIAL.len() || vbs != TRIVIAL {
+        return None;
+    }
+    let v0 = Point::new(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+    let v1 = Point::new(pts[2].x - pts[1].x, pts[2].y - pts[1].y);
+    let v2 = Point::new(pts[3].x - pts[2].x, pts[3].y - pts[2].y);
+    let v3 = Point::new(pts[0].x - pts[3].x, pts[0].y - pts[3].y);
+
+    // One vector axis-aligned, and each following vector orthogonal to the last.
+    let axis_aligned = |a: &Point| (a.x == 0.0) ^ (a.y == 0.0);
+    let orthogonal = |a: &Point, b: &Point| ((a.x == 0.0) ^ (b.x == 0.0)) && ((a.y == 0.0) ^ (b.y == 0.0));
+
+    if !(axis_aligned(&v0) && orthogonal(&v0, &v1) && orthogonal(&v1, &v2) && orthogonal(&v2, &v3)) {
+        return None;
+    }
+    Some(rect_from_corners(pts[0], pts[2]))
+}
+
+/// General port of `SkPathPriv::IsRectContour` for a single contour
+/// (`allowPartial = false`).
+fn is_rect_contour(points: &[Point], verbs: &[Verb]) -> Option<Rect> {
+    let verb_cnt = verbs.len();
+    let mut pi = 0usize;
+    let mut curr_verb = 0usize;
+
+    let mut corners = 0usize;
+    let mut line_start = Point::zero();
+    let mut first_pt = Point::zero();
+    let mut last_pt = Point::zero();
+    let mut first_corner = Point::zero();
+    let mut third_corner = Point::zero();
+    let mut directions = [-1i32; 5];
+    let mut closed_or_moved = false;
+    let mut auto_close = false;
+
+    while curr_verb < verb_cnt {
+        let verb = verbs[curr_verb];
+        match verb {
+            Verb::Close | Verb::Line => {
+                if verb == Verb::Close {
+                    auto_close = true;
+                } else {
+                    last_pt = points[pi];
+                }
+                let line_end = if verb == Verb::Close {
+                    first_pt
+                } else {
+                    let p = points[pi];
+                    pi += 1;
+                    p
+                };
+                let dx = line_end.x - line_start.x;
+                let dy = line_end.y - line_start.y;
+                if dx != 0.0 && dy != 0.0 {
+                    return None; // diagonal
+                }
+                if !line_end.is_finite() || !line_start.is_finite() {
+                    return None; // infinity or NaN
+                }
+                if line_start == line_end {
+                    // single point on side is OK
+                } else {
+                    let next_direction = rect_make_dir(dx, dy);
+                    if corners == 0 {
+                        directions[0] = next_direction;
+                        corners = 1;
+                        closed_or_moved = false;
+                        line_start = line_end;
+                    } else if closed_or_moved {
+                        return None; // closed followed by a line
+                    } else if auto_close && next_direction == directions[0] {
+                        // colinear with first
+                    } else {
+                        closed_or_moved = auto_close;
+                        if directions[corners - 1] == next_direction {
+                            if corners == 3 && verb == Verb::Line {
+                                third_corner = line_end;
+                            }
+                            line_start = line_end;
+                        } else {
+                            directions[corners] = next_direction;
+                            corners += 1;
+                            match corners {
+                                2 => first_corner = line_start,
+                                3 => {
+                                    if (directions[0] ^ directions[2]) != 2 {
+                                        return None;
+                                    }
+                                    third_corner = line_end;
+                                }
+                                4 => {
+                                    if (directions[1] ^ directions[3]) != 2 {
+                                        return None;
+                                    }
+                                }
+                                _ => return None, // too many direction changes
+                            }
+                            line_start = line_end;
+                        }
+                    }
+                }
+            }
+            Verb::Quad | Verb::Conic | Verb::Cubic => return None,
+            Verb::Move => {
+                if corners == 0 {
+                    first_pt = points[pi];
+                } else {
+                    let cx = first_pt.x - last_pt.x;
+                    let cy = first_pt.y - last_pt.y;
+                    if cx != 0.0 && cy != 0.0 {
+                        return None; // diagonal
+                    }
+                }
+                line_start = points[pi];
+                pi += 1;
+                closed_or_moved = true;
+            }
+        }
+        curr_verb += 1;
     }
 
-    // Calculate x-coordinate of intersection
-    let t = (point.y - p0.y) / (p1.y - p0.y);
-    let x_intersect = p0.x + t * (p1.x - p0.x);
+    if corners < 3 || corners > 4 {
+        return None;
+    }
+    let cx = first_pt.x - last_pt.x;
+    let cy = first_pt.y - last_pt.y;
+    if cx != 0.0 && cy != 0.0 {
+        return None;
+    }
+    Some(rect_from_corners(first_corner, third_corner))
+}
 
-    x_intersect > point.x
+/// Inclusive point-in-rect test (ported from `contains_inclusive`).
+#[inline]
+fn contains_inclusive(r: &Rect, p: Point) -> bool {
+    r.left <= p.x && p.x <= r.right && r.top <= p.y && p.y <= r.bottom
+}
+
+/// True if `b` lies between `a` and `c` (inclusive), ported from Skia's `between`.
+#[inline]
+fn between(a: Scalar, b: Scalar, c: Scalar) -> bool {
+    (a - b) * (c - b) <= 0.0
+}
+
+#[inline]
+fn sign_as_int(x: Scalar) -> i32 {
+    if x < 0.0 {
+        -1
+    } else if x > 0.0 {
+        1
+    } else {
+        0
+    }
+}
+
+/// Ported from `checkOnCurve`.
+#[inline]
+fn check_on_curve(x: Scalar, y: Scalar, start: Point, end: Point) -> bool {
+    if start.y == end.y {
+        between(start.x, x, end.x) && x != end.x
+    } else {
+        x == start.x && y == start.y
+    }
+}
+
+/// Signed winding contribution of a line edge for the point (x, y).
+///
+/// Ported from `winding_line` in `SkPathPriv.cpp`: returns +1/-1 for a crossing
+/// to the right of the point (sign encodes the edge's y-direction), 0 otherwise,
+/// and increments `on_curve_count` when the point lies on the edge.
+fn winding_line(a: Point, b: Point, x: Scalar, y: Scalar, on_curve_count: &mut i32) -> i32 {
+    let x0 = a.x;
+    let mut y0 = a.y;
+    let x1 = b.x;
+    let mut y1 = b.y;
+
+    let dy = y1 - y0;
+    let mut dir = 1;
+    if y0 > y1 {
+        std::mem::swap(&mut y0, &mut y1);
+        dir = -1;
+    }
+    if y < y0 || y > y1 {
+        return 0;
+    }
+    if check_on_curve(x, y, a, b) {
+        *on_curve_count += 1;
+        return 0;
+    }
+    if y == y1 {
+        return 0;
+    }
+    let cross = (x1 - x0) * (y - a.y) - dy * (x - x0);
+
+    if cross == 0.0 {
+        if x != x1 || y != b.y {
+            *on_curve_count += 1;
+        }
+        dir = 0;
+    } else if sign_as_int(cross) == dir {
+        dir = 0;
+    }
+    dir
+}
+
+/// Convexity computation, ported from the `Convexicator` in `SkPathPriv.cpp`.
+mod convex {
+    use super::sign_as_int;
+    use skia_rs_core::Point;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum FirstDir {
+        CW,
+        CCW,
+        Unknown,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum DirChange {
+        Left,
+        Right,
+        Straight,
+        Backwards,
+        Unknown,
+        Invalid,
+    }
+
+    #[inline]
+    fn vsub(a: Point, b: Point) -> Point {
+        Point::new(a.x - b.x, a.y - b.y)
+    }
+
+    /// Quick concave test: counts direction-sign changes around the contour.
+    /// Ported from `Convexicator::IsConcaveBySign`.
+    pub fn is_concave_by_sign(pts: &[Point]) -> bool {
+        let count = pts.len();
+        if count <= 3 {
+            return false;
+        }
+        let first_pt = pts[0];
+        let mut curr_pt = pts[0];
+        let mut dxes = 0i32;
+        let mut dyes = 0i32;
+        let mut last_sx = 2i32;
+        let mut last_sy = 2i32;
+
+        let process = |next: Point,
+                           curr: &mut Point,
+                           dxes: &mut i32,
+                           dyes: &mut i32,
+                           last_sx: &mut i32,
+                           last_sy: &mut i32|
+         -> Option<bool> {
+            let vx = next.x - curr.x;
+            let vy = next.y - curr.y;
+            if vx != 0.0 || vy != 0.0 {
+                if !vx.is_finite() || !vy.is_finite() {
+                    return Some(true);
+                }
+                let sx = (vx < 0.0) as i32;
+                let sy = (vy < 0.0) as i32;
+                *dxes += (sx != *last_sx) as i32;
+                *dyes += (sy != *last_sy) as i32;
+                if *dxes > 3 || *dyes > 3 {
+                    return Some(true);
+                }
+                *last_sx = sx;
+                *last_sy = sy;
+            }
+            *curr = next;
+            None
+        };
+
+        for &p in &pts[1..count] {
+            if let Some(r) = process(p, &mut curr_pt, &mut dxes, &mut dyes, &mut last_sx, &mut last_sy) {
+                return r;
+            }
+        }
+        // closing edge back to the first point
+        if let Some(r) = process(first_pt, &mut curr_pt, &mut dxes, &mut dyes, &mut last_sx, &mut last_sy) {
+            return r;
+        }
+        false
+    }
+
+    /// Only valid for a single contour.
+    pub struct Convexicator {
+        first_pt: Point,
+        first_vec: Point,
+        last_pt: Point,
+        last_vec: Point,
+        expected_dir: DirChange,
+        first_direction: FirstDir,
+        reversals: i32,
+    }
+
+    impl Convexicator {
+        pub fn new() -> Self {
+            Self {
+                first_pt: Point::zero(),
+                first_vec: Point::zero(),
+                last_pt: Point::zero(),
+                last_vec: Point::zero(),
+                expected_dir: DirChange::Invalid,
+                first_direction: FirstDir::Unknown,
+                reversals: 0,
+            }
+        }
+
+        pub fn first_direction(&self) -> FirstDir {
+            self.first_direction
+        }
+
+        pub fn reversals(&self) -> i32 {
+            self.reversals
+        }
+
+        pub fn set_move_pt(&mut self, pt: Point) {
+            self.first_pt = pt;
+            self.last_pt = pt;
+            self.expected_dir = DirChange::Invalid;
+        }
+
+        pub fn add_pt(&mut self, pt: Point) -> bool {
+            if self.last_pt == pt {
+                return true;
+            }
+            if self.first_pt == self.last_pt
+                && self.expected_dir == DirChange::Invalid
+                && self.last_vec.is_zero()
+            {
+                self.last_vec = vsub(pt, self.last_pt);
+                self.first_vec = self.last_vec;
+            } else if !self.add_vec(vsub(pt, self.last_pt)) {
+                return false;
+            }
+            self.last_pt = pt;
+            true
+        }
+
+        pub fn close(&mut self) -> bool {
+            let fp = self.first_pt;
+            let fv = self.first_vec;
+            self.add_pt(fp) && self.add_vec(fv)
+        }
+
+        fn direction_change(&self, cur_vec: Point) -> DirChange {
+            let cross = self.last_vec.cross(&cur_vec);
+            if !cross.is_finite() {
+                return DirChange::Unknown;
+            }
+            if cross == 0.0 {
+                return if self.last_vec.dot(&cur_vec) < 0.0 {
+                    DirChange::Backwards
+                } else {
+                    DirChange::Straight
+                };
+            }
+            if sign_as_int(cross) == 1 {
+                DirChange::Right
+            } else {
+                DirChange::Left
+            }
+        }
+
+        fn add_vec(&mut self, cur_vec: Point) -> bool {
+            let dir = self.direction_change(cur_vec);
+            match dir {
+                DirChange::Left | DirChange::Right => {
+                    if self.expected_dir == DirChange::Invalid {
+                        self.expected_dir = dir;
+                        self.first_direction = if dir == DirChange::Right {
+                            FirstDir::CW
+                        } else {
+                            FirstDir::CCW
+                        };
+                    } else if dir != self.expected_dir {
+                        self.first_direction = FirstDir::Unknown;
+                        return false;
+                    }
+                    self.last_vec = cur_vec;
+                }
+                DirChange::Straight => {}
+                DirChange::Backwards => {
+                    // allow the path to reverse direction twice
+                    self.last_vec = cur_vec;
+                    self.reversals += 1;
+                    return self.reversals < 3;
+                }
+                DirChange::Unknown => {
+                    // Non-finite cross product: cannot determine convexity.
+                    return false;
+                }
+                DirChange::Invalid => unreachable!("invalid direction change flag"),
+            }
+            true
+        }
+    }
 }
 
 /// A path element from iteration.
@@ -1032,6 +1676,153 @@ mod tests {
             "expected 3.0, got {}",
             len
         );
+    }
+
+    #[test]
+    fn test_direction_add_rect_is_cw() {
+        // add_rect emits CW geometry in y-down device space; must report CW.
+        let mut b = PathBuilder::new();
+        b.add_rect(&Rect::new(0.0, 0.0, 10.0, 10.0));
+        let path = b.build();
+        assert_eq!(path.direction(), Some(PathDirection::CW));
+    }
+
+    #[test]
+    fn test_is_rect_accepts_add_rect_output() {
+        // add_rect emits Move + 3 Lines + Close (the 4th edge is the close).
+        let mut b = PathBuilder::new();
+        b.add_rect(&Rect::new(1.0, 2.0, 5.0, 8.0));
+        let path = b.build();
+        let r = path.is_rect().expect("add_rect output must be recognized as a rect");
+        assert!((r.left - 1.0).abs() < 1e-4 && (r.top - 2.0).abs() < 1e-4);
+        assert!((r.right - 5.0).abs() < 1e-4 && (r.bottom - 8.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_is_rect_rejects_hv_staircase() {
+        // A horizontal/vertical staircase has too many direction changes.
+        let mut b = PathBuilder::new();
+        b.move_to(0.0, 0.0);
+        b.line_to(10.0, 0.0);
+        b.line_to(10.0, 10.0);
+        b.line_to(20.0, 10.0);
+        b.line_to(20.0, 20.0);
+        b.line_to(0.0, 20.0);
+        b.close();
+        let path = b.build();
+        assert_eq!(path.is_rect(), None, "staircase must not be a rect");
+    }
+
+    #[test]
+    fn test_convexity_two_contours_is_concave() {
+        let mut b = PathBuilder::new();
+        b.add_rect(&Rect::new(0.0, 0.0, 10.0, 10.0));
+        b.add_rect(&Rect::new(20.0, 20.0, 30.0, 30.0));
+        let path = b.build();
+        assert_eq!(path.convexity(), PathConvexity::Concave);
+    }
+
+    #[test]
+    fn test_convexity_single_rect_is_convex() {
+        let mut b = PathBuilder::new();
+        b.add_rect(&Rect::new(0.0, 0.0, 10.0, 10.0));
+        let path = b.build();
+        assert_eq!(path.convexity(), PathConvexity::Convex);
+    }
+
+    #[test]
+    fn test_convexity_concave_l_shape() {
+        // An L-shape is concave.
+        let mut b = PathBuilder::new();
+        b.move_to(0.0, 0.0);
+        b.line_to(20.0, 0.0);
+        b.line_to(20.0, 10.0);
+        b.line_to(10.0, 10.0);
+        b.line_to(10.0, 20.0);
+        b.line_to(0.0, 20.0);
+        b.close();
+        let path = b.build();
+        assert_eq!(path.convexity(), PathConvexity::Concave);
+    }
+
+    #[test]
+    fn test_reverse_produces_valid_verb_stream() {
+        // Reversing must not produce a Move at the end or doubled/spurious Close.
+        let mut b = PathBuilder::new();
+        b.move_to(0.0, 0.0);
+        b.line_to(10.0, 0.0);
+        b.line_to(10.0, 10.0);
+        b.close();
+        let mut path = b.build();
+        path.reverse();
+        let verbs = path.verbs();
+        assert_eq!(verbs[0], Verb::Move, "reversed path must start with Move");
+        // Move must never appear except as first verb of a contour, never trailing.
+        assert_ne!(*verbs.last().unwrap(), Verb::Move, "must not end with Move");
+        // Exactly one Close for the single closed contour.
+        let closes = verbs.iter().filter(|v| **v == Verb::Close).count();
+        assert_eq!(closes, 1, "exactly one Close preserved");
+        // The reversed closed triangle still contains its centroid.
+        assert!(path.contains(Point::new(6.6, 3.3)));
+    }
+
+    #[test]
+    fn test_bounds_non_finite_is_empty() {
+        let mut b = PathBuilder::new();
+        b.move_to(0.0, 0.0);
+        b.line_to(Scalar::INFINITY, 10.0);
+        let path = b.build();
+        assert_eq!(path.bounds(), Rect::EMPTY, "non-finite path has empty bounds");
+    }
+
+    #[test]
+    fn test_contains_signed_winding_self_overlap() {
+        // Even-odd vs winding differ on a self-overlapping figure-eight-like path.
+        // Two nested CCW+CW squares: winding cancels in the inner region.
+        let mut b = PathBuilder::new();
+        // outer CW
+        b.move_to(0.0, 0.0);
+        b.line_to(30.0, 0.0);
+        b.line_to(30.0, 30.0);
+        b.line_to(0.0, 30.0);
+        b.close();
+        // inner, same CW winding -> winding rule keeps interior filled
+        b.move_to(10.0, 10.0);
+        b.line_to(20.0, 10.0);
+        b.line_to(20.0, 20.0);
+        b.line_to(10.0, 20.0);
+        b.close();
+        let mut path = b.build();
+        path.set_fill_type(FillType::Winding);
+        // both wound same way -> center has winding 2 -> filled
+        assert!(path.contains(Point::new(15.0, 15.0)));
+        path.set_fill_type(FillType::EvenOdd);
+        // even-odd -> center crosses two boundaries -> empty (hole)
+        assert!(!path.contains(Point::new(15.0, 15.0)));
+    }
+
+    #[test]
+    fn test_contains_inverse_fill_outside_bounds() {
+        let mut b = PathBuilder::new();
+        b.add_rect(&Rect::new(0.0, 0.0, 10.0, 10.0));
+        let mut path = b.build();
+        path.set_fill_type(FillType::InverseWinding);
+        // Point outside bounds is contained for inverse fill.
+        assert!(path.contains(Point::new(100.0, 100.0)));
+        // Point inside the rect is NOT contained for inverse fill.
+        assert!(!path.contains(Point::new(5.0, 5.0)));
+    }
+
+    #[test]
+    fn test_contains_implicit_close_unclosed_triangle() {
+        // Triangle without explicit Close must still hit-test as closed.
+        let mut b = PathBuilder::new();
+        b.move_to(0.0, 0.0);
+        b.line_to(10.0, 0.0);
+        b.line_to(5.0, 10.0);
+        // no close()
+        let path = b.build();
+        assert!(path.contains(Point::new(5.0, 3.0)), "implicit closing edge fills the triangle");
     }
 
     #[test]

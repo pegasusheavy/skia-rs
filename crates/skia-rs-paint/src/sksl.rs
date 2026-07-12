@@ -761,6 +761,15 @@ pub enum Expr {
         /// Arguments.
         args: Vec<Expr>,
     },
+    /// Method-style call on a postfix expression (e.g. `child.eval(coord)`).
+    MethodCall {
+        /// Receiver expression (the value the method is invoked on).
+        receiver: Box<Expr>,
+        /// Method name.
+        method: String,
+        /// Arguments.
+        args: Vec<Expr>,
+    },
     /// Constructor (vec2, vec3, etc.).
     Constructor {
         /// Type being constructed.
@@ -1551,14 +1560,65 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_and(&mut self) -> Result<Expr, String> {
-        let mut expr = self.parse_equality()?;
+        let mut expr = self.parse_bit_or()?;
 
         while self.check(&Token::AndAnd) {
+            self.advance();
+            let right = self.parse_bit_or()?;
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                op: BinaryOp::And,
+                right: Box::new(right),
+            };
+        }
+
+        Ok(expr)
+    }
+
+    // GLSL precedence: | is below ^, which is below &, which is below
+    // equality; shifts sit between relational and additive.
+
+    fn parse_bit_or(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_bit_xor()?;
+
+        while self.check(&Token::Or) {
+            self.advance();
+            let right = self.parse_bit_xor()?;
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                op: BinaryOp::BitOr,
+                right: Box::new(right),
+            };
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_bit_xor(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_bit_and()?;
+
+        while self.check(&Token::Caret) {
+            self.advance();
+            let right = self.parse_bit_and()?;
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                op: BinaryOp::BitXor,
+                right: Box::new(right),
+            };
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_bit_and(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_equality()?;
+
+        while self.check(&Token::And) {
             self.advance();
             let right = self.parse_equality()?;
             expr = Expr::Binary {
                 left: Box::new(expr),
-                op: BinaryOp::And,
+                op: BinaryOp::BitAnd,
                 right: Box::new(right),
             };
         }
@@ -1587,7 +1647,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_comparison(&mut self) -> Result<Expr, String> {
-        let mut expr = self.parse_additive()?;
+        let mut expr = self.parse_shift()?;
 
         while self.check(&Token::Lt)
             || self.check(&Token::LtEq)
@@ -1599,6 +1659,26 @@ impl<'a> Parser<'a> {
                 Token::LtEq => BinaryOp::LtEq,
                 Token::Gt => BinaryOp::Gt,
                 Token::GtEq => BinaryOp::GtEq,
+                _ => unreachable!(),
+            };
+            let right = self.parse_shift()?;
+            expr = Expr::Binary {
+                left: Box::new(expr),
+                op,
+                right: Box::new(right),
+            };
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_shift(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_additive()?;
+
+        while self.check(&Token::LtLt) || self.check(&Token::GtGt) {
+            let op = match self.advance() {
+                Token::LtLt => BinaryOp::Shl,
+                Token::GtGt => BinaryOp::Shr,
                 _ => unreachable!(),
             };
             let right = self.parse_additive()?;
@@ -1702,6 +1782,20 @@ impl<'a> Parser<'a> {
         self.parse_postfix()
     }
 
+    /// Parse a parenthesized, comma-separated argument list. The opening
+    /// `(` must already be consumed.
+    fn parse_call_args(&mut self) -> Result<Vec<Expr>, String> {
+        let mut args = Vec::new();
+        while !self.check(&Token::RParen) {
+            args.push(self.parse_expression()?);
+            if !self.check(&Token::RParen) {
+                self.expect(&Token::Comma)?;
+            }
+        }
+        self.expect(&Token::RParen)?;
+        Ok(args)
+    }
+
     fn parse_postfix(&mut self) -> Result<Expr, String> {
         let mut expr = self.parse_primary()?;
 
@@ -1725,20 +1819,30 @@ impl<'a> Parser<'a> {
                     index: Box::new(index),
                 };
             } else if self.check(&Token::LParen) {
-                // Function call
-                if let Expr::Var(name) = expr {
-                    self.advance();
-                    let mut args = Vec::new();
-                    while !self.check(&Token::RParen) {
-                        args.push(self.parse_expression()?);
-                        if !self.check(&Token::RParen) {
-                            self.expect(&Token::Comma)?;
-                        }
+                // Function call (`f(...)`) or method-style call on an
+                // arbitrary postfix expression (`child.eval(coord)`).
+                match expr {
+                    Expr::Var(name) => {
+                        self.advance();
+                        let args = self.parse_call_args()?;
+                        expr = Expr::Call { name, args };
                     }
-                    self.expect(&Token::RParen)?;
-                    expr = Expr::Call { name, args };
-                } else {
-                    break;
+                    Expr::Field {
+                        expr: receiver,
+                        field,
+                    } => {
+                        self.advance();
+                        let args = self.parse_call_args()?;
+                        expr = Expr::MethodCall {
+                            receiver,
+                            method: field,
+                            args,
+                        };
+                    }
+                    other => {
+                        expr = other;
+                        break;
+                    }
                 }
             } else if self.check(&Token::PlusPlus) {
                 self.advance();
@@ -1792,6 +1896,7 @@ impl<'a> Parser<'a> {
             Token::Vec2
             | Token::Vec3
             | Token::Vec4
+            | Token::Half
             | Token::Half2
             | Token::Half3
             | Token::Half4

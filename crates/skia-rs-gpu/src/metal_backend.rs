@@ -193,7 +193,10 @@ pub struct MetalPixelFormatInfo {
     pub renderable: bool,
 }
 
-/// Convert TextureFormat to Metal pixel format.
+/// Convert TextureFormat to Metal pixel format (nominal mapping).
+///
+/// Note: `Depth24Stencil8` maps to `Depth24Unorm_Stencil8`, which is **not**
+/// supported on all Metal devices (Apple-silicon GPUs do not support it).
 #[cfg(feature = "metal")]
 pub fn texture_format_to_metal(format: TextureFormat) -> MTLPixelFormat {
     match format {
@@ -544,8 +547,13 @@ impl MetalContext {
             max_samplers_per_stage: 16,
             max_textures_per_stage: 128,
             max_buffers_per_stage: 31,
-            argument_buffers: device.argument_buffers_support()
-                != metal::MTLArgumentBuffersTier::Tier1,
+            // Both Tier1 and Tier2 support argument buffers; only the tier
+            // differs. The previous `!= Tier1` reported Tier1 devices as
+            // lacking argument buffers entirely, which is wrong.
+            argument_buffers: matches!(
+                device.argument_buffers_support(),
+                metal::MTLArgumentBuffersTier::Tier1 | metal::MTLArgumentBuffersTier::Tier2
+            ),
             raster_order_groups: device.are_raster_order_groups_supported(),
             float32_filtering: true, // Most Metal devices support this
             msaa_depth_resolve: true,

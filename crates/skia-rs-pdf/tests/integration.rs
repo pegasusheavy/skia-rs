@@ -28,7 +28,7 @@ fn simple_pdf_has_valid_structure() {
         c.use_standard_font(StandardFont::Helvetica);
         let mut p = Paint::new();
         p.set_color32(Color::from_rgb(0, 0, 0));
-        c.draw_text("Hello, World!", 72.0, 72.0, 14.0, &p);
+        c.draw_text("Hello, World!", 72.0, 72.0, 14.0, &p).expect("draw_text should succeed");
         let page = c.finish();
         doc.end_page(page);
     }
@@ -59,7 +59,7 @@ fn end_to_end_pdf_with_text_image_transparency_pdfa() {
 
         let mut paint = Paint::new();
         paint.set_color32(Color::from_rgb(0, 0, 0));
-        canvas.draw_text("Hello, PDF!", 72.0, 100.0, 14.0, &paint);
+        canvas.draw_text("Hello, PDF!", 72.0, 100.0, 14.0, &paint).expect("draw_text should succeed");
 
         // Translucent rect — should register an ExtGState.
         let mut translucent = Paint::new();
@@ -116,7 +116,7 @@ fn truetype_embedding_emits_fontfile2_and_widths() {
         let mut canvas = doc.begin_page(200.0, 200.0);
         canvas.set_font(font_idx);
         let paint = Paint::new();
-        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint);
+        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint).expect("draw_text should succeed");
         let page = canvas.finish();
         doc.end_page(page);
     }
@@ -168,7 +168,7 @@ fn truetype_subset_length1_matches_stream_length() {
         let mut canvas = doc.begin_page(200.0, 200.0);
         canvas.set_font(font_idx);
         let paint = Paint::new();
-        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint);
+        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint).expect("draw_text should succeed");
         let page = canvas.finish();
         doc.end_page(page);
     }
@@ -227,6 +227,201 @@ fn truetype_subset_actually_prunes_large_glyf() {
     // Subset must still parse as a TTF.
     let face = ttf_parser::Face::parse(&subset, 0).expect("subset parses");
     assert_eq!(face.number_of_glyphs() as usize, 10);
+}
+
+/// A Type0 (CID-keyed) font, once registered and used, must emit a
+/// `/DescendantFonts` array pointing at a `CIDFontType2` dict with
+/// `/CIDToGIDMap`, `/W`, and `/CIDSystemInfo` — per PDF 32000-1 §9.7.6, a
+/// Type0 font is otherwise glyph-less.
+#[test]
+fn type0_font_emits_descendant_fonts_array() {
+    let mut doc = PdfDocument::new();
+
+    let font_idx = doc
+        .fonts_mut()
+        .register_truetype_cid("Demo", DEMO_TTF.to_vec());
+
+    {
+        // `draw_text`/`draw_text_with_font` fail closed against Type0/CID
+        // fonts (see `type0_font_draw_text_fails_closed` below), so we
+        // can't drive resource usage through a live draw here. `set_font`
+        // alone is enough to register the font as used for this page's
+        // `/Resources`, and the `/DescendantFonts` structure below is
+        // emitted for every registered Type0 font regardless of whether
+        // any text was drawn through it (see `PdfDocument::write_to`).
+        let mut canvas = doc.begin_page(200.0, 200.0);
+        canvas.set_font(font_idx);
+        let page = canvas.finish();
+        doc.end_page(page);
+    }
+
+    let mut buf = Vec::new();
+    doc.write_to(&mut buf).expect("write should succeed");
+    let s = String::from_utf8_lossy(&buf);
+
+    assert!(s.contains("/Subtype /Type0"), "{}", s);
+    assert!(
+        s.contains("/DescendantFonts ["),
+        "missing /DescendantFonts: {}",
+        s
+    );
+    assert!(s.contains("/Subtype /CIDFontType2"));
+    assert!(s.contains("/CIDToGIDMap /Identity"));
+    assert!(s.contains(
+        "/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>"
+    ));
+    assert!(s.contains("/W ["));
+    // Embedded outlines are shared with the simple-TrueType path.
+    assert!(s.contains("/FontFile2"));
+}
+
+/// Symbolic standard fonts (`Symbol`, `ZapfDingbats`) must omit `/Encoding`
+/// so a reader falls back to the font's built-in encoding; non-symbolic
+/// standard fonts (e.g. `Helvetica`) keep `/Encoding /WinAnsiEncoding`.
+/// Each font is drawn on its own page so every `/Encoding` occurrence in
+/// the output maps back to a single, unambiguous font dict.
+#[test]
+fn standard_font_encoding_is_omitted_only_for_symbolic_fonts() {
+    let mut doc = PdfDocument::new();
+    let paint = Paint::new();
+
+    {
+        let mut canvas = doc.begin_page(200.0, 200.0);
+        canvas.use_standard_font(StandardFont::Symbol);
+        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint).expect("draw_text should succeed");
+        let page = canvas.finish();
+        doc.end_page(page);
+    }
+    let mut buf = Vec::new();
+    doc.write_to(&mut buf).expect("write should succeed");
+    let s = String::from_utf8_lossy(&buf);
+    assert!(
+        !s.contains("/Encoding"),
+        "Symbol must omit /Encoding to use its built-in encoding: {}",
+        s
+    );
+
+    let mut doc = PdfDocument::new();
+    {
+        let mut canvas = doc.begin_page(200.0, 200.0);
+        canvas.use_standard_font(StandardFont::ZapfDingbats);
+        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint).expect("draw_text should succeed");
+        let page = canvas.finish();
+        doc.end_page(page);
+    }
+    let mut buf = Vec::new();
+    doc.write_to(&mut buf).expect("write should succeed");
+    let s = String::from_utf8_lossy(&buf);
+    assert!(
+        !s.contains("/Encoding"),
+        "ZapfDingbats must omit /Encoding to use its built-in encoding: {}",
+        s
+    );
+
+    let mut doc = PdfDocument::new();
+    {
+        let mut canvas = doc.begin_page(200.0, 200.0);
+        canvas.use_standard_font(StandardFont::Helvetica);
+        canvas.draw_text("A", 10.0, 20.0, 12.0, &paint).expect("draw_text should succeed");
+        let page = canvas.finish();
+        doc.end_page(page);
+    }
+    let mut buf = Vec::new();
+    doc.write_to(&mut buf).expect("write should succeed");
+    let s = String::from_utf8_lossy(&buf);
+    assert!(
+        s.contains("/Encoding /WinAnsiEncoding"),
+        "Helvetica should keep /Encoding /WinAnsiEncoding: {}",
+        s
+    );
+}
+
+/// A font registered via `register_truetype_cid` is emitted with
+/// `/Encoding /Identity-H`, which a reader interprets as a stream of
+/// 2-byte CIDs. `draw_text`/`draw_text_with_font` don't yet resolve
+/// per-glyph CIDs, so drawing live text through such a font must fail
+/// closed with `Err(PdfError::Unsupported)` instead of silently emitting
+/// 1-byte WinAnsi codes against a 2-byte encoding, which would decode as
+/// garbage glyphs.
+#[test]
+fn type0_font_draw_text_fails_closed() {
+    let mut doc = PdfDocument::new();
+
+    let font_idx = doc
+        .fonts_mut()
+        .register_truetype_cid("Demo", DEMO_TTF.to_vec());
+
+    let mut canvas = doc.begin_page(200.0, 200.0);
+    canvas.set_font(font_idx);
+    let paint = Paint::new();
+
+    let result = canvas.draw_text("A", 10.0, 20.0, 12.0, &paint);
+
+    match result {
+        Err(skia_rs_pdf::PdfError::Unsupported(msg)) => {
+            assert!(
+                msg.contains("Type0"),
+                "expected message to mention Type0/CID font, got: {}",
+                msg
+            );
+        }
+        other => panic!(
+            "draw_text against a Type0/Identity-H font must fail closed with \
+             Err(PdfError::Unsupported), not emit 1-byte codes; got {:?}",
+            other
+        ),
+    }
+}
+
+/// PDF/A OutputIntents require a real, parseable ICC profile in
+/// `/DestOutputProfile` — a placeholder byte string is not valid ICC data
+/// and fails conformance even though the surrounding PDF object looks
+/// structurally correct. Decompress the emitted stream and check for the
+/// ICC 'acsp' file signature at its spec-mandated offset (36).
+#[test]
+fn pdfa_output_intent_embeds_real_icc_profile() {
+    let mut doc = PdfDocument::new();
+    doc.set_pdfa_conformance(PdfALevel::A2b);
+    {
+        let canvas = doc.begin_page(100.0, 100.0);
+        let page = canvas.finish();
+        doc.end_page(page);
+    }
+
+    let mut buf = Vec::new();
+    doc.write_to(&mut buf).expect("write should succeed");
+
+    // Locate the DestOutputProfile stream and decompress it.
+    let needle = b"/N 3 /Alternate /DeviceRGB";
+    let start = buf
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .expect("ICC profile stream header not found");
+    let stream_start = buf[start..]
+        .windows(7)
+        .position(|w| w == b"stream\n")
+        .map(|p| start + p + 7)
+        .expect("stream keyword not found");
+    let stream_end = buf[stream_start..]
+        .windows(10)
+        .position(|w| w == b"\nendstream")
+        .map(|p| stream_start + p)
+        .expect("endstream not found");
+
+    use std::io::Read as _;
+    let mut decoder = flate2::read::ZlibDecoder::new(&buf[stream_start..stream_end]);
+    let mut icc = Vec::new();
+    decoder
+        .read_to_end(&mut icc)
+        .expect("ICC stream must be valid FlateDecode data");
+
+    assert!(icc.len() > 500, "ICC profile too small: {} bytes", icc.len());
+    assert_eq!(
+        &icc[36..40],
+        b"acsp",
+        "missing ICC file signature 'acsp' at offset 36"
+    );
+    assert_eq!(&icc[16..20], b"RGB ", "profile must be an RGB color space");
 }
 
 /// Construct a minimal TrueType file with `num_glyphs` glyphs, each of

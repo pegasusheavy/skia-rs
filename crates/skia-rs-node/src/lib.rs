@@ -665,9 +665,15 @@ impl Surface {
     }
 
     /// Get pixel data as Buffer (RGBA).
+    ///
+    /// The surface stores premultiplied RGBA8888 pixels internally; this
+    /// unpremultiplies before returning so callers see straight-alpha RGBA,
+    /// as documented.
     #[napi]
     pub fn get_pixels(&self) -> Buffer {
-        Buffer::from(self.inner.pixels())
+        let mut pixels = self.inner.pixels().to_vec();
+        skia_rs_canvas::simd::unpremultiply_span(&mut pixels);
+        Buffer::from(pixels)
     }
 
     /// Get row bytes.

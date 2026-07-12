@@ -578,21 +578,40 @@ impl ComputePipelineDescriptor {
 }
 
 /// Pipeline state cache key.
+///
+/// The key must distinguish any two descriptors that would compile into
+/// *different* GPU pipelines. Two descriptors that share these fields are
+/// guaranteed to produce interchangeable pipelines and may share a cache
+/// slot. Missing a field here means two genuinely different pipelines
+/// collide in the cache and the wrong one is used (e.g. a stencil-write
+/// pass silently reusing a stencil-test pass's pipeline).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PipelineKey {
     /// Vertex shader hash.
     pub vertex_shader_hash: u64,
     /// Fragment shader hash.
     pub fragment_shader_hash: u64,
-    /// Vertex buffer layout hash.
+    /// Vertex/fragment entry-point name hash.
+    pub entry_point_hash: u64,
+    /// Vertex buffer layout hash (stride, step mode, attribute
+    /// location/offset/format).
     pub vertex_layout_hash: u64,
+    /// Primitive state hash (topology, front face, cull mode, polygon mode,
+    /// strip index format).
+    pub primitive_hash: u64,
     /// Color target formats.
     pub color_formats: Vec<TextureFormat>,
     /// Depth format.
     pub depth_format: Option<TextureFormat>,
+    /// Depth/stencil state hash (depth compare/write, stencil front/back
+    /// ops+compares, read/write masks, depth bias).
+    pub depth_stencil_hash: u64,
     /// Sample count.
     pub sample_count: u32,
-    /// Blend state hash.
+    /// Multisample-state hash (sample mask, alpha-to-coverage).
+    pub multisample_hash: u64,
+    /// Blend + write-mask hash (per-target color/alpha factors, operations,
+    /// and color write mask).
     pub blend_hash: u64,
 }
 
@@ -612,35 +631,101 @@ impl PipelineKey {
         let vertex_shader_hash = hash_str(&desc.vertex_shader);
         let fragment_shader_hash = hash_str(&desc.fragment_shader);
 
+        let mut entry_hasher = std::collections::hash_map::DefaultHasher::new();
+        desc.vertex_entry.hash(&mut entry_hasher);
+        desc.fragment_entry.hash(&mut entry_hasher);
+        let entry_point_hash = entry_hasher.finish();
+
+        // Vertex layout: stride, step mode, and *every* attribute field —
+        // location, offset, and format all change the compiled input state.
         let mut layout_hasher = std::collections::hash_map::DefaultHasher::new();
         for buf in &desc.vertex_buffers {
             buf.stride.hash(&mut layout_hasher);
+            buf.step_mode.hash(&mut layout_hasher);
             for attr in &buf.attributes {
                 attr.location.hash(&mut layout_hasher);
                 attr.offset.hash(&mut layout_hasher);
+                attr.format.hash(&mut layout_hasher);
             }
         }
         let vertex_layout_hash = layout_hasher.finish();
 
+        // Primitive state.
+        let mut prim_hasher = std::collections::hash_map::DefaultHasher::new();
+        desc.primitive.topology.hash(&mut prim_hasher);
+        desc.primitive.front_face.hash(&mut prim_hasher);
+        desc.primitive.cull_mode.hash(&mut prim_hasher);
+        desc.primitive.polygon_mode.hash(&mut prim_hasher);
+        desc.primitive.strip_index_format.hash(&mut prim_hasher);
+        let primitive_hash = prim_hasher.finish();
+
+        // Depth/stencil: every field that reaches the pipeline. The f32 bias
+        // fields are hashed via their bit patterns.
+        let mut ds_hasher = std::collections::hash_map::DefaultHasher::new();
+        if let Some(ds) = &desc.depth_stencil {
+            ds.depth_write_enabled.hash(&mut ds_hasher);
+            ds.depth_compare.hash(&mut ds_hasher);
+            hash_stencil_face(&ds.stencil_front, &mut ds_hasher);
+            hash_stencil_face(&ds.stencil_back, &mut ds_hasher);
+            ds.stencil_read_mask.hash(&mut ds_hasher);
+            ds.stencil_write_mask.hash(&mut ds_hasher);
+            ds.depth_bias.hash(&mut ds_hasher);
+            ds.depth_bias_slope_scale.to_bits().hash(&mut ds_hasher);
+            ds.depth_bias_clamp.to_bits().hash(&mut ds_hasher);
+        }
+        let depth_stencil_hash = ds_hasher.finish();
+
+        // Multisample fields beyond the count.
+        let mut ms_hasher = std::collections::hash_map::DefaultHasher::new();
+        desc.multisample.mask.hash(&mut ms_hasher);
+        desc.multisample.alpha_to_coverage_enabled.hash(&mut ms_hasher);
+        let multisample_hash = ms_hasher.finish();
+
+        // Blend: both color *and* alpha components (factors + operation) plus
+        // the color write mask, per target.
         let mut blend_hasher = std::collections::hash_map::DefaultHasher::new();
         for target in &desc.color_targets {
-            if let Some(blend) = &target.blend {
-                (blend.color.src_factor as u32).hash(&mut blend_hasher);
-                (blend.color.dst_factor as u32).hash(&mut blend_hasher);
+            match &target.blend {
+                Some(blend) => {
+                    1u8.hash(&mut blend_hasher); // discriminant: blending on
+                    hash_blend_component(&blend.color, &mut blend_hasher);
+                    hash_blend_component(&blend.alpha, &mut blend_hasher);
+                }
+                None => 0u8.hash(&mut blend_hasher), // discriminant: no blend
             }
+            target.write_mask.hash(&mut blend_hasher);
         }
         let blend_hash = blend_hasher.finish();
 
         Self {
             vertex_shader_hash,
             fragment_shader_hash,
+            entry_point_hash,
             vertex_layout_hash,
+            primitive_hash,
             color_formats: desc.color_targets.iter().map(|t| t.format).collect(),
             depth_format: desc.depth_stencil.as_ref().map(|ds| ds.format),
+            depth_stencil_hash,
             sample_count: desc.multisample.count,
+            multisample_hash,
             blend_hash,
         }
     }
+}
+
+fn hash_stencil_face<H: std::hash::Hasher>(face: &StencilFaceState, hasher: &mut H) {
+    use std::hash::Hash;
+    face.compare.hash(hasher);
+    face.fail_op.hash(hasher);
+    face.depth_fail_op.hash(hasher);
+    face.pass_op.hash(hasher);
+}
+
+fn hash_blend_component<H: std::hash::Hasher>(comp: &BlendComponent, hasher: &mut H) {
+    use std::hash::Hash;
+    comp.src_factor.hash(hasher);
+    comp.dst_factor.hash(hasher);
+    comp.operation.hash(hasher);
 }
 
 #[cfg(test)]
@@ -695,5 +780,84 @@ mod tests {
 
         assert_eq!(key1, key2);
         assert_ne!(key1, key3);
+    }
+
+    /// Regression for the PipelineKey coverage finding: the key must change
+    /// whenever a field that affects the *compiled* pipeline changes.
+    #[test]
+    fn test_pipeline_key_covers_every_state_field() {
+        // A rich base descriptor exercising all state.
+        let base = || {
+            let mut ds = DepthStencilState::default();
+            ds.stencil_front = StencilFaceState {
+                compare: CompareFunction::Equal,
+                fail_op: StencilOperation::Keep,
+                depth_fail_op: StencilOperation::Keep,
+                pass_op: StencilOperation::Zero,
+            };
+            RenderPipelineDescriptor::new("vs", "fs")
+                .with_vertex_buffer(VertexBufferLayout {
+                    stride: 16,
+                    step_mode: VertexStepMode::Vertex,
+                    attributes: vec![VertexAttribute {
+                        location: 0,
+                        offset: 0,
+                        format: VertexFormat::Float32x2,
+                    }],
+                })
+                .with_color_target(
+                    ColorTargetState::new(TextureFormat::Rgba8Unorm)
+                        .with_blend(BlendState::PREMULTIPLIED_ALPHA),
+                )
+                .with_depth_stencil(ds)
+                .with_primitive(PrimitiveState::default())
+        };
+
+        let base_key = PipelineKey::from_descriptor(&base());
+        assert_eq!(base_key, PipelineKey::from_descriptor(&base()));
+
+        // Helper: mutate the descriptor and assert the key changes.
+        let mut assert_changes = |mutate: &dyn Fn(&mut RenderPipelineDescriptor)| {
+            let mut d = base();
+            mutate(&mut d);
+            assert_ne!(
+                base_key,
+                PipelineKey::from_descriptor(&d),
+                "pipeline key failed to distinguish a state change"
+            );
+        };
+
+        // Entry points.
+        assert_changes(&|d| d.vertex_entry = "other".into());
+        assert_changes(&|d| d.fragment_entry = "other".into());
+        // Vertex attribute format (same location/offset).
+        assert_changes(&|d| d.vertex_buffers[0].attributes[0].format = VertexFormat::Float32x4);
+        assert_changes(&|d| d.vertex_buffers[0].step_mode = VertexStepMode::Instance);
+        // Primitive state.
+        assert_changes(&|d| d.primitive.topology = PrimitiveTopology::LineList);
+        assert_changes(&|d| d.primitive.cull_mode = CullMode::Back);
+        // Stencil ops / compares / masks.
+        assert_changes(&|d| {
+            d.depth_stencil.as_mut().unwrap().stencil_front.pass_op = StencilOperation::Replace
+        });
+        assert_changes(&|d| {
+            d.depth_stencil.as_mut().unwrap().stencil_back.compare = CompareFunction::NotEqual
+        });
+        assert_changes(&|d| d.depth_stencil.as_mut().unwrap().stencil_write_mask = 0x0F);
+        assert_changes(&|d| d.depth_stencil.as_mut().unwrap().depth_write_enabled = false);
+        assert_changes(&|d| d.depth_stencil.as_mut().unwrap().depth_compare = CompareFunction::Always);
+        // Blend operation and alpha component (not just color src/dst).
+        assert_changes(&|d| {
+            d.color_targets[0].blend.as_mut().unwrap().color.operation =
+                BlendOperation::ReverseSubtract
+        });
+        assert_changes(&|d| {
+            d.color_targets[0].blend.as_mut().unwrap().alpha.dst_factor = BlendFactor::Zero
+        });
+        // Color write mask.
+        assert_changes(&|d| d.color_targets[0].write_mask = ColorWriteMask::RED);
+        // Multisample.
+        assert_changes(&|d| d.multisample.alpha_to_coverage_enabled = true);
+        assert_changes(&|d| d.multisample.count = 4);
     }
 }

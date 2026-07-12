@@ -9,8 +9,12 @@
 //! - Skew
 
 use crate::keyframe::{AnimatedProperty, KeyframeValue};
-use crate::model::TransformModel;
+use crate::model::{ShapeModel, TransformModel};
 use skia_rs_core::{Matrix, Scalar};
+
+/// AE control limit for skew angle (degrees), per upstream
+/// `TransformAdapter2D::totalMatrix` (`Transform.cpp`).
+const MAX_SKEW_ANGLE: Scalar = 85.0;
 
 /// Animated transform for a layer or shape.
 #[derive(Debug, Clone)]
@@ -100,6 +104,39 @@ impl Transform {
         transform
     }
 
+    /// Parse a group/shape "tr" transform item. `ShapeModel` fields are
+    /// heavily overloaded across shape types (same JSON keys mean
+    /// different things per `"ty"`); for `"tr"` items:
+    /// `a`=anchor, `p`=position, `s`=scale (%), `r`=rotation (degrees),
+    /// `o`=opacity (%), `sk`=skew (degrees), `sa`=skew axis (degrees).
+    pub fn from_shape_lottie(model: &ShapeModel) -> Self {
+        let mut transform = Self::new();
+
+        if let Some(ref anchor) = model.transform {
+            transform.anchor = AnimatedProperty::from_lottie(anchor);
+        }
+        if let Some(ref position) = model.position {
+            transform.position = AnimatedProperty::from_lottie(position);
+        }
+        if let Some(ref scale) = model.size {
+            transform.scale = AnimatedProperty::from_lottie(scale);
+        }
+        if let Some(ref rotation) = model.roundness {
+            transform.rotation = AnimatedProperty::from_lottie(rotation);
+        }
+        if let Some(ref opacity) = model.opacity {
+            transform.opacity = AnimatedProperty::from_lottie(opacity);
+        }
+        if let Some(ref skew) = model.skew {
+            transform.skew = Some(AnimatedProperty::from_lottie(skew));
+        }
+        if let Some(ref skew_axis) = model.skew_axis {
+            transform.skew_axis = Some(AnimatedProperty::from_lottie(skew_axis));
+        }
+
+        transform
+    }
+
     /// Check if this transform is animated.
     pub fn is_animated(&self) -> bool {
         self.anchor.is_animated()
@@ -164,10 +201,15 @@ impl Transform {
     }
 
     /// Get the skew at a specific frame (in radians).
+    ///
+    /// Per upstream `TransformAdapter2D::totalMatrix` (`Transform.cpp`),
+    /// the skew angle is pinned to `[-85, 85]` degrees and negated before
+    /// conversion to radians.
     pub fn skew_at(&self, frame: Scalar) -> Option<Scalar> {
         self.skew.as_ref().map(|s| {
             let degrees = s.value_at(frame).as_scalar().unwrap_or(0.0);
-            degrees * std::f32::consts::PI / 180.0
+            let pinned = degrees.clamp(-MAX_SKEW_ANGLE, MAX_SKEW_ANGLE);
+            -(pinned * std::f32::consts::PI / 180.0)
         })
     }
 
@@ -339,6 +381,42 @@ mod tests {
 
         let opacity = transform.opacity_at(0.0);
         assert_eq!(opacity, 1.0); // Clamped to 1.0
+    }
+
+    #[test]
+    fn test_skew_is_negated_and_pinned() {
+        let mut transform = Transform::new();
+        transform.skew = Some(AnimatedProperty::static_value(KeyframeValue::Scalar(30.0)));
+
+        let skew = transform.skew_at(0.0).unwrap();
+        assert!((skew - (-30.0f32.to_radians())).abs() < 0.0001);
+
+        // AE pins skew to +/-85 degrees.
+        transform.skew = Some(AnimatedProperty::static_value(KeyframeValue::Scalar(200.0)));
+        let skew = transform.skew_at(0.0).unwrap();
+        assert!((skew - (-85.0f32.to_radians())).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_from_shape_lottie_parses_tr_transform() {
+        use crate::model::ShapeModel;
+
+        let json = r#"{
+            "ty":"tr",
+            "a":{"a":0,"k":[5,5,0]},
+            "p":{"a":0,"k":[50,60,0]},
+            "s":{"a":0,"k":[50,50]},
+            "r":{"a":0,"k":45},
+            "o":{"a":0,"k":50}
+        }"#;
+        let model: ShapeModel = serde_json::from_str(json).unwrap();
+        let transform = Transform::from_shape_lottie(&model);
+
+        assert_eq!(transform.position_at(0.0), [50.0, 60.0]);
+        assert_eq!(transform.anchor_at(0.0), [5.0, 5.0]);
+        assert_eq!(transform.scale_at(0.0), [0.5, 0.5]);
+        assert!((transform.rotation_at(0.0) - std::f32::consts::FRAC_PI_4).abs() < 0.001);
+        assert_eq!(transform.opacity_at(0.0), 0.5);
     }
 
     #[test]

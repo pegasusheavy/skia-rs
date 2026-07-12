@@ -23,7 +23,7 @@ fn pdf_generator_main() {
     use skia_rs_core::{Color, Point, Rect};
     use skia_rs_paint::{Paint, Style};
     use skia_rs_path::PathBuilder;
-    use skia_rs_pdf::{PdfDocument, PdfMetadata};
+    use skia_rs_pdf::PdfDocument;
     use std::fs::File;
     use std::io::BufWriter;
     println!("skia-rs PDF Generator Example");
@@ -53,6 +53,7 @@ fn pdf_generator_main() {
     );
 
     let mut canvas = doc.begin_page(page_width, page_height);
+    canvas.use_standard_font(skia_rs_pdf::StandardFont::Helvetica);
 
     // Draw a header rectangle
     {
@@ -69,7 +70,9 @@ fn pdf_generator_main() {
         let mut paint = Paint::new();
         paint.set_color32(Color::from_rgb(255, 255, 255));
 
-        canvas.draw_text("skia-rs PDF Example", 50.0, 50.0, 24.0, &paint);
+        canvas
+            .draw_text("skia-rs PDF Example", 50.0, 50.0, 24.0, &paint)
+            .expect("draw_text should succeed");
         println!("  Drew title text");
     }
 
@@ -78,7 +81,9 @@ fn pdf_generator_main() {
         let mut paint = Paint::new();
         paint.set_color32(Color::from_rgb(100, 100, 100));
 
-        canvas.draw_text("Pure Rust 2D Graphics Library", 50.0, 120.0, 14.0, &paint);
+        canvas
+            .draw_text("Pure Rust 2D Graphics Library", 50.0, 120.0, 14.0, &paint)
+            .expect("draw_text should succeed");
     }
 
     // Draw some shapes demonstration
@@ -86,7 +91,9 @@ fn pdf_generator_main() {
         // Draw section title
         let mut text_paint = Paint::new();
         text_paint.set_color32(Color::from_rgb(30, 30, 50));
-        canvas.draw_text("Shape Examples:", 50.0, 170.0, 16.0, &text_paint);
+        canvas
+            .draw_text("Shape Examples:", 50.0, 170.0, 16.0, &text_paint)
+            .expect("draw_text should succeed");
 
         // Draw a filled rectangle
         let mut fill_paint = Paint::new();
@@ -121,7 +128,9 @@ fn pdf_generator_main() {
 
     // Draw some lines
     {
-        canvas.draw_text("Line Examples:", 50.0, 330.0, 16.0, &Paint::new());
+        canvas
+            .draw_text("Line Examples:", 50.0, 330.0, 16.0, &Paint::new())
+            .expect("draw_text should succeed");
 
         let mut line_paint = Paint::new();
         line_paint.set_color32(Color::from_rgb(241, 196, 15));
@@ -152,7 +161,9 @@ fn pdf_generator_main() {
 
     // Draw a path
     {
-        canvas.draw_text("Path Example:", 50.0, 450.0, 16.0, &Paint::new());
+        canvas
+            .draw_text("Path Example:", 50.0, 450.0, 16.0, &Paint::new())
+            .expect("draw_text should succeed");
 
         let mut path_builder = PathBuilder::new();
         path_builder
@@ -187,23 +198,27 @@ fn pdf_generator_main() {
 
         let mut text_paint = Paint::new();
         text_paint.set_color32(Color::from_rgb(255, 255, 255));
-        canvas.draw_text(
-            "Generated with skia-rs - Pure Rust 2D Graphics",
-            50.0,
-            page_height - 20.0,
-            12.0,
-            &text_paint,
-        );
+        canvas
+            .draw_text(
+                "Generated with skia-rs - Pure Rust 2D Graphics",
+                50.0,
+                page_height - 20.0,
+                12.0,
+                &text_paint,
+            )
+            .expect("draw_text should succeed");
         println!("  Drew footer");
     }
 
     // End the page
-    doc.end_page(canvas);
+    let page1 = canvas.finish();
+    doc.end_page(page1);
     println!("\nPage 1 complete!");
 
     // Add a second page
     println!("\nBeginning page 2...");
     let mut canvas2 = doc.begin_page(page_width, page_height);
+    canvas2.use_standard_font(skia_rs_pdf::StandardFont::Helvetica);
 
     // Draw some content on page 2
     {
@@ -214,7 +229,9 @@ fn pdf_generator_main() {
 
         let mut text_paint = Paint::new();
         text_paint.set_color32(Color::from_rgb(255, 255, 255));
-        canvas2.draw_text("Page 2 - Color Palette", 50.0, 50.0, 24.0, &text_paint);
+        canvas2
+            .draw_text("Page 2 - Color Palette", 50.0, 50.0, 24.0, &text_paint)
+            .expect("draw_text should succeed");
     }
 
     // Draw color swatches
@@ -238,14 +255,17 @@ fn pdf_generator_main() {
 
             let mut text_paint = Paint::new();
             text_paint.set_color32(Color::from_rgb(30, 30, 50));
-            canvas2.draw_text(name, 170.0, y + 30.0, 14.0, &text_paint);
+            canvas2
+                .draw_text(name, 170.0, y + 30.0, 14.0, &text_paint)
+                .expect("draw_text should succeed");
 
             y += 70.0;
         }
         println!("  Drew color palette");
     }
 
-    doc.end_page(canvas2);
+    let page2 = canvas2.finish();
+    doc.end_page(page2);
     println!("Page 2 complete!");
 
     // Write PDF to file

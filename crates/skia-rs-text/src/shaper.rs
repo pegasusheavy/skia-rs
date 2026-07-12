@@ -212,8 +212,14 @@ impl Shaper {
         // Shape the text
         let output = rustybuzz::shape(&face, &[], buffer);
 
-        // Convert to our format
+        // Convert to our format. Matches SkShaper_harfbuzz.cpp:
+        //   SkScalarFromHBPosX = +(1/65536) * getScaleX()
+        //   SkScalarFromHBPosY = -(1/65536)   // HarfBuzz y-up, Skia y-down
+        // We work in font units (rustybuzz returns unscaled positions) and
+        // convert with `size / upem`, so the x conversion additionally
+        // multiplies by `scale_x` and the y conversion is negated.
         let scale = font.size() / face.units_per_em() as Scalar;
+        let scale_x = scale * font.scale_x();
 
         let glyphs: Vec<ShapedGlyph> = output
             .glyph_infos()
@@ -222,10 +228,10 @@ impl Shaper {
             .map(|(info, pos)| ShapedGlyph {
                 glyph_id: GlyphId(info.glyph_id as u16),
                 cluster: info.cluster,
-                x_advance: pos.x_advance as Scalar * scale,
-                y_advance: pos.y_advance as Scalar * scale,
-                x_offset: pos.x_offset as Scalar * scale,
-                y_offset: pos.y_offset as Scalar * scale,
+                x_advance: pos.x_advance as Scalar * scale_x,
+                y_advance: -(pos.y_advance as Scalar) * scale,
+                x_offset: pos.x_offset as Scalar * scale_x,
+                y_offset: -(pos.y_offset as Scalar) * scale,
             })
             .collect();
 

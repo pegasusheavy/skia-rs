@@ -73,59 +73,6 @@
 // Perspective 2 index.
 #define Matrix_PERSP_2 8
 
-// Clip operation for canvas clipping functions.
-enum sk_clip_op_t
-#ifdef __cplusplus
-  : uint32_t
-#endif // __cplusplus
- {
-    // Intersect the existing clip with the new region.
-    sk_clip_op_t_Intersect = 0,
-    // Subtract the new region from the existing clip (difference).
-    sk_clip_op_t_Difference = 1,
-};
-#ifndef __cplusplus
-typedef uint32_t sk_clip_op_t;
-#endif // __cplusplus
-
-// Region operation for region manipulation functions.
-enum sk_region_op_t
-#ifdef __cplusplus
-  : uint32_t
-#endif // __cplusplus
- {
-    // Subtract the operand from the target.
-    sk_region_op_t_Difference = 0,
-    // Intersect target and operand.
-    sk_region_op_t_Intersect = 1,
-    // Union target and operand.
-    sk_region_op_t_Union = 2,
-    // Exclusive-or target and operand.
-    sk_region_op_t_Xor = 3,
-    // Subtract target from operand (reverse difference).
-    sk_region_op_t_ReverseDifference = 4,
-    // Replace target with operand.
-    sk_region_op_t_Replace = 5,
-};
-#ifndef __cplusplus
-typedef uint32_t sk_region_op_t;
-#endif // __cplusplus
-
-// Trim path effect mode.
-enum sk_trim_mode_t
-#ifdef __cplusplus
-  : uint32_t
-#endif // __cplusplus
- {
-    // Normal trim: keep segment from start to end.
-    sk_trim_mode_t_Normal = 0,
-    // Inverted trim: discard segment from start to end.
-    sk_trim_mode_t_Inverted = 1,
-};
-#ifndef __cplusplus
-typedef uint32_t sk_trim_mode_t;
-#endif // __cplusplus
-
 // Mipmap mode for image sampling.
 enum MipmapMode
 #ifdef __cplusplus
@@ -241,6 +188,11 @@ typedef struct sk_color4f_t {
     float a;
 } sk_color4f_t;
 
+// C ABI type for the paint's blend mode. Values follow upstream
+// `SkBlendMode` numbering (`include/core/SkBlendMode.h`), all 29 modes
+// (`kClear = 0` .. `kLuminosity = 28`); see [`BlendMode::from_u8`].
+typedef uint32_t sk_blend_mode_t;
+
 // Reference counted shader type.
 typedef struct sk_shader_t sk_shader_t;
 
@@ -285,6 +237,11 @@ typedef struct sk_matrix_t {
     float values[9];
 } sk_matrix_t;
 
+// C ABI type for [`SkClipOp`]. Functions taking a clip op accept this raw
+// `uint32_t` and decode it via [`decode_clip_op`], rejecting out-of-range
+// values instead of constructing an invalid Rust enum from C.
+typedef uint32_t sk_clip_op_t;
+
 // C-compatible integer rectangle structure.
 typedef struct sk_irect_t {
     // Left edge.
@@ -324,8 +281,14 @@ typedef struct RefCounted_PictureRef sk_picture_t;
 // Reference counted [`Region`].
 typedef struct RefCounted_Region sk_region_t;
 
+// C ABI type for [`SkRegionOp`]; see [`decode_region_op`].
+typedef uint32_t sk_region_op_t;
+
 // Reference counted [`PathEffectRef`].
 typedef struct RefCounted_PathEffectRef sk_patheffect_t;
+
+// C ABI type for [`SkTrimMode`]; see [`decode_trim_mode`].
+typedef uint32_t sk_trim_mode_t;
 
 // Binary-compatible 2D point (matches SkPoint exactly)
 typedef struct SkPointABI {
@@ -436,7 +399,10 @@ bool sk_last_call_panicked(void);
 
 // Get the reference count of an object.
 //
-// Returns 0 if the pointer is null or fails the tag check.
+// Returns 0 if the pointer is null or fails the tag check. The tag check
+// is a best-effort heuristic against passing a non-refcounted pointer, not
+// a memory-safety guarantee: `ptr` must still be null or point to a valid
+// allocation of at least `size_of::<RefCountedHeader>()` readable bytes.
 uint32_t sk_refcnt_get_count(const sk_refcnt_t *ptr);
 
 // Check if an object has only one reference (is unique).
@@ -489,6 +455,14 @@ int32_t sk_surface_get_height(const sk_surface_t *surface);
 
 // Get the pixel data from a surface (unsynchronized borrow).
 //
+// The bytes are always **premultiplied**, regardless of the surface's
+// declared alpha type — the underlying buffer physically stores premul
+// pixels, and a borrowed pointer cannot be converted in place without
+// mutating the surface's own storage. Surfaces created with
+// `alpha_type = Unpremul` are rejected (returns `false`); use
+// [`sk_surface_read_pixels`] instead, which copies out and unpremultiplies
+// as needed.
+//
 // **Lifetime:** the pointer returned via `out_pixels` is only valid for as
 // long as `surface` remains allocated AND is not mutated. Any subsequent
 // drawing call on this surface (e.g. [`sk_surface_draw_rect`]) may move
@@ -502,6 +476,11 @@ bool sk_surface_peek_pixels(const sk_surface_t *surface,
 //
 // Safer than [`sk_surface_peek_pixels`] — the caller owns the destination
 // buffer and does not need to track the surface's lifetime.
+//
+// The bytes are converted to match the surface's declared alpha type: for
+// surfaces created with `alpha_type = Unpremul`, the copied pixels are
+// unpremultiplied before being written to `dst`; otherwise the raw
+// premultiplied bytes are copied as-is.
 //
 // Returns the number of bytes written, or 0 on failure (null surface,
 // null/undersized destination buffer).
@@ -559,9 +538,16 @@ void sk_paint_set_antialias(sk_paint_t *paint,
 // Check if anti-alias is enabled.
 bool sk_paint_is_antialias(const sk_paint_t *paint);
 
-// Set the paint's blend mode (matches [`abi::SkBlendModeABI`]).
-void sk_paint_set_blend_mode(sk_paint_t *paint,
-                             uint32_t mode);
+// Set the paint's blend mode. `mode` follows upstream `SkBlendMode`
+// (0-28); see [`BlendMode::from_u8`]. Returns false (leaving the paint's
+// blend mode unchanged) if `paint` is null or `mode` is out of range.
+bool sk_paint_set_blend_mode(sk_paint_t *paint,
+                             sk_blend_mode_t mode);
+
+// Get the paint's blend mode as a raw `sk_blend_mode_t` (upstream
+// `SkBlendMode` numbering, 0-28). Returns `SrcOver` (3) if `paint` is null,
+// matching `SkPaint`'s default blend mode.
+sk_blend_mode_t sk_paint_get_blend_mode(const sk_paint_t *paint);
 
 // Attach a shader to the paint. Passing null clears it.
 //
@@ -711,18 +697,34 @@ void sk_matrix_set_scale(struct sk_matrix_t *matrix,
 void sk_matrix_set_rotate(struct sk_matrix_t *matrix,
                           float degrees);
 
-// Concatenate two matrices.
+// Concatenate two matrices: `*result = a * b`.
+//
+// `result` may alias `a` and/or `b` (in-place concat is a supported usage,
+// mirroring `SkMatrix::preConcat`/`postConcat` call patterns). Both inputs
+// are copied into owned locals via [`ptr::read`] *before* anything is
+// written through `result`, so no `&`/`&mut` reference ever aliases the
+// same memory — forming `result.as_mut()` while `a`/`b` were still live
+// `&`-refs into the same allocation would be immediate UB when `result`
+// aliases an input.
 void sk_matrix_concat(struct sk_matrix_t *result,
                       const struct sk_matrix_t *a,
                       const struct sk_matrix_t *b);
 
 // Map a point through a matrix.
+//
+// `result` may alias `point` (in-place mapping). `matrix`/`point` are read
+// via [`ptr::read`] before writing through `result`; see
+// [`sk_matrix_concat`] for why that ordering matters.
 void sk_matrix_map_point(const struct sk_matrix_t *matrix,
                          const struct sk_point_t *point,
                          struct sk_point_t *result);
 
 // Invert a matrix into `result`. Returns true on success, false if the
 // matrix is singular (non-invertible); on failure `result` is unchanged.
+//
+// `result` may alias `matrix` (in-place inversion); `matrix` is read via
+// [`ptr::read`] before writing through `result`; see [`sk_matrix_concat`]
+// for why that ordering matters.
 bool sk_matrix_invert(const struct sk_matrix_t *matrix,
                       struct sk_matrix_t *result);
 
@@ -733,33 +735,41 @@ bool sk_matrix_is_identity(const struct sk_matrix_t *matrix);
 float sk_matrix_determinant(const struct sk_matrix_t *matrix);
 
 // Get the library version as a NUL-terminated static string.
+//
+// Sourced from the crate's `Cargo.toml` version (`CARGO_PKG_VERSION`) at
+// compile time, so it always matches the shipped `skia-rs-ffi` release.
 const char *sk_version(void);
 
 // Check if the library is available.
 bool sk_is_available(void);
 
-// Clear a surface with a color.
+// Clear a surface with a color. No-op while the surface is locked (see
+// [`sk_surface_lock_canvas`]).
 void sk_surface_clear(sk_surface_t *surface,
                       sk_color_t color);
 
-// Draw a rect on a surface.
+// Draw a rect on a surface. No-op while the surface is locked (see
+// [`sk_surface_lock_canvas`]).
 void sk_surface_draw_rect(sk_surface_t *surface,
                           const struct sk_rect_t *rect,
                           const sk_paint_t *paint);
 
-// Draw a circle on a surface.
+// Draw a circle on a surface. No-op while the surface is locked (see
+// [`sk_surface_lock_canvas`]).
 void sk_surface_draw_circle(sk_surface_t *surface,
                             float cx,
                             float cy,
                             float radius,
                             const sk_paint_t *paint);
 
-// Draw a path on a surface.
+// Draw a path on a surface. No-op while the surface is locked (see
+// [`sk_surface_lock_canvas`]).
 void sk_surface_draw_path(sk_surface_t *surface,
                           const sk_path_t *path,
                           const sk_paint_t *paint);
 
-// Draw a line on a surface.
+// Draw a line on a surface. No-op while the surface is locked (see
+// [`sk_surface_lock_canvas`]).
 void sk_surface_draw_line(sk_surface_t *surface,
                           float x0,
                           float y0,
@@ -771,7 +781,11 @@ void sk_surface_draw_line(sk_surface_t *surface,
 //
 // The returned canvas is valid until [`sk_canvas_release`] is called and
 // must not outlive `surface`. Only one canvas may be held per surface at
-// a time — attempting to lock twice returns null.
+// a time — attempting to lock twice returns null. While a surface is
+// locked, the `sk_surface_draw_*`/`sk_surface_clear` convenience helpers
+// (which bypass the locked canvas and draw directly on the surface) are
+// rejected (no-op) to avoid two independent mutable views of the same
+// pixel buffer.
 struct sk_canvas_t *sk_surface_lock_canvas(sk_surface_t *surface);
 
 // Release a canvas acquired via [`sk_surface_lock_canvas`].
@@ -842,14 +856,18 @@ void sk_canvas_draw_path(struct sk_canvas_t *canvas,
 
 // Intersect or subtract a rectangle from the clip.
 //
-// `op` follows [`ClipOp`]: 0 = Intersect, 1 = Difference. Returns false if
-// the canvas handle is null; otherwise true.
+// `op` follows upstream `SkClipOp`: 0 = Difference, 1 = Intersect (see
+// [`decode_clip_op`]). Returns false if the canvas handle is null or `op`
+// is out of range; otherwise true.
 bool sk_canvas_clip_rect(struct sk_canvas_t *canvas,
                          const struct sk_rect_t *rect,
                          sk_clip_op_t op,
                          bool anti_alias);
 
 // Intersect or subtract a path from the clip.
+//
+// `op` follows upstream `SkClipOp`; see [`decode_clip_op`]. Returns false
+// if `op` is out of range.
 bool sk_canvas_clip_path(struct sk_canvas_t *canvas,
                          const sk_path_t *path,
                          sk_clip_op_t op,
@@ -1017,12 +1035,20 @@ struct sk_matrix44_t sk_matrix44_new(void);
 struct sk_matrix44_t sk_matrix44_from_array(const float *values);
 
 // Map a 2D point through a 4x4 matrix (projects through W).
+//
+// `result` may alias `point` (in-place mapping); inputs are read via
+// [`ptr::read`] before writing through `result` — see
+// [`sk_matrix_concat`] for why that ordering matters.
 void sk_matrix44_map_point(const struct sk_matrix44_t *matrix,
                            const struct sk_point_t *point,
                            struct sk_point_t *result);
 
 // Invert a 4x4 matrix. Returns true on success; `result` is unchanged if
 // the matrix is singular.
+//
+// `result` may alias `matrix` (in-place inversion); `matrix` is read via
+// [`ptr::read`] before writing through `result` — see
+// [`sk_matrix_concat`] for why that ordering matters.
 bool sk_matrix44_invert(const struct sk_matrix44_t *matrix,
                         struct sk_matrix44_t *result);
 
@@ -1032,7 +1058,11 @@ bool sk_matrix44_is_identity(const struct sk_matrix44_t *matrix);
 // Return the determinant of the matrix.
 float sk_matrix44_determinant(const struct sk_matrix44_t *matrix);
 
-// Concatenate two 4x4 matrices: `result = a * b`.
+// Concatenate two 4x4 matrices: `*result = a * b`.
+//
+// `result` may alias `a` and/or `b` (in-place concat); inputs are read via
+// [`ptr::read`] before writing through `result` — see
+// [`sk_matrix_concat`] for why that ordering matters.
 void sk_matrix44_concat(struct sk_matrix44_t *result,
                         const struct sk_matrix44_t *a,
                         const struct sk_matrix44_t *b);
@@ -1090,6 +1120,12 @@ bool sk_canvas_draw_text_blob(struct sk_canvas_t *canvas,
 struct sk_picture_recorder_t *sk_picture_recorder_new(void);
 
 // Destroy a picture recorder.
+//
+// Any outstanding [`sk_recording_canvas_t`] handles are left dangling by
+// design (the caller is responsible for releasing them), but every
+// `sk_recording_canvas_*` entry point checks the shared liveness flag
+// before touching the recorder, so calling them after this returns errors
+// out safely instead of dereferencing freed memory.
 void sk_picture_recorder_delete(struct sk_picture_recorder_t *r);
 
 // Begin recording into a fresh picture. Returns a recording canvas handle
@@ -1159,6 +1195,9 @@ bool sk_region_set_rect(sk_region_t *region,
                         const struct sk_irect_t *rect);
 
 // Apply a rect op on the region.
+//
+// `op` follows upstream `SkRegion::Op`; see [`decode_region_op`]. Returns
+// false if `op` is out of range.
 bool sk_region_op_rect(sk_region_t *region,
                        const struct sk_irect_t *rect,
                        sk_region_op_t op);
@@ -1190,7 +1229,8 @@ sk_patheffect_t *sk_patheffect_new_dash(const float *intervals,
                                         float phase);
 
 // Create a trim path effect. `start` and `end` are normalized lengths
-// in [0, 1].
+// in [0, 1]. `mode` follows upstream `SkTrimPathEffect::Mode`; see
+// [`decode_trim_mode`]. Returns null if `mode` is out of range.
 sk_patheffect_t *sk_patheffect_new_trim(float start,
                                         float end,
                                         sk_trim_mode_t mode);

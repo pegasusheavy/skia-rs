@@ -241,18 +241,27 @@ impl RuntimeEffect {
         crate::sksl_validate::validate_program(&program)
             .map_err(|e| RuntimeEffectError::ValidationFailed(e.to_string()))?;
 
-        // Extract uniforms
+        // Extract uniforms. Child declarations (`uniform shader/colorFilter/
+        // blender`) are children, not data uniforms — they are excluded from
+        // uniforms() and do not occupy uniform bytes.
+        //
+        // Uniforms pack tightly with 4-byte granularity, matching
+        // SkRuntimeEffectPriv::VarAsUniform (`uni.offset = *offset;
+        // *offset += uni.sizeInBytes();`) — no 16-byte std140-style
+        // alignment. Every uniform size is already a multiple of 4.
         let mut uniforms = Vec::new();
         let mut offset = 0;
 
         for uniform in &program.uniforms {
+            if matches!(
+                uniform.ty,
+                SkslType::Shader | SkslType::ColorFilter | SkslType::Blender
+            ) {
+                continue;
+            }
             let ty = UniformType::from(&uniform.ty);
             let count = uniform.array_size.unwrap_or(1);
             let size = ty.size_bytes() * count;
-
-            // Align offset
-            let alignment = ty.size_bytes().min(16);
-            offset = (offset + alignment - 1) / alignment * alignment;
 
             uniforms.push(Uniform {
                 name: uniform.name.clone(),
@@ -598,6 +607,22 @@ impl RuntimeEffect {
             Expr::Call { name, args } => {
                 let args_str: Vec<String> = args.iter().map(|a| self.expr_to_glsl(a)).collect();
                 format!("{}({})", name, args_str.join(", "))
+            }
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                // Child eval: emitted as a helper-call naming convention
+                // (`<child>_eval(...)`); GPU backends bind child shaders as
+                // functions/samplers under this name.
+                let args_str: Vec<String> = args.iter().map(|a| self.expr_to_glsl(a)).collect();
+                format!(
+                    "{}_{}({})",
+                    self.expr_to_glsl(receiver),
+                    method,
+                    args_str.join(", ")
+                )
             }
             Expr::Constructor { ty, args } => {
                 let args_str: Vec<String> = args.iter().map(|a| self.expr_to_glsl(a)).collect();
@@ -986,6 +1011,20 @@ impl RuntimeEffect {
                 let args_str: Vec<String> = args.iter().map(|a| self.expr_to_wgsl(a)).collect();
                 format!("{}({})", name, args_str.join(", "))
             }
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                // Child eval helper-call naming convention (see GLSL emitter).
+                let args_str: Vec<String> = args.iter().map(|a| self.expr_to_wgsl(a)).collect();
+                format!(
+                    "{}_{}({})",
+                    self.expr_to_wgsl(receiver),
+                    method,
+                    args_str.join(", ")
+                )
+            }
             Expr::Constructor { ty, args } => {
                 let args_str: Vec<String> = args.iter().map(|a| self.expr_to_wgsl(a)).collect();
                 format!("{}({})", ty.wgsl_name(), args_str.join(", "))
@@ -1244,6 +1283,20 @@ impl RuntimeEffect {
             Expr::Call { name, args } => {
                 let args_str: Vec<String> = args.iter().map(|a| self.expr_to_msl(a)).collect();
                 format!("{}({})", name, args_str.join(", "))
+            }
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                // Child eval helper-call naming convention (see GLSL emitter).
+                let args_str: Vec<String> = args.iter().map(|a| self.expr_to_msl(a)).collect();
+                format!(
+                    "{}_{}({})",
+                    self.expr_to_msl(receiver),
+                    method,
+                    args_str.join(", ")
+                )
             }
             Expr::Constructor { ty, args } => {
                 let args_str: Vec<String> = args.iter().map(|a| self.expr_to_msl(a)).collect();
@@ -1673,6 +1726,10 @@ impl Shader for RuntimeShader {
         // Software fallback: run the SkSL interpreter on the parsed program.
         // Runtime shaders follow the convention `half4 main(float2 coord)`,
         // so we dispatch `main` with a Vec2 coordinate and read back a Vec4.
+        //
+        // Per the Shader::sample contract the returned color is treated as
+        // premultiplied: SkSL shader output feeds the raster pipeline
+        // directly, whose colors are premul (matching upstream semantics).
         let mut interp = self.effect.build_interp(&self.uniforms, &self.children);
         let coord = SkslValue::Vec2([x, y]);
         let result = interp.run_function("main", vec![coord]);
@@ -1733,6 +1790,113 @@ mod tests {
         assert_eq!(effect.uniforms().len(), 2);
         assert!(effect.find_uniform("time").is_some());
         assert!(effect.find_uniform("resolution").is_some());
+    }
+
+    #[test]
+    fn test_uniforms_pack_tightly_no_16_byte_alignment() {
+        // SkRuntimeEffect.cpp packs uniforms back to back:
+        //   uni.offset = *offset; *offset += uni.sizeInBytes();
+        // A float followed by a vec4 sits at offsets 0 and 4 (not 16),
+        // total size 20.
+        let src = r#"
+            uniform float a;
+            uniform vec4 b;
+            vec4 main(vec2 coord) { return b * a; }
+        "#;
+        let effect = RuntimeEffect::make_for_shader(src).unwrap();
+        let a = effect.find_uniform("a").unwrap();
+        let b = effect.find_uniform("b").unwrap();
+        assert_eq!(a.offset, 0);
+        assert_eq!(b.offset, 4, "vec4 must pack tightly after float");
+        assert_eq!(effect.uniform_size(), 20);
+    }
+
+    #[test]
+    fn test_uniform_mat3_packs_tightly() {
+        // mat3 is 36 bytes; a following float sits at offset 40 (4 + 36).
+        let src = r#"
+            uniform float a;
+            uniform mat3 m;
+            uniform float c;
+            vec4 main(vec2 coord) { return vec4(a + c); }
+        "#;
+        let effect = RuntimeEffect::make_for_shader(src).unwrap();
+        assert_eq!(effect.find_uniform("m").unwrap().offset, 4);
+        assert_eq!(effect.find_uniform("c").unwrap().offset, 40);
+        assert_eq!(effect.uniform_size(), 44);
+    }
+
+    #[test]
+    fn test_child_shaders_are_not_uniforms() {
+        // `uniform shader s;` declares a child, not a data uniform: it must
+        // not appear in uniforms() nor contribute to uniform_size().
+        let src = r#"
+            uniform shader child;
+            uniform float x;
+            vec4 main(vec2 coord) { return vec4(x); }
+        "#;
+        let effect = RuntimeEffect::make_for_shader(src).unwrap();
+        assert_eq!(effect.uniforms().len(), 1, "only x is a data uniform");
+        assert!(effect.find_uniform("child").is_none());
+        assert_eq!(effect.find_uniform("x").unwrap().offset, 0);
+        assert_eq!(effect.uniform_size(), 4);
+        assert_eq!(effect.children().len(), 1);
+        assert_eq!(effect.children()[0].name, "child");
+    }
+
+    #[test]
+    fn test_child_shader_eval_samples_child() {
+        // Method-style `child.eval(coord)` must parse and sample the bound
+        // child shader in the software interpreter.
+        let src = r#"
+            uniform shader child;
+            half4 main(float2 coord) {
+                half4 c = child.eval(coord);
+                return c * 0.5;
+            }
+        "#;
+        let effect = Arc::new(RuntimeEffect::make_for_shader(src).unwrap());
+        let uniforms = UniformData::from_effect(&effect);
+        let child: Arc<dyn Shader> = Arc::new(crate::shader::ColorShader::new(Color4f::new(
+            1.0, 0.5, 0.0, 1.0,
+        )));
+        let shader = effect.make_shader(&uniforms, &[child]).unwrap();
+        let c = shader.sample(3.0, 4.0);
+        assert!((c.r - 0.5).abs() < 1e-4, "child red halved, got {}", c.r);
+        assert!((c.g - 0.25).abs() < 1e-4, "child green halved, got {}", c.g);
+        assert!((c.a - 0.5).abs() < 1e-4, "child alpha halved, got {}", c.a);
+    }
+
+    #[test]
+    fn test_child_shader_eval_uses_coords() {
+        // The child must be sampled at the coordinates passed to eval().
+        let src = r#"
+            uniform shader child;
+            half4 main(float2 coord) {
+                return child.eval(coord * 2.0);
+            }
+        "#;
+        let effect = Arc::new(RuntimeEffect::make_for_shader(src).unwrap());
+        let uniforms = UniformData::from_effect(&effect);
+        // Opaque linear gradient black -> white over x in [0, 10].
+        let child: Arc<dyn Shader> = Arc::new(crate::shader::LinearGradient::new(
+            skia_rs_core::Point::new(0.0, 0.0),
+            skia_rs_core::Point::new(10.0, 0.0),
+            vec![
+                Color4f::new(0.0, 0.0, 0.0, 1.0),
+                Color4f::new(1.0, 1.0, 1.0, 1.0),
+            ],
+            None,
+            crate::shader::TileMode::Clamp,
+        ));
+        let shader = effect.make_shader(&uniforms, &[child]).unwrap();
+        // sample at x=2.5 -> child sampled at x=5 -> t=0.5.
+        let c = shader.sample(2.5, 0.0);
+        assert!(
+            (c.r - 0.5).abs() < 1e-3,
+            "child sampled at doubled coord, got {}",
+            c.r
+        );
     }
 
     #[test]

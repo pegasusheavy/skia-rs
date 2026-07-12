@@ -98,14 +98,6 @@ pub enum BlendClass {
 /// strategy (destination texture binding + custom shader) rather than the
 /// fixed-function blender.
 pub fn blend_mode_to_state(mode: BlendMode) -> (BlendState, BlendClass) {
-    // Alpha component blending convention: always use premultiplied alpha
-    // for the alpha channel (matching what Skia writes to backing stores).
-    let pma_alpha = BlendComponent {
-        src_factor: BlendFactor::One,
-        dst_factor: BlendFactor::OneMinusSrcAlpha,
-        operation: BlendOperation::Add,
-    };
-
     let (color, class) = match mode {
         BlendMode::Clear => (
             BlendComponent {
@@ -253,7 +245,36 @@ pub fn blend_mode_to_state(mode: BlendMode) -> (BlendState, BlendClass) {
         ),
     };
 
-    (BlendState { color, alpha: pma_alpha }, class)
+    // Ganesh drives all four channels with a single fixed-function blend
+    // formula (`skia/src/gpu/BlendFormula.cpp` `gBlendTable[0][0]`). On the
+    // alpha channel, a color-referencing coefficient (SrcColor / DstColor)
+    // resolves to the source/destination *alpha*. wgpu separates the color
+    // and alpha components, so we reproduce the single-formula behavior by
+    // mapping each color factor to its alpha-channel equivalent. This yields
+    // per-mode alpha components rather than a hardwired SrcOver alpha.
+    let alpha = BlendComponent {
+        src_factor: to_alpha_factor(color.src_factor),
+        dst_factor: to_alpha_factor(color.dst_factor),
+        operation: color.operation,
+    };
+
+    (BlendState { color, alpha }, class)
+}
+
+/// Map a color-channel blend factor to the equivalent alpha-channel factor.
+///
+/// Fixed-function blending on the alpha channel treats a source/destination
+/// *color* coefficient as the corresponding source/destination *alpha*
+/// (there is no separate "color" for a single-component channel). Factors
+/// that already reference alpha (or constants) are unchanged.
+fn to_alpha_factor(f: BlendFactor) -> BlendFactor {
+    match f {
+        BlendFactor::Src => BlendFactor::SrcAlpha,
+        BlendFactor::OneMinusSrc => BlendFactor::OneMinusSrcAlpha,
+        BlendFactor::Dst => BlendFactor::DstAlpha,
+        BlendFactor::OneMinusDst => BlendFactor::OneMinusDstAlpha,
+        other => other,
+    }
 }
 
 /// Selection of pipeline parameters derived from a `Paint`.
@@ -621,47 +642,23 @@ fn apply_paint_alpha(color: [f32; 4], paint: &Paint) -> [f32; 4] {
     [color[0], color[1], color[2], color[3] * a]
 }
 
-// `skia_rs_paint` does not yet expose `Any` on its Shader trait, so we
-// implement narrow-downcast helpers here via runtime kind checks combined
-// with the known concrete-type getters. These return `None` if the trait
-// object is not the corresponding concrete type even when the kind
-// matches (which should not happen for first-party shaders).
+// Concrete-type extraction via the `Shader::as_any` downcast hook. The
+// built-in gradient shaders return `Some(self as &dyn Any)` from `as_any`,
+// so we can recover their exact geometry (endpoints, radius, angles, color
+// stops) instead of probing via `sample`. A `None` result (foreign shader,
+// or a shader kind without an `as_any` override) makes the callers fall
+// back to the sampling path.
 
 fn as_linear_gradient(shader: &dyn Shader) -> Option<&LinearGradient> {
-    if shader.shader_kind() != ShaderKind::LinearGradient {
-        return None;
-    }
-    // SAFETY: we use a trait-object pointer reinterpret guarded by the
-    // kind check. Because `LinearGradient: Shader` and we're comparing
-    // kinds, the vtable is the only thing we'd mis-read. Doing it
-    // properly requires adding `fn as_any(&self) -> &dyn Any` to the
-    // trait. The kind check is necessary but not sufficient — a
-    // third-party `Shader` could claim to be a LinearGradient without
-    // being one. We therefore do NOT do an unsafe cast; instead we
-    // return None here and let the caller fall back to sampling.
-    //
-    // This is a conscious trade-off: correctness over convenience. The
-    // sampling path below is what actually carries paint parameters
-    // through to the GPU today. The extraction via downcast can be
-    // switched on as soon as `Shader: Any` lands upstream.
-    let _ = shader;
-    None
+    shader.as_any()?.downcast_ref::<LinearGradient>()
 }
 
 fn as_radial_gradient(shader: &dyn Shader) -> Option<&RadialGradient> {
-    if shader.shader_kind() != ShaderKind::RadialGradient {
-        return None;
-    }
-    let _ = shader;
-    None
+    shader.as_any()?.downcast_ref::<RadialGradient>()
 }
 
 fn as_sweep_gradient(shader: &dyn Shader) -> Option<&SweepGradient> {
-    if shader.shader_kind() != ShaderKind::SweepGradient {
-        return None;
-    }
-    let _ = shader;
-    None
+    shader.as_any()?.downcast_ref::<SweepGradient>()
 }
 
 #[cfg(test)]
@@ -702,6 +699,38 @@ mod tests {
 
         let (_state, class) = blend_mode_to_state(BlendMode::Clear);
         assert_eq!(class, BlendClass::PorterDuff);
+    }
+
+    #[test]
+    fn test_blend_mode_alpha_is_per_mode() {
+        // Regression: alpha components must be derived per mode from Ganesh's
+        // single-formula table, not hardwired to SrcOver's (One, ISA).
+
+        // Clear: color (Zero, Zero) => alpha (Zero, Zero).
+        let (s, _) = blend_mode_to_state(BlendMode::Clear);
+        assert_eq!(s.alpha.src_factor, BlendFactor::Zero);
+        assert_eq!(s.alpha.dst_factor, BlendFactor::Zero);
+
+        // Src: color (One, Zero) => alpha (One, Zero).
+        let (s, _) = blend_mode_to_state(BlendMode::Src);
+        assert_eq!(s.alpha.src_factor, BlendFactor::One);
+        assert_eq!(s.alpha.dst_factor, BlendFactor::Zero);
+
+        // Modulate: color dst = Src(color) => alpha dst = SrcAlpha.
+        let (s, _) = blend_mode_to_state(BlendMode::Modulate);
+        assert_eq!(s.color.dst_factor, BlendFactor::Src);
+        assert_eq!(s.alpha.src_factor, BlendFactor::Zero);
+        assert_eq!(s.alpha.dst_factor, BlendFactor::SrcAlpha);
+
+        // Screen: color dst = OneMinusSrc(color) => alpha dst = OneMinusSrcAlpha.
+        let (s, _) = blend_mode_to_state(BlendMode::Screen);
+        assert_eq!(s.color.dst_factor, BlendFactor::OneMinusSrc);
+        assert_eq!(s.alpha.dst_factor, BlendFactor::OneMinusSrcAlpha);
+
+        // Plus: color (One, One) => alpha (One, One).
+        let (s, _) = blend_mode_to_state(BlendMode::Plus);
+        assert_eq!(s.alpha.src_factor, BlendFactor::One);
+        assert_eq!(s.alpha.dst_factor, BlendFactor::One);
     }
 
     #[test]
@@ -757,6 +786,55 @@ mod tests {
         let plan = paint_to_pipeline(&paint);
         assert_eq!(plan.selection.shader, BuiltinShader::RadialGradient);
         assert_eq!(plan.uniforms.len(), 48);
+    }
+
+    #[test]
+    fn test_linear_gradient_reads_real_geometry() {
+        // Regression: gradient uniforms must carry the real endpoints and
+        // straight (unpremultiplied) stop colors read from geometry, not the
+        // premultiplied sample() probe or the unit-segment fallback.
+        let gradient = LG::new(
+            Point::new(2.0, 3.0),
+            Point::new(7.0, 3.0),
+            vec![
+                Color4f::new(1.0, 0.0, 0.0, 0.5), // straight red, alpha 0.5
+                Color4f::new(0.0, 1.0, 0.0, 1.0),
+            ],
+            None,
+            TileMode::Clamp,
+        );
+        let mut paint = Paint::new();
+        paint.set_shader(Some(Arc::new(gradient)));
+
+        let plan = paint_to_pipeline(&paint);
+        let b = &plan.uniforms.bytes;
+        let f = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        // start (offset 0..8), end (8..16).
+        assert!((f(0) - 2.0).abs() < 1e-6, "start.x from geometry");
+        assert!((f(4) - 3.0).abs() < 1e-6, "start.y from geometry");
+        assert!((f(8) - 7.0).abs() < 1e-6, "end.x from geometry");
+        // color0 at offset 16: straight red 1.0, not premultiplied 0.5.
+        assert!((f(16) - 1.0).abs() < 1e-6, "color0.r must be straight (1.0)");
+        assert!((f(28) - 0.5).abs() < 1e-6, "color0.a preserved");
+    }
+
+    #[test]
+    fn test_radial_gradient_reads_real_geometry() {
+        let gradient = RG::new(
+            Point::new(4.0, 5.0),
+            9.0,
+            vec![Color4f::new(1.0, 1.0, 1.0, 1.0), Color4f::new(0.0, 0.0, 0.0, 1.0)],
+            None,
+            TileMode::Clamp,
+        );
+        let mut paint = Paint::new();
+        paint.set_shader(Some(Arc::new(gradient)));
+        let plan = paint_to_pipeline(&paint);
+        let b = &plan.uniforms.bytes;
+        let f = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        assert!((f(0) - 4.0).abs() < 1e-6, "center.x");
+        assert!((f(4) - 5.0).abs() < 1e-6, "center.y");
+        assert!((f(8) - 9.0).abs() < 1e-6, "radius");
     }
 
     #[test]

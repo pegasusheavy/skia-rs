@@ -38,6 +38,17 @@ pub enum DrawCommand {
         /// First instance.
         first_instance: u32,
     },
+    /// Dispatch a compute workgroup grid. Distinct from `Draw` so the
+    /// executor can route it to a compute pass (or reject it) rather than
+    /// mis-replaying it as a draw call.
+    DispatchCompute {
+        /// Workgroups in X.
+        x: u32,
+        /// Workgroups in Y.
+        y: u32,
+        /// Workgroups in Z.
+        z: u32,
+    },
     /// Set scissor rect.
     SetScissor {
         /// Scissor rectangle.
@@ -208,13 +219,35 @@ impl ScissorRect {
         }
     }
 
-    /// Create from a rect (clamping to u32 bounds).
+    /// Create from a rect, clamping the box into the non-negative quadrant.
+    ///
+    /// When `left`/`top` are negative the origin is clamped to 0 **and** the
+    /// width/height shrink by the clipped-off amount, so the box's right/
+    /// bottom edges stay put (rather than sliding right as they would if the
+    /// original width were kept). Fully off-screen boxes collapse to zero.
     pub fn from_rect(rect: &Rect) -> Self {
+        let left = rect.left.max(0.0);
+        let top = rect.top.max(0.0);
+        let right = rect.right.max(left);
+        let bottom = rect.bottom.max(top);
         Self {
-            x: rect.left.max(0.0) as u32,
-            y: rect.top.max(0.0) as u32,
-            width: rect.width().max(0.0) as u32,
-            height: rect.height().max(0.0) as u32,
+            x: left as u32,
+            y: top as u32,
+            width: (right - left) as u32,
+            height: (bottom - top) as u32,
+        }
+    }
+
+    /// Clamp the scissor box to a framebuffer of `fb_width` x `fb_height`,
+    /// shrinking width/height so the box never extends past the edges.
+    pub fn clamp_to_framebuffer(&self, fb_width: u32, fb_height: u32) -> Self {
+        let x = self.x.min(fb_width);
+        let y = self.y.min(fb_height);
+        Self {
+            x,
+            y,
+            width: self.width.min(fb_width - x),
+            height: self.height.min(fb_height - y),
         }
     }
 }
@@ -353,6 +386,11 @@ impl CommandBuffer {
             base_vertex,
             first_instance,
         });
+    }
+
+    /// Record a compute dispatch of `(x, y, z)` workgroups.
+    pub fn dispatch_compute(&mut self, x: u32, y: u32, z: u32) {
+        self.record(DrawCommand::DispatchCompute { x, y, z });
     }
 
     /// Set scissor rect.
@@ -764,9 +802,10 @@ impl<'a> ComputePassEncoder<'a> {
 
     /// Dispatch compute work.
     pub fn dispatch_workgroups(&mut self, x: u32, y: u32, z: u32) {
-        // For now, we'll record this as a draw command
-        // A proper implementation would have a dedicated compute dispatch command
-        self.encoder.buffer.draw_with_offsets(x, y, z, 0);
+        // Record a real compute dispatch. Executors that do not support
+        // compute may reject or skip it, but it must never be replayed as a
+        // draw call (which would issue a bogus vertex draw).
+        self.encoder.buffer.dispatch_compute(x, y, z);
     }
 
     /// Push a debug group.
@@ -823,6 +862,46 @@ mod tests {
         assert_eq!(scissor.y, 20);
         assert_eq!(scissor.width, 100);
         assert_eq!(scissor.height, 200);
+    }
+
+    #[test]
+    fn test_scissor_rect_negative_origin_shrinks_box() {
+        // Regression: a box with negative left/top must clamp origin to 0 and
+        // shrink width/height so the right/bottom edges stay put.
+        let rect = Rect::new(-10.0, -20.0, 90.0, 80.0); // left,top,right,bottom
+        let scissor = ScissorRect::from_rect(&rect);
+        assert_eq!(scissor.x, 0);
+        assert_eq!(scissor.y, 0);
+        assert_eq!(scissor.width, 90, "right edge preserved: 90 - 0");
+        assert_eq!(scissor.height, 80, "bottom edge preserved: 80 - 0");
+    }
+
+    #[test]
+    fn test_scissor_clamp_to_framebuffer() {
+        let s = ScissorRect::new(90, 90, 100, 100);
+        let c = s.clamp_to_framebuffer(128, 128);
+        assert_eq!(c.x, 90);
+        assert_eq!(c.width, 38, "clamped to 128 - 90");
+        assert_eq!(c.height, 38);
+        // Origin beyond the framebuffer collapses to zero extent.
+        let off = ScissorRect::new(200, 200, 10, 10).clamp_to_framebuffer(128, 128);
+        assert_eq!(off.width, 0);
+        assert_eq!(off.height, 0);
+    }
+
+    #[test]
+    fn test_dispatch_compute_records_distinct_command() {
+        // Regression: a compute dispatch must record a DispatchCompute, not a
+        // Draw (which would replay as a bogus vertex draw).
+        let mut buffer = CommandBuffer::new();
+        buffer.dispatch_compute(8, 4, 1);
+        assert_eq!(buffer.len(), 1);
+        match &buffer.commands()[0] {
+            DrawCommand::DispatchCompute { x, y, z } => {
+                assert_eq!((*x, *y, *z), (8, 4, 1));
+            }
+            other => panic!("expected DispatchCompute, got {other:?}"),
+        }
     }
 
     #[test]

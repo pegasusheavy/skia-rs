@@ -8,8 +8,7 @@
 //! - Cascading and specificity
 
 use crate::dom::{SvgDom, SvgNode, SvgPaint};
-use skia_rs_core::{Color, Matrix, Scalar};
-use std::collections::HashMap;
+use skia_rs_core::{Matrix, Scalar};
 
 /// A CSS stylesheet containing multiple rules.
 #[derive(Debug, Clone, Default)]
@@ -301,11 +300,59 @@ fn node_tag_name(node: &SvgNode) -> &str {
 }
 
 /// Style declarations (property-value pairs).
-pub type StyleDeclarations = HashMap<String, String>;
+///
+/// Declarations are kept in **document order** rather than in a `HashMap`,
+/// because CSS cascade within a block is order-dependent (a later
+/// declaration of the same property wins, and dependent properties such as
+/// `fill` / `fill-opacity` must apply in source order). A repeated property
+/// updates in place so "last wins" holds without duplicating entries.
+#[derive(Debug, Clone, Default)]
+pub struct StyleDeclarations {
+    decls: Vec<(String, String)>,
+}
 
-/// Parse CSS declarations from a string.
+impl StyleDeclarations {
+    /// Create an empty declaration list.
+    pub fn new() -> Self {
+        Self { decls: Vec::new() }
+    }
+
+    /// Insert or overwrite a property, preserving first-seen order.
+    pub fn insert(&mut self, property: String, value: String) {
+        if let Some(entry) = self.decls.iter_mut().find(|(p, _)| *p == property) {
+            entry.1 = value;
+        } else {
+            self.decls.push((property, value));
+        }
+    }
+
+    /// Look up a property's value.
+    pub fn get(&self, property: &str) -> Option<&String> {
+        self.decls
+            .iter()
+            .find(|(p, _)| p == property)
+            .map(|(_, v)| v)
+    }
+
+    /// Iterate declarations in document order.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &String)> {
+        self.decls.iter().map(|(p, v)| (p, v))
+    }
+
+    /// Number of declarations.
+    pub fn len(&self) -> usize {
+        self.decls.len()
+    }
+
+    /// Whether there are no declarations.
+    pub fn is_empty(&self) -> bool {
+        self.decls.is_empty()
+    }
+}
+
+/// Parse CSS declarations from a string, preserving document order.
 pub fn parse_declarations(s: &str) -> StyleDeclarations {
-    let mut declarations = HashMap::new();
+    let mut declarations = StyleDeclarations::new();
 
     for decl in s.split(';') {
         let decl = decl.trim();
@@ -369,7 +416,7 @@ fn apply_stylesheet_to_node(node: &mut SvgNode, stylesheet: &Stylesheet, ancesto
 }
 
 fn apply_declarations_to_node(node: &mut SvgNode, declarations: &StyleDeclarations) {
-    for (property, value) in declarations {
+    for (property, value) in declarations.iter() {
         apply_style_property(node, property, value);
     }
 }
@@ -384,34 +431,24 @@ pub fn apply_style_property(node: &mut SvgNode, property: &str, value: &str) {
             node.stroke = parse_css_paint(value);
         }
         "stroke-width" => {
-            node.stroke_width = parse_css_length(value);
+            node.stroke_width = Some(parse_css_length(value));
+        }
+        "color" => {
+            if !value.trim().eq_ignore_ascii_case("inherit") {
+                node.color = crate::parser::parse_color(value);
+            }
         }
         "opacity" => {
-            node.opacity = value.parse().unwrap_or(1.0);
+            node.opacity = parse_opacity_value(value).unwrap_or(1.0);
         }
         "fill-opacity" => {
-            // Adjust fill opacity
-            if let Some(SvgPaint::Color(ref mut color)) = node.fill {
-                let opacity: f32 = value.parse().unwrap_or(1.0);
-                *color = Color::from_argb(
-                    (opacity * 255.0) as u8,
-                    color.red(),
-                    color.green(),
-                    color.blue(),
-                );
-            }
+            // Fill opacity is an independent inherited property that
+            // multiplies into the fill paint alpha at render time — it does
+            // not mutate the fill color.
+            node.fill_opacity = parse_opacity_value(value);
         }
         "stroke-opacity" => {
-            // Adjust stroke opacity
-            if let Some(SvgPaint::Color(ref mut color)) = node.stroke {
-                let opacity: f32 = value.parse().unwrap_or(1.0);
-                *color = Color::from_argb(
-                    (opacity * 255.0) as u8,
-                    color.red(),
-                    color.green(),
-                    color.blue(),
-                );
-            }
+            node.stroke_opacity = parse_opacity_value(value);
         }
         "visibility" => {
             node.visible = value != "hidden";
@@ -469,26 +506,23 @@ pub fn apply_style_property(node: &mut SvgNode, property: &str, value: &str) {
 
 fn parse_css_paint(s: &str) -> Option<SvgPaint> {
     let s = s.trim();
-    if s == "none" || s == "transparent" {
-        Some(SvgPaint::None)
-    } else if s.starts_with("url(") {
-        let url = s[4..]
-            .trim_end_matches(')')
-            .trim_matches('"')
-            .trim_matches('\'');
-        Some(SvgPaint::Url(url.to_string()))
-    } else {
-        parse_css_color(s).map(SvgPaint::Color)
+    if s == "transparent" {
+        return Some(SvgPaint::None);
     }
+    // Reuse the SVG `<paint>` grammar (none / currentColor / color /
+    // url(#id) fallback) so CSS and presentation attributes agree.
+    crate::parser::parse_paint(s)
 }
 
-fn parse_css_color(s: &str) -> Option<Color> {
-    // "currentcolor" needs context from the inheritance chain, which
-    // Color::from_css doesn't have. Return None so the caller can handle it.
-    if s.trim().eq_ignore_ascii_case("currentcolor") {
-        return None;
-    }
-    Color::from_css(s)
+/// Parse an `<opacity-value>` (number or percentage) clamped to `[0, 1]`.
+fn parse_opacity_value(s: &str) -> Option<Scalar> {
+    let s = s.trim();
+    let v = if let Some(pct) = s.strip_suffix('%') {
+        pct.trim().parse::<Scalar>().ok()? / 100.0
+    } else {
+        s.parse::<Scalar>().ok()?
+    };
+    Some(v.clamp(0.0, 1.0))
 }
 
 fn parse_css_length(s: &str) -> Scalar {
@@ -540,6 +574,8 @@ fn extract_stylesheets_from_node(node: &SvgNode, stylesheet: &mut Stylesheet) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::parse_color as parse_css_color;
+    use skia_rs_core::Color;
 
     #[test]
     fn test_parse_css_color() {
@@ -558,6 +594,40 @@ mod tests {
         assert_eq!(decls.get("fill"), Some(&"red".to_string()));
         assert_eq!(decls.get("stroke"), Some(&"blue".to_string()));
         assert_eq!(decls.get("stroke-width"), Some(&"2px".to_string()));
+    }
+
+    #[test]
+    fn test_declarations_preserve_document_order() {
+        // Order must be deterministic (document order), not HashMap iteration
+        // order. A repeated property keeps its first position but takes the
+        // last value ("last wins").
+        let decls = parse_declarations("fill: red; stroke: blue; fill: green");
+        let order: Vec<&str> = decls.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(order, vec!["fill", "stroke"]);
+        assert_eq!(decls.get("fill"), Some(&"green".to_string()));
+    }
+
+    #[test]
+    fn test_fill_opacity_is_independent_property() {
+        // fill-opacity sets the node property and does NOT mutate the fill
+        // color; the two are combined at render time.
+        use crate::dom::{SvgNode, SvgNodeKind, SvgRect};
+        let mut node = SvgNode::new(SvgNodeKind::Rect(SvgRect::default()));
+        apply_style_property(&mut node, "fill", "red");
+        apply_style_property(&mut node, "fill-opacity", "0.25");
+        assert!(matches!(
+            node.fill,
+            Some(SvgPaint::Color(c)) if c == Color::from_rgb(255, 0, 0)
+        ));
+        assert!((node.fill_opacity.unwrap() - 0.25).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_css_currentcolor_paint() {
+        use crate::dom::{SvgNode, SvgNodeKind, SvgRect};
+        let mut node = SvgNode::new(SvgNodeKind::Rect(SvgRect::default()));
+        apply_style_property(&mut node, "fill", "currentColor");
+        assert!(matches!(node.fill, Some(SvgPaint::CurrentColor)));
     }
 
     #[test]

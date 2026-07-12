@@ -20,9 +20,21 @@ pub struct AnimatedImage {
     pub frames: Vec<AnimationFrame>,
     /// How many times the animation loops.
     pub loop_count: LoopCount,
+    /// Width of the animation canvas (the GIF logical-screen width). Frames
+    /// are positioned within this canvas via their `x_offset`/`y_offset`
+    /// and may be smaller than the canvas.
+    pub canvas_width: i32,
+    /// Height of the animation canvas (the GIF logical-screen height).
+    pub canvas_height: i32,
 }
 
 impl AnimatedImage {
+    /// Returns the animation canvas size as `(width, height)`.
+    #[inline]
+    pub fn canvas_dimensions(&self) -> (i32, i32) {
+        (self.canvas_width, self.canvas_height)
+    }
+
     /// Returns the number of frames.
     #[inline]
     pub fn frame_count(&self) -> usize {
@@ -86,8 +98,14 @@ pub enum DisposalMethod {
     /// Leave the canvas as-is; the next frame composites over the
     /// current pixels.
     Keep,
-    /// Clear the frame's region to the background/transparent before
-    /// compositing the next frame.
+    /// Clear the frame's region to **transparent** before compositing the
+    /// next frame.
+    ///
+    /// Despite the name, this always clears to transparent black, never to
+    /// the GIF's logical-screen background color. This matches Skia's
+    /// `SkCodecAnimation::DisposalMethod::kRestoreBGColor`, whose GIF
+    /// implementation (`SkGifCodec`) fills the disposed region with
+    /// `SK_ColorTRANSPARENT`.
     Background,
     /// Restore the canvas area underneath this frame to what it was
     /// before this frame was drawn.
@@ -158,6 +176,8 @@ mod tests {
         let anim = AnimatedImage {
             frames: vec![mk_frame(50), mk_frame(100), mk_frame(25)],
             loop_count: LoopCount::Infinite,
+            canvas_width: 1,
+            canvas_height: 1,
         };
         assert_eq!(anim.frame_count(), 3);
         assert_eq!(anim.total_duration(), Duration::from_millis(175));
@@ -168,6 +188,8 @@ mod tests {
         let anim = AnimatedImage {
             frames: vec![mk_frame(10)],
             loop_count: LoopCount::Once,
+            canvas_width: 1,
+            canvas_height: 1,
         };
         assert!(anim.frame(0).is_some());
         assert!(anim.frame(1).is_none());

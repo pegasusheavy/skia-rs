@@ -30,6 +30,21 @@ use crate::{
 };
 use std::ffi::CString;
 
+/// Parse a Vulkan fixed-size, NUL-terminated device-name array into an owned
+/// `String` **without** taking ownership of the borrowed array memory.
+///
+/// This replaces a previous `CString::from_raw` over the props' stack array,
+/// which would free memory it did not own on drop (undefined behavior). We
+/// reinterpret the `c_char` array as bytes and stop at the first NUL via
+/// `CStr::from_bytes_until_nul`, then copy out an owned `String`.
+fn parse_device_name(name: &[std::os::raw::c_char]) -> String {
+    let bytes: &[u8] =
+        unsafe { std::slice::from_raw_parts(name.as_ptr() as *const u8, name.len()) };
+    std::ffi::CStr::from_bytes_until_nul(bytes)
+        .map(|c| c.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
 /// Vulkan instance extensions required by skia-rs.
 pub const REQUIRED_INSTANCE_EXTENSIONS: &[&str] = &[
     "VK_KHR_surface",
@@ -609,18 +624,15 @@ impl VulkanContext {
                     GpuError::ResourceCreation(format!("Failed to create command pool: {:?}", e))
                 })?;
 
-            // Build adapter info
-            let device_name = CString::from_raw(device_props.device_name.as_ptr() as *mut i8)
-                .to_string_lossy()
-                .into_owned();
-            // Note: We need to be careful here - the device_name is a fixed array, not a C string
-            // Let's properly handle it:
-            let device_name = device_props
-                .device_name
-                .iter()
-                .take_while(|&&c| c != 0)
-                .map(|&c| c as u8 as char)
-                .collect::<String>();
+            // Build adapter info.
+            //
+            // `device_props.device_name` is a fixed-size, NUL-terminated
+            // `[c_char; VK_MAX_PHYSICAL_DEVICE_NAME_SIZE]` array owned by the
+            // props struct. We must NOT build a `CString` from it: that would
+            // take ownership of borrowed stack memory and free it on drop
+            // (undefined behavior). Instead, borrow the bytes up to the first
+            // NUL via `CStr::from_bytes_until_nul` — no ownership, no free.
+            let device_name = parse_device_name(&device_props.device_name);
 
             let adapter_info = GpuAdapterInfo {
                 name: device_name,
@@ -977,6 +989,28 @@ unsafe extern "system" fn vulkan_debug_callback(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_device_name_no_ownership_ub() {
+        // Regression for the CString::from_raw UB: parsing must read the
+        // NUL-terminated array by borrow and never free it. Build a padded
+        // fixed-size array like Vulkan's device_name field.
+        let mut arr = [0 as std::os::raw::c_char; 256];
+        for (i, b) in b"NVIDIA RTX".iter().enumerate() {
+            arr[i] = *b as std::os::raw::c_char;
+        }
+        // Trailing bytes after the NUL are garbage and must be ignored.
+        arr[64] = b'X' as std::os::raw::c_char;
+        assert_eq!(parse_device_name(&arr), "NVIDIA RTX");
+
+        // An all-zero array parses to an empty string, not a panic.
+        let zeros = [0 as std::os::raw::c_char; 8];
+        assert_eq!(parse_device_name(&zeros), "");
+
+        // An array with no NUL at all does not panic (returns default).
+        let no_nul = [b'A' as std::os::raw::c_char; 4];
+        assert_eq!(parse_device_name(&no_nul), "");
+    }
 
     #[test]
     fn test_vulkan_version() {

@@ -6,6 +6,13 @@ use crate::shader::ShaderRef;
 use skia_rs_core::{Color, Color4f, Scalar};
 use skia_rs_path::PathEffectRef;
 
+/// Convert a float color component in [0, 1] to a byte, rounding to
+/// nearest (Skia's `SkColor4f::toSkColor` semantics — 0.5 maps to 128).
+#[inline]
+fn color_component_to_byte(v: Scalar) -> u8 {
+    (v * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
 /// Paint style (fill, stroke, or both).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(u8)]
@@ -89,11 +96,13 @@ impl Default for Paint {
             path_effect: None,
             blend_mode: BlendMode::SrcOver,
             style: Style::Fill,
-            stroke_width: 1.0,
+            // SkPaint.cpp: fWidth{0} — a zero stroke width means hairline.
+            stroke_width: 0.0,
             stroke_miter: 4.0,
             stroke_cap: StrokeCap::Butt,
             stroke_join: StrokeJoin::Miter,
-            anti_alias: true,
+            // SkPaint defaults to no anti-aliasing.
+            anti_alias: false,
             dither: false,
         }
     }
@@ -113,13 +122,16 @@ impl Paint {
     }
 
     /// Get the color as 32-bit Color.
+    ///
+    /// Float components are rounded to the nearest byte (Skia's
+    /// `SkColor4f::toSkColor` rounding), not truncated.
     #[inline]
     pub fn color32(&self) -> Color {
         Color::from_argb(
-            (self.color.a * 255.0).clamp(0.0, 255.0) as u8,
-            (self.color.r * 255.0).clamp(0.0, 255.0) as u8,
-            (self.color.g * 255.0).clamp(0.0, 255.0) as u8,
-            (self.color.b * 255.0).clamp(0.0, 255.0) as u8,
+            color_component_to_byte(self.color.a),
+            color_component_to_byte(self.color.r),
+            color_component_to_byte(self.color.g),
+            color_component_to_byte(self.color.b),
         )
     }
 
@@ -384,11 +396,11 @@ impl Paint {
     pub fn serialize(&self) -> Vec<u8> {
         let mut data = Vec::with_capacity(17);
 
-        // Color (4 bytes)
-        data.push((self.color.r * 255.0).clamp(0.0, 255.0) as u8);
-        data.push((self.color.g * 255.0).clamp(0.0, 255.0) as u8);
-        data.push((self.color.b * 255.0).clamp(0.0, 255.0) as u8);
-        data.push((self.color.a * 255.0).clamp(0.0, 255.0) as u8);
+        // Color (4 bytes, rounded to nearest)
+        data.push(color_component_to_byte(self.color.r));
+        data.push(color_component_to_byte(self.color.g));
+        data.push(color_component_to_byte(self.color.b));
+        data.push(color_component_to_byte(self.color.a));
 
         // Blend mode (1 byte)
         data.push(self.blend_mode as u8);
@@ -670,6 +682,36 @@ impl Paint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_paint_defaults_match_skpaint() {
+        // SkPaint.cpp: fWidth{0} (hairline) and fAntiAlias false by default.
+        let paint = Paint::new();
+        assert_eq!(paint.stroke_width(), 0.0, "default stroke width is hairline (0)");
+        assert!(!paint.is_anti_alias(), "anti-aliasing is off by default");
+    }
+
+    #[test]
+    fn test_color32_rounds_float_components() {
+        // Float->byte conversion must round to nearest, not truncate:
+        // 0.5 * 255 = 127.5 -> 128.
+        let mut paint = Paint::new();
+        paint.set_color(Color4f::new(0.5, 0.5, 0.5, 0.5));
+        let c = paint.color32();
+        assert_eq!(c.red(), 128, "r was {}", c.red());
+        assert_eq!(c.green(), 128);
+        assert_eq!(c.blue(), 128);
+        assert_eq!(c.alpha(), 128);
+    }
+
+    #[test]
+    fn test_serialize_rounds_color_bytes() {
+        let mut paint = Paint::new();
+        paint.set_color(Color4f::new(0.5, 0.5, 0.5, 0.5));
+        let data = paint.serialize();
+        // First four bytes are RGBA.
+        assert_eq!(&data[0..4], &[128, 128, 128, 128]);
+    }
 
     #[test]
     fn test_paint_serialization() {

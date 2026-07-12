@@ -143,7 +143,9 @@ pub enum DecorationStyle {
 pub struct ParagraphBuilder {
     style: ParagraphStyle,
     runs: Vec<TextRun>,
-    current_style: TextStyle,
+    /// Style stack. `push_style` pushes; `pop` removes the top, restoring
+    /// the previous style. When empty the default text style applies.
+    style_stack: Vec<TextStyle>,
 }
 
 /// A run of text with a single style.
@@ -159,19 +161,31 @@ impl ParagraphBuilder {
         Self {
             style,
             runs: Vec::new(),
-            current_style: TextStyle::default(),
+            style_stack: Vec::new(),
         }
     }
 
-    /// Push a style onto the style stack.
+    /// The style currently in effect: the top of the stack, or the default
+    /// text style when the stack is empty.
+    fn current_style(&self) -> TextStyle {
+        self.style_stack
+            .last()
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Push a style onto the style stack. It becomes the current style
+    /// until a matching [`Self::pop`].
     pub fn push_style(&mut self, style: &TextStyle) -> &mut Self {
-        self.current_style = style.clone();
+        self.style_stack.push(style.clone());
         self
     }
 
-    /// Pop the current style.
+    /// Pop the top style off the stack, restoring the previously pushed
+    /// style (or the default style when the stack becomes empty). A pop on
+    /// an empty stack is a no-op, matching Skia's `ParagraphBuilder::Pop`.
     pub fn pop(&mut self) -> &mut Self {
-        self.current_style = TextStyle::default();
+        self.style_stack.pop();
         self
     }
 
@@ -180,7 +194,7 @@ impl ParagraphBuilder {
         if !text.is_empty() {
             self.runs.push(TextRun {
                 text: text.to_string(),
-                style: self.current_style.clone(),
+                style: self.current_style(),
             });
         }
         self
@@ -593,10 +607,16 @@ impl Paragraph {
             }
         }
         if clusters.is_empty() {
-            // Empty line (e.g. bare newline). Use the paragraph's default
-            // style metrics so height is non-zero.
-            let default_font = Font::default();
-            let m = default_font.metrics();
+            // Empty line (e.g. bare newline). Take its height from the
+            // paragraph's own style (the first run's font) rather than an
+            // unrelated `Font::default()`, so a blank line matches the
+            // surrounding text's line height. Falls back to the default
+            // font only when the paragraph has no runs at all.
+            let m = self
+                .runs
+                .first()
+                .map(|r| r.style.font.metrics())
+                .unwrap_or_else(|| Font::default().metrics());
             ascent = m.ascent;
             descent = m.descent;
             leading = m.leading;
@@ -644,6 +664,12 @@ impl Paragraph {
             // offsets (x_offset, y_offset) from shaping are applied to
             // the draw position but do not advance the pen. The cursor
             // advances by `x_advance + letter_spacing` per glyph.
+            //
+            // `y_offset` is already in Skia's y-down convention (the shaper
+            // negates HarfBuzz's y-up value), so a raised glyph carries a
+            // negative offset. It is stored relative to the baseline and
+            // combined with `line.baseline` in `to_text_blob`, so add it
+            // directly — do not negate again here.
             for sg in cluster.glyphs {
                 last.glyphs.push(sg.glyph_id.0);
                 last.positions

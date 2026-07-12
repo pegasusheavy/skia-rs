@@ -6,7 +6,7 @@ use crate::raster::PixelBuffer;
 use skia_rs_codec::Image;
 use skia_rs_core::pixel::{ImageInfo, SurfaceProps};
 #[cfg(feature = "codec")]
-use skia_rs_core::{AlphaType, ColorType, IRect};
+use skia_rs_core::{AlphaType, IRect};
 
 /// A surface is a backing store for a canvas.
 pub struct Surface {
@@ -18,8 +18,22 @@ pub struct Surface {
 
 impl Surface {
     /// Create a raster surface.
+    ///
+    /// The backing [`PixelBuffer`] stores premultiplied pixels in RGBA byte
+    /// order, so only RGBA-order 8888 color types are supported. Other color
+    /// types are rejected (returns `None`) rather than silently mislabeled,
+    /// matching `SkSurface::MakeRaster` returning null for an unsupported
+    /// [`ImageInfo`].
     pub fn new_raster(info: &ImageInfo, props: Option<&SurfaceProps>) -> Option<Self> {
+        use skia_rs_core::ColorType;
+
         if info.is_empty() {
+            return None;
+        }
+
+        // RGBA-order 8888 only (the buffer is RGBA). BGRA and narrower/wider
+        // formats are not backed by this RGBA buffer.
+        if !matches!(info.color_type, ColorType::Rgba8888 | ColorType::Srgba8888) {
             return None;
         }
 
@@ -106,10 +120,18 @@ impl Surface {
     /// The returned image shares pixel data with the surface when possible.
     #[cfg(feature = "codec")]
     pub fn make_image_snapshot(&self) -> Option<Image> {
-        let pixels = self.buffer.pixels.clone();
+        use skia_rs_core::AlphaType;
+
+        let mut pixels = self.buffer.pixels.clone();
         let row_bytes = self.buffer.stride;
 
-        // Convert core ImageInfo to codec ImageInfo
+        // The buffer stores premultiplied pixels. If the surface's declared
+        // alpha type is Unpremul, deliver unpremultiplied bytes on snapshot.
+        if self.info.alpha_type == AlphaType::Unpremul {
+            skia_rs_core::unpremultiply_in_place(&mut pixels);
+        }
+
+        // Carry the surface's true color/alpha type into the snapshot.
         let codec_info = skia_rs_codec::ImageInfo::new(
             self.info.width(),
             self.info.height(),
@@ -137,7 +159,7 @@ impl Surface {
         let row_bytes = (width as usize) * 4;
         let mut pixels = vec![0u8; (height as usize) * row_bytes];
 
-        // Copy subset pixels
+        // Copy subset pixels (premultiplied, RGBA order).
         for y in 0..height {
             for x in 0..width {
                 let src_x = subset.left + x;
@@ -153,8 +175,18 @@ impl Surface {
             }
         }
 
-        let info =
-            skia_rs_codec::ImageInfo::new(width, height, ColorType::Rgba8888, AlphaType::Premul);
+        // Deliver unpremultiplied bytes when the surface is Unpremul.
+        if self.info.alpha_type == AlphaType::Unpremul {
+            skia_rs_core::unpremultiply_in_place(&mut pixels);
+        }
+
+        // Carry the surface's true color/alpha type into the snapshot.
+        let info = skia_rs_codec::ImageInfo::new(
+            width,
+            height,
+            self.info.color_type,
+            self.info.alpha_type,
+        );
         Image::from_raster_data_owned(info, pixels, row_bytes)
     }
 }
@@ -269,7 +301,7 @@ pub type RasterCanvas<'a> = crate::Canvas<'a>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skia_rs_core::{AlphaType, Color, ColorType, Point, Rect};
+    use skia_rs_core::{AlphaType, Color, ColorType, IRect, Point, Rect};
     use skia_rs_paint::{Paint, Style};
 
     #[test]
@@ -278,6 +310,34 @@ mod tests {
         let surface = Surface::new_raster(&info, None).unwrap();
         assert_eq!(surface.width(), 100);
         assert_eq!(surface.height(), 100);
+    }
+
+    #[test]
+    fn test_new_raster_rejects_unsupported_color_type() {
+        // The RGBA-ordered PixelBuffer can only represent RGBA-order 8888.
+        // Unsupported color types must be rejected explicitly (not silently
+        // mislabeled), per SkSurface::MakeRaster returning null.
+        let bad = ImageInfo::new(4, 4, ColorType::Rgb565, AlphaType::Premul).unwrap();
+        assert!(Surface::new_raster(&bad, None).is_none());
+        let ok = ImageInfo::new(4, 4, ColorType::Rgba8888, AlphaType::Premul).unwrap();
+        assert!(Surface::new_raster(&ok, None).is_some());
+    }
+
+    #[cfg(feature = "codec")]
+    #[test]
+    fn test_snapshot_carries_true_alpha_type() {
+        // A snapshot must carry the surface's declared color/alpha type, not a
+        // hardcoded Premul.
+        let info = ImageInfo::new(4, 4, ColorType::Rgba8888, AlphaType::Unpremul).unwrap();
+        let mut surface = Surface::new_raster(&info, None).unwrap();
+        surface.canvas().clear(Color::from_argb(255, 10, 20, 30));
+        let img = surface.make_image_snapshot().unwrap();
+        assert_eq!(img.info().alpha_type, AlphaType::Unpremul);
+        let sub = surface
+            .make_image_snapshot_subset(&IRect::new(0, 0, 2, 2))
+            .unwrap();
+        assert_eq!(sub.info().color_type, ColorType::Rgba8888);
+        assert_eq!(sub.info().alpha_type, AlphaType::Unpremul);
     }
 
     #[test]
