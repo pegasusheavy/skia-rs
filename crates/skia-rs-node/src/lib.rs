@@ -406,7 +406,35 @@ impl Paint {
     /// Set alpha (0-255).
     #[napi]
     pub fn set_alpha(&mut self, alpha: u32) {
-        self.inner.set_alpha(alpha as f32 / 255.0);
+        self.inner.set_alpha((alpha.min(255) as f32) / 255.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Mirrors the arithmetic in `Paint::set_alpha` / `Paint::get_alpha`
+    /// without requiring a napi runtime.
+    fn set_alpha_arith(alpha: u32) -> f32 {
+        (alpha.min(255) as f32) / 255.0
+    }
+
+    fn get_alpha_arith(a: f32) -> u32 {
+        (a * 255.0).round() as u32
+    }
+
+    #[test]
+    fn set_alpha_round_trip() {
+        assert_eq!(get_alpha_arith(set_alpha_arith(128)), 128);
+        assert_eq!(get_alpha_arith(set_alpha_arith(0)), 0);
+        assert_eq!(get_alpha_arith(set_alpha_arith(255)), 255);
+    }
+
+    #[test]
+    fn set_alpha_clamps_above_255() {
+        // Without the clamp, 300 / 255.0 ~= 1.176, which is > 1.0.
+        let clamped = set_alpha_arith(300);
+        assert_eq!(clamped, 1.0);
+        assert_eq!(get_alpha_arith(clamped), 255);
     }
 }
 
