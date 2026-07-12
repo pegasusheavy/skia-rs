@@ -19,11 +19,13 @@ pub struct Stylesheet {
 
 impl Stylesheet {
     /// Create an empty stylesheet.
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self { rules: Vec::new() }
     }
 
     /// Parse a CSS stylesheet from a string.
+    #[must_use] 
     pub fn parse(css: &str) -> Self {
         let mut stylesheet = Self::new();
         let css = css.trim();
@@ -33,7 +35,7 @@ impl Stylesheet {
 
         while chars.peek().is_some() {
             // Skip whitespace
-            while chars.peek().map(|c| c.is_whitespace()).unwrap_or(false) {
+            while chars.peek().is_some_and(|c| c.is_whitespace()) {
                 chars.next();
             }
 
@@ -79,7 +81,7 @@ impl Stylesheet {
             // Read declarations until }
             let mut declarations_str = String::new();
             let mut brace_depth = 1;
-            while let Some(c) = chars.next() {
+            for c in chars.by_ref() {
                 if c == '{' {
                     brace_depth += 1;
                 } else if c == '}' {
@@ -136,15 +138,16 @@ pub enum CssSelector {
     /// ID selector (e.g., #id).
     Id(String),
     /// Descendant selector (e.g., g rect).
-    Descendant(Box<CssSelector>, Box<CssSelector>),
+    Descendant(Box<Self>, Box<Self>),
     /// Child selector (e.g., g > rect).
-    Child(Box<CssSelector>, Box<CssSelector>),
+    Child(Box<Self>, Box<Self>),
     /// Multiple conditions (e.g., rect.classname).
-    And(Vec<CssSelector>),
+    And(Vec<Self>),
 }
 
 impl CssSelector {
     /// Parse a selector string.
+    #[must_use] 
     pub fn parse(s: &str) -> Self {
         let s = s.trim();
 
@@ -152,7 +155,7 @@ impl CssSelector {
         if s.contains(" > ") {
             let parts: Vec<&str> = s.splitn(2, " > ").collect();
             if parts.len() == 2 {
-                return CssSelector::Child(
+                return Self::Child(
                     Box::new(Self::parse(parts[0])),
                     Box::new(Self::parse(parts[1])),
                 );
@@ -162,7 +165,7 @@ impl CssSelector {
         if s.contains(' ') {
             let parts: Vec<&str> = s.splitn(2, ' ').collect();
             if parts.len() == 2 && !parts[1].is_empty() {
-                return CssSelector::Descendant(
+                return Self::Descendant(
                     Box::new(Self::parse(parts[0])),
                     Box::new(Self::parse(parts[1])),
                 );
@@ -172,9 +175,9 @@ impl CssSelector {
         // Check for combined selectors (e.g., rect.classname#id)
         let mut selectors = Vec::new();
         let mut current = String::new();
-        let mut chars = s.chars().peekable();
+        let chars = s.chars().peekable();
 
-        while let Some(c) = chars.next() {
+        for c in chars {
             match c {
                 '.' | '#' => {
                     if !current.is_empty() {
@@ -196,25 +199,26 @@ impl CssSelector {
                 .pop()
                 .expect("selectors.len() == 1 guarantees element")
         } else if selectors.is_empty() {
-            CssSelector::Universal
+            Self::Universal
         } else {
-            CssSelector::And(selectors)
+            Self::And(selectors)
         }
     }
 
     /// Calculate specificity (ID, class, element counts).
+    #[must_use] 
     pub fn specificity(&self) -> (u32, u32, u32) {
         match self {
-            CssSelector::Universal => (0, 0, 0),
-            CssSelector::Element(_) => (0, 0, 1),
-            CssSelector::Class(_) => (0, 1, 0),
-            CssSelector::Id(_) => (1, 0, 0),
-            CssSelector::Descendant(a, b) | CssSelector::Child(a, b) => {
+            Self::Universal => (0, 0, 0),
+            Self::Element(_) => (0, 0, 1),
+            Self::Class(_) => (0, 1, 0),
+            Self::Id(_) => (1, 0, 0),
+            Self::Descendant(a, b) | Self::Child(a, b) => {
                 let (id_a, class_a, elem_a) = a.specificity();
                 let (id_b, class_b, elem_b) = b.specificity();
                 (id_a + id_b, class_a + class_b, elem_a + elem_b)
             }
-            CssSelector::And(selectors) => {
+            Self::And(selectors) => {
                 let mut id = 0;
                 let mut class = 0;
                 let mut elem = 0;
@@ -232,11 +236,11 @@ impl CssSelector {
     /// Check if this selector matches a node.
     pub fn matches(&self, node: &SvgNode, ancestors: &[&SvgNode]) -> bool {
         match self {
-            CssSelector::Universal => true,
-            CssSelector::Element(tag) => node_tag_name(node) == tag,
-            CssSelector::Class(class) => node.classes.contains(class),
-            CssSelector::Id(id) => node.id.as_deref() == Some(id.as_str()),
-            CssSelector::Descendant(ancestor_sel, child_sel) => {
+            Self::Universal => true,
+            Self::Element(tag) => node_tag_name(node) == tag,
+            Self::Class(class) => node.classes.contains(class),
+            Self::Id(id) => node.id.as_deref() == Some(id.as_str()),
+            Self::Descendant(ancestor_sel, child_sel) => {
                 if !child_sel.matches(node, ancestors) {
                     return false;
                 }
@@ -248,7 +252,7 @@ impl CssSelector {
                 }
                 false
             }
-            CssSelector::Child(parent_sel, child_sel) => {
+            Self::Child(parent_sel, child_sel) => {
                 if !child_sel.matches(node, ancestors) {
                     return false;
                 }
@@ -259,7 +263,7 @@ impl CssSelector {
                     false
                 }
             }
-            CssSelector::And(selectors) => selectors.iter().all(|s| s.matches(node, ancestors)),
+            Self::And(selectors) => selectors.iter().all(|s| s.matches(node, ancestors)),
         }
     }
 }
@@ -313,7 +317,8 @@ pub struct StyleDeclarations {
 
 impl StyleDeclarations {
     /// Create an empty declaration list.
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self { decls: Vec::new() }
     }
 
@@ -327,6 +332,7 @@ impl StyleDeclarations {
     }
 
     /// Look up a property's value.
+    #[must_use] 
     pub fn get(&self, property: &str) -> Option<&String> {
         self.decls
             .iter()
@@ -340,17 +346,20 @@ impl StyleDeclarations {
     }
 
     /// Number of declarations.
+    #[must_use] 
     pub fn len(&self) -> usize {
         self.decls.len()
     }
 
     /// Whether there are no declarations.
+    #[must_use] 
     pub fn is_empty(&self) -> bool {
         self.decls.is_empty()
     }
 }
 
 /// Parse CSS declarations from a string, preserving document order.
+#[must_use] 
 pub fn parse_declarations(s: &str) -> StyleDeclarations {
     let mut declarations = StyleDeclarations::new();
 
@@ -371,6 +380,7 @@ pub fn parse_declarations(s: &str) -> StyleDeclarations {
 }
 
 /// Parse an inline style attribute.
+#[must_use] 
 pub fn parse_inline_style(style: &str) -> StyleDeclarations {
     parse_declarations(style)
 }
@@ -405,7 +415,7 @@ fn apply_stylesheet_to_node(node: &mut SvgNode, stylesheet: &Stylesheet, ancesto
 
     // Recursively apply to children
     // We need to create a new ancestors list that includes this node
-    let node_ptr = node as *const SvgNode;
+    let node_ptr = std::ptr::from_ref::<SvgNode>(node);
     let mut new_ancestors: Vec<&SvgNode> = ancestors.to_vec();
     // Safety: we're not modifying ancestors while iterating
     new_ancestors.push(unsafe { &*node_ptr });

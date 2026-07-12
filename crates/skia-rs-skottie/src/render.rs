@@ -92,19 +92,19 @@ impl<'a> RenderContext<'a> {
     }
 
     /// Set the frame rate (fps) used for precomp `tm` remapping.
-    pub fn set_frame_rate(&mut self, fps: Scalar) {
+    pub const fn set_frame_rate(&mut self, fps: Scalar) {
         self.frame_rate = fps;
     }
 
     /// Set the bounds of the current composition (used to resolve inverted
     /// masks to a finite region).
-    pub fn set_bounds(&mut self, bounds: Rect) {
+    pub const fn set_bounds(&mut self, bounds: Rect) {
         self.bounds = bounds;
     }
 
     /// Save the current state.
     pub fn save(&mut self) {
-        self.transform_stack.push(self.current_transform.clone());
+        self.transform_stack.push(self.current_transform);
         self.opacity_stack.push(self.current_opacity);
         self.canvas.save();
     }
@@ -147,7 +147,8 @@ impl<'a> RenderContext<'a> {
     }
 
     /// Get current opacity.
-    pub fn current_opacity(&self) -> Scalar {
+    #[must_use] 
+    pub const fn current_opacity(&self) -> Scalar {
         self.current_opacity
     }
 
@@ -588,7 +589,7 @@ fn resolve_matte_source<'s>(layer: &Layer, siblings: &'s [Layer]) -> Option<&'s 
 /// BT.709 luma weights, zeroing RGB. Applied at layer-composite time (see
 /// [`RenderContext::render_matte_composite`]) so the accumulated mask
 /// layer's RGB becomes mask *coverage* stored in alpha.
-fn luma_color_filter() -> skia_rs_paint::ColorMatrixFilter {
+const fn luma_color_filter() -> skia_rs_paint::ColorMatrixFilter {
     #[rustfmt::skip]
     let m: [Scalar; 20] = [
         0.0,    0.0,    0.0,    0.0, 0.0,
@@ -712,15 +713,15 @@ fn build_gradient_shader(
         // Rotate `e` around `s` by `highlight_angle` degrees.
         let ex = e.x - s.x;
         let ey = e.y - s.y;
-        let rotated_e = Point::new(s.x + ex * cos - ey * sin, s.y + ex * sin + ey * cos);
+        let rotated_e = Point::new(ey.mul_add(-sin, ex.mul_add(cos, s.x)), ey.mul_add(cos, ex.mul_add(sin, s.y)));
 
         let eps = 1e-4;
         let h_len = (highlight_length * 0.01).clamp(-1.0 + eps, 1.0 - eps);
         let focal = Point::new(
-            s.x + (rotated_e.x - s.x) * h_len,
-            s.y + (rotated_e.y - s.y) * h_len,
+            (rotated_e.x - s.x).mul_add(h_len, s.x),
+            (rotated_e.y - s.y).mul_add(h_len, s.y),
         );
-        let end_radius = ((rotated_e.x - s.x).powi(2) + (rotated_e.y - s.y).powi(2)).sqrt();
+        let end_radius = (rotated_e.x - s.x).hypot(rotated_e.y - s.y);
 
         Some(Arc::new(TwoPointConicalGradient::new(
             focal,
@@ -749,12 +750,12 @@ pub struct SkiaCanvas<'c, 'a> {
 
 impl<'c, 'a> SkiaCanvas<'c, 'a> {
     /// Create a new Skia canvas wrapper.
-    pub fn new(canvas: &'c mut skia_rs_canvas::Canvas<'a>) -> Self {
+    pub const fn new(canvas: &'c mut skia_rs_canvas::Canvas<'a>) -> Self {
         Self { inner: canvas }
     }
 }
 
-impl<'c, 'a> Canvas for SkiaCanvas<'c, 'a> {
+impl Canvas for SkiaCanvas<'_, '_> {
     fn save(&mut self) {
         self.inner.save();
     }
@@ -996,7 +997,7 @@ mod tests {
         let a = mk(1, "");
         let b = mk(2, "");
         let consumer = mk(3, r#","tt":1,"tp":1"#);
-        let siblings = vec![a.clone(), b, consumer.clone()];
+        let siblings = vec![a, b, consumer.clone()];
 
         let source = resolve_matte_source(&consumer, &siblings).unwrap();
         assert_eq!(
@@ -1018,7 +1019,7 @@ mod tests {
 
         let source = mk(1, r#","td":true"#);
         let consumer = mk(2, r#","tt":1"#);
-        let siblings = vec![source.clone(), consumer.clone()];
+        let siblings = vec![source, consumer.clone()];
 
         let resolved = resolve_matte_source(&consumer, &siblings).unwrap();
         assert_eq!(resolved.index, 1);
@@ -1148,7 +1149,7 @@ mod tests {
     }
 
     /// A matte source that is not visible at the frame contributes ZERO
-    /// coverage (per sksg::MaskEffect: content composited SrcIn against
+    /// coverage (per `sksg::MaskEffect`: content composited `SrcIn` against
     /// nothing) — the consumer must render nothing, not render unmasked.
     #[test]
     fn test_alpha_matte_with_invisible_source_masks_everything_out() {
@@ -1265,7 +1266,7 @@ mod tests {
         // ~50% coverage -> alpha roughly in [96, 160] (127 +/- slop for
         // sRGB-vs-linear luma weighting/AA differences).
         assert!(
-            (96..=160).contains(&(pixel.alpha() as i32)),
+            (96..=160).contains(&i32::from(pixel.alpha())),
             "expected ~50% alpha from luma matte, got {pixel:?}"
         );
     }

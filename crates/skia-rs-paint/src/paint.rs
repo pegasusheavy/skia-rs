@@ -111,13 +111,15 @@ impl Default for Paint {
 impl Paint {
     /// Create a new paint with default settings.
     #[inline]
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Get the color as Color4f.
     #[inline]
-    pub fn color(&self) -> Color4f {
+    #[must_use] 
+    pub const fn color(&self) -> Color4f {
         self.color
     }
 
@@ -126,6 +128,7 @@ impl Paint {
     /// Float components are rounded to the nearest byte (Skia's
     /// `SkColor4f::toSkColor` rounding), not truncated.
     #[inline]
+    #[must_use] 
     pub fn color32(&self) -> Color {
         Color::from_argb(
             color_component_to_byte(self.color.a),
@@ -137,7 +140,7 @@ impl Paint {
 
     /// Set the color from Color4f.
     #[inline]
-    pub fn set_color(&mut self, color: Color4f) -> &mut Self {
+    pub const fn set_color(&mut self, color: Color4f) -> &mut Self {
         self.color = color;
         self
     }
@@ -157,97 +160,105 @@ impl Paint {
 
     /// Get the alpha value (0.0-1.0).
     #[inline]
-    pub fn alpha(&self) -> Scalar {
+    #[must_use] 
+    pub const fn alpha(&self) -> Scalar {
         self.color.a
     }
 
     /// Set the alpha value (0.0-1.0).
     #[inline]
-    pub fn set_alpha(&mut self, alpha: Scalar) -> &mut Self {
+    pub const fn set_alpha(&mut self, alpha: Scalar) -> &mut Self {
         self.color.a = alpha;
         self
     }
 
     /// Get the blend mode.
     #[inline]
-    pub fn blend_mode(&self) -> BlendMode {
+    #[must_use] 
+    pub const fn blend_mode(&self) -> BlendMode {
         self.blend_mode
     }
 
     /// Set the blend mode.
     #[inline]
-    pub fn set_blend_mode(&mut self, mode: BlendMode) -> &mut Self {
+    pub const fn set_blend_mode(&mut self, mode: BlendMode) -> &mut Self {
         self.blend_mode = mode;
         self
     }
 
     /// Get the style.
     #[inline]
-    pub fn style(&self) -> Style {
+    #[must_use] 
+    pub const fn style(&self) -> Style {
         self.style
     }
 
     /// Set the style.
     #[inline]
-    pub fn set_style(&mut self, style: Style) -> &mut Self {
+    pub const fn set_style(&mut self, style: Style) -> &mut Self {
         self.style = style;
         self
     }
 
     /// Get the stroke width.
     #[inline]
-    pub fn stroke_width(&self) -> Scalar {
+    #[must_use] 
+    pub const fn stroke_width(&self) -> Scalar {
         self.stroke_width
     }
 
     /// Set the stroke width.
     #[inline]
-    pub fn set_stroke_width(&mut self, width: Scalar) -> &mut Self {
+    pub const fn set_stroke_width(&mut self, width: Scalar) -> &mut Self {
         self.stroke_width = width.max(0.0);
         self
     }
 
     /// Get the stroke miter limit.
     #[inline]
-    pub fn stroke_miter(&self) -> Scalar {
+    #[must_use] 
+    pub const fn stroke_miter(&self) -> Scalar {
         self.stroke_miter
     }
 
     /// Set the stroke miter limit.
     #[inline]
-    pub fn set_stroke_miter(&mut self, miter: Scalar) -> &mut Self {
+    pub const fn set_stroke_miter(&mut self, miter: Scalar) -> &mut Self {
         self.stroke_miter = miter.max(0.0);
         self
     }
 
     /// Get the stroke cap.
     #[inline]
-    pub fn stroke_cap(&self) -> StrokeCap {
+    #[must_use] 
+    pub const fn stroke_cap(&self) -> StrokeCap {
         self.stroke_cap
     }
 
     /// Set the stroke cap.
     #[inline]
-    pub fn set_stroke_cap(&mut self, cap: StrokeCap) -> &mut Self {
+    pub const fn set_stroke_cap(&mut self, cap: StrokeCap) -> &mut Self {
         self.stroke_cap = cap;
         self
     }
 
     /// Get the stroke join.
     #[inline]
-    pub fn stroke_join(&self) -> StrokeJoin {
+    #[must_use] 
+    pub const fn stroke_join(&self) -> StrokeJoin {
         self.stroke_join
     }
 
     /// Set the stroke join.
     #[inline]
-    pub fn set_stroke_join(&mut self, join: StrokeJoin) -> &mut Self {
+    pub const fn set_stroke_join(&mut self, join: StrokeJoin) -> &mut Self {
         self.stroke_join = join;
         self
     }
 
     /// Get the shader.
     #[inline]
+    #[must_use] 
     pub fn shader(&self) -> Option<&ShaderRef> {
         self.shader.as_ref()
     }
@@ -261,12 +272,14 @@ impl Paint {
 
     /// Check if the paint has a shader.
     #[inline]
+    #[must_use] 
     pub fn has_shader(&self) -> bool {
         self.shader.is_some()
     }
 
     /// Get the mask filter.
     #[inline]
+    #[must_use] 
     pub fn mask_filter(&self) -> Option<&MaskFilterRef> {
         self.mask_filter.as_ref()
     }
@@ -280,12 +293,14 @@ impl Paint {
 
     /// Check if the paint has a mask filter.
     #[inline]
+    #[must_use] 
     pub fn has_mask_filter(&self) -> bool {
         self.mask_filter.is_some()
     }
 
     /// Get the color filter.
     #[inline]
+    #[must_use] 
     pub fn color_filter(&self) -> Option<&ColorFilterRef> {
         self.color_filter.as_ref()
     }
@@ -299,12 +314,14 @@ impl Paint {
 
     /// Check if the paint has a color filter.
     #[inline]
+    #[must_use] 
     pub fn has_color_filter(&self) -> bool {
         self.color_filter.is_some()
     }
 
     /// Get the image filter.
     #[inline]
+    #[must_use] 
     pub fn image_filter(&self) -> Option<&ImageFilterRef> {
         self.image_filter.as_ref()
     }
@@ -318,12 +335,14 @@ impl Paint {
 
     /// Check if the paint has an image filter.
     #[inline]
+    #[must_use] 
     pub fn has_image_filter(&self) -> bool {
         self.image_filter.is_some()
     }
 
     /// Get the path effect.
     #[inline]
+    #[must_use] 
     pub fn path_effect(&self) -> Option<&PathEffectRef> {
         self.path_effect.as_ref()
     }
@@ -337,39 +356,43 @@ impl Paint {
 
     /// Check if the paint has a path effect.
     #[inline]
+    #[must_use] 
     pub fn has_path_effect(&self) -> bool {
         self.path_effect.is_some()
     }
 
     /// Check if anti-aliasing is enabled.
     #[inline]
-    pub fn is_anti_alias(&self) -> bool {
+    #[must_use] 
+    pub const fn is_anti_alias(&self) -> bool {
         self.anti_alias
     }
 
     /// Set anti-aliasing.
     #[inline]
-    pub fn set_anti_alias(&mut self, aa: bool) -> &mut Self {
+    pub const fn set_anti_alias(&mut self, aa: bool) -> &mut Self {
         self.anti_alias = aa;
         self
     }
 
     /// Check if dithering is enabled.
     #[inline]
-    pub fn is_dither(&self) -> bool {
+    #[must_use] 
+    pub const fn is_dither(&self) -> bool {
         self.dither
     }
 
     /// Set dithering.
     #[inline]
-    pub fn set_dither(&mut self, dither: bool) -> &mut Self {
+    pub const fn set_dither(&mut self, dither: bool) -> &mut Self {
         self.dither = dither;
         self
     }
 
-    /// Alias for is_anti_alias (Skia compatibility).
+    /// Alias for `is_anti_alias` (Skia compatibility).
     #[inline]
-    pub fn anti_alias(&self) -> bool {
+    #[must_use] 
+    pub const fn anti_alias(&self) -> bool {
         self.anti_alias
     }
 
@@ -387,12 +410,13 @@ impl Paint {
     /// - 4 bytes: stroke miter (f32 little-endian)
     /// - 1 byte: stroke cap
     /// - 1 byte: stroke join
-    /// - 1 byte: flags (bit 0: anti_alias, bit 1: dither)
-    /// - [optional trailing sections for shader, mask_filter, color_filter, image_filter]
+    /// - 1 byte: flags (bit 0: `anti_alias`, bit 1: dither)
+    /// - [optional trailing sections for shader, `mask_filter`, `color_filter`, `image_filter`]
     ///
     /// Each optional section is: [1 byte present flag] [4 bytes length] [data].
     /// If a shader/filter does not support serialization (e.g., runtime shaders), the
     /// present flag is 0 and that field is omitted from deserialization.
+    #[must_use] 
     pub fn serialize(&self) -> Vec<u8> {
         let mut data = Vec::with_capacity(17);
 
@@ -480,6 +504,7 @@ impl Paint {
     /// Shaders and filters are deserialized from optional trailing sections.
     /// Runtime shaders/filters (SkSL-based) do not serialize and will be `None`
     /// after deserialization.
+    #[must_use] 
     pub fn deserialize(data: &[u8]) -> Option<Self> {
         if data.len() < 17 {
             return None;
@@ -488,10 +513,10 @@ impl Paint {
         let mut offset = 0;
 
         // Color
-        let r = data[offset] as f32 / 255.0;
-        let g = data[offset + 1] as f32 / 255.0;
-        let b = data[offset + 2] as f32 / 255.0;
-        let a = data[offset + 3] as f32 / 255.0;
+        let r = f32::from(data[offset]) / 255.0;
+        let g = f32::from(data[offset + 1]) / 255.0;
+        let b = f32::from(data[offset + 2]) / 255.0;
+        let a = f32::from(data[offset + 3]) / 255.0;
         let color = Color4f::new(r, g, b, a);
         offset += 4;
 
@@ -977,8 +1002,7 @@ mod tests {
                 assert_eq!(
                     restored.blend_mode(),
                     mode,
-                    "round-trip failed for {:?}",
-                    mode
+                    "round-trip failed for {mode:?}"
                 );
             }
         }
@@ -994,8 +1018,7 @@ mod tests {
             assert_eq!(
                 restored.stroke_width(),
                 *w,
-                "stroke width {} failed round-trip",
-                w
+                "stroke width {w} failed round-trip"
             );
         }
     }

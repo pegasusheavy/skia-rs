@@ -61,12 +61,12 @@ pub enum ShaderType {
 impl fmt::Display for ShaderType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ShaderType::Vertex => write!(f, "Vertex"),
-            ShaderType::Fragment => write!(f, "Fragment"),
-            ShaderType::Compute => write!(f, "Compute"),
-            ShaderType::Geometry => write!(f, "Geometry"),
-            ShaderType::TessControl => write!(f, "TessControl"),
-            ShaderType::TessEval => write!(f, "TessEval"),
+            Self::Vertex => write!(f, "Vertex"),
+            Self::Fragment => write!(f, "Fragment"),
+            Self::Compute => write!(f, "Compute"),
+            Self::Geometry => write!(f, "Geometry"),
+            Self::TessControl => write!(f, "TessControl"),
+            Self::TessEval => write!(f, "TessEval"),
         }
     }
 }
@@ -89,11 +89,11 @@ pub enum ShaderLanguage {
 impl fmt::Display for ShaderLanguage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ShaderLanguage::Glsl => write!(f, "GLSL"),
-            ShaderLanguage::Wgsl => write!(f, "WGSL"),
-            ShaderLanguage::SpirV => write!(f, "SPIR-V"),
-            ShaderLanguage::Msl => write!(f, "MSL"),
-            ShaderLanguage::Hlsl => write!(f, "HLSL"),
+            Self::Glsl => write!(f, "GLSL"),
+            Self::Wgsl => write!(f, "WGSL"),
+            Self::SpirV => write!(f, "SPIR-V"),
+            Self::Msl => write!(f, "MSL"),
+            Self::Hlsl => write!(f, "HLSL"),
         }
     }
 }
@@ -201,7 +201,8 @@ pub struct ValidationResult {
 
 impl ValidationResult {
     /// Create a valid result
-    pub fn valid() -> Self {
+    #[must_use] 
+    pub const fn valid() -> Self {
         Self {
             is_valid: true,
             errors: Vec::new(),
@@ -211,6 +212,7 @@ impl ValidationResult {
     }
 
     /// Create an invalid result with a single error
+    #[must_use] 
     pub fn error(error: ShaderError) -> Self {
         Self {
             is_valid: false,
@@ -318,6 +320,7 @@ impl Default for ShaderDebugger {
 
 impl ShaderDebugger {
     /// Create a new shader debugger
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             shader_cache: HashMap::new(),
@@ -329,17 +332,17 @@ impl ShaderDebugger {
     }
 
     /// Set debug verbosity level
-    pub fn set_verbosity(&mut self, verbosity: DebugVerbosity) {
+    pub const fn set_verbosity(&mut self, verbosity: DebugVerbosity) {
         self.verbosity = verbosity;
     }
 
     /// Enable/disable source capture
-    pub fn set_capture_source(&mut self, capture: bool) {
+    pub const fn set_capture_source(&mut self, capture: bool) {
         self.capture_source = capture;
     }
 
     /// Enable/disable binary capture
-    pub fn set_capture_binary(&mut self, capture: bool) {
+    pub const fn set_capture_binary(&mut self, capture: bool) {
         self.capture_binary = capture;
     }
 
@@ -378,11 +381,13 @@ impl ShaderDebugger {
     }
 
     /// Get information about a registered shader
+    #[must_use] 
     pub fn get_shader_info(&self, id: u64) -> Option<&ShaderInfo> {
         self.shader_cache.get(&id)
     }
 
     /// Validate a shader
+    #[must_use] 
     pub fn validate_shader(
         &self,
         source: &str,
@@ -581,8 +586,7 @@ impl ShaderDebugger {
         if open_braces != close_braces {
             result.errors.push(ShaderError {
                 message: format!(
-                    "Mismatched braces: {} open, {} close",
-                    open_braces, close_braces
+                    "Mismatched braces: {open_braces} open, {close_braces} close"
                 ),
                 line: 0,
                 column: 0,
@@ -623,7 +627,7 @@ impl ShaderDebugger {
         );
         if let Err(err) = validator.validate(&module) {
             result.errors.push(ShaderError {
-                message: format!("WGSL semantic validation failed: {}", err),
+                message: format!("WGSL semantic validation failed: {err}"),
                 line: 0,
                 column: 0,
                 code: Some("E002".to_string()),
@@ -645,7 +649,7 @@ impl ShaderDebugger {
             let has_stage = module.entry_points.iter().any(|ep| ep.stage == stage);
             if !has_stage {
                 result.errors.push(ShaderError {
-                    message: format!("No {:?} entry point in WGSL module", stage),
+                    message: format!("No {stage:?} entry point in WGSL module"),
                     line: 0,
                     column: 0,
                     code: Some("E003".to_string()),
@@ -691,10 +695,11 @@ impl ShaderDebugger {
     }
 
     /// Dump shader information for debugging
+    #[must_use] 
     pub fn dump_shader(&self, id: u64) -> String {
         if let Some(info) = self.shader_cache.get(&id) {
             let mut output = String::new();
-            output.push_str(&format!("=== Shader {} ===\n", id));
+            output.push_str(&format!("=== Shader {id} ===\n"));
             output.push_str(&format!("Type: {}\n", info.shader_type));
             output.push_str(&format!("Language: {}\n", info.language));
             output.push_str(&format!("Entry Point: {}\n", info.entry_point));
@@ -735,11 +740,12 @@ impl ShaderDebugger {
 
             output
         } else {
-            format!("Shader {} not found", id)
+            format!("Shader {id} not found")
         }
     }
 
     /// Get all registered shader IDs
+    #[must_use] 
     pub fn get_shader_ids(&self) -> Vec<u64> {
         self.shader_cache.keys().copied().collect()
     }
@@ -765,6 +771,7 @@ pub struct ShaderProfiler {
 
 impl ShaderProfiler {
     /// Create a new shader profiler
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
@@ -786,6 +793,7 @@ impl ShaderProfiler {
     }
 
     /// Get average compilation time for a shader
+    #[must_use] 
     pub fn avg_compile_time(&self, shader_id: u64) -> Option<Duration> {
         self.compile_times.get(&shader_id).map(|times| {
             let total: Duration = times.iter().sum();
@@ -794,6 +802,7 @@ impl ShaderProfiler {
     }
 
     /// Get average execution time for a shader
+    #[must_use] 
     pub fn avg_execution_time(&self, shader_id: u64) -> Option<Duration> {
         self.execution_times.get(&shader_id).map(|times| {
             let total: Duration = times.iter().sum();
@@ -802,6 +811,7 @@ impl ShaderProfiler {
     }
 
     /// Generate a profiling report
+    #[must_use] 
     pub fn generate_report(&self) -> String {
         let mut output = String::new();
         output.push_str("=== Shader Profiling Report ===\n\n");

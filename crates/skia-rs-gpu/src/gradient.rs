@@ -3,7 +3,7 @@
 //! This module provides utilities for converting gradient definitions
 //! into textures suitable for GPU sampling.
 
-use skia_rs_core::{Color4f, Point, Scalar};
+use skia_rs_core::Color4f;
 
 /// Gradient stop.
 #[derive(Debug, Clone, Copy)]
@@ -16,7 +16,8 @@ pub struct GradientStop {
 
 impl GradientStop {
     /// Create a new gradient stop.
-    pub fn new(position: f32, color: Color4f) -> Self {
+    #[must_use] 
+    pub const fn new(position: f32, color: Color4f) -> Self {
         Self {
             position: position.clamp(0.0, 1.0),
             color,
@@ -107,6 +108,7 @@ fn encode_texel(color: Color4f, config: &GradientTextureConfig) -> [u8; 4] {
 }
 
 /// Generate a 1D gradient texture.
+#[must_use] 
 pub fn generate_gradient_texture_1d(
     stops: &[GradientStop],
     tile_mode: GradientTileMode,
@@ -158,6 +160,7 @@ pub fn generate_gradient_texture_1d(
 }
 
 /// Generate a 2D radial gradient texture.
+#[must_use] 
 pub fn generate_radial_gradient_texture(
     stops: &[GradientStop],
     tile_mode: GradientTileMode,
@@ -176,13 +179,13 @@ pub fn generate_radial_gradient_texture(
 
     let center_x = config.width as f32 * 0.5;
     let center_y = config.height as f32 * 0.5;
-    let max_radius = (center_x * center_x + center_y * center_y).sqrt();
+    let max_radius = center_x.hypot(center_y);
 
     for y in 0..config.height {
         for x in 0..config.width {
             let dx = x as f32 - center_x;
             let dy = y as f32 - center_y;
-            let mut t = (dx * dx + dy * dy).sqrt() / max_radius;
+            let mut t = dx.hypot(dy) / max_radius;
 
             t = apply_tile_mode(t, tile_mode);
 
@@ -195,6 +198,7 @@ pub fn generate_radial_gradient_texture(
 }
 
 /// Generate a sweep gradient texture.
+#[must_use] 
 pub fn generate_sweep_gradient_texture(
     stops: &[GradientStop],
     tile_mode: GradientTileMode,
@@ -244,10 +248,10 @@ fn apply_tile_mode(t: f32, mode: GradientTileMode) -> f32 {
             if cycle > 1.0 { 2.0 - cycle } else { cycle }
         }
         GradientTileMode::Decal => {
-            if t < 0.0 || t > 1.0 {
-                -1.0 // Signal for transparent
-            } else {
+            if (0.0..=1.0).contains(&t) {
                 t
+            } else {
+                -1.0 // Signal for transparent
             }
         }
     }
@@ -287,10 +291,10 @@ fn sample_gradient(stops: &[GradientStop], t: f32) -> Color4f {
     };
 
     Color4f::new(
-        lower.color.r + (upper.color.r - lower.color.r) * blend,
-        lower.color.g + (upper.color.g - lower.color.g) * blend,
-        lower.color.b + (upper.color.b - lower.color.b) * blend,
-        lower.color.a + (upper.color.a - lower.color.a) * blend,
+        (upper.color.r - lower.color.r).mul_add(blend, lower.color.r),
+        (upper.color.g - lower.color.g).mul_add(blend, lower.color.g),
+        (upper.color.b - lower.color.b).mul_add(blend, lower.color.b),
+        (upper.color.a - lower.color.a).mul_add(blend, lower.color.a),
     )
 }
 
@@ -299,11 +303,12 @@ fn linear_to_srgb(linear: f32) -> f32 {
     if linear <= 0.0031308 {
         linear * 12.92
     } else {
-        1.055 * linear.powf(1.0 / 2.4) - 0.055
+        1.055f32.mul_add(linear.powf(1.0 / 2.4), -0.055)
     }
 }
 
 /// Convert sRGB color component to linear.
+#[must_use] 
 pub fn srgb_to_linear(srgb: f32) -> f32 {
     if srgb <= 0.04045 {
         srgb / 12.92
@@ -323,6 +328,7 @@ pub struct GradientLUT {
 
 impl GradientLUT {
     /// Create a new gradient LUT from stops.
+    #[must_use] 
     pub fn from_stops(stops: &[GradientStop], width: u32, tile_mode: GradientTileMode) -> Self {
         let config = GradientTextureConfig {
             width,
@@ -337,6 +343,7 @@ impl GradientLUT {
     }
 
     /// Sample the LUT at position t.
+    #[must_use] 
     pub fn sample(&self, t: f32) -> Color4f {
         let t = t.clamp(0.0, 1.0);
         let x = (t * (self.width - 1) as f32).round() as usize;
@@ -344,10 +351,10 @@ impl GradientLUT {
 
         if idx + 3 < self.data.len() {
             Color4f::new(
-                self.data[idx] as f32 / 255.0,
-                self.data[idx + 1] as f32 / 255.0,
-                self.data[idx + 2] as f32 / 255.0,
-                self.data[idx + 3] as f32 / 255.0,
+                f32::from(self.data[idx]) / 255.0,
+                f32::from(self.data[idx + 1]) / 255.0,
+                f32::from(self.data[idx + 2]) / 255.0,
+                f32::from(self.data[idx + 3]) / 255.0,
             )
         } else {
             Color4f::transparent()

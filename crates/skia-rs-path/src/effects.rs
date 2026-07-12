@@ -52,7 +52,7 @@ pub type PathEffectRef = Arc<dyn PathEffect>;
 // =============================================================================
 
 /// Convert a path with curves to a path containing only lines,
-/// using adaptive tolerance for curve flattening. Used by DashEffect
+/// using adaptive tolerance for curve flattening. Used by `DashEffect`
 /// so dash intervals can transition mid-curve.
 fn flatten_path_to_lines(path: &Path, tolerance: Scalar) -> Path {
     let mut builder = PathBuilder::new();
@@ -123,6 +123,7 @@ impl DashEffect {
     ///
     /// `intervals` must have an even number of entries (on/off pairs).
     /// If odd, the pattern is duplicated to make it even.
+    #[must_use] 
     pub fn new(intervals: Vec<Scalar>, phase: Scalar) -> Option<Self> {
         if intervals.is_empty() {
             return None;
@@ -131,7 +132,7 @@ impl DashEffect {
         // Ensure even number of intervals
         let intervals = if intervals.len() % 2 != 0 {
             let mut doubled = intervals.clone();
-            doubled.extend(intervals.iter().cloned());
+            doubled.extend(intervals.iter().copied());
             doubled
         } else {
             intervals
@@ -157,22 +158,26 @@ impl DashEffect {
     }
 
     /// Create a simple dash pattern (dash length, gap length).
+    #[must_use] 
     pub fn simple(dash: Scalar, gap: Scalar) -> Option<Self> {
         Self::new(vec![dash, gap], 0.0)
     }
 
     /// Create a dotted pattern.
+    #[must_use] 
     pub fn dotted(dot_size: Scalar, gap: Scalar) -> Option<Self> {
         Self::new(vec![dot_size, gap], 0.0)
     }
 
     /// Get the intervals.
+    #[must_use] 
     pub fn intervals(&self) -> &[Scalar] {
         &self.intervals
     }
 
     /// Get the phase.
-    pub fn phase(&self) -> Scalar {
+    #[must_use] 
+    pub const fn phase(&self) -> Scalar {
         self.phase
     }
 }
@@ -208,8 +213,8 @@ impl DashEffect {
             } else {
                 let dt = *remaining_in_interval / segment_length;
                 let mid = Point::new(
-                    from.x + (to.x - from.x) * (t + dt),
-                    from.y + (to.y - from.y) * (t + dt),
+                    (to.x - from.x).mul_add(t + dt, from.x),
+                    (to.y - from.y).mul_add(t + dt, from.y),
                 );
                 if *is_on {
                     builder.line_to(mid.x, mid.y);
@@ -369,6 +374,7 @@ pub struct CornerEffect {
 
 impl CornerEffect {
     /// Create a new corner effect.
+    #[must_use] 
     pub fn new(radius: Scalar) -> Option<Self> {
         if radius <= 0.0 {
             return None;
@@ -377,7 +383,8 @@ impl CornerEffect {
     }
 
     /// Get the radius.
-    pub fn radius(&self) -> Scalar {
+    #[must_use] 
+    pub const fn radius(&self) -> Scalar {
         self.radius
     }
 }
@@ -470,11 +477,11 @@ impl PathEffect for CornerEffect {
                     let a = current;
                     let b = end;
                     let draw_segment = corner_compute_step(a, b, radius, &mut step);
-                    if !prev_is_valid {
+                    if prev_is_valid {
+                        dst.quad_to(a.x, a.y, a.x + step.x, a.y + step.y);
+                    } else {
                         dst.move_to(move_to.x + step.x, move_to.y + step.y);
                         prev_is_valid = true;
-                    } else {
-                        dst.quad_to(a.x, a.y, a.x + step.x, a.y + step.y);
                     }
                     if draw_segment {
                         dst.line_to(b.x - step.x, b.y - step.y);
@@ -571,6 +578,7 @@ pub struct DiscreteEffect {
 
 impl DiscreteEffect {
     /// Create a new discrete effect.
+    #[must_use] 
     pub fn new(seg_length: Scalar, deviation: Scalar, seed: u32) -> Option<Self> {
         if seg_length <= 0.0 {
             return None;
@@ -583,12 +591,14 @@ impl DiscreteEffect {
     }
 
     /// Get the segment length.
-    pub fn seg_length(&self) -> Scalar {
+    #[must_use] 
+    pub const fn seg_length(&self) -> Scalar {
         self.seg_length
     }
 
     /// Get the deviation.
-    pub fn deviation(&self) -> Scalar {
+    #[must_use] 
+    pub const fn deviation(&self) -> Scalar {
         self.deviation
     }
 
@@ -596,7 +606,7 @@ impl DiscreteEffect {
     fn random(&self, seed: u32) -> Scalar {
         // Simple LCG
         let n = seed.wrapping_mul(1103515245).wrapping_add(12345);
-        ((n >> 16) & 0x7FFF) as Scalar / 32767.0 * 2.0 - 1.0
+        (((n >> 16) & 0x7FFF) as Scalar / 32767.0).mul_add(2.0, -1.0)
     }
 }
 
@@ -627,8 +637,8 @@ impl PathEffect for DiscreteEffect {
 
                     for i in 1..=num_segments {
                         let t = i as Scalar / num_segments as Scalar;
-                        let x = current_pos.x + (end.x - current_pos.x) * t;
-                        let y = current_pos.y + (end.y - current_pos.y) * t;
+                        let x = (end.x - current_pos.x).mul_add(t, current_pos.x);
+                        let y = (end.y - current_pos.y).mul_add(t, current_pos.y);
 
                         let dx = self.random(seed) * self.deviation;
                         seed = seed.wrapping_add(1);
@@ -737,25 +747,29 @@ pub enum TrimMode {
 
 impl TrimEffect {
     /// Create a new trim effect.
+    #[must_use] 
     pub fn new(start: Scalar, end: Scalar, mode: TrimMode) -> Option<Self> {
-        if start < 0.0 || start > 1.0 || end < 0.0 || end > 1.0 {
+        if !(0.0..=1.0).contains(&start) || !(0.0..=1.0).contains(&end) {
             return None;
         }
         Some(Self { start, end, mode })
     }
 
     /// Get the start position.
-    pub fn start(&self) -> Scalar {
+    #[must_use] 
+    pub const fn start(&self) -> Scalar {
         self.start
     }
 
     /// Get the end position.
-    pub fn end(&self) -> Scalar {
+    #[must_use] 
+    pub const fn end(&self) -> Scalar {
         self.end
     }
 
     /// Get the trim mode.
-    pub fn mode(&self) -> TrimMode {
+    #[must_use] 
+    pub const fn mode(&self) -> TrimMode {
         self.mode
     }
 }
@@ -926,8 +940,8 @@ impl PathEffect for SumEffect {
 fn quadratic_point(p0: Point, p1: Point, p2: Point, t: Scalar) -> Point {
     let mt = 1.0 - t;
     Point::new(
-        mt * mt * p0.x + 2.0 * mt * t * p1.x + t * t * p2.x,
-        mt * mt * p0.y + 2.0 * mt * t * p1.y + t * t * p2.y,
+        (t * t).mul_add(p2.x, (mt * mt).mul_add(p0.x, 2.0 * mt * t * p1.x)),
+        (t * t).mul_add(p2.y, (mt * mt).mul_add(p0.y, 2.0 * mt * t * p1.y)),
     )
 }
 
@@ -936,8 +950,8 @@ fn cubic_point(p0: Point, p1: Point, p2: Point, p3: Point, t: Scalar) -> Point {
     let mt2 = mt * mt;
     let t2 = t * t;
     Point::new(
-        mt2 * mt * p0.x + 3.0 * mt2 * t * p1.x + 3.0 * mt * t2 * p2.x + t2 * t * p3.x,
-        mt2 * mt * p0.y + 3.0 * mt2 * t * p1.y + 3.0 * mt * t2 * p2.y + t2 * t * p3.y,
+        (t2 * t).mul_add(p3.x, (3.0 * mt * t2).mul_add(p2.x, (mt2 * mt).mul_add(p0.x, 3.0 * mt2 * t * p1.x))),
+        (t2 * t).mul_add(p3.y, (3.0 * mt * t2).mul_add(p2.y, (mt2 * mt).mul_add(p0.y, 3.0 * mt2 * t * p1.y))),
     )
 }
 
@@ -945,14 +959,14 @@ fn quadratic_length(p0: Point, p1: Point, p2: Point) -> Scalar {
     // Approximate with chord + control polygon
     let chord = p0.distance(&p2);
     let polygon = p0.distance(&p1) + p1.distance(&p2);
-    (chord + polygon) / 2.0
+    f32::midpoint(chord, polygon)
 }
 
 fn cubic_length(p0: Point, p1: Point, p2: Point, p3: Point) -> Scalar {
     // Approximate with chord + control polygon
     let chord = p0.distance(&p3);
     let polygon = p0.distance(&p1) + p1.distance(&p2) + p2.distance(&p3);
-    (chord + polygon) / 2.0
+    f32::midpoint(chord, polygon)
 }
 
 // =============================================================================
@@ -1006,22 +1020,22 @@ impl Path1DEffect {
     }
 
     /// Get the stamped path.
-    pub fn path(&self) -> &Path {
+    pub const fn path(&self) -> &Path {
         &self.path
     }
 
     /// Get the advance distance.
-    pub fn advance(&self) -> Scalar {
+    pub const fn advance(&self) -> Scalar {
         self.advance
     }
 
     /// Get the phase.
-    pub fn phase(&self) -> Scalar {
+    pub const fn phase(&self) -> Scalar {
         self.phase
     }
 
     /// Get the style.
-    pub fn style(&self) -> Path1DStyle {
+    pub const fn style(&self) -> Path1DStyle {
         self.style
     }
 }
@@ -1103,12 +1117,12 @@ impl Path2DEffect {
     }
 
     /// Get the matrix.
-    pub fn matrix(&self) -> &skia_rs_core::Matrix {
+    pub const fn matrix(&self) -> &skia_rs_core::Matrix {
         &self.matrix
     }
 
     /// Get the tiled path.
-    pub fn path(&self) -> &Path {
+    pub const fn path(&self) -> &Path {
         &self.path
     }
 }
@@ -1185,6 +1199,7 @@ impl Line2DEffect {
     ///
     /// - `width`: The width of the lines.
     /// - `matrix`: The matrix defining the line pattern orientation and spacing.
+    #[must_use] 
     pub fn new(width: Scalar, matrix: skia_rs_core::Matrix) -> Option<Self> {
         if width <= 0.0 {
             return None;
@@ -1193,12 +1208,14 @@ impl Line2DEffect {
     }
 
     /// Get the line width.
-    pub fn width(&self) -> Scalar {
+    #[must_use] 
+    pub const fn width(&self) -> Scalar {
         self.width
     }
 
     /// Get the matrix.
-    pub fn matrix(&self) -> &skia_rs_core::Matrix {
+    #[must_use] 
+    pub const fn matrix(&self) -> &skia_rs_core::Matrix {
         &self.matrix
     }
 }
@@ -1247,7 +1264,7 @@ impl PathEffect for Line2DEffect {
             let half_width = self.width / 2.0;
             let dx = world_p1.x - world_p0.x;
             let dy = world_p1.y - world_p0.y;
-            let len = (dx * dx + dy * dy).sqrt();
+            let len = dx.hypot(dy);
 
             if len > 0.0 {
                 let nx = -dy / len * half_width;
@@ -1276,21 +1293,25 @@ impl PathEffect for Line2DEffect {
 // =============================================================================
 
 /// Create a dash path effect.
+#[must_use] 
 pub fn make_dash(intervals: Vec<Scalar>, phase: Scalar) -> Option<PathEffectRef> {
     DashEffect::new(intervals, phase).map(|e| Arc::new(e) as PathEffectRef)
 }
 
 /// Create a corner path effect.
+#[must_use] 
 pub fn make_corner(radius: Scalar) -> Option<PathEffectRef> {
     CornerEffect::new(radius).map(|e| Arc::new(e) as PathEffectRef)
 }
 
 /// Create a discrete path effect.
+#[must_use] 
 pub fn make_discrete(seg_length: Scalar, deviation: Scalar, seed: u32) -> Option<PathEffectRef> {
     DiscreteEffect::new(seg_length, deviation, seed).map(|e| Arc::new(e) as PathEffectRef)
 }
 
 /// Create a trim path effect.
+#[must_use] 
 pub fn make_trim(start: Scalar, end: Scalar, mode: TrimMode) -> Option<PathEffectRef> {
     TrimEffect::new(start, end, mode).map(|e| Arc::new(e) as PathEffectRef)
 }
@@ -1321,6 +1342,7 @@ pub fn make_path_2d(matrix: skia_rs_core::Matrix, path: Path) -> Option<PathEffe
 }
 
 /// Create a 2D line effect.
+#[must_use] 
 pub fn make_line_2d(width: Scalar, matrix: skia_rs_core::Matrix) -> Option<PathEffectRef> {
     Line2DEffect::new(width, matrix).map(|e| Arc::new(e) as PathEffectRef)
 }
@@ -1362,8 +1384,7 @@ mod tests {
         let drawn = PathMeasure::new(&dashed).length();
         assert!(
             (drawn - 20.0).abs() < 1.0,
-            "closing edge must be dashed continuously: expected ~20 drawn units, got {}",
-            drawn
+            "closing edge must be dashed continuously: expected ~20 drawn units, got {drawn}"
         );
     }
 
@@ -1387,8 +1408,7 @@ mod tests {
             .count();
         assert!(
             moves >= 3,
-            "Expected at least 3 dashes on curved path (curve length ~140, dash period 20), got {}",
-            moves
+            "Expected at least 3 dashes on curved path (curve length ~140, dash period 20), got {moves}"
         );
     }
 

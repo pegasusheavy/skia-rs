@@ -6,8 +6,8 @@
 //! - Saving the result as PNG
 //!
 //! Usage:
-//!   cargo run --example svg_viewer
-//!   cargo run --example svg_viewer -- path/to/file.svg
+//!   cargo run --example `svg_viewer`
+//!   cargo run --example `svg_viewer` -- path/to/file.svg
 
 use skia_rs_canvas::Surface;
 use skia_rs_codec::{ImageEncoder, ImageInfo, PngEncoder};
@@ -71,11 +71,11 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let svg_content = if args.len() > 1 {
         let path = &args[1];
-        println!("Loading SVG from: {}", path);
+        println!("Loading SVG from: {path}");
         match fs::read_to_string(path) {
             Ok(content) => content,
             Err(e) => {
-                eprintln!("Failed to read SVG file: {}", e);
+                eprintln!("Failed to read SVG file: {e}");
                 eprintln!("Using sample SVG instead.\n");
                 SAMPLE_SVG.to_string()
             }
@@ -101,7 +101,7 @@ fn main() {
             let mut surface =
                 Surface::new_raster_n32_premul(width, height).expect("Failed to create surface");
 
-            println!("\nCreated {}x{} surface", width, height);
+            println!("\nCreated {width}x{height} surface");
 
             // Clear with a background color
             {
@@ -120,7 +120,7 @@ fn main() {
 
             let output_path = "svg_viewer_output.png";
             let file = File::create(output_path).expect("Failed to create output file");
-            let ref mut writer = BufWriter::new(file);
+            let writer = &mut BufWriter::new(file);
 
             let img_info = ImageInfo::new(width, height, ColorType::Rgba8888, AlphaType::Premul);
 
@@ -131,13 +131,13 @@ fn main() {
                 encoder
                     .encode(&image, writer)
                     .expect("Failed to encode PNG");
-                println!("\nSaved output to: {}", output_path);
+                println!("\nSaved output to: {output_path}");
             } else {
                 eprintln!("Failed to create image from surface pixels");
             }
         }
         Err(e) => {
-            eprintln!("Failed to parse SVG: {}", e);
+            eprintln!("Failed to parse SVG: {e}");
         }
     }
 

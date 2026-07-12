@@ -73,6 +73,21 @@
 // Perspective 2 index.
 #define Matrix_PERSP_2 8
 
+// Filter mode for image sampling.
+enum FilterMode
+#ifdef __cplusplus
+  : uint8_t
+#endif // __cplusplus
+ {
+    // Nearest neighbor sampling.
+    FilterMode_Nearest = 0,
+    // Bilinear interpolation.
+    FilterMode_Linear,
+};
+#ifndef __cplusplus
+typedef uint8_t FilterMode;
+#endif // __cplusplus
+
 // Mipmap mode for image sampling.
 enum MipmapMode
 #ifdef __cplusplus
@@ -88,21 +103,6 @@ enum MipmapMode
 };
 #ifndef __cplusplus
 typedef uint8_t MipmapMode;
-#endif // __cplusplus
-
-// Filter mode for image sampling.
-enum FilterMode
-#ifdef __cplusplus
-  : uint8_t
-#endif // __cplusplus
- {
-    // Nearest neighbor sampling.
-    FilterMode_Nearest = 0,
-    // Bilinear interpolation.
-    FilterMode_Linear,
-};
-#ifndef __cplusplus
-typedef uint8_t FilterMode;
 #endif // __cplusplus
 
 // Describes the color space for interpreting colors.
@@ -290,13 +290,13 @@ typedef struct RefCounted_PathEffectRef sk_patheffect_t;
 // C ABI type for [`SkTrimMode`]; see [`decode_trim_mode`].
 typedef uint32_t sk_trim_mode_t;
 
-// Binary-compatible 2D point (matches SkPoint exactly)
+// Binary-compatible 2D point (matches `SkPoint` exactly)
 typedef struct SkPointABI {
     float x;
     float y;
 } SkPointABI;
 
-// Binary-compatible rectangle (matches SkRect exactly)
+// Binary-compatible rectangle (matches `SkRect` exactly)
 typedef struct SkRectABI {
     float left;
     float top;
@@ -304,7 +304,7 @@ typedef struct SkRectABI {
     float bottom;
 } SkRectABI;
 
-// Binary-compatible 3x3 matrix (matches SkMatrix exactly)
+// Binary-compatible 3x3 matrix (matches `SkMatrix` exactly)
 //
 // Layout: [scaleX, skewX, transX, skewY, scaleY, transY, persp0, persp1, persp2]
 typedef struct SkMatrixABI {
@@ -809,7 +809,7 @@ int32_t sk_canvas_save(struct sk_canvas_t *canvas);
 // or 0 on failure (null canvas).
 //
 // **Pragmatic note:** because the FFI canvas reconstructs its underlying
-// [`Canvas`] between calls, the layer_paint / layer_bounds are tracked but
+// [`Canvas`] between calls, the `layer_paint` / `layer_bounds` are tracked but
 // composition is delegated to the transient canvas at the next draw — the
 // effective behavior matches the recording-only semantics in
 // [`skia_rs_canvas::Canvas::save_layer`].
@@ -1269,19 +1269,19 @@ struct SkMatrixABI sk_matrix_identity(void);
 // Create identity matrix 4x4
 struct SkMatrix44ABI sk_matrix44_identity(void);
 
-// Get size of SkPointABI (for runtime verification)
+// Get size of `SkPointABI` (for runtime verification)
 uintptr_t sk_sizeof_point(void);
 
-// Get size of SkRectABI (for runtime verification)
+// Get size of `SkRectABI` (for runtime verification)
 uintptr_t sk_sizeof_rect(void);
 
-// Get size of SkMatrixABI (for runtime verification)
+// Get size of `SkMatrixABI` (for runtime verification)
 uintptr_t sk_sizeof_matrix(void);
 
-// Get size of SkImageInfoABI (for runtime verification)
+// Get size of `SkImageInfoABI` (for runtime verification)
 uintptr_t sk_sizeof_imageinfo(void);
 
-// Get size of SkColor4fABI (for runtime verification)
+// Get size of `SkColor4fABI` (for runtime verification)
 uintptr_t sk_sizeof_color4f(void);
 
 // Validate that all ABI types have expected sizes

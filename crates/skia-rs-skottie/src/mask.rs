@@ -33,14 +33,14 @@ pub enum MaskMode {
 impl From<&str> for MaskMode {
     fn from(s: &str) -> Self {
         match s.to_lowercase().as_str() {
-            "n" | "none" => MaskMode::None,
-            "a" | "add" => MaskMode::Add,
-            "s" | "subtract" => MaskMode::Subtract,
-            "i" | "intersect" => MaskMode::Intersect,
-            "l" | "lighten" => MaskMode::Lighten,
-            "d" | "darken" => MaskMode::Darken,
-            "f" | "difference" => MaskMode::Difference,
-            _ => MaskMode::Add,
+            "n" | "none" => Self::None,
+            "a" | "add" => Self::Add,
+            "s" | "subtract" => Self::Subtract,
+            "i" | "intersect" => Self::Intersect,
+            "l" | "lighten" => Self::Lighten,
+            "d" | "darken" => Self::Darken,
+            "f" | "difference" => Self::Difference,
+            _ => Self::Add,
         }
     }
 }
@@ -63,11 +63,11 @@ pub enum MatteMode {
 impl From<i32> for MatteMode {
     fn from(value: i32) -> Self {
         match value {
-            1 => MatteMode::Alpha,
-            2 => MatteMode::AlphaInverted,
-            3 => MatteMode::Luma,
-            4 => MatteMode::LumaInverted,
-            _ => MatteMode::None,
+            1 => Self::Alpha,
+            2 => Self::AlphaInverted,
+            3 => Self::Luma,
+            4 => Self::LumaInverted,
+            _ => Self::None,
         }
     }
 }
@@ -91,6 +91,7 @@ pub struct Mask {
 
 impl Mask {
     /// Create a new mask.
+    #[must_use] 
     pub fn new(mode: MaskMode) -> Self {
         Self {
             name: String::new(),
@@ -112,13 +113,12 @@ impl Mask {
             inverted: model.inverted,
             expansion: model
                 .expansion
-                .as_ref()
-                .map(AnimatedProperty::from_lottie)
-                .unwrap_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(0.0))),
+                .as_ref().map_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(0.0)), AnimatedProperty::from_lottie),
         }
     }
 
     /// Get the mask path at a specific frame.
+    #[must_use] 
     pub fn path_at(&self, frame: Scalar) -> Option<Path> {
         let value = self.path.value_at(frame);
 
@@ -129,23 +129,26 @@ impl Mask {
     }
 
     /// Get the opacity at a specific frame (0.0 - 1.0).
+    #[must_use] 
     pub fn opacity_at(&self, frame: Scalar) -> Scalar {
         let opacity = self.opacity.value_at(frame).as_scalar().unwrap_or(100.0);
         (opacity / 100.0).clamp(0.0, 1.0)
     }
 
     /// Get the expansion at a specific frame.
+    #[must_use] 
     pub fn expansion_at(&self, frame: Scalar) -> Scalar {
         self.expansion.value_at(frame).as_scalar().unwrap_or(0.0)
     }
 
     /// Check if this mask affects rendering (not None mode with zero opacity).
+    #[must_use] 
     pub fn is_active(&self, frame: Scalar) -> bool {
         self.mode != MaskMode::None && self.opacity_at(frame) > 0.0
     }
 }
 
-/// Convert PathData to skia Path.
+/// Convert `PathData` to skia Path.
 fn path_data_to_path(data: &PathData) -> Path {
     let mut builder = PathBuilder::new();
 
@@ -184,7 +187,7 @@ fn path_data_to_path(data: &PathData) -> Path {
     if data.closed && n > 1 {
         let last = n - 1;
         let out_t = data.out_tangents.get(last).copied().unwrap_or([0.0, 0.0]);
-        let in_t = data.in_tangents.get(0).copied().unwrap_or([0.0, 0.0]);
+        let in_t = data.in_tangents.first().copied().unwrap_or([0.0, 0.0]);
 
         let c1 = [
             data.vertices[last][0] + out_t[0],
@@ -219,6 +222,7 @@ pub struct MaskGroup {
 
 impl MaskGroup {
     /// Create a new empty mask group.
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
@@ -229,6 +233,7 @@ impl MaskGroup {
     }
 
     /// Check if the group has any active masks.
+    #[must_use] 
     pub fn has_active_masks(&self, frame: Scalar) -> bool {
         self.masks.iter().any(|m| m.is_active(frame))
     }
@@ -241,6 +246,7 @@ impl MaskGroup {
 /// inverts an individual mask's geometry (relative to `bounds`); the
 /// *first* mask in the stack always draws in "source" mode, with its
 /// effective inversion flipped when its own mode is Subtract.
+#[must_use] 
 pub fn build_clip(masks: &[Mask], frame: Scalar, bounds: Rect) -> Option<Path> {
     let mut result: Option<Path> = None;
 

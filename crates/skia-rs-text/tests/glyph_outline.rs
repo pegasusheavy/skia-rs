@@ -78,9 +78,7 @@ fn glyph_path_scales_with_font_size() {
     let hratio = bb.height() / sb.height();
     assert!(
         (wratio - 10.0).abs() < 0.1,
-        "width ratio {wratio} ≠ 10 (small={:?}, big={:?})",
-        sb,
-        bb
+        "width ratio {wratio} ≠ 10 (small={sb:?}, big={bb:?})"
     );
     assert!((hratio - 10.0).abs() < 0.1, "height ratio {hratio} ≠ 10");
 }
@@ -316,8 +314,7 @@ fn shaper_preserves_cluster_indices() {
     for w in clusters.windows(2) {
         assert!(
             w[0] <= w[1],
-            "clusters must be non-decreasing: {:?}",
-            clusters
+            "clusters must be non-decreasing: {clusters:?}"
         );
     }
 }
@@ -677,7 +674,7 @@ fn text_blob_bounds_bracket_real_glyph_positions() {
         Point::new(60.0, 0.0),
         Point::new(120.0, 0.0),
     ];
-    let run = GlyphRun::new(font.clone(), glyphs, positions, Point::zero());
+    let run = GlyphRun::new(font, glyphs, positions, Point::zero());
     let b = run.bounds();
     // Right edge must include the last glyph's outline, not just its
     // origin. The real advance is ~54.7px at size=100, so the right edge
@@ -732,7 +729,7 @@ fn metrics_top_bottom_come_from_font_bbox() {
     // (here the hhea ascender 1024 exceeds the bbox yMax 700). The key
     // point is they are bbox-derived, not `ascent * 1.125`.
     assert!(
-        (m.top - m.ascent * 1.125).abs() > 1.0,
+        m.ascent.mul_add(-1.125, m.top).abs() > 1.0,
         "top must not be ascent*1.125"
     );
 }
@@ -790,7 +787,7 @@ fn glyph_path_applies_scale_x() {
     // Height unchanged.
     assert!((wb.height() - bb.height()).abs() < 0.5);
     // And glyph_advance scales the same way.
-    assert!((wide.glyph_advance(1) - 2.0 * base.glyph_advance(1)).abs() < 0.01);
+    assert!(2.0f32.mul_add(-base.glyph_advance(1), wide.glyph_advance(1)).abs() < 0.01);
 }
 
 #[test]
@@ -830,7 +827,7 @@ fn shaper_x_positions_scale_with_scale_x() {
     let ax = a[0].glyphs[0].x_advance;
     let bx = b[0].glyphs[0].x_advance;
     assert!(
-        (bx - 2.0 * ax).abs() < 0.5,
+        2.0f32.mul_add(-ax, bx).abs() < 0.5,
         "scale_x=2 should double shaped x advance: {bx} vs {ax}"
     );
 }

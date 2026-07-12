@@ -7,7 +7,7 @@
 //! the referenced `<clipPath>` element.
 
 use crate::css::apply_stylesheet;
-use crate::dom::*;
+use crate::dom::{SvgPaint, SvgNode, SvgDom, PreserveAspectRatio, MeetOrSlice, AlignX, AlignY, SvgNodeKind, SvgText, TextAnchor, SvgImage, GradientUnits, GradientStop, SpreadMethod};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use skia_rs_canvas::{Canvas, ClipOp, SaveLayerRec, Surface};
@@ -63,7 +63,7 @@ struct PresentationState {
 impl PresentationState {
     /// The document-root initial presentation state
     /// (`SkSVGPresentationAttributes::MakeInitial`).
-    fn initial() -> Self {
+    const fn initial() -> Self {
         Self {
             fill: SvgPaint::Color(Color::BLACK),
             stroke: SvgPaint::None,
@@ -158,7 +158,7 @@ fn parse_dash_array(s: &str) -> Option<Vec<Scalar>> {
 /// `create_paint_from_svg_paint` has O(1) access to gradient/clipPath
 /// lookup instead of re-walking the DOM for each element.
 struct RenderContext<'a> {
-    /// id -> SvgNode for all nodes in the DOM that carry an id.
+    /// id -> `SvgNode` for all nodes in the DOM that carry an id.
     defs: HashMap<String, &'a SvgNode>,
 }
 
@@ -298,8 +298,8 @@ fn compute_viewbox_matrix(view_box: &Rect, viewport: &Rect, par: PreserveAspectR
         ),
     };
 
-    let tx = -view_box.left * scale_x + (viewport.width() - view_box.width() * scale_x) * cx;
-    let ty = -view_box.top * scale_y + (viewport.height() - view_box.height() * scale_y) * cy;
+    let tx = (-view_box.left).mul_add(scale_x, view_box.width().mul_add(-scale_x, viewport.width()) * cx);
+    let ty = (-view_box.top).mul_add(scale_y, view_box.height().mul_add(-scale_y, viewport.height()) * cy);
 
     Matrix::translate(viewport.left + tx, viewport.top + ty)
         .concat(&Matrix::scale(scale_x, scale_y))
@@ -802,11 +802,11 @@ fn build_paint(
         SvgPaint::None => return None,
         SvgPaint::Color(color) => {
             paint.set_color32(*color);
-            base_alpha = color.alpha() as Scalar / 255.0;
+            base_alpha = Scalar::from(color.alpha()) / 255.0;
         }
         SvgPaint::CurrentColor => {
             paint.set_color32(state.color);
-            base_alpha = state.color.alpha() as Scalar / 255.0;
+            base_alpha = Scalar::from(state.color.alpha()) / 255.0;
         }
         SvgPaint::Url(url, fallback) => {
             let id = url.trim_start_matches('#');
@@ -822,7 +822,7 @@ fn build_paint(
                 // present, else Skia's fallback (black).
                 let fb = fallback.unwrap_or(Color::BLACK);
                 paint.set_color32(fb);
-                base_alpha = fb.alpha() as Scalar / 255.0;
+                base_alpha = Scalar::from(fb.alpha()) / 255.0;
             }
         }
     }
@@ -920,7 +920,7 @@ fn stops_to_colors(stops: &[GradientStop]) -> (Vec<Color4f>, Option<Vec<Scalar>>
     (colors, positions_opt)
 }
 
-fn spread_to_tile_mode(spread: SpreadMethod) -> TileMode {
+const fn spread_to_tile_mode(spread: SpreadMethod) -> TileMode {
     match spread {
         SpreadMethod::Pad => TileMode::Clamp,
         SpreadMethod::Reflect => TileMode::Mirror,
@@ -961,6 +961,7 @@ pub fn render_svg_in_container(
 }
 
 /// Render an SVG string to a new surface.
+#[must_use] 
 pub fn render_svg_string(svg: &str, width: i32, height: i32) -> Option<Surface> {
     let dom = crate::parse_svg(svg).ok()?;
     let mut surface = Surface::new_raster_n32_premul(width, height)?;

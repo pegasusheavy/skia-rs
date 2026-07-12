@@ -13,13 +13,13 @@ use std::hint::black_box;
 fn bench_paint_creation(c: &mut Criterion) {
     let mut group = c.benchmark_group("Paint/creation");
 
-    group.bench_function("new", |b| b.iter(|| Paint::new()));
+    group.bench_function("new", |b| b.iter(Paint::new));
 
-    group.bench_function("default", |b| b.iter(|| Paint::default()));
+    group.bench_function("default", |b| b.iter(Paint::default));
 
     group.bench_function("clone", |b| {
         let paint = Paint::new();
-        b.iter(|| black_box(&paint).clone())
+        b.iter(|| black_box(&paint).clone());
     });
 
     group.finish();
@@ -36,7 +36,7 @@ fn bench_paint_setters(c: &mut Criterion) {
                 paint
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("set_color32", |b| {
@@ -47,7 +47,7 @@ fn bench_paint_setters(c: &mut Criterion) {
                 paint
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("set_argb", |b| {
@@ -58,7 +58,7 @@ fn bench_paint_setters(c: &mut Criterion) {
                 paint
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("set_alpha", |b| {
@@ -69,7 +69,7 @@ fn bench_paint_setters(c: &mut Criterion) {
                 paint
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("set_style", |b| {
@@ -80,7 +80,7 @@ fn bench_paint_setters(c: &mut Criterion) {
                 paint
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("set_stroke_width", |b| {
@@ -91,7 +91,7 @@ fn bench_paint_setters(c: &mut Criterion) {
                 paint
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("set_blend_mode", |b| {
@@ -102,7 +102,7 @@ fn bench_paint_setters(c: &mut Criterion) {
                 paint
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("set_anti_alias", |b| {
@@ -113,7 +113,7 @@ fn bench_paint_setters(c: &mut Criterion) {
                 paint
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     // Chain multiple setters
@@ -132,7 +132,7 @@ fn bench_paint_setters(c: &mut Criterion) {
                 paint
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.finish();
@@ -155,13 +155,13 @@ fn bench_paint_getters(c: &mut Criterion) {
     group.bench_function("style", |b| b.iter(|| black_box(&paint).style()));
 
     group.bench_function("stroke_width", |b| {
-        b.iter(|| black_box(&paint).stroke_width())
+        b.iter(|| black_box(&paint).stroke_width());
     });
 
     group.bench_function("blend_mode", |b| b.iter(|| black_box(&paint).blend_mode()));
 
     group.bench_function("is_anti_alias", |b| {
-        b.iter(|| black_box(&paint).is_anti_alias())
+        b.iter(|| black_box(&paint).is_anti_alias());
     });
 
     group.finish();
@@ -181,7 +181,7 @@ fn bench_blend_mode(c: &mut Criterion) {
     ];
 
     group.bench_function("name", |b| {
-        b.iter(|| modes.iter().map(|m| m.name()).collect::<Vec<_>>())
+        b.iter(|| modes.iter().map(skia_rs_paint::BlendMode::name).collect::<Vec<_>>());
     });
 
     group.finish();
@@ -191,7 +191,7 @@ fn bench_shader_creation(c: &mut Criterion) {
     let mut group = c.benchmark_group("Shader/creation");
 
     group.bench_function("color_shader", |b| {
-        b.iter(|| ColorShader::new(Color4f::new(1.0, 0.0, 0.0, 1.0)))
+        b.iter(|| ColorShader::new(Color4f::new(1.0, 0.0, 0.0, 1.0)));
     });
 
     let colors = vec![
@@ -209,7 +209,7 @@ fn bench_shader_creation(c: &mut Criterion) {
                 None,
                 TileMode::Clamp,
             )
-        })
+        });
     });
 
     group.bench_function("radial_gradient", |b| {
@@ -221,7 +221,7 @@ fn bench_shader_creation(c: &mut Criterion) {
                 None,
                 TileMode::Clamp,
             )
-        })
+        });
     });
 
     group.bench_function("sweep_gradient", |b| {
@@ -234,7 +234,7 @@ fn bench_shader_creation(c: &mut Criterion) {
                 None,
                 TileMode::Clamp,
             )
-        })
+        });
     });
 
     // Gradients with varying color stop counts
@@ -254,7 +254,7 @@ fn bench_shader_creation(c: &mut Criterion) {
                         None,
                         TileMode::Clamp,
                     )
-                })
+                });
             },
         );
     }
@@ -281,19 +281,19 @@ fn bench_shader_queries(c: &mut Criterion) {
     );
 
     group.bench_function("color_is_opaque/true", |b| {
-        b.iter(|| black_box(&opaque_color).is_opaque())
+        b.iter(|| black_box(&opaque_color).is_opaque());
     });
 
     group.bench_function("color_is_opaque/false", |b| {
-        b.iter(|| black_box(&transparent_color).is_opaque())
+        b.iter(|| black_box(&transparent_color).is_opaque());
     });
 
     group.bench_function("gradient_is_opaque", |b| {
-        b.iter(|| black_box(&gradient).is_opaque())
+        b.iter(|| black_box(&gradient).is_opaque());
     });
 
     group.bench_function("local_matrix", |b| {
-        b.iter(|| black_box(&color_shader).local_matrix())
+        b.iter(|| black_box(&color_shader).local_matrix());
     });
 
     group.finish();
@@ -303,11 +303,11 @@ fn bench_color_filter(c: &mut Criterion) {
     let mut group = c.benchmark_group("ColorFilter");
 
     group.bench_function("identity_create", |b| {
-        b.iter(|| ColorMatrixFilter::identity())
+        b.iter(ColorMatrixFilter::identity);
     });
 
     group.bench_function("saturation_create", |b| {
-        b.iter(|| ColorMatrixFilter::saturation(black_box(0.5)))
+        b.iter(|| ColorMatrixFilter::saturation(black_box(0.5)));
     });
 
     let identity = ColorMatrixFilter::identity();
@@ -317,11 +317,11 @@ fn bench_color_filter(c: &mut Criterion) {
     use skia_rs_paint::ColorFilter;
 
     group.bench_function("identity_filter", |b| {
-        b.iter(|| identity.filter_color(black_box(color)))
+        b.iter(|| identity.filter_color(black_box(color)));
     });
 
     group.bench_function("saturation_filter", |b| {
-        b.iter(|| saturation.filter_color(black_box(color)))
+        b.iter(|| saturation.filter_color(black_box(color)));
     });
 
     // Batch filtering
@@ -339,7 +339,7 @@ fn bench_color_filter(c: &mut Criterion) {
                         .iter()
                         .map(|c| saturation.filter_color(*c))
                         .collect::<Vec<_>>()
-                })
+                });
             },
         );
     }
@@ -351,7 +351,7 @@ fn bench_mask_filter(c: &mut Criterion) {
     let mut group = c.benchmark_group("MaskFilter");
 
     group.bench_function("blur_create", |b| {
-        b.iter(|| BlurMaskFilter::new(BlurStyle::Normal, black_box(5.0)))
+        b.iter(|| BlurMaskFilter::new(BlurStyle::Normal, black_box(5.0)));
     });
 
     let blur = BlurMaskFilter::new(BlurStyle::Normal, 5.0);
@@ -372,7 +372,7 @@ fn bench_image_filter(c: &mut Criterion) {
     use skia_rs_paint::{BlurImageFilter, ImageFilter};
 
     group.bench_function("blur_create", |b| {
-        b.iter(|| BlurImageFilter::new(black_box(5.0), black_box(5.0), TileMode::Clamp))
+        b.iter(|| BlurImageFilter::new(black_box(5.0), black_box(5.0), TileMode::Clamp));
     });
 
     group.bench_function("drop_shadow_create", |b| {
@@ -385,7 +385,7 @@ fn bench_image_filter(c: &mut Criterion) {
                 Color4f::new(0.0, 0.0, 0.0, 0.5),
                 false,
             )
-        })
+        });
     });
 
     let blur = BlurImageFilter::new(5.0, 5.0, TileMode::Clamp);
@@ -394,11 +394,11 @@ fn bench_image_filter(c: &mut Criterion) {
     let rect = Rect::from_xywh(10.0, 20.0, 100.0, 50.0);
 
     group.bench_function("blur_filter_bounds", |b| {
-        b.iter(|| blur.filter_bounds(black_box(&rect)))
+        b.iter(|| blur.filter_bounds(black_box(&rect)));
     });
 
     group.bench_function("shadow_filter_bounds", |b| {
-        b.iter(|| shadow.filter_bounds(black_box(&rect)))
+        b.iter(|| shadow.filter_bounds(black_box(&rect)));
     });
 
     group.finish();

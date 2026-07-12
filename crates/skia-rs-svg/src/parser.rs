@@ -4,7 +4,7 @@
 //! mixed text/element content) and walks the tree to build an `SvgDom`.
 
 use crate::css::Stylesheet;
-use crate::dom::*;
+use crate::dom::{SvgDom, SvgNode, SvgNodeKind, SvgRect, SvgCircle, SvgEllipse, SvgLine, SvgText, TextAnchor, SvgImage, SvgLinearGradient, SvgRadialGradient, GradientStop, SpreadMethod, GradientUnits, PreserveAspectRatio, AlignX, AlignY, MeetOrSlice, SvgPaint};
 use skia_rs_core::{Color, Matrix, Point, Rect, Scalar};
 use skia_rs_path::parse_svg_path;
 use std::collections::HashMap;
@@ -79,7 +79,7 @@ pub fn parse_svg(svg: &str) -> Result<SvgDom, SvgError> {
     Ok(dom)
 }
 
-/// Collect all attributes of a roxmltree node into a HashMap.
+/// Collect all attributes of a roxmltree node into a `HashMap`.
 ///
 /// Namespaced attributes are stored under both their local name and their
 /// `prefix:local` form so that common lookups like `xlink:href` still work.
@@ -95,7 +95,7 @@ fn attrs_of(node: roxmltree::Node) -> HashMap<String, String> {
             // Convert common namespaces to a prefix.
             let prefix = ns_to_prefix(ns);
             if !prefix.is_empty() {
-                map.insert(format!("{}:{}", prefix, name), value);
+                map.insert(format!("{prefix}:{name}"), value);
             }
         }
     }
@@ -142,19 +142,19 @@ fn build_node(
     // defaulting to `dflt` when the attribute is absent.
     let hlen = |k: &str, dflt: &str| {
         lctx.resolve(
-            attrs.get(k).map(String::as_str).unwrap_or(dflt),
+            attrs.get(k).map_or(dflt, String::as_str),
             LengthType::Horizontal,
         )
     };
     let vlen = |k: &str, dflt: &str| {
         lctx.resolve(
-            attrs.get(k).map(String::as_str).unwrap_or(dflt),
+            attrs.get(k).map_or(dflt, String::as_str),
             LengthType::Vertical,
         )
     };
     let olen = |k: &str, dflt: &str| {
         lctx.resolve(
-            attrs.get(k).map(String::as_str).unwrap_or(dflt),
+            attrs.get(k).map_or(dflt, String::as_str),
             LengthType::Other,
         )
     };
@@ -203,15 +203,15 @@ fn build_node(
             y2: vlen("y2", "0"),
         })),
         "polyline" => {
-            let points = parse_points(attrs.get("points").map(String::as_str).unwrap_or(""));
+            let points = parse_points(attrs.get("points").map_or("", String::as_str));
             SvgNode::new(SvgNodeKind::Polyline(points))
         }
         "polygon" => {
-            let points = parse_points(attrs.get("points").map(String::as_str).unwrap_or(""));
+            let points = parse_points(attrs.get("points").map_or("", String::as_str));
             SvgNode::new(SvgNodeKind::Polygon(points))
         }
         "path" => {
-            let d = attrs.get("d").map(String::as_str).unwrap_or("");
+            let d = attrs.get("d").map_or("", String::as_str);
             let path = parse_svg_path(d).unwrap_or_default();
             SvgNode::new(SvgNodeKind::Path(path))
         }
@@ -255,38 +255,36 @@ fn build_node(
         }
         "linearGradient" => {
             let gradient = SvgLinearGradient {
-                x1: parse_length(attrs.get("x1").map(String::as_str).unwrap_or("0")),
-                y1: parse_length(attrs.get("y1").map(String::as_str).unwrap_or("0")),
-                x2: parse_length(attrs.get("x2").map(String::as_str).unwrap_or("100%")),
-                y2: parse_length(attrs.get("y2").map(String::as_str).unwrap_or("0")),
+                x1: parse_length(attrs.get("x1").map_or("0", String::as_str)),
+                y1: parse_length(attrs.get("y1").map_or("0", String::as_str)),
+                x2: parse_length(attrs.get("x2").map_or("100%", String::as_str)),
+                y2: parse_length(attrs.get("y2").map_or("0", String::as_str)),
                 stops: collect_stops(xml_node),
                 spread: parse_spread(attrs.get("spreadMethod").map(String::as_str)),
                 units: parse_gradient_units(attrs.get("gradientUnits").map(String::as_str)),
                 transform: attrs
                     .get("gradientTransform")
-                    .map(|s| parse_transform_str(s))
-                    .unwrap_or(Matrix::IDENTITY),
+                    .map_or(Matrix::IDENTITY, |s| parse_transform_str(s)),
             };
             SvgNode::new(SvgNodeKind::LinearGradient(gradient))
         }
         "radialGradient" => {
-            let cx = parse_length(attrs.get("cx").map(String::as_str).unwrap_or("50%"));
-            let cy = parse_length(attrs.get("cy").map(String::as_str).unwrap_or("50%"));
+            let cx = parse_length(attrs.get("cx").map_or("50%", String::as_str));
+            let cy = parse_length(attrs.get("cy").map_or("50%", String::as_str));
             let fx_str = attrs.get("fx").cloned();
             let fy_str = attrs.get("fy").cloned();
             let gradient = SvgRadialGradient {
                 cx,
                 cy,
-                r: parse_length(attrs.get("r").map(String::as_str).unwrap_or("50%")),
-                fx: fx_str.map(|s| parse_length(&s)).unwrap_or(cx),
-                fy: fy_str.map(|s| parse_length(&s)).unwrap_or(cy),
+                r: parse_length(attrs.get("r").map_or("50%", String::as_str)),
+                fx: fx_str.map_or(cx, |s| parse_length(&s)),
+                fy: fy_str.map_or(cy, |s| parse_length(&s)),
                 stops: collect_stops(xml_node),
                 spread: parse_spread(attrs.get("spreadMethod").map(String::as_str)),
                 units: parse_gradient_units(attrs.get("gradientUnits").map(String::as_str)),
                 transform: attrs
                     .get("gradientTransform")
-                    .map(|s| parse_transform_str(s))
-                    .unwrap_or(Matrix::IDENTITY),
+                    .map_or(Matrix::IDENTITY, |s| parse_transform_str(s)),
             };
             SvgNode::new(SvgNodeKind::RadialGradient(gradient))
         }
@@ -331,7 +329,7 @@ fn apply_common_attrs(node: &mut SvgNode, attrs: &HashMap<String, String>) {
     node.id = attrs.get("id").cloned();
 
     if let Some(class) = attrs.get("class") {
-        node.classes = class.split_whitespace().map(|s| s.to_string()).collect();
+        node.classes = class.split_whitespace().map(std::string::ToString::to_string).collect();
     }
 
     if let Some(transform) = attrs.get("transform") {
@@ -384,7 +382,7 @@ fn apply_common_attrs(node: &mut SvgNode, attrs: &HashMap<String, String>) {
     // declarations after stylesheet rules.
     if let Some(style) = attrs.get("style") {
         node.attributes
-            .insert("style".to_string(), style.to_string());
+            .insert("style".to_string(), style.clone());
     }
 
     // Preserve a handful of non-standard attributes that downstream code
@@ -400,12 +398,12 @@ fn apply_common_attrs(node: &mut SvgNode, attrs: &HashMap<String, String>) {
         "clip-path",
     ] {
         if let Some(v) = attrs.get(key) {
-            node.attributes.insert(key.to_string(), v.to_string());
+            node.attributes.insert(key.to_string(), v.clone());
         }
     }
 }
 
-/// Collect `<stop>` children of a gradient element into GradientStops.
+/// Collect `<stop>` children of a gradient element into `GradientStops`.
 fn collect_stops(gradient: roxmltree::Node) -> Vec<GradientStop> {
     let mut stops = Vec::new();
     for child in gradient.children() {
@@ -418,7 +416,7 @@ fn collect_stops(gradient: roxmltree::Node) -> Vec<GradientStop> {
         let attrs = attrs_of(child);
 
         // Offset may be a plain number (0..1) or a percentage.
-        let offset_str = attrs.get("offset").map(String::as_str).unwrap_or("0");
+        let offset_str = attrs.get("offset").map_or("0", String::as_str);
         let offset = parse_length(offset_str).clamp(0.0, 1.0);
 
         // stop-color can live on the element or in a style attribute.
@@ -486,6 +484,7 @@ fn parse_gradient_units(s: Option<&str>) -> GradientUnits {
 /// default font size — this matches browsers when no parent font is set.
 /// Physical units (`cm`, `mm`, `in`, `pt`, `pc`) convert to CSS pixels at
 /// 96dpi.
+#[must_use] 
 pub fn parse_length(s: &str) -> Scalar {
     let s = s.trim();
     if s.is_empty() {
@@ -569,7 +568,7 @@ impl LengthContext {
             LengthType::Vertical => self.vh,
             // https://www.w3.org/TR/SVG11/coords.html#Units_viewport_percentage
             LengthType::Other => {
-                (1.0 / std::f32::consts::SQRT_2) * (self.vw * self.vw + self.vh * self.vh).sqrt()
+                (1.0 / std::f32::consts::SQRT_2) * self.vw.hypot(self.vh)
             }
         }
     }
@@ -701,6 +700,7 @@ pub(crate) fn parse_color(s: &str) -> Option<Color> {
 }
 
 /// Parse a transform string (public for CSS module).
+#[must_use] 
 pub fn parse_transform_str(s: &str) -> Matrix {
     let mut result = Matrix::IDENTITY;
     let s = s.trim();
@@ -748,7 +748,7 @@ pub fn parse_transform_str(s: &str) -> Matrix {
                 }
                 "rotate" => {
                     let angle = nums.first().copied().unwrap_or(0.0);
-                    let radians = angle * std::f32::consts::PI / 180.0;
+                    let radians = angle.to_radians();
                     if nums.len() >= 3 {
                         let cx = nums[1];
                         let cy = nums[2];

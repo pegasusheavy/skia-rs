@@ -5,7 +5,7 @@
 //! - Text blob creation and rendering
 //! - Drawing text with different sizes and colors
 //!
-//! Run with: cargo run --example text_rendering --features "text,codec"
+//! Run with: cargo run --example `text_rendering` --features "text,codec"
 
 fn main() {
     #[cfg(all(feature = "text", feature = "codec"))]

@@ -13,6 +13,7 @@ use skia_rs_core::{Color, Color4f, Matrix, Point, Rect, Scalar};
 use skia_rs_path::{Path, PathBuilder};
 
 /// Create a deterministic RNG for reproducible benchmarks.
+#[must_use] 
 pub fn create_rng() -> XorShiftRng {
     use rand::SeedableRng;
     XorShiftRng::seed_from_u64(0xDEAD_BEEF_CAFE_BABE)
@@ -87,6 +88,7 @@ pub fn random_matrices(rng: &mut impl Rng, count: usize) -> Vec<Matrix> {
 }
 
 /// Generate a simple path with the given number of segments.
+#[must_use] 
 pub fn generate_simple_path(segment_count: usize) -> Path {
     let mut builder = PathBuilder::new();
     builder.move_to(0.0, 0.0);
@@ -102,6 +104,7 @@ pub fn generate_simple_path(segment_count: usize) -> Path {
 }
 
 /// Generate a path with mixed curve types.
+#[must_use] 
 pub fn generate_complex_path(segment_count: usize) -> Path {
     let mut builder = PathBuilder::new();
     let mut rng = create_rng();
@@ -125,6 +128,7 @@ pub fn generate_complex_path(segment_count: usize) -> Path {
 }
 
 /// Generate a path with multiple contours.
+#[must_use] 
 pub fn generate_multi_contour_path(contour_count: usize, segments_per_contour: usize) -> Path {
     let mut builder = PathBuilder::new();
     let mut rng = create_rng();
@@ -136,7 +140,7 @@ pub fn generate_multi_contour_path(contour_count: usize, segments_per_contour: u
         builder.move_to(offset_x, offset_y);
 
         for i in 0..segments_per_contour {
-            let x = offset_x + (i as Scalar + 1.0) * 10.0;
+            let x = (i as Scalar + 1.0).mul_add(10.0, offset_x);
             let y = offset_y + rng.gen_range(-20.0..20.0);
             builder.line_to(x, y);
         }
@@ -148,6 +152,7 @@ pub fn generate_multi_contour_path(contour_count: usize, segments_per_contour: u
 }
 
 /// Generate nested rectangles path.
+#[must_use] 
 pub fn generate_nested_rects(count: usize, spacing: Scalar) -> Path {
     let mut builder = PathBuilder::new();
 
@@ -161,6 +166,7 @@ pub fn generate_nested_rects(count: usize, spacing: Scalar) -> Path {
 }
 
 /// Generate a star path.
+#[must_use] 
 pub fn generate_star(points: usize, outer_radius: Scalar, inner_radius: Scalar) -> Path {
     let mut builder = PathBuilder::new();
 
@@ -172,7 +178,7 @@ pub fn generate_star(points: usize, outer_radius: Scalar, inner_radius: Scalar) 
         } else {
             inner_radius
         };
-        let angle = (i as Scalar) * angle_step - std::f32::consts::FRAC_PI_2;
+        let angle = (i as Scalar).mul_add(angle_step, -std::f32::consts::FRAC_PI_2);
         let x = radius * angle.cos();
         let y = radius * angle.sin();
 

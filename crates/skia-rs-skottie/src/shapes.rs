@@ -55,28 +55,29 @@ pub enum Shape {
 
 impl Shape {
     /// Parse from Lottie shape model.
+    #[must_use] 
     pub fn from_lottie(model: &ShapeModel) -> Option<Self> {
         if model.hidden {
             return None;
         }
 
         match model.shape_type.as_str() {
-            "gr" => Some(Shape::Group(ShapeGroup::from_lottie(model))),
-            "rc" => Some(Shape::Rectangle(RectangleShape::from_lottie(model))),
-            "el" => Some(Shape::Ellipse(EllipseShape::from_lottie(model))),
-            "sh" => Some(Shape::Path(PathShape::from_lottie(model))),
-            "sr" => Some(Shape::Polystar(PolystarShape::from_lottie(model))),
-            "fl" => Some(Shape::Fill(FillShape::from_lottie(model))),
-            "st" => Some(Shape::Stroke(StrokeShape::from_lottie(model))),
-            "gf" => Some(Shape::GradientFill(GradientFillShape::from_lottie(model))),
-            "gs" => Some(Shape::GradientStroke(GradientStrokeShape::from_lottie(
+            "gr" => Some(Self::Group(ShapeGroup::from_lottie(model))),
+            "rc" => Some(Self::Rectangle(RectangleShape::from_lottie(model))),
+            "el" => Some(Self::Ellipse(EllipseShape::from_lottie(model))),
+            "sh" => Some(Self::Path(PathShape::from_lottie(model))),
+            "sr" => Some(Self::Polystar(PolystarShape::from_lottie(model))),
+            "fl" => Some(Self::Fill(FillShape::from_lottie(model))),
+            "st" => Some(Self::Stroke(StrokeShape::from_lottie(model))),
+            "gf" => Some(Self::GradientFill(GradientFillShape::from_lottie(model))),
+            "gs" => Some(Self::GradientStroke(GradientStrokeShape::from_lottie(
                 model,
             ))),
-            "tm" => Some(Shape::TrimPath(TrimPathShape::from_lottie(model))),
-            "mm" => Some(Shape::MergePaths(MergePathsShape::from_lottie(model))),
-            "rd" => Some(Shape::RoundCorners(RoundCornersShape::from_lottie(model))),
-            "rp" => Some(Shape::Repeater(RepeaterShape::from_lottie(model))),
-            "tr" => Some(Shape::Transform(ShapeTransform::from_lottie(model))),
+            "tm" => Some(Self::TrimPath(TrimPathShape::from_lottie(model))),
+            "mm" => Some(Self::MergePaths(MergePathsShape::from_lottie(model))),
+            "rd" => Some(Self::RoundCorners(RoundCornersShape::from_lottie(model))),
+            "rp" => Some(Self::Repeater(RepeaterShape::from_lottie(model))),
+            "tr" => Some(Self::Transform(ShapeTransform::from_lottie(model))),
             _ => None, // Unknown shape type
         }
     }
@@ -95,6 +96,7 @@ pub struct ShapeGroup {
 
 impl ShapeGroup {
     /// Create a new empty group.
+    #[must_use] 
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
@@ -104,6 +106,7 @@ impl ShapeGroup {
     }
 
     /// Parse from Lottie model.
+    #[must_use] 
     pub fn from_lottie(model: &ShapeModel) -> Self {
         let mut group = Self::new(&model.name);
 
@@ -119,6 +122,7 @@ impl ShapeGroup {
     }
 
     /// Build paths for this group at a specific frame.
+    #[must_use] 
     pub fn build_paths(&self, frame: Scalar) -> Vec<Path> {
         let mut paths = Vec::new();
 
@@ -193,12 +197,13 @@ impl RectangleShape {
             direction: model
                 .direction
                 .as_ref()
-                .and_then(|d| d.as_direction())
+                .and_then(super::model::DirectionOrDash::as_direction)
                 .unwrap_or(1),
         }
     }
 
     /// Build a path at a specific frame.
+    #[must_use] 
     pub fn to_path(&self, frame: Scalar) -> Option<Path> {
         let pos = self
             .position
@@ -231,7 +236,23 @@ impl RectangleShape {
             const KAPPA: Scalar = 0.552_284_8;
             let k = r * KAPPA;
 
-            if !ccw {
+            if ccw {
+                builder.move_to(left + r, top);
+                builder.cubic_to(left + r - k, top, left, top + r - k, left, top + r);
+                builder.line_to(left, bottom - r);
+                builder.cubic_to(left, bottom - r + k, left + r - k, bottom, left + r, bottom);
+                builder.line_to(right - r, bottom);
+                builder.cubic_to(
+                    right - r + k,
+                    bottom,
+                    right,
+                    bottom - r + k,
+                    right,
+                    bottom - r,
+                );
+                builder.line_to(right, top + r);
+                builder.cubic_to(right, top + r - k, right - r + k, top, right - r, top);
+            } else {
                 builder.move_to(left + r, top);
                 builder.line_to(right - r, top);
                 builder.cubic_to(right - r + k, top, right, top + r - k, right, top + r);
@@ -248,22 +269,6 @@ impl RectangleShape {
                 builder.cubic_to(left + r - k, bottom, left, bottom - r + k, left, bottom - r);
                 builder.line_to(left, top + r);
                 builder.cubic_to(left, top + r - k, left + r - k, top, left + r, top);
-            } else {
-                builder.move_to(left + r, top);
-                builder.cubic_to(left + r - k, top, left, top + r - k, left, top + r);
-                builder.line_to(left, bottom - r);
-                builder.cubic_to(left, bottom - r + k, left + r - k, bottom, left + r, bottom);
-                builder.line_to(right - r, bottom);
-                builder.cubic_to(
-                    right - r + k,
-                    bottom,
-                    right,
-                    bottom - r + k,
-                    right,
-                    bottom - r,
-                );
-                builder.line_to(right, top + r);
-                builder.cubic_to(right, top + r - k, right - r + k, top, right - r, top);
             }
         } else if !ccw {
             builder.move_to(left, top);
@@ -313,12 +318,13 @@ impl EllipseShape {
             direction: model
                 .direction
                 .as_ref()
-                .and_then(|d| d.as_direction())
+                .and_then(super::model::DirectionOrDash::as_direction)
                 .unwrap_or(1),
         }
     }
 
     /// Build a path at a specific frame.
+    #[must_use] 
     pub fn to_path(&self, frame: Scalar) -> Option<Path> {
         let pos = self
             .position
@@ -337,7 +343,7 @@ impl EllipseShape {
         let cy = pos[1];
 
         // Approximate ellipse with 4 cubic bezier curves
-        let k = 0.5522847498; // (4/3) * tan(π/8)
+        let k = 0.552_284_8; // (4/3) * tan(π/8)
         let kx = rx * k;
         let ky = ry * k;
 
@@ -377,12 +383,13 @@ impl PathShape {
             direction: model
                 .direction
                 .as_ref()
-                .and_then(|d| d.as_direction())
+                .and_then(super::model::DirectionOrDash::as_direction)
                 .unwrap_or(1),
         }
     }
 
     /// Build a path at a specific frame.
+    #[must_use] 
     pub fn to_path(&self, frame: Scalar) -> Option<Path> {
         let value = self.path.value_at(frame);
 
@@ -393,7 +400,7 @@ impl PathShape {
     }
 }
 
-/// Convert PathData to skia Path.
+/// Convert `PathData` to skia Path.
 fn path_data_to_path(data: &PathData) -> Path {
     let mut builder = PathBuilder::new();
 
@@ -432,7 +439,7 @@ fn path_data_to_path(data: &PathData) -> Path {
     if data.closed && n > 1 {
         let last = n - 1;
         let out_t = data.out_tangents.get(last).copied().unwrap_or([0.0, 0.0]);
-        let in_t = data.in_tangents.get(0).copied().unwrap_or([0.0, 0.0]);
+        let in_t = data.in_tangents.first().copied().unwrap_or([0.0, 0.0]);
 
         let c1 = [
             data.vertices[last][0] + out_t[0],
@@ -519,12 +526,13 @@ impl PolystarShape {
             direction: model
                 .direction
                 .as_ref()
-                .and_then(|d| d.as_direction())
+                .and_then(super::model::DirectionOrDash::as_direction)
                 .unwrap_or(1),
         }
     }
 
     /// Build a path at a specific frame.
+    #[must_use] 
     pub fn to_path(&self, frame: Scalar) -> Option<Path> {
         let pos = self
             .position
@@ -550,7 +558,7 @@ impl PolystarShape {
         }
 
         let mut builder = PathBuilder::new();
-        let rot_rad = (rotation - 90.0) * std::f32::consts::PI / 180.0;
+        let rot_rad = (rotation - 90.0).to_radians();
 
         let is_star = self.star_type == 1;
         let step_count = if is_star { n * 2 } else { n };
@@ -564,8 +572,8 @@ impl PolystarShape {
                 outer_r
             };
 
-            let x = pos[0] + angle.cos() * radius;
-            let y = pos[1] + angle.sin() * radius;
+            let x = angle.cos().mul_add(radius, pos[0]);
+            let y = angle.sin().mul_add(radius, pos[1]);
 
             if i == 0 {
                 builder.move_to(x, y);
@@ -604,9 +612,7 @@ impl FillShape {
                 .unwrap_or_default(),
             opacity: model
                 .opacity
-                .as_ref()
-                .map(AnimatedProperty::from_lottie)
-                .unwrap_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(100.0))),
+                .as_ref().map_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(100.0)), AnimatedProperty::from_lottie),
             // "fl" shapes reuse the "r" key (roundness on "rc" shapes) for
             // fill rule: 1 = non-zero (default), 2 = even-odd.
             fill_rule: model
@@ -614,12 +620,12 @@ impl FillShape {
                 .as_ref()
                 .map(|v| AnimatedProperty::from_lottie(v).value_at(0.0))
                 .and_then(|v| v.as_scalar())
-                .map(|v| v.round() as i32)
-                .unwrap_or(1),
+                .map_or(1, |v| v.round() as i32),
         }
     }
 
     /// Get the color at a specific frame.
+    #[must_use] 
     pub fn color_at(&self, frame: Scalar) -> Color4f {
         let c = self
             .color
@@ -631,7 +637,8 @@ impl FillShape {
     }
 
     /// Get the `skia_rs_path::FillType` for this fill's rule.
-    pub fn path_fill_type(&self) -> skia_rs_path::FillType {
+    #[must_use] 
+    pub const fn path_fill_type(&self) -> skia_rs_path::FillType {
         if self.fill_rule == 2 {
             skia_rs_path::FillType::EvenOdd
         } else {
@@ -689,14 +696,10 @@ impl StrokeShape {
                 .unwrap_or_default(),
             opacity: model
                 .opacity
-                .as_ref()
-                .map(AnimatedProperty::from_lottie)
-                .unwrap_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(100.0))),
+                .as_ref().map_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(100.0)), AnimatedProperty::from_lottie),
             width: model
                 .stroke_width
-                .as_ref()
-                .map(AnimatedProperty::from_lottie)
-                .unwrap_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(1.0))),
+                .as_ref().map_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(1.0)), AnimatedProperty::from_lottie),
             line_cap,
             line_join,
             miter_limit: model.miter_limit.unwrap_or(4.0),
@@ -734,6 +737,7 @@ impl StrokeShape {
     }
 
     /// Get the color at a specific frame.
+    #[must_use] 
     pub fn color_at(&self, frame: Scalar) -> Color4f {
         let c = self
             .color
@@ -745,11 +749,13 @@ impl StrokeShape {
     }
 
     /// Get the stroke width at a specific frame.
+    #[must_use] 
     pub fn width_at(&self, frame: Scalar) -> Scalar {
         self.width.value_at(frame).as_scalar().unwrap_or(1.0)
     }
 
     /// Get the resolved dash intervals (on/off pairs) at a frame, if dashed.
+    #[must_use] 
     pub fn dash_intervals_at(&self, frame: Scalar) -> Option<Vec<Scalar>> {
         if self.dashes.is_empty() {
             return None;
@@ -763,6 +769,7 @@ impl StrokeShape {
     }
 
     /// Get the dash phase/offset at a frame.
+    #[must_use] 
     pub fn dash_offset_at(&self, frame: Scalar) -> Scalar {
         self.dash_offset.value_at(frame).as_scalar().unwrap_or(0.0)
     }
@@ -815,13 +822,10 @@ impl GradientFillShape {
             color_count: model
                 .gradient_colors
                 .as_ref()
-                .map(|gc| gc.count)
-                .unwrap_or(2),
+                .map_or(2, |gc| gc.count),
             opacity: model
                 .opacity
-                .as_ref()
-                .map(AnimatedProperty::from_lottie)
-                .unwrap_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(100.0))),
+                .as_ref().map_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(100.0)), AnimatedProperty::from_lottie),
             highlight_length: model
                 .gradient_highlight_length
                 .as_ref()
@@ -838,6 +842,7 @@ impl GradientFillShape {
     }
 
     /// Resolve the color stops at a frame.
+    #[must_use] 
     pub fn stops_at(&self, frame: Scalar) -> Vec<(Scalar, Color4f)> {
         resolve_gradient_stops(&self.colors, self.color_count, frame)
     }
@@ -909,18 +914,13 @@ impl GradientStrokeShape {
             color_count: model
                 .gradient_colors
                 .as_ref()
-                .map(|gc| gc.count)
-                .unwrap_or(2),
+                .map_or(2, |gc| gc.count),
             opacity: model
                 .opacity
-                .as_ref()
-                .map(AnimatedProperty::from_lottie)
-                .unwrap_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(100.0))),
+                .as_ref().map_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(100.0)), AnimatedProperty::from_lottie),
             width: model
                 .stroke_width
-                .as_ref()
-                .map(AnimatedProperty::from_lottie)
-                .unwrap_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(1.0))),
+                .as_ref().map_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(1.0)), AnimatedProperty::from_lottie),
             line_cap,
             line_join,
             highlight_length: model
@@ -937,6 +937,7 @@ impl GradientStrokeShape {
     }
 
     /// Resolve the color stops at a frame.
+    #[must_use] 
     pub fn stops_at(&self, frame: Scalar) -> Vec<(Scalar, Color4f)> {
         resolve_gradient_stops(&self.colors, self.color_count, frame)
     }
@@ -955,7 +956,7 @@ fn resolve_gradient_stops(
     let value = colors.value_at(frame);
     let raw: Vec<Scalar> = value
         .as_float_array()
-        .map(|v| v.to_vec())
+        .map(<[f32]>::to_vec)
         .or_else(|| value.as_color().map(|c| c.to_vec()))
         .unwrap_or_default();
 
@@ -994,9 +995,9 @@ fn resolve_gradient_stops(
                     0.0
                 };
                 return [
-                    w[0].1[0] + (w[1].1[0] - w[0].1[0]) * f,
-                    w[0].1[1] + (w[1].1[1] - w[0].1[1]) * f,
-                    w[0].1[2] + (w[1].1[2] - w[0].1[2]) * f,
+                    (w[1].1[0] - w[0].1[0]).mul_add(f, w[0].1[0]),
+                    (w[1].1[1] - w[0].1[1]).mul_add(f, w[0].1[1]),
+                    (w[1].1[2] - w[0].1[2]).mul_add(f, w[0].1[2]),
                 ];
             }
         }
@@ -1016,7 +1017,7 @@ fn resolve_gradient_stops(
                 } else {
                     0.0
                 };
-                return w[0].1 + (w[1].1 - w[0].1) * f;
+                return (w[1].1 - w[0].1).mul_add(f, w[0].1);
             }
         }
         opacity_stops.last().unwrap().1
@@ -1078,9 +1079,7 @@ impl TrimPathShape {
                 .unwrap_or_default(),
             end: model
                 .trim_end
-                .as_ref()
-                .map(AnimatedProperty::from_lottie)
-                .unwrap_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(100.0))),
+                .as_ref().map_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(100.0)), AnimatedProperty::from_lottie),
             offset: model
                 .opacity
                 .as_ref()
@@ -1093,6 +1092,7 @@ impl TrimPathShape {
     /// Get the resolved `(start, end, inverted)` trim interval at a frame,
     /// both in `0..=1`, matching upstream `TrimEffectAdapter::onSync`
     /// (`modules/skottie/src/layers/shapelayer/TrimPaths.cpp`).
+    #[must_use] 
     pub fn resolved_at(&self, frame: Scalar) -> (Scalar, Scalar, bool) {
         let start = self.start.value_at(frame).as_scalar().unwrap_or(0.0) / 100.0;
         let end = self.end.value_at(frame).as_scalar().unwrap_or(100.0) / 100.0;
@@ -1129,6 +1129,7 @@ pub struct MergePathsShape {
 
 impl MergePathsShape {
     /// Parse from Lottie model.
+    #[must_use] 
     pub fn from_lottie(model: &ShapeModel) -> Self {
         Self {
             name: model.name.clone(),
@@ -1175,6 +1176,7 @@ pub struct RepeaterShape {
 
 impl RepeaterShape {
     /// Parse from Lottie model.
+    #[must_use] 
     pub fn from_lottie(model: &ShapeModel) -> Self {
         Self {
             name: model.name.clone(),
@@ -1196,6 +1198,7 @@ pub struct ShapeTransform {
 
 impl ShapeTransform {
     /// Parse from Lottie model.
+    #[must_use] 
     pub fn from_lottie(model: &ShapeModel) -> Self {
         Self {
             name: model.name.clone(),

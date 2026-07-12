@@ -58,10 +58,11 @@ impl ComparisonResult {
     }
 
     /// Format the ratio as a human-readable string.
+    #[must_use] 
     pub fn format_ratio(&self) -> String {
         match self.ratio {
             Some(r) if r < 1.0 => format!("{:.1}x faster", 1.0 / r),
-            Some(r) if r > 1.0 => format!("{:.1}x slower", r),
+            Some(r) if r > 1.0 => format!("{r:.1}x slower"),
             Some(_) => "same".to_string(),
             None => "N/A".to_string(),
         }
@@ -83,6 +84,7 @@ pub struct ComparisonReport {
 
 impl ComparisonReport {
     /// Create a new report.
+    #[must_use] 
     pub fn new() -> Self {
         let mut report = Self::default();
         report.metadata.insert(
@@ -112,7 +114,7 @@ impl ComparisonReport {
         if !self.metadata.is_empty() {
             output.push_str("## Metadata\n\n");
             for (key, value) in &self.metadata {
-                output.push_str(&format!("- **{}**: {}\n", key, value));
+                output.push_str(&format!("- **{key}**: {value}\n"));
             }
             output.push('\n');
         }
@@ -125,9 +127,7 @@ impl ComparisonReport {
         for result in &self.results {
             let skia_rs = format_duration(result.skia_rs_time);
             let skia = result
-                .skia_time
-                .map(format_duration)
-                .unwrap_or_else(|| "-".to_string());
+                .skia_time.map_or_else(|| "-".to_string(), format_duration);
             let ratio = result.format_ratio();
 
             output.push_str(&format!(
@@ -141,7 +141,9 @@ impl ComparisonReport {
 
         let with_comparison: Vec<_> = self.results.iter().filter(|r| r.ratio.is_some()).collect();
 
-        if !with_comparison.is_empty() {
+        if with_comparison.is_empty() {
+            output.push_str("No comparison data available (original Skia benchmarks not run).\n");
+        } else {
             let faster_count = with_comparison
                 .iter()
                 .filter(|r| r.ratio.unwrap() < 1.0)
@@ -158,10 +160,10 @@ impl ComparisonReport {
                 .sum::<f64>()
                 / with_comparison.len() as f64;
 
-            output.push_str(&format!("- **Faster**: {} operations\n", faster_count));
-            output.push_str(&format!("- **Slower**: {} operations\n", slower_count));
-            output.push_str(&format!("- **Same**: {} operations\n", same_count));
-            output.push_str(&format!("- **Average ratio**: {:.2}x\n", avg_ratio));
+            output.push_str(&format!("- **Faster**: {faster_count} operations\n"));
+            output.push_str(&format!("- **Slower**: {slower_count} operations\n"));
+            output.push_str(&format!("- **Same**: {same_count} operations\n"));
+            output.push_str(&format!("- **Average ratio**: {avg_ratio:.2}x\n"));
 
             if avg_ratio < 1.0 {
                 output.push_str(&format!(
@@ -170,12 +172,9 @@ impl ComparisonReport {
                 ));
             } else if avg_ratio > 1.0 {
                 output.push_str(&format!(
-                    "\n**Overall: skia-rs is {:.1}x slower on average**\n",
-                    avg_ratio
+                    "\n**Overall: skia-rs is {avg_ratio:.1}x slower on average**\n"
                 ));
             }
-        } else {
-            output.push_str("No comparison data available (original Skia benchmarks not run).\n");
         }
 
         output
@@ -193,6 +192,7 @@ impl ComparisonReport {
     }
 
     /// Convert to JSON string.
+    #[must_use] 
     pub fn to_json(&self) -> String {
         let mut json = String::from("{\n");
 
@@ -201,7 +201,7 @@ impl ComparisonReport {
         let meta_entries: Vec<_> = self
             .metadata
             .iter()
-            .map(|(k, v)| format!("    \"{}\": \"{}\"", k, v))
+            .map(|(k, v)| format!("    \"{k}\": \"{v}\""))
             .collect();
         json.push_str(&meta_entries.join(",\n"));
         json.push_str("\n  },\n");
@@ -210,12 +210,8 @@ impl ComparisonReport {
         json.push_str("  \"results\": [\n");
         let result_entries: Vec<_> = self.results.iter()
             .map(|r| {
-                let skia_time = r.skia_time
-                    .map(|d| format!("{}", d.as_nanos()))
-                    .unwrap_or_else(|| "null".to_string());
-                let ratio = r.ratio
-                    .map(|r| format!("{}", r))
-                    .unwrap_or_else(|| "null".to_string());
+                let skia_time = r.skia_time.map_or_else(|| "null".to_string(), |d| format!("{}", d.as_nanos()));
+                let ratio = r.ratio.map_or_else(|| "null".to_string(), |r| format!("{r}"));
 
                 format!(
                     "    {{\n      \"name\": \"{}\",\n      \"skia_rs_ns\": {},\n      \"skia_ns\": {},\n      \"ratio\": {},\n      \"notes\": \"{}\"\n    }}",
@@ -245,7 +241,7 @@ fn format_duration(d: Duration) -> String {
     } else if nanos >= 1_000 {
         format!("{:.2}µs", nanos as f64 / 1_000.0)
     } else {
-        format!("{}ns", nanos)
+        format!("{nanos}ns")
     }
 }
 
@@ -267,7 +263,8 @@ impl Default for BenchmarkRunner {
 
 impl BenchmarkRunner {
     /// Create a new runner with default settings.
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self {
             iterations: 100,
             warmup_iterations: 10,
@@ -275,13 +272,15 @@ impl BenchmarkRunner {
     }
 
     /// Set the number of iterations.
-    pub fn iterations(mut self, n: usize) -> Self {
+    #[must_use] 
+    pub const fn iterations(mut self, n: usize) -> Self {
         self.iterations = n;
         self
     }
 
     /// Set the number of warmup iterations.
-    pub fn warmup(mut self, n: usize) -> Self {
+    #[must_use] 
+    pub const fn warmup(mut self, n: usize) -> Self {
         self.warmup_iterations = n;
         self
     }
@@ -339,11 +338,12 @@ impl BenchmarkRunner {
 ///
 /// Note: These should be updated based on actual Skia benchmark runs.
 pub mod reference_timings {
-    use super::*;
+    use super::{Duration, Path, HashMap, fs};
 
     /// Get reference timing for an operation.
     ///
     /// Returns None if no reference timing is available.
+    #[must_use] 
     pub fn get(operation: &str) -> Option<Duration> {
         // These are placeholder values - should be replaced with
         // actual benchmark results from original Skia
@@ -382,7 +382,7 @@ pub mod reference_timings {
             if let Some(name_start) = line.find('"') {
                 if let Some(name_end) = line[name_start + 1..].find('"') {
                     let name = &line[name_start + 1..name_start + 1 + name_end];
-                    if let Some(ns_str) = line.split(':').last() {
+                    if let Some(ns_str) = line.split(':').next_back() {
                         if let Ok(ns) = ns_str.trim().trim_matches(',').parse::<u64>() {
                             timings.insert(name.to_string(), Duration::from_nanos(ns));
                         }
@@ -449,13 +449,11 @@ mod tests {
         // Match the actual output format: "**Faster**: 1 operations"
         assert!(
             formatted.contains("**Faster**: 1"),
-            "Expected report to contain '**Faster**: 1', got: {}",
-            formatted
+            "Expected report to contain '**Faster**: 1', got: {formatted}"
         );
         assert!(
             formatted.contains("**Slower**: 1"),
-            "Expected report to contain '**Slower**: 1', got: {}",
-            formatted
+            "Expected report to contain '**Slower**: 1', got: {formatted}"
         );
     }
 }

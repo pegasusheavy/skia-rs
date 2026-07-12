@@ -31,18 +31,21 @@ pub struct AnimatedImage {
 impl AnimatedImage {
     /// Returns the animation canvas size as `(width, height)`.
     #[inline]
-    pub fn canvas_dimensions(&self) -> (i32, i32) {
+    #[must_use] 
+    pub const fn canvas_dimensions(&self) -> (i32, i32) {
         (self.canvas_width, self.canvas_height)
     }
 
     /// Returns the number of frames.
     #[inline]
+    #[must_use] 
     pub fn frame_count(&self) -> usize {
         self.frames.len()
     }
 
     /// Returns `true` if the animation has no frames.
     #[inline]
+    #[must_use] 
     pub fn is_empty(&self) -> bool {
         self.frames.is_empty()
     }
@@ -50,12 +53,14 @@ impl AnimatedImage {
     /// Sum of all per-frame delays. Useful for UI "total duration"
     /// displays. Note this is the sum for a single play-through — it does
     /// not account for `loop_count`.
+    #[must_use] 
     pub fn total_duration(&self) -> Duration {
         self.frames.iter().map(|f| f.delay).sum()
     }
 
     /// Borrow a frame by index.
     #[inline]
+    #[must_use] 
     pub fn frame(&self, index: usize) -> Option<&AnimationFrame> {
         self.frames.get(index)
     }
@@ -129,9 +134,9 @@ impl From<gif::DisposalMethod> for DisposalMethod {
             // Spec: `Any` = decoder's choice. Historically treated as
             // "do not dispose" (same as Keep), which is what most
             // renderers do.
-            gif::DisposalMethod::Any | gif::DisposalMethod::Keep => DisposalMethod::Keep,
-            gif::DisposalMethod::Background => DisposalMethod::Background,
-            gif::DisposalMethod::Previous => DisposalMethod::Previous,
+            gif::DisposalMethod::Any | gif::DisposalMethod::Keep => Self::Keep,
+            gif::DisposalMethod::Background => Self::Background,
+            gif::DisposalMethod::Previous => Self::Previous,
         }
     }
 }
@@ -140,14 +145,14 @@ impl From<gif::DisposalMethod> for DisposalMethod {
 impl From<gif::Repeat> for LoopCount {
     fn from(r: gif::Repeat) -> Self {
         match r {
-            gif::Repeat::Infinite => LoopCount::Infinite,
+            gif::Repeat::Infinite => Self::Infinite,
             // GIF89a's NETSCAPE2.0 loop extension uses 0 to mean
             // "infinite" at the wire level, but the `gif` crate already
             // surfaces that as `Repeat::Infinite`. A `Finite(0)` here
             // therefore means "play once" — which is what `Once`
             // expresses in this enum.
-            gif::Repeat::Finite(0) => LoopCount::Once,
-            gif::Repeat::Finite(n) => LoopCount::Finite(n as u32),
+            gif::Repeat::Finite(0) => Self::Once,
+            gif::Repeat::Finite(n) => Self::Finite(u32::from(n)),
         }
     }
 }

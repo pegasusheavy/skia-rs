@@ -60,6 +60,7 @@ pub struct TileInstance {
 }
 
 /// Generate tile instances for a given area.
+#[must_use] 
 pub fn generate_tiles(
     image_width: u32,
     image_height: u32,
@@ -168,7 +169,7 @@ fn axis_slots(
                 let flip = mode == TileMode::Mirror && i.rem_euclid(2) != 0;
                 slots.push(AxisSlot {
                     index: i,
-                    pos: dest_start + i as f32 * src_extent,
+                    pos: (i as f32).mul_add(src_extent, dest_start),
                     size: src_extent,
                     uv0: uv_min,
                     uv1: uv_min + uv_size,
@@ -181,6 +182,7 @@ fn axis_slots(
 }
 
 /// Calculate UV transform matrix for tiled rendering.
+#[must_use] 
 pub fn calculate_uv_transform(image_width: u32, image_height: u32, config: &TileConfig) -> Matrix {
     let scale_x = config.dest_rect.width() / (config.source_rect.width() * image_width as f32);
     let scale_y = config.dest_rect.height() / (config.source_rect.height() * image_height as f32);
@@ -206,7 +208,8 @@ pub struct NinePatch {
 
 impl NinePatch {
     /// Create a new nine-patch configuration.
-    pub fn new(left: f32, top: f32, right: f32, bottom: f32) -> Self {
+    #[must_use] 
+    pub const fn new(left: f32, top: f32, right: f32, bottom: f32) -> Self {
         Self {
             left,
             top,
@@ -216,12 +219,14 @@ impl NinePatch {
     }
 
     /// Create a uniform nine-patch (same inset on all sides).
-    pub fn uniform(inset: f32) -> Self {
+    #[must_use] 
+    pub const fn uniform(inset: f32) -> Self {
         Self::new(inset, inset, inset, inset)
     }
 }
 
 /// Generate nine-patch tile instances.
+#[must_use] 
 pub fn generate_nine_patch(
     image_width: u32,
     image_height: u32,

@@ -62,6 +62,7 @@ impl Default for StrokeParams {
 
 impl StrokeParams {
     /// Create new stroke parameters.
+    #[must_use] 
     pub fn new(width: Scalar) -> Self {
         Self {
             width,
@@ -70,19 +71,22 @@ impl StrokeParams {
     }
 
     /// Set the stroke cap.
-    pub fn with_cap(mut self, cap: StrokeCap) -> Self {
+    #[must_use] 
+    pub const fn with_cap(mut self, cap: StrokeCap) -> Self {
         self.cap = cap;
         self
     }
 
     /// Set the stroke join.
-    pub fn with_join(mut self, join: StrokeJoin) -> Self {
+    #[must_use] 
+    pub const fn with_join(mut self, join: StrokeJoin) -> Self {
         self.join = join;
         self
     }
 
     /// Set the miter limit.
-    pub fn with_miter_limit(mut self, limit: Scalar) -> Self {
+    #[must_use] 
+    pub const fn with_miter_limit(mut self, limit: Scalar) -> Self {
         self.miter_limit = limit;
         self
     }
@@ -186,7 +190,7 @@ pub fn stroke_to_fill(path: &Path, params: &StrokeParams) -> Option<Path> {
 fn seg_normal(a: Point, b: Point) -> Point {
     let dx = b.x - a.x;
     let dy = b.y - a.y;
-    let len = (dx * dx + dy * dy).sqrt();
+    let len = dx.hypot(dy);
     if len > 0.0 {
         Point::new(-dy / len, dx / len)
     } else {
@@ -212,12 +216,12 @@ fn add_join(
     if avg_len <= 0.001 {
         // Nearly opposite normals (180-degree turn): use the incoming normal.
         left.push(Point::new(
-            vertex.x + n1.x * half_width,
-            vertex.y + n1.y * half_width,
+            n1.x.mul_add(half_width, vertex.x),
+            n1.y.mul_add(half_width, vertex.y),
         ));
         right.push(Point::new(
-            vertex.x - n1.x * half_width,
-            vertex.y - n1.y * half_width,
+            n1.x.mul_add(-half_width, vertex.x),
+            n1.y.mul_add(-half_width, vertex.y),
         ));
         return;
     }
@@ -230,49 +234,49 @@ fn add_join(
             let miter_len = 1.0 / (avg_len / 2.0);
             if miter_len <= params.miter_limit {
                 left.push(Point::new(
-                    vertex.x + offset.x * miter_len,
-                    vertex.y + offset.y * miter_len,
+                    offset.x.mul_add(miter_len, vertex.x),
+                    offset.y.mul_add(miter_len, vertex.y),
                 ));
                 right.push(Point::new(
-                    vertex.x - offset.x * miter_len,
-                    vertex.y - offset.y * miter_len,
+                    offset.x.mul_add(-miter_len, vertex.x),
+                    offset.y.mul_add(-miter_len, vertex.y),
                 ));
             } else {
                 // Fall back to bevel.
                 left.push(Point::new(
-                    vertex.x + n1.x * half_width,
-                    vertex.y + n1.y * half_width,
+                    n1.x.mul_add(half_width, vertex.x),
+                    n1.y.mul_add(half_width, vertex.y),
                 ));
                 left.push(Point::new(
-                    vertex.x + n2.x * half_width,
-                    vertex.y + n2.y * half_width,
+                    n2.x.mul_add(half_width, vertex.x),
+                    n2.y.mul_add(half_width, vertex.y),
                 ));
                 right.push(Point::new(
-                    vertex.x - n1.x * half_width,
-                    vertex.y - n1.y * half_width,
+                    n1.x.mul_add(-half_width, vertex.x),
+                    n1.y.mul_add(-half_width, vertex.y),
                 ));
                 right.push(Point::new(
-                    vertex.x - n2.x * half_width,
-                    vertex.y - n2.y * half_width,
+                    n2.x.mul_add(-half_width, vertex.x),
+                    n2.y.mul_add(-half_width, vertex.y),
                 ));
             }
         }
         StrokeJoin::Bevel => {
             left.push(Point::new(
-                vertex.x + n1.x * half_width,
-                vertex.y + n1.y * half_width,
+                n1.x.mul_add(half_width, vertex.x),
+                n1.y.mul_add(half_width, vertex.y),
             ));
             left.push(Point::new(
-                vertex.x + n2.x * half_width,
-                vertex.y + n2.y * half_width,
+                n2.x.mul_add(half_width, vertex.x),
+                n2.y.mul_add(half_width, vertex.y),
             ));
             right.push(Point::new(
-                vertex.x - n1.x * half_width,
-                vertex.y - n1.y * half_width,
+                n1.x.mul_add(-half_width, vertex.x),
+                n1.y.mul_add(-half_width, vertex.y),
             ));
             right.push(Point::new(
-                vertex.x - n2.x * half_width,
-                vertex.y - n2.y * half_width,
+                n2.x.mul_add(-half_width, vertex.x),
+                n2.y.mul_add(-half_width, vertex.y),
             ));
         }
         StrokeJoin::Round => {
@@ -287,14 +291,14 @@ fn add_join(
             let n_segs = ((delta.abs() / std::f32::consts::FRAC_PI_4).ceil() as usize).max(4);
             for k in 0..=n_segs {
                 let t = k as Scalar / n_segs as Scalar;
-                let a = start_angle + delta * t;
+                let a = delta.mul_add(t, start_angle);
                 left.push(Point::new(
-                    vertex.x + a.cos() * half_width,
-                    vertex.y + a.sin() * half_width,
+                    a.cos().mul_add(half_width, vertex.x),
+                    a.sin().mul_add(half_width, vertex.y),
                 ));
                 right.push(Point::new(
-                    vertex.x - a.cos() * half_width,
-                    vertex.y - a.sin() * half_width,
+                    a.cos().mul_add(-half_width, vertex.x),
+                    a.sin().mul_add(-half_width, vertex.y),
                 ));
             }
         }
@@ -331,7 +335,7 @@ fn stroke_contour(
     // Drop consecutive duplicate points so segments are well-defined.
     let mut pts: Vec<Point> = Vec::with_capacity(points.len());
     for &p in points {
-        if pts.last().map_or(true, |q: &Point| *q != p) {
+        if pts.last().is_none_or(|q: &Point| *q != p) {
             pts.push(p);
         }
     }
@@ -405,12 +409,12 @@ fn stroke_open(
     // First point.
     let first_normal = normals[0];
     left.push(Point::new(
-        pts[0].x + first_normal.x * half_width,
-        pts[0].y + first_normal.y * half_width,
+        first_normal.x.mul_add(half_width, pts[0].x),
+        first_normal.y.mul_add(half_width, pts[0].y),
     ));
     right.push(Point::new(
-        pts[0].x - first_normal.x * half_width,
-        pts[0].y - first_normal.y * half_width,
+        first_normal.x.mul_add(-half_width, pts[0].x),
+        first_normal.y.mul_add(-half_width, pts[0].y),
     ));
 
     for i in 1..n - 1 {
@@ -428,12 +432,12 @@ fn stroke_open(
     // Last point.
     let last_normal = normals[normals.len() - 1];
     left.push(Point::new(
-        pts[n - 1].x + last_normal.x * half_width,
-        pts[n - 1].y + last_normal.y * half_width,
+        last_normal.x.mul_add(half_width, pts[n - 1].x),
+        last_normal.y.mul_add(half_width, pts[n - 1].y),
     ));
     right.push(Point::new(
-        pts[n - 1].x - last_normal.x * half_width,
-        pts[n - 1].y - last_normal.y * half_width,
+        last_normal.x.mul_add(-half_width, pts[n - 1].x),
+        last_normal.y.mul_add(-half_width, pts[n - 1].y),
     ));
 
     builder.move_to(left[0].x, left[0].y);
@@ -473,8 +477,8 @@ fn emit_cap_dot(builder: &mut PathBuilder, center: Point, half_width: Scalar, ca
             for i in 1..steps {
                 let a = (i as Scalar / steps as Scalar) * std::f32::consts::TAU;
                 builder.line_to(
-                    center.x + a.cos() * half_width,
-                    center.y + a.sin() * half_width,
+                    a.cos().mul_add(half_width, center.x),
+                    a.sin().mul_add(half_width, center.y),
                 );
             }
             builder.close();
@@ -503,12 +507,12 @@ fn add_cap(
             };
             let ext = Point::new(dir.x * half_width, dir.y * half_width);
             builder.line_to(
-                center.x + normal.x * half_width + ext.x,
-                center.y + normal.y * half_width + ext.y,
+                normal.x.mul_add(half_width, center.x) + ext.x,
+                normal.y.mul_add(half_width, center.y) + ext.y,
             );
             builder.line_to(
-                center.x - normal.x * half_width + ext.x,
-                center.y - normal.y * half_width + ext.y,
+                normal.x.mul_add(-half_width, center.x) + ext.x,
+                normal.y.mul_add(-half_width, center.y) + ext.y,
             );
         }
         StrokeCap::Round => {
@@ -523,8 +527,8 @@ fn add_cap(
             for i in 0..=steps {
                 let t = i as Scalar / steps as Scalar;
                 let angle = start_angle + t * std::f32::consts::PI;
-                let x = center.x + angle.cos() * half_width;
-                let y = center.y + angle.sin() * half_width;
+                let x = angle.cos().mul_add(half_width, center.x);
+                let y = angle.sin().mul_add(half_width, center.y);
                 builder.line_to(x, y);
             }
         }
@@ -674,8 +678,7 @@ mod tests {
         // beyond the basic 5-6 a miter would emit.
         assert!(
             count > 10,
-            "Round join should generate arc segments, got {} verbs",
-            count
+            "Round join should generate arc segments, got {count} verbs"
         );
     }
 }

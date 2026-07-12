@@ -44,13 +44,13 @@ pub const SK_ABI_VERSION_PATCH: u32 = 0;
 
 /// Get the ABI version as a packed 32-bit integer
 #[unsafe(no_mangle)]
-pub extern "C" fn sk_abi_get_version() -> u32 {
+pub const extern "C" fn sk_abi_get_version() -> u32 {
     (SK_ABI_VERSION_MAJOR << 16) | (SK_ABI_VERSION_MINOR << 8) | SK_ABI_VERSION_PATCH
 }
 
 /// Check if the ABI version is compatible
 #[unsafe(no_mangle)]
-pub extern "C" fn sk_abi_is_compatible(major: u32, minor: u32) -> bool {
+pub const extern "C" fn sk_abi_is_compatible(major: u32, minor: u32) -> bool {
     major == SK_ABI_VERSION_MAJOR && minor <= SK_ABI_VERSION_MINOR
 }
 
@@ -58,7 +58,7 @@ pub extern "C" fn sk_abi_is_compatible(major: u32, minor: u32) -> bool {
 // Core Types - Binary Compatible with Skia
 // =============================================================================
 
-/// Binary-compatible 2D point (matches SkPoint exactly)
+/// Binary-compatible 2D point (matches `SkPoint` exactly)
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct SkPointABI {
@@ -69,7 +69,7 @@ pub struct SkPointABI {
 const _: () = assert!(std::mem::size_of::<SkPointABI>() == 8);
 const _: () = assert!(std::mem::align_of::<SkPointABI>() == 4);
 
-/// Binary-compatible integer point (matches SkIPoint exactly)
+/// Binary-compatible integer point (matches `SkIPoint` exactly)
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SkIPointABI {
@@ -80,7 +80,7 @@ pub struct SkIPointABI {
 const _: () = assert!(std::mem::size_of::<SkIPointABI>() == 8);
 const _: () = assert!(std::mem::align_of::<SkIPointABI>() == 4);
 
-/// Binary-compatible 2D size (matches SkSize exactly)
+/// Binary-compatible 2D size (matches `SkSize` exactly)
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct SkSizeABI {
@@ -91,7 +91,7 @@ pub struct SkSizeABI {
 const _: () = assert!(std::mem::size_of::<SkSizeABI>() == 8);
 const _: () = assert!(std::mem::align_of::<SkSizeABI>() == 4);
 
-/// Binary-compatible integer size (matches SkISize exactly)
+/// Binary-compatible integer size (matches `SkISize` exactly)
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SkISizeABI {
@@ -102,7 +102,7 @@ pub struct SkISizeABI {
 const _: () = assert!(std::mem::size_of::<SkISizeABI>() == 8);
 const _: () = assert!(std::mem::align_of::<SkISizeABI>() == 4);
 
-/// Binary-compatible rectangle (matches SkRect exactly)
+/// Binary-compatible rectangle (matches `SkRect` exactly)
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct SkRectABI {
@@ -115,7 +115,7 @@ pub struct SkRectABI {
 const _: () = assert!(std::mem::size_of::<SkRectABI>() == 16);
 const _: () = assert!(std::mem::align_of::<SkRectABI>() == 4);
 
-/// Binary-compatible integer rectangle (matches SkIRect exactly)
+/// Binary-compatible integer rectangle (matches `SkIRect` exactly)
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SkIRectABI {
@@ -128,7 +128,7 @@ pub struct SkIRectABI {
 const _: () = assert!(std::mem::size_of::<SkIRectABI>() == 16);
 const _: () = assert!(std::mem::align_of::<SkIRectABI>() == 4);
 
-/// Binary-compatible 3x3 matrix (matches SkMatrix exactly)
+/// Binary-compatible 3x3 matrix (matches `SkMatrix` exactly)
 ///
 /// Layout: [scaleX, skewX, transX, skewY, scaleY, transY, persp0, persp1, persp2]
 #[repr(C)]
@@ -148,6 +148,7 @@ impl Default for SkMatrixABI {
 
 impl SkMatrixABI {
     /// Identity matrix constant
+    #[must_use] 
     pub const fn identity() -> Self {
         Self {
             values: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
@@ -173,6 +174,7 @@ impl Default for SkMatrix44ABI {
 
 impl SkMatrix44ABI {
     /// Identity matrix constant
+    #[must_use] 
     pub const fn identity() -> Self {
         Self {
             values: [
@@ -182,13 +184,13 @@ impl SkMatrix44ABI {
     }
 }
 
-/// Binary-compatible ARGB color (matches SkColor exactly)
+/// Binary-compatible ARGB color (matches `SkColor` exactly)
 pub type SkColorABI = u32;
 
-/// Binary-compatible ARGB color with premultiplied alpha (matches SkPMColor)
+/// Binary-compatible ARGB color with premultiplied alpha (matches `SkPMColor`)
 pub type SkPMColorABI = u32;
 
-/// Binary-compatible 4-component color (matches SkColor4f exactly)
+/// Binary-compatible 4-component color (matches `SkColor4f` exactly)
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct SkColor4fABI {
@@ -205,7 +207,7 @@ const _: () = assert!(std::mem::align_of::<SkColor4fABI>() == 4);
 // Image Info - Binary Compatible
 // =============================================================================
 
-/// Binary-compatible color type (matches SkColorType exactly)
+/// Binary-compatible color type (matches `SkColorType` exactly)
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SkColorTypeABI {
@@ -235,7 +237,7 @@ pub enum SkColorTypeABI {
     R8Unorm = 22,
 }
 
-/// Binary-compatible alpha type (matches SkAlphaType exactly)
+/// Binary-compatible alpha type (matches `SkAlphaType` exactly)
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SkAlphaTypeABI {
@@ -258,7 +260,7 @@ pub enum SkAlphaTypeABI {
 /// an opaque `SkColorSpace*` handle, not a `sk_sp` you can memcpy into
 /// upstream Skia code.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SkImageInfoABI {
     pub width: i32,
     pub height: i32,
@@ -292,7 +294,7 @@ impl Default for SkImageInfoABI {
 // Paint - Binary Compatible
 // =============================================================================
 
-/// Binary-compatible paint style (matches SkPaint::Style exactly)
+/// Binary-compatible paint style (matches `SkPaint::Style` exactly)
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SkPaintStyleABI {
@@ -302,7 +304,7 @@ pub enum SkPaintStyleABI {
     StrokeAndFill = 2,
 }
 
-/// Binary-compatible stroke cap (matches SkPaint::Cap exactly)
+/// Binary-compatible stroke cap (matches `SkPaint::Cap` exactly)
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SkStrokeCapABI {
@@ -312,7 +314,7 @@ pub enum SkStrokeCapABI {
     Square = 2,
 }
 
-/// Binary-compatible stroke join (matches SkPaint::Join exactly)
+/// Binary-compatible stroke join (matches `SkPaint::Join` exactly)
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SkStrokeJoinABI {
@@ -322,7 +324,7 @@ pub enum SkStrokeJoinABI {
     Bevel = 2,
 }
 
-/// Binary-compatible blend mode (matches SkBlendMode exactly)
+/// Binary-compatible blend mode (matches `SkBlendMode` exactly)
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SkBlendModeABI {
@@ -362,7 +364,7 @@ pub enum SkBlendModeABI {
 // Path - Binary Compatible
 // =============================================================================
 
-/// Binary-compatible path fill type (matches SkPathFillType exactly)
+/// Binary-compatible path fill type (matches `SkPathFillType` exactly)
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SkPathFillTypeABI {
@@ -373,7 +375,7 @@ pub enum SkPathFillTypeABI {
     InverseEvenOdd = 3,
 }
 
-/// Binary-compatible path verb (matches SkPath::Verb exactly)
+/// Binary-compatible path verb (matches `SkPath::Verb` exactly)
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkPathVerbABI {
@@ -392,13 +394,13 @@ pub enum SkPathVerbABI {
 
 /// Convert from internal Point to ABI Point
 #[unsafe(no_mangle)]
-pub extern "C" fn sk_point_to_abi(x: f32, y: f32) -> SkPointABI {
+pub const extern "C" fn sk_point_to_abi(x: f32, y: f32) -> SkPointABI {
     SkPointABI { x, y }
 }
 
 /// Convert from internal Rect to ABI Rect
 #[unsafe(no_mangle)]
-pub extern "C" fn sk_rect_to_abi(left: f32, top: f32, right: f32, bottom: f32) -> SkRectABI {
+pub const extern "C" fn sk_rect_to_abi(left: f32, top: f32, right: f32, bottom: f32) -> SkRectABI {
     SkRectABI {
         left,
         top,
@@ -409,13 +411,13 @@ pub extern "C" fn sk_rect_to_abi(left: f32, top: f32, right: f32, bottom: f32) -
 
 /// Create identity matrix
 #[unsafe(no_mangle)]
-pub extern "C" fn sk_matrix_identity() -> SkMatrixABI {
+pub const extern "C" fn sk_matrix_identity() -> SkMatrixABI {
     SkMatrixABI::identity()
 }
 
 /// Create identity matrix 4x4
 #[unsafe(no_mangle)]
-pub extern "C" fn sk_matrix44_identity() -> SkMatrix44ABI {
+pub const extern "C" fn sk_matrix44_identity() -> SkMatrix44ABI {
     SkMatrix44ABI::identity()
 }
 
@@ -423,33 +425,33 @@ pub extern "C" fn sk_matrix44_identity() -> SkMatrix44ABI {
 // Type Size Verification Functions
 // =============================================================================
 
-/// Get size of SkPointABI (for runtime verification)
+/// Get size of `SkPointABI` (for runtime verification)
 #[unsafe(no_mangle)]
-pub extern "C" fn sk_sizeof_point() -> usize {
+pub const extern "C" fn sk_sizeof_point() -> usize {
     std::mem::size_of::<SkPointABI>()
 }
 
-/// Get size of SkRectABI (for runtime verification)
+/// Get size of `SkRectABI` (for runtime verification)
 #[unsafe(no_mangle)]
-pub extern "C" fn sk_sizeof_rect() -> usize {
+pub const extern "C" fn sk_sizeof_rect() -> usize {
     std::mem::size_of::<SkRectABI>()
 }
 
-/// Get size of SkMatrixABI (for runtime verification)
+/// Get size of `SkMatrixABI` (for runtime verification)
 #[unsafe(no_mangle)]
-pub extern "C" fn sk_sizeof_matrix() -> usize {
+pub const extern "C" fn sk_sizeof_matrix() -> usize {
     std::mem::size_of::<SkMatrixABI>()
 }
 
-/// Get size of SkImageInfoABI (for runtime verification)
+/// Get size of `SkImageInfoABI` (for runtime verification)
 #[unsafe(no_mangle)]
-pub extern "C" fn sk_sizeof_imageinfo() -> usize {
+pub const extern "C" fn sk_sizeof_imageinfo() -> usize {
     std::mem::size_of::<SkImageInfoABI>()
 }
 
-/// Get size of SkColor4fABI (for runtime verification)
+/// Get size of `SkColor4fABI` (for runtime verification)
 #[unsafe(no_mangle)]
-pub extern "C" fn sk_sizeof_color4f() -> usize {
+pub const extern "C" fn sk_sizeof_color4f() -> usize {
     std::mem::size_of::<SkColor4fABI>()
 }
 
@@ -460,7 +462,7 @@ pub extern "C" fn sk_sizeof_color4f() -> usize {
 /// Validate that all ABI types have expected sizes
 /// Returns true if all sizes match, false otherwise
 #[unsafe(no_mangle)]
-pub extern "C" fn sk_abi_validate() -> bool {
+pub const extern "C" fn sk_abi_validate() -> bool {
     // These sizes must match Skia's C API exactly
     std::mem::size_of::<SkPointABI>() == 8
         && std::mem::size_of::<SkIPointABI>() == 8

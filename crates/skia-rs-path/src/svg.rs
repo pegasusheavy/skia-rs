@@ -20,7 +20,7 @@ pub fn parse_svg_path(d: &str) -> Result<Path, SvgPathError> {
 }
 
 /// Error type for SVG path parsing.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SvgPathError {
     /// Unexpected end of input.
     UnexpectedEnd,
@@ -39,12 +39,12 @@ pub enum SvgPathError {
 impl std::fmt::Display for SvgPathError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SvgPathError::UnexpectedEnd => write!(f, "unexpected end of path data"),
-            SvgPathError::InvalidNumber(s) => write!(f, "invalid number: {}", s),
-            SvgPathError::UnknownCommand(c) => write!(f, "unknown command: {}", c),
-            SvgPathError::ExpectedNumber => write!(f, "expected a number"),
-            SvgPathError::MissingMoveTo => write!(f, "path must start with moveto"),
-            SvgPathError::UnexpectedNumber => {
+            Self::UnexpectedEnd => write!(f, "unexpected end of path data"),
+            Self::InvalidNumber(s) => write!(f, "invalid number: {s}"),
+            Self::UnknownCommand(c) => write!(f, "unknown command: {c}"),
+            Self::ExpectedNumber => write!(f, "expected a number"),
+            Self::MissingMoveTo => write!(f, "path must start with moveto"),
+            Self::UnexpectedNumber => {
                 write!(f, "unexpected number where a command was expected")
             }
         }
@@ -89,7 +89,7 @@ impl<'a> SvgPathParser<'a> {
         Ok(self.builder.build())
     }
 
-    fn is_end(&self) -> bool {
+    const fn is_end(&self) -> bool {
         self.pos >= self.input.len()
     }
 
@@ -228,7 +228,7 @@ impl<'a> SvgPathParser<'a> {
         let mut first = true;
         loop {
             self.skip_whitespace();
-            if self.is_end() || self.peek().map_or(false, |c| c.is_ascii_alphabetic()) {
+            if self.is_end() || self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
                 break;
             }
 
@@ -257,7 +257,7 @@ impl<'a> SvgPathParser<'a> {
     fn parse_lineto(&mut self, is_relative: bool) -> Result<(), SvgPathError> {
         loop {
             self.skip_whitespace();
-            if self.is_end() || self.peek().map_or(false, |c| c.is_ascii_alphabetic()) {
+            if self.is_end() || self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
                 break;
             }
 
@@ -280,7 +280,7 @@ impl<'a> SvgPathParser<'a> {
     fn parse_horizontal_lineto(&mut self, is_relative: bool) -> Result<(), SvgPathError> {
         loop {
             self.skip_whitespace();
-            if self.is_end() || self.peek().map_or(false, |c| c.is_ascii_alphabetic()) {
+            if self.is_end() || self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
                 break;
             }
 
@@ -297,7 +297,7 @@ impl<'a> SvgPathParser<'a> {
     fn parse_vertical_lineto(&mut self, is_relative: bool) -> Result<(), SvgPathError> {
         loop {
             self.skip_whitespace();
-            if self.is_end() || self.peek().map_or(false, |c| c.is_ascii_alphabetic()) {
+            if self.is_end() || self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
                 break;
             }
 
@@ -314,7 +314,7 @@ impl<'a> SvgPathParser<'a> {
     fn parse_curveto(&mut self, is_relative: bool) -> Result<(), SvgPathError> {
         loop {
             self.skip_whitespace();
-            if self.is_end() || self.peek().map_or(false, |c| c.is_ascii_alphabetic()) {
+            if self.is_end() || self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
                 break;
             }
 
@@ -346,7 +346,7 @@ impl<'a> SvgPathParser<'a> {
         let mut iteration = 0;
         loop {
             self.skip_whitespace();
-            if self.is_end() || self.peek().map_or(false, |c| c.is_ascii_alphabetic()) {
+            if self.is_end() || self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
                 break;
             }
 
@@ -362,7 +362,7 @@ impl<'a> SvgPathParser<'a> {
             // current point (SVG 1.1 / SkParsePath).
             let reflect = iteration > 0 || prev_op == 'C' || prev_op == 'S';
             let (x1, y1) = match (reflect, self.last_control) {
-                (true, Some((lx, ly))) => (2.0 * cx - lx, 2.0 * cy - ly),
+                (true, Some((lx, ly))) => (2.0f32.mul_add(cx, -lx), 2.0f32.mul_add(cy, -ly)),
                 _ => (cx, cy),
             };
             iteration += 1;
@@ -382,7 +382,7 @@ impl<'a> SvgPathParser<'a> {
     fn parse_quadto(&mut self, is_relative: bool) -> Result<(), SvgPathError> {
         loop {
             self.skip_whitespace();
-            if self.is_end() || self.peek().map_or(false, |c| c.is_ascii_alphabetic()) {
+            if self.is_end() || self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
                 break;
             }
 
@@ -412,7 +412,7 @@ impl<'a> SvgPathParser<'a> {
         let mut iteration = 0;
         loop {
             self.skip_whitespace();
-            if self.is_end() || self.peek().map_or(false, |c| c.is_ascii_alphabetic()) {
+            if self.is_end() || self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
                 break;
             }
 
@@ -424,7 +424,7 @@ impl<'a> SvgPathParser<'a> {
             // command was a quadratic (Q or T); otherwise control == current.
             let reflect = iteration > 0 || prev_op == 'Q' || prev_op == 'T';
             let (x1, y1) = match (reflect, self.last_control) {
-                (true, Some((lx, ly))) => (2.0 * cx - lx, 2.0 * cy - ly),
+                (true, Some((lx, ly))) => (2.0f32.mul_add(cx, -lx), 2.0f32.mul_add(cy, -ly)),
                 _ => (cx, cy),
             };
             iteration += 1;
@@ -444,7 +444,7 @@ impl<'a> SvgPathParser<'a> {
     fn parse_arcto(&mut self, is_relative: bool) -> Result<(), SvgPathError> {
         loop {
             self.skip_whitespace();
-            if self.is_end() || self.peek().map_or(false, |c| c.is_ascii_alphabetic()) {
+            if self.is_end() || self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
                 break;
             }
 
@@ -525,8 +525,7 @@ mod tests {
         // current point at S is (10,0); with no reflection c1 == current point.
         assert!(
             (c1.x - 10.0).abs() < 1e-3 && (c1.y - 0.0).abs() < 1e-3,
-            "S after L must not reflect: c1={:?}",
-            c1
+            "S after L must not reflect: c1={c1:?}"
         );
     }
 
@@ -547,8 +546,7 @@ mod tests {
         let c1 = cubics[1].0;
         assert!(
             (c1.x - 30.0).abs() < 1e-3 && (c1.y + 10.0).abs() < 1e-3,
-            "S after C must reflect: c1={:?}",
-            c1
+            "S after C must reflect: c1={c1:?}"
         );
     }
 
@@ -564,8 +562,7 @@ mod tests {
         let (c, _end) = quad.expect("expected a quad");
         assert!(
             (c.x - 10.0).abs() < 1e-3 && (c.y - 0.0).abs() < 1e-3,
-            "T after L must not reflect: c={:?}",
-            c
+            "T after L must not reflect: c={c:?}"
         );
     }
 
@@ -584,8 +581,7 @@ mod tests {
             .expect("expected cubic from S");
         assert!(
             (c1.x - 20.0).abs() < 1e-3 && (c1.y - 0.0).abs() < 1e-3,
-            "S after Q must not reflect: c1={:?}",
-            c1
+            "S after Q must not reflect: c1={c1:?}"
         );
     }
 
@@ -604,8 +600,7 @@ mod tests {
             .expect("expected quad from T");
         assert!(
             (c.x - 20.0).abs() < 1e-3 && (c.y - 0.0).abs() < 1e-3,
-            "T after C must not reflect: c={:?}",
-            c
+            "T after C must not reflect: c={c:?}"
         );
     }
 
@@ -626,8 +621,7 @@ mod tests {
             .unwrap();
         assert!(
             (last_line.x - 15.0).abs() < 1e-3 && (last_line.y - 5.0).abs() < 1e-3,
-            "relative line after Z should start at subpath start: {:?}",
-            last_line
+            "relative line after Z should start at subpath start: {last_line:?}"
         );
     }
 }

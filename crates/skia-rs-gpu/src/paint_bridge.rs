@@ -63,7 +63,8 @@ pub enum BuiltinShader {
 
 impl BuiltinShader {
     /// Return the vertex and fragment WGSL source for this built-in.
-    pub fn wgsl_sources(self) -> (&'static str, &'static str) {
+    #[must_use] 
+    pub const fn wgsl_sources(self) -> (&'static str, &'static str) {
         match self {
             Self::SolidColor => (builtin::SOLID_COLOR_VS, builtin::SOLID_COLOR_FS),
             Self::LinearGradient => (builtin::GRADIENT_VS, builtin::LINEAR_GRADIENT_FS),
@@ -97,7 +98,8 @@ pub enum BlendClass {
 /// `BlendClass::Advanced` tag so the caller knows it needs a read-modify-write
 /// strategy (destination texture binding + custom shader) rather than the
 /// fixed-function blender.
-pub fn blend_mode_to_state(mode: BlendMode) -> (BlendState, BlendClass) {
+#[must_use] 
+pub const fn blend_mode_to_state(mode: BlendMode) -> (BlendState, BlendClass) {
     let (color, class) = match mode {
         BlendMode::Clear => (
             BlendComponent {
@@ -267,7 +269,7 @@ pub fn blend_mode_to_state(mode: BlendMode) -> (BlendState, BlendClass) {
 /// *color* coefficient as the corresponding source/destination *alpha*
 /// (there is no separate "color" for a single-component channel). Factors
 /// that already reference alpha (or constants) are unchanged.
-fn to_alpha_factor(f: BlendFactor) -> BlendFactor {
+const fn to_alpha_factor(f: BlendFactor) -> BlendFactor {
     match f {
         BlendFactor::Src => BlendFactor::SrcAlpha,
         BlendFactor::OneMinusSrc => BlendFactor::OneMinusSrcAlpha,
@@ -302,11 +304,13 @@ pub struct PaintUniforms {
 
 impl PaintUniforms {
     /// Number of bytes in the uniform block.
+    #[must_use] 
     pub fn len(&self) -> usize {
         self.bytes.len()
     }
 
     /// True if no uniform data is set.
+    #[must_use] 
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }
@@ -328,6 +332,7 @@ pub struct PaintPlan {
 /// Examines the paint's shader (if any) and blend mode, picks an appropriate
 /// built-in GPU shader, builds the pipeline descriptor and key, and packs
 /// the shader parameters into a uniform blob.
+#[must_use] 
 pub fn paint_to_pipeline(paint: &Paint) -> PaintPlan {
     let (blend, blend_class) = blend_mode_to_state(paint.blend_mode());
 
@@ -355,11 +360,13 @@ pub fn paint_to_pipeline(paint: &Paint) -> PaintPlan {
 /// Target format is `Rgba8Unorm` by default; callers that render to sRGB
 /// or other formats should call [`build_pipeline_descriptor_with_target`]
 /// directly.
+#[must_use] 
 pub fn build_pipeline_descriptor(selection: &PipelineSelection) -> RenderPipelineDescriptor {
     build_pipeline_descriptor_with_target(selection, TextureFormat::Rgba8Unorm)
 }
 
 /// Build a `RenderPipelineDescriptor` for a specific render target format.
+#[must_use] 
 pub fn build_pipeline_descriptor_with_target(
     selection: &PipelineSelection,
     target: TextureFormat,

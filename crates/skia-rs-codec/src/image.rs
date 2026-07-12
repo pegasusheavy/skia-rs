@@ -46,7 +46,8 @@ pub struct ImageInfo {
 
 impl ImageInfo {
     /// Create a new image info.
-    pub fn new(width: i32, height: i32, color_type: ColorType, alpha_type: AlphaType) -> Self {
+    #[must_use] 
+    pub const fn new(width: i32, height: i32, color_type: ColorType, alpha_type: AlphaType) -> Self {
         Self {
             width,
             height,
@@ -58,61 +59,71 @@ impl ImageInfo {
 
     /// Get the width.
     #[inline]
-    pub fn width(&self) -> i32 {
+    #[must_use] 
+    pub const fn width(&self) -> i32 {
         self.width
     }
 
     /// Get the height.
     #[inline]
-    pub fn height(&self) -> i32 {
+    #[must_use] 
+    pub const fn height(&self) -> i32 {
         self.height
     }
 
     /// Get the color type.
     #[inline]
-    pub fn color_type(&self) -> ColorType {
+    #[must_use] 
+    pub const fn color_type(&self) -> ColorType {
         self.color_type
     }
 
     /// Get the alpha type.
     #[inline]
-    pub fn alpha_type(&self) -> AlphaType {
+    #[must_use] 
+    pub const fn alpha_type(&self) -> AlphaType {
         self.alpha_type
     }
 
     /// Get the color space.
     #[inline]
-    pub fn color_space(&self) -> Option<&ColorSpace> {
+    #[must_use] 
+    pub const fn color_space(&self) -> Option<&ColorSpace> {
         self.color_space.as_ref()
     }
 
     /// Returns true if dimensions are zero or negative.
     #[inline]
-    pub fn is_empty(&self) -> bool {
+    #[must_use] 
+    pub const fn is_empty(&self) -> bool {
         self.width <= 0 || self.height <= 0
     }
 
     /// Returns true if alpha is opaque.
     #[inline]
+    #[must_use] 
     pub fn is_opaque(&self) -> bool {
         self.alpha_type == AlphaType::Opaque
     }
 
     /// Bytes per pixel.
     #[inline]
-    pub fn bytes_per_pixel(&self) -> usize {
+    #[must_use] 
+    pub const fn bytes_per_pixel(&self) -> usize {
         self.color_type.bytes_per_pixel()
     }
 
     /// Minimum row bytes.
     #[inline]
-    pub fn min_row_bytes(&self) -> usize {
+    #[must_use] 
+    pub const fn min_row_bytes(&self) -> usize {
         self.width as usize * self.bytes_per_pixel()
     }
 
     /// Compute byte size for given row bytes.
     #[inline]
-    pub fn compute_byte_size(&self, row_bytes: usize) -> usize {
+    #[must_use] 
+    pub const fn compute_byte_size(&self, row_bytes: usize) -> usize {
         if self.height <= 0 {
             return 0;
         }
@@ -169,6 +180,7 @@ impl Image {
     /// Create an image from raw pixel data.
     ///
     /// The pixels are copied into the image.
+    #[must_use] 
     pub fn from_raster_data(info: &ImageInfo, pixels: &[u8], row_bytes: usize) -> Option<Self> {
         if info.is_empty() {
             return None;
@@ -190,6 +202,7 @@ impl Image {
     }
 
     /// Create an image from owned pixel data.
+    #[must_use] 
     pub fn from_raster_data_owned(
         info: ImageInfo,
         pixels: Vec<u8>,
@@ -215,6 +228,7 @@ impl Image {
     }
 
     /// Create a new RGBA image filled with a color.
+    #[must_use] 
     pub fn from_color(width: i32, height: i32, color: u32) -> Option<Self> {
         if width <= 0 || height <= 0 {
             return None;
@@ -245,60 +259,70 @@ impl Image {
 
     /// Get the image width.
     #[inline]
+    #[must_use] 
     pub fn width(&self) -> i32 {
         self.inner.info.width()
     }
 
     /// Get the image height.
     #[inline]
+    #[must_use] 
     pub fn height(&self) -> i32 {
         self.inner.info.height()
     }
 
     /// Get the image dimensions as (width, height).
     #[inline]
+    #[must_use] 
     pub fn dimensions(&self) -> (i32, i32) {
         (self.width(), self.height())
     }
 
     /// Get the image bounds as a rectangle.
     #[inline]
+    #[must_use] 
     pub fn bounds(&self) -> Rect {
         Rect::from_xywh(0.0, 0.0, self.width() as Scalar, self.height() as Scalar)
     }
 
     /// Get the image info.
     #[inline]
+    #[must_use] 
     pub fn info(&self) -> &ImageInfo {
         &self.inner.info
     }
 
     /// Get the color type.
     #[inline]
+    #[must_use] 
     pub fn color_type(&self) -> ColorType {
         self.inner.info.color_type()
     }
 
     /// Get the alpha type.
     #[inline]
+    #[must_use] 
     pub fn alpha_type(&self) -> AlphaType {
         self.inner.info.alpha_type()
     }
 
     /// Get the color space.
     #[inline]
+    #[must_use] 
     pub fn color_space(&self) -> Option<&ColorSpace> {
         self.inner.info.color_space()
     }
 
     /// Returns true if the image is opaque.
     #[inline]
+    #[must_use] 
     pub fn is_opaque(&self) -> bool {
         self.inner.info.is_opaque()
     }
 
     /// Get the row bytes (stride).
     #[inline]
+    #[must_use] 
     pub fn row_bytes(&self) -> usize {
         self.inner.row_bytes
     }
@@ -310,6 +334,7 @@ impl Image {
     /// always compare unequal even if a later allocation reuses a freed
     /// image's memory. Cloning an `Image` shares the same ID.
     #[inline]
+    #[must_use] 
     pub fn unique_id(&self) -> usize {
         self.inner.unique_id as usize
     }
@@ -402,6 +427,7 @@ impl Image {
     }
 
     /// Read a single pixel at (x, y).
+    #[must_use] 
     pub fn read_pixel(&self, x: i32, y: i32) -> Option<skia_rs_core::Color4f> {
         if x < 0 || x >= self.width() || y < 0 || y >= self.height() {
             return None;
@@ -412,25 +438,25 @@ impl Image {
 
         match self.color_type() {
             ColorType::Rgba8888 => {
-                let r = self.inner.pixels[offset] as f32 / 255.0;
-                let g = self.inner.pixels[offset + 1] as f32 / 255.0;
-                let b = self.inner.pixels[offset + 2] as f32 / 255.0;
-                let a = self.inner.pixels[offset + 3] as f32 / 255.0;
+                let r = f32::from(self.inner.pixels[offset]) / 255.0;
+                let g = f32::from(self.inner.pixels[offset + 1]) / 255.0;
+                let b = f32::from(self.inner.pixels[offset + 2]) / 255.0;
+                let a = f32::from(self.inner.pixels[offset + 3]) / 255.0;
                 Some(skia_rs_core::Color4f::new(r, g, b, a))
             }
             ColorType::Bgra8888 => {
-                let b = self.inner.pixels[offset] as f32 / 255.0;
-                let g = self.inner.pixels[offset + 1] as f32 / 255.0;
-                let r = self.inner.pixels[offset + 2] as f32 / 255.0;
-                let a = self.inner.pixels[offset + 3] as f32 / 255.0;
+                let b = f32::from(self.inner.pixels[offset]) / 255.0;
+                let g = f32::from(self.inner.pixels[offset + 1]) / 255.0;
+                let r = f32::from(self.inner.pixels[offset + 2]) / 255.0;
+                let a = f32::from(self.inner.pixels[offset + 3]) / 255.0;
                 Some(skia_rs_core::Color4f::new(r, g, b, a))
             }
             ColorType::Alpha8 => {
-                let a = self.inner.pixels[offset] as f32 / 255.0;
+                let a = f32::from(self.inner.pixels[offset]) / 255.0;
                 Some(skia_rs_core::Color4f::new(0.0, 0.0, 0.0, a))
             }
             ColorType::Gray8 => {
-                let v = self.inner.pixels[offset] as f32 / 255.0;
+                let v = f32::from(self.inner.pixels[offset]) / 255.0;
                 Some(skia_rs_core::Color4f::new(v, v, v, 1.0))
             }
             _ => None,
@@ -438,11 +464,13 @@ impl Image {
     }
 
     /// Get direct access to the pixel data (if available).
+    #[must_use] 
     pub fn peek_pixels(&self) -> Option<&[u8]> {
         Some(&self.inner.pixels)
     }
 
     /// Create a subset of this image.
+    #[must_use] 
     pub fn make_subset(&self, subset: &Rect) -> Option<Self> {
         let x = subset.left as i32;
         let y = subset.top as i32;
@@ -478,6 +506,7 @@ impl Image {
     ///
     /// For quality-sensitive scaling (photographs, downscaling), prefer
     /// [`Image::make_scaled_with`] with [`SamplingOptions::Linear`].
+    #[must_use] 
     pub fn make_scaled(&self, width: i32, height: i32) -> Option<Self> {
         self.make_scaled_with(width, height, SamplingOptions::Nearest)
     }
@@ -494,6 +523,7 @@ impl Image {
     ///   cost bump.
     /// - [`SamplingOptions::Lanczos3`]: 6-tap per axis windowed sinc, best
     ///   quality for photographic downscaling.
+    #[must_use] 
     pub fn make_scaled_with(
         &self,
         width: i32,
@@ -568,13 +598,13 @@ impl Image {
                 let max_y = src_h.saturating_sub(1);
 
                 for dst_y in 0..height as usize {
-                    let fy = ((dst_y as f32 + 0.5) * y_scale - 0.5).max(0.0);
+                    let fy = (dst_y as f32 + 0.5).mul_add(y_scale, -0.5).max(0.0);
                     let y0 = (fy as usize).min(max_y);
                     let y1 = (y0 + 1).min(max_y);
                     let ty = fy - y0 as f32;
 
                     for dst_x in 0..width as usize {
-                        let fx = ((dst_x as f32 + 0.5) * x_scale - 0.5).max(0.0);
+                        let fx = (dst_x as f32 + 0.5).mul_add(x_scale, -0.5).max(0.0);
                         let x0 = (fx as usize).min(max_x);
                         let x1 = (x0 + 1).min(max_x);
                         let tx = fx - x0 as f32;
@@ -586,13 +616,13 @@ impl Image {
                         let dst_offset = dst_y * new_row_bytes + dst_x * bytes_per_pixel;
 
                         for i in 0..bytes_per_pixel {
-                            let c00 = src_pixels[p00 + i] as f32;
-                            let c01 = src_pixels[p01 + i] as f32;
-                            let c10 = src_pixels[p10 + i] as f32;
-                            let c11 = src_pixels[p11 + i] as f32;
+                            let c00 = f32::from(src_pixels[p00 + i]);
+                            let c01 = f32::from(src_pixels[p01 + i]);
+                            let c10 = f32::from(src_pixels[p10 + i]);
+                            let c11 = f32::from(src_pixels[p11 + i]);
 
-                            let top = c00 * (1.0 - tx) + c01 * tx;
-                            let bot = c10 * (1.0 - tx) + c11 * tx;
+                            let top = c00.mul_add(1.0 - tx, c01 * tx);
+                            let bot = c10.mul_add(1.0 - tx, c11 * tx);
                             let v = top * (1.0 - ty) + bot * ty;
 
                             new_pixels[dst_offset + i] = v.round().clamp(0.0, 255.0) as u8;
@@ -681,15 +711,13 @@ fn cubic_bc(t: f32, b: f32, c: f32) -> f32 {
     if t < 1.0 {
         let t2 = t * t;
         let t3 = t2 * t;
-        ((12.0 - 9.0 * b - 6.0 * c) * t3 + (-18.0 + 12.0 * b + 6.0 * c) * t2 + (6.0 - 2.0 * b))
+        (6.0f32.mul_add(-c, 9.0f32.mul_add(-b, 12.0)).mul_add(t3, 6.0f32.mul_add(c, 12.0f32.mul_add(b, -18.0)) * t2) + 2.0f32.mul_add(-b, 6.0))
             / 6.0
     } else if t < 2.0 {
         let t2 = t * t;
         let t3 = t2 * t;
-        ((-b - 6.0 * c) * t3
-            + (6.0 * b + 30.0 * c) * t2
-            + (-12.0 * b - 48.0 * c) * t
-            + (8.0 * b + 24.0 * c))
+        ((-12.0f32).mul_add(b, -(48.0 * c)).mul_add(t, 6.0f32.mul_add(-c, -b).mul_add(t3, 6.0f32.mul_add(b, 30.0 * c) * t2))
+            + 8.0f32.mul_add(b, 24.0 * c))
             / 6.0
     } else {
         0.0
@@ -731,7 +759,7 @@ fn kernel_weight(sampling: SamplingOptions, t: f32) -> f32 {
 }
 
 #[inline]
-fn kernel_radius(sampling: SamplingOptions) -> f32 {
+const fn kernel_radius(sampling: SamplingOptions) -> f32 {
     match sampling {
         SamplingOptions::Mitchell | SamplingOptions::CatmullRom => 2.0,
         SamplingOptions::Lanczos3 => 3.0,
@@ -760,7 +788,7 @@ fn build_taps(src_len: usize, dst_len: usize, sampling: SamplingOptions) -> Taps
     let mut weights = vec![0f32; dst_len * tap_count];
 
     for i in 0..dst_len {
-        let center = (i as f32 + 0.5) * scale - 0.5;
+        let center = (i as f32 + 0.5).mul_add(scale, -0.5);
         let left = (center - support + 0.5).floor() as i32;
         let mut sum = 0.0f32;
         for k in 0..tap_count {
@@ -816,7 +844,7 @@ fn resample_separable(
                 let w = h_taps.weights[base + k];
                 let p = &src_row[sx * bpp..sx * bpp + bpp];
                 for c in 0..bpp {
-                    acc[c] += p[c] as f32 * w;
+                    acc[c] += f32::from(p[c]) * w;
                 }
             }
             for c in 0..bpp {
@@ -967,8 +995,7 @@ mod tests {
         // Mitchell rings mildly; require at least mostly-increasing behavior.
         assert!(
             strictly_increasing >= 13,
-            "got {} monotone steps",
-            strictly_increasing
+            "got {strictly_increasing} monotone steps"
         );
     }
 
@@ -1012,9 +1039,7 @@ mod tests {
             let grey = p.r * 255.0;
             assert!(
                 (grey - 127.5).abs() < 35.0,
-                "Lanczos downscale x={} got {}",
-                x,
-                grey,
+                "Lanczos downscale x={x} got {grey}",
             );
         }
     }

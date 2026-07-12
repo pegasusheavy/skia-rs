@@ -28,12 +28,13 @@ pub struct SvgDom {
 
 impl SvgDom {
     /// Create a new empty SVG DOM.
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Get the intrinsic size.
-    pub fn intrinsic_size(&self) -> (Scalar, Scalar) {
+    pub const fn intrinsic_size(&self) -> (Scalar, Scalar) {
         (self.width, self.height)
     }
 
@@ -104,10 +105,12 @@ impl Default for PreserveAspectRatio {
 
 /// SVG node types.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub enum SvgNodeKind {
     /// Root SVG element.
     Svg,
     /// Group element.
+    #[default]
     Group,
     /// Rectangle.
     Rect(SvgRect),
@@ -141,11 +144,6 @@ pub enum SvgNodeKind {
     Unknown(String),
 }
 
-impl Default for SvgNodeKind {
-    fn default() -> Self {
-        Self::Group
-    }
-}
 
 /// SVG node (element in the DOM tree).
 ///
@@ -184,7 +182,7 @@ pub struct SvgNode {
     /// Visibility.
     pub visible: bool,
     /// Child nodes.
-    pub children: Vec<SvgNode>,
+    pub children: Vec<Self>,
     /// Custom attributes.
     pub attributes: HashMap<String, String>,
 }
@@ -216,12 +214,12 @@ impl SvgNode {
     }
 
     /// Add a child node.
-    pub fn add_child(&mut self, child: SvgNode) {
+    pub fn add_child(&mut self, child: Self) {
         self.children.push(child);
     }
 
     /// Find a node by ID.
-    pub fn find_by_id(&self, id: &str) -> Option<&SvgNode> {
+    pub fn find_by_id(&self, id: &str) -> Option<&Self> {
         if self.id.as_deref() == Some(id) {
             return Some(self);
         }

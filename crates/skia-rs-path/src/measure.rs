@@ -45,17 +45,20 @@ impl PathMeasure {
 
     /// Get the total length of the path.
     #[inline]
-    pub fn length(&self) -> Scalar {
+    #[must_use] 
+    pub const fn length(&self) -> Scalar {
         self.total_length
     }
 
     /// Get the number of contours.
     #[inline]
+    #[must_use] 
     pub fn contour_count(&self) -> usize {
         self.contour_lengths.len()
     }
 
     /// Get the length of a specific contour.
+    #[must_use] 
     pub fn contour_length(&self, index: usize) -> Option<Scalar> {
         self.contour_lengths.get(index).copied()
     }
@@ -64,6 +67,7 @@ impl PathMeasure {
     ///
     /// The distance is pinned to `[0, length]` (like `SkContourMeasure::getPosTan`);
     /// `None` is only returned for NaN input or an empty path.
+    #[must_use] 
     pub fn get_point_at(&self, distance: Scalar) -> Option<Point> {
         if distance.is_nan() || self.total_length <= 0.0 {
             return None;
@@ -78,8 +82,8 @@ impl PathMeasure {
             0.0
         };
         Some(Point::new(
-            seg.start.x + (seg.end.x - seg.start.x) * t,
-            seg.start.y + (seg.end.y - seg.start.y) * t,
+            (seg.end.x - seg.start.x).mul_add(t, seg.start.x),
+            (seg.end.y - seg.start.y).mul_add(t, seg.start.y),
         ))
     }
 
@@ -87,6 +91,7 @@ impl PathMeasure {
     ///
     /// The distance is pinned to `[0, length]` (like `SkContourMeasure::getPosTan`);
     /// `None` is only returned for NaN input or an empty path.
+    #[must_use] 
     pub fn get_tangent_at(&self, distance: Scalar) -> Option<Point> {
         if distance.is_nan() || self.total_length <= 0.0 {
             return None;
@@ -96,7 +101,7 @@ impl PathMeasure {
         let seg = Self::segment_at(contour, offset);
         let dx = seg.end.x - seg.start.x;
         let dy = seg.end.y - seg.start.y;
-        let len = (dx * dx + dy * dy).sqrt();
+        let len = dx.hypot(dy);
         if len > 0.0 {
             Some(Point::new(dx / len, dy / len))
         } else {
@@ -110,6 +115,7 @@ impl PathMeasure {
     /// given distance, and the local x-axis to the path's tangent
     /// direction at that distance. Useful for placing text or stamps
     /// along a path.
+    #[must_use] 
     pub fn get_matrix_at(&self, distance: Scalar) -> Option<Matrix> {
         let position = self.get_point_at(distance)?;
         let tangent = self.get_tangent_at(distance)?;
@@ -125,6 +131,7 @@ impl PathMeasure {
     /// Returns a new Path containing the portion from `start` to `end`,
     /// constructed from line segments (curves in the source path are
     /// flattened during length computation).
+    #[must_use] 
     pub fn get_segment(&self, start: Scalar, end: Scalar) -> Option<Path> {
         // Pin start/stop into the legal range like SkContourMeasure::getSegment:
         // clamp start up to 0 and stop down to length; reject only NaN or an
@@ -173,8 +180,8 @@ impl PathMeasure {
                     1.0
                 };
                 let p = Point::new(
-                    seg.start.x + (seg.end.x - seg.start.x) * t1,
-                    seg.start.y + (seg.end.y - seg.start.y) * t1,
+                    (seg.end.x - seg.start.x).mul_add(t1, seg.start.x),
+                    (seg.end.y - seg.start.y).mul_add(t1, seg.start.y),
                 );
                 builder.line_to(p.x, p.y);
             }
@@ -222,7 +229,7 @@ impl PathMeasure {
         let push_segment = |contour: &mut Contour, start: Point, end: Point| {
             let dx = end.x - start.x;
             let dy = end.y - start.y;
-            let len = (dx * dx + dy * dy).sqrt();
+            let len = dx.hypot(dy);
             if len > 0.0 {
                 contour.length += len;
                 contour.segments.push(Segment {
@@ -343,8 +350,8 @@ fn interpolate_at(contour: &Contour, offset: Scalar) -> Point {
         0.0
     };
     Point::new(
-        seg.start.x + (seg.end.x - seg.start.x) * t,
-        seg.start.y + (seg.end.y - seg.start.y) * t,
+        (seg.end.x - seg.start.x).mul_add(t, seg.start.x),
+        (seg.end.y - seg.start.y).mul_add(t, seg.start.y),
     )
 }
 

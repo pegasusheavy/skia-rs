@@ -12,12 +12,14 @@ pub struct AtlasEntryId(u64);
 
 impl AtlasEntryId {
     /// Create a new entry ID.
-    pub fn new(id: u64) -> Self {
+    #[must_use] 
+    pub const fn new(id: u64) -> Self {
         Self(id)
     }
 
     /// Get the raw ID value.
-    pub fn raw(&self) -> u64 {
+    #[must_use] 
+    pub const fn raw(&self) -> u64 {
         self.0
     }
 }
@@ -44,6 +46,7 @@ impl AtlasRegion {
     /// sampling never reaches into a neighbouring entry's texels (the classic
     /// atlas-bleed artifact). This matches Skia's convention of sampling at
     /// texel centers for atlased content.
+    #[must_use] 
     pub fn uv_rect(&self, atlas_width: u32, atlas_height: u32) -> [f32; 4] {
         let half_w = 0.5 / atlas_width as f32;
         let half_h = 0.5 / atlas_height as f32;
@@ -56,7 +59,8 @@ impl AtlasRegion {
     }
 
     /// Convert to a rect.
-    pub fn to_rect(&self) -> Rect {
+    #[must_use] 
+    pub const fn to_rect(&self) -> Rect {
         Rect::from_xywh(
             self.x as f32,
             self.y as f32,
@@ -120,7 +124,7 @@ struct AtlasLayer {
 }
 
 impl AtlasLayer {
-    fn new(width: u32, height: u32) -> Self {
+    const fn new(width: u32, height: u32) -> Self {
         Self {
             current_y: 0,
             current_shelf_height: 0,
@@ -166,7 +170,7 @@ impl AtlasLayer {
         None
     }
 
-    fn reset(&mut self) {
+    const fn reset(&mut self) {
         self.current_y = 0;
         self.current_shelf_height = 0;
         self.current_x = 0;
@@ -194,6 +198,7 @@ pub struct TextureAtlas {
 
 impl TextureAtlas {
     /// Create a new texture atlas.
+    #[must_use] 
     pub fn new(config: AtlasConfig) -> Self {
         let mut layers = Vec::with_capacity(config.max_layers as usize);
         layers.push(AtlasLayer::new(config.width, config.height));
@@ -209,26 +214,31 @@ impl TextureAtlas {
     }
 
     /// Get atlas configuration.
-    pub fn config(&self) -> &AtlasConfig {
+    #[must_use] 
+    pub const fn config(&self) -> &AtlasConfig {
         &self.config
     }
 
     /// Get current generation.
-    pub fn generation(&self) -> u64 {
+    #[must_use] 
+    pub const fn generation(&self) -> u64 {
         self.generation
     }
 
     /// Get number of active layers.
+    #[must_use] 
     pub fn layer_count(&self) -> u32 {
         self.layers.len() as u32
     }
 
     /// Get number of entries.
+    #[must_use] 
     pub fn entry_count(&self) -> usize {
         self.entries.len()
     }
 
     /// Look up an existing entry.
+    #[must_use] 
     pub fn lookup(&self, id: AtlasEntryId) -> Option<&AtlasRegion> {
         self.entries.get(&id)
     }
@@ -329,6 +339,7 @@ impl TextureAtlas {
     }
 
     /// Number of entries currently marked as freed but not yet repacked.
+    #[must_use] 
     pub fn freed_count(&self) -> usize {
         self.freed.len()
     }
@@ -440,7 +451,7 @@ impl TextureAtlas {
 #[derive(Debug, Clone, Default)]
 pub struct CompactResult {
     /// Entries whose region moved during repacking. Each tuple is
-    /// (id, old_region, new_region).
+    /// (id, `old_region`, `new_region`).
     pub remapped: Vec<(AtlasEntryId, AtlasRegion, AtlasRegion)>,
     /// Entries that were freed and dropped from the atlas.
     pub removed: Vec<AtlasEntryId>,
@@ -459,6 +470,7 @@ pub struct AtlasManager {
 
 impl AtlasManager {
     /// Create a new atlas manager with default configuration.
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             path_atlas: TextureAtlas::new(AtlasConfig {
@@ -486,32 +498,35 @@ impl AtlasManager {
     }
 
     /// Get path atlas.
-    pub fn path_atlas(&self) -> &TextureAtlas {
+    #[must_use] 
+    pub const fn path_atlas(&self) -> &TextureAtlas {
         &self.path_atlas
     }
 
     /// Get mutable path atlas.
-    pub fn path_atlas_mut(&mut self) -> &mut TextureAtlas {
+    pub const fn path_atlas_mut(&mut self) -> &mut TextureAtlas {
         &mut self.path_atlas
     }
 
     /// Get glyph atlas.
-    pub fn glyph_atlas(&self) -> &TextureAtlas {
+    #[must_use] 
+    pub const fn glyph_atlas(&self) -> &TextureAtlas {
         &self.glyph_atlas
     }
 
     /// Get mutable glyph atlas.
-    pub fn glyph_atlas_mut(&mut self) -> &mut TextureAtlas {
+    pub const fn glyph_atlas_mut(&mut self) -> &mut TextureAtlas {
         &mut self.glyph_atlas
     }
 
     /// Get color atlas.
-    pub fn color_atlas(&self) -> &TextureAtlas {
+    #[must_use] 
+    pub const fn color_atlas(&self) -> &TextureAtlas {
         &self.color_atlas
     }
 
     /// Get mutable color atlas.
-    pub fn color_atlas_mut(&mut self) -> &mut TextureAtlas {
+    pub const fn color_atlas_mut(&mut self) -> &mut TextureAtlas {
         &mut self.color_atlas
     }
 

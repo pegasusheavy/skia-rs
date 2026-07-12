@@ -11,7 +11,7 @@
 use crate::keyframe::AnimatedProperty;
 use crate::mask::Mask;
 use crate::model::LayerModel;
-use crate::shapes::{Shape, ShapeGroup};
+use crate::shapes::Shape;
 use crate::transform::Transform;
 use skia_rs_core::{Color, Scalar};
 use skia_rs_paint::BlendMode;
@@ -56,22 +56,22 @@ pub enum LayerType {
 impl From<i32> for LayerType {
     fn from(value: i32) -> Self {
         match value {
-            0 => LayerType::Precomp,
-            1 => LayerType::Solid,
-            2 => LayerType::Image,
-            3 => LayerType::Null,
-            4 => LayerType::Shape,
-            5 => LayerType::Text,
-            6 => LayerType::Audio,
-            7 => LayerType::VideoPlaceholder,
-            8 => LayerType::ImageSequence,
-            9 => LayerType::Video,
-            10 => LayerType::ImagePlaceholder,
-            11 => LayerType::Guide,
-            12 => LayerType::Adjustment,
-            13 => LayerType::Camera,
-            14 => LayerType::Light,
-            _ => LayerType::Unknown,
+            0 => Self::Precomp,
+            1 => Self::Solid,
+            2 => Self::Image,
+            3 => Self::Null,
+            4 => Self::Shape,
+            5 => Self::Text,
+            6 => Self::Audio,
+            7 => Self::VideoPlaceholder,
+            8 => Self::ImageSequence,
+            9 => Self::Video,
+            10 => Self::ImagePlaceholder,
+            11 => Self::Guide,
+            12 => Self::Adjustment,
+            13 => Self::Camera,
+            14 => Self::Light,
+            _ => Self::Unknown,
         }
     }
 }
@@ -249,11 +249,11 @@ pub enum MatteMode {
 impl From<i32> for MatteMode {
     fn from(value: i32) -> Self {
         match value {
-            1 => MatteMode::Alpha,
-            2 => MatteMode::AlphaInverted,
-            3 => MatteMode::Luma,
-            4 => MatteMode::LumaInverted,
-            _ => MatteMode::None,
+            1 => Self::Alpha,
+            2 => Self::AlphaInverted,
+            3 => Self::Luma,
+            4 => Self::LumaInverted,
+            _ => Self::None,
         }
     }
 }
@@ -278,8 +278,7 @@ impl Layer {
                 let color = model
                     .solid_color
                     .as_ref()
-                    .map(|s| parse_color_string(s))
-                    .unwrap_or(Color::WHITE);
+                    .map_or(Color::WHITE, |s| parse_color_string(s));
                 LayerContent::Solid(SolidContent {
                     color,
                     width: model.solid_width.unwrap_or(100.0),
@@ -306,14 +305,14 @@ impl Layer {
                             font_family: kf.data.font.clone(),
                             fill_color: kf.data.fill_color.as_ref().map(|c| {
                                 Color::from_rgb(
-                                    (c.get(0).copied().unwrap_or(0.0) * 255.0) as u8,
+                                    (c.first().copied().unwrap_or(0.0) * 255.0) as u8,
                                     (c.get(1).copied().unwrap_or(0.0) * 255.0) as u8,
                                     (c.get(2).copied().unwrap_or(0.0) * 255.0) as u8,
                                 )
                             }),
                             stroke_color: kf.data.stroke_color.as_ref().map(|c| {
                                 Color::from_rgb(
-                                    (c.get(0).copied().unwrap_or(0.0) * 255.0) as u8,
+                                    (c.first().copied().unwrap_or(0.0) * 255.0) as u8,
                                     (c.get(1).copied().unwrap_or(0.0) * 255.0) as u8,
                                     (c.get(2).copied().unwrap_or(0.0) * 255.0) as u8,
                                 )
@@ -385,6 +384,7 @@ impl Layer {
     }
 
     /// Check if this layer is visible at a specific frame.
+    #[must_use] 
     pub fn is_visible_at(&self, frame: Scalar) -> bool {
         !self.hidden && frame >= self.in_point && frame < self.out_point
     }
@@ -396,36 +396,41 @@ impl Layer {
     /// precomp's content time is remapped — the precomp layer's own
     /// transform/opacity/masks evaluate at the unadjusted comp frame.
     /// `tm` (if present) overrides the linear `(t - st) / sr` mapping.
+    #[must_use] 
     pub fn precomp_content_frame(&self, frame: Scalar, frame_rate: Scalar) -> Scalar {
         if let Some(ref remap) = self.time_remap {
             let seconds = remap.value_at(frame).as_scalar().unwrap_or(0.0);
             seconds * frame_rate
         } else {
-            let stretch = if self.time_stretch != 0.0 {
-                self.time_stretch
-            } else {
+            let stretch = if self.time_stretch == 0.0 {
                 1.0
+            } else {
+                self.time_stretch
             };
             (frame - self.start_time) / stretch
         }
     }
 
     /// Get the opacity at a specific frame.
+    #[must_use] 
     pub fn opacity_at(&self, frame: Scalar) -> Scalar {
         self.transform.opacity_at(frame)
     }
 
     /// Get the transform matrix at a specific frame.
+    #[must_use] 
     pub fn matrix_at(&self, frame: Scalar) -> skia_rs_core::Matrix {
         self.transform.matrix_at(frame)
     }
 
     /// Check if this layer has masks.
+    #[must_use] 
     pub fn has_masks(&self) -> bool {
         !self.masks.is_empty()
     }
 
     /// Check if this is a matte layer.
+    #[must_use] 
     pub fn is_matte_layer(&self) -> bool {
         self.matte_mode.is_some() && self.matte_mode != Some(MatteMode::None)
     }

@@ -6,11 +6,11 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use std::hint::black_box;
 
 use skia_rs_bench::{
-    canvas_sizes, generate_complex_path, generate_multi_contour_path, generate_simple_path,
-    generate_star, random_points, random_rects, sizes,
+    generate_complex_path, generate_multi_contour_path, generate_simple_path,
+    generate_star, random_points, random_rects,
 };
 use skia_rs_canvas::Surface;
-use skia_rs_core::{Color, Point, Rect};
+use skia_rs_core::{Color, Rect};
 use skia_rs_paint::Paint;
 use skia_rs_path::PathBuilder;
 
@@ -79,7 +79,7 @@ fn bench_path_memory(c: &mut Criterion) {
     // Multi-contour paths
     let configs = [(10, 10), (10, 100), (100, 10), (100, 100)];
     for (contours, segments) in configs {
-        let name = format!("{}contours_{}segs", contours, segments);
+        let name = format!("{contours}contours_{segments}segs");
         group.bench_with_input(
             BenchmarkId::new("multi_contour", &name),
             &(contours, segments),
@@ -95,7 +95,7 @@ fn bench_path_memory(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark PathBuilder incremental growth.
+/// Benchmark `PathBuilder` incremental growth.
 fn bench_pathbuilder_growth(c: &mut Criterion) {
     let mut group = c.benchmark_group("memory/pathbuilder_growth");
 

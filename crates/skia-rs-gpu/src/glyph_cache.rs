@@ -27,6 +27,7 @@ pub struct GlyphKey {
 
 impl GlyphKey {
     /// Create a new glyph key.
+    #[must_use] 
     pub fn new(font_id: u32, glyph_id: u32, size: f32, sub_pixel: Point) -> Self {
         Self {
             font_id,
@@ -39,7 +40,8 @@ impl GlyphKey {
     }
 
     /// Create with flags.
-    pub fn with_flags(mut self, flags: u8) -> Self {
+    #[must_use] 
+    pub const fn with_flags(mut self, flags: u8) -> Self {
         self.flags = flags;
         self
     }
@@ -77,6 +79,7 @@ pub struct GlyphCacheStats {
 
 impl GlyphCacheStats {
     /// Calculate hit rate.
+    #[must_use] 
     pub fn hit_rate(&self) -> f64 {
         let total = self.hits + self.misses;
         if total == 0 {
@@ -130,6 +133,7 @@ pub struct GlyphCache {
 
 impl GlyphCache {
     /// Create a new glyph cache.
+    #[must_use] 
     pub fn new(config: GlyphCacheConfig) -> Self {
         let atlas = TextureAtlas::new(config.atlas_config.clone());
         Self {
@@ -142,17 +146,20 @@ impl GlyphCache {
     }
 
     /// Get cache configuration.
-    pub fn config(&self) -> &GlyphCacheConfig {
+    #[must_use] 
+    pub const fn config(&self) -> &GlyphCacheConfig {
         &self.config
     }
 
     /// Get cache statistics.
-    pub fn stats(&self) -> &GlyphCacheStats {
+    #[must_use] 
+    pub const fn stats(&self) -> &GlyphCacheStats {
         &self.stats
     }
 
     /// Get the glyph atlas.
-    pub fn atlas(&self) -> &TextureAtlas {
+    #[must_use] 
+    pub const fn atlas(&self) -> &TextureAtlas {
         &self.atlas
     }
 
@@ -173,6 +180,7 @@ impl GlyphCache {
     }
 
     /// Check if a glyph is cached without updating LRU.
+    #[must_use] 
     pub fn contains(&self, key: &GlyphKey) -> bool {
         self.cache.contains_key(key)
     }
@@ -303,7 +311,8 @@ impl GlyphCache {
     /// Current atlas generation. Emit it into a [`GlyphBatch`] and revalidate
     /// batches against it before drawing (a reset or compaction bumps it,
     /// invalidating outstanding UV coordinates).
-    pub fn atlas_generation(&self) -> u64 {
+    #[must_use] 
+    pub const fn atlas_generation(&self) -> u64 {
         self.atlas.generation()
     }
 
@@ -316,11 +325,13 @@ impl GlyphCache {
     }
 
     /// Get number of cached glyphs.
+    #[must_use] 
     pub fn len(&self) -> usize {
         self.cache.len()
     }
 
     /// Check if cache is empty.
+    #[must_use] 
     pub fn is_empty(&self) -> bool {
         self.cache.is_empty()
     }
@@ -368,7 +379,8 @@ pub struct GlyphInstance {
 
 impl GlyphBatch {
     /// Create a new empty batch.
-    pub fn new(atlas_generation: u64) -> Self {
+    #[must_use] 
+    pub const fn new(atlas_generation: u64) -> Self {
         Self {
             atlas_generation,
             instances: Vec::new(),
@@ -395,11 +407,13 @@ impl GlyphBatch {
     }
 
     /// Check if batch is empty.
+    #[must_use] 
     pub fn is_empty(&self) -> bool {
         self.instances.is_empty()
     }
 
     /// Get number of glyphs in batch.
+    #[must_use] 
     pub fn len(&self) -> usize {
         self.instances.len()
     }
@@ -417,7 +431,7 @@ impl GlyphBatch {
     /// glyphs. A [`BatchValidity::Stale`] result means the batch must be
     /// rebuilt from the (repopulated) cache.
     #[must_use]
-    pub fn validate(&self, current_generation: u64) -> BatchValidity {
+    pub const fn validate(&self, current_generation: u64) -> BatchValidity {
         if self.atlas_generation == current_generation {
             BatchValidity::Current
         } else {

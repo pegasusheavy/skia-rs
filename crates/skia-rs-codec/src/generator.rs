@@ -43,7 +43,7 @@ pub enum GeneratorError {
 /// `ImageGenerator` provides a way to generate image pixels on demand.
 /// This enables lazy image loading and procedural image generation.
 ///
-/// # Implementing ImageGenerator
+/// # Implementing `ImageGenerator`
 ///
 /// To implement a custom generator:
 /// 1. Implement `info()` to return the image dimensions and format
@@ -284,6 +284,7 @@ pub struct SolidColorGenerator {
 
 impl SolidColorGenerator {
     /// Create a new solid color generator.
+    #[must_use] 
     pub fn new(width: i32, height: i32, color: [u8; 4]) -> Self {
         Self {
             info: ImageInfo::new(width, height, ColorType::Rgba8888, AlphaType::Premul),
@@ -340,6 +341,7 @@ impl EncodedImageGenerator {
     /// Create a generator from encoded data.
     ///
     /// Returns `None` if the data cannot be decoded.
+    #[must_use] 
     pub fn new(data: Vec<u8>) -> Option<Self> {
         Self::from_shared(data.into())
     }
@@ -347,6 +349,7 @@ impl EncodedImageGenerator {
     /// Create a generator from shared encoded data.
     ///
     /// Decodes the payload up front to determine its native format.
+    #[must_use] 
     pub fn from_shared(data: Arc<[u8]>) -> Option<Self> {
         let decoded = crate::decode_image(&data).ok()?;
 
@@ -359,7 +362,8 @@ impl EncodedImageGenerator {
     }
 
     /// Get a reference to the cached decoded image.
-    pub fn decoded_image(&self) -> &crate::Image {
+    #[must_use] 
+    pub const fn decoded_image(&self) -> &crate::Image {
         &self.decoded
     }
 }
@@ -439,13 +443,10 @@ impl ImageGenerator for EncodedImageGenerator {
         // (src, dst) pairs instead.
         matches!(
             (self.info.color_type, info.color_type),
-            (ColorType::Rgba8888, ColorType::Rgba8888)
-                | (ColorType::Rgba8888, ColorType::Bgra8888)
-                | (ColorType::Bgra8888, ColorType::Rgba8888)
-                | (ColorType::Bgra8888, ColorType::Bgra8888)
-                | (ColorType::Gray8, ColorType::Rgba8888)
-                | (ColorType::Alpha8, ColorType::Rgba8888)
-                | (ColorType::Rgba8888, ColorType::Gray8)
+            (ColorType::Rgba8888 | ColorType::Bgra8888 | ColorType::Gray8 |
+ColorType::Alpha8, ColorType::Rgba8888) |
+(ColorType::Rgba8888 | ColorType::Bgra8888, ColorType::Bgra8888) |
+(ColorType::Rgba8888, ColorType::Gray8)
         )
     }
 }
@@ -512,9 +513,9 @@ mod tests {
         let mut dst = [0u8; 4];
         convert_pixels(&src_info, &src, 4, &dst_info, &mut dst, 4).unwrap();
         // Allow off-by-one from integer rounding.
-        assert!((dst[0] as i32 - 50).abs() <= 1);
-        assert!((dst[1] as i32 - 100).abs() <= 1);
-        assert!((dst[2] as i32 - 150).abs() <= 1);
+        assert!((i32::from(dst[0]) - 50).abs() <= 1);
+        assert!((i32::from(dst[1]) - 100).abs() <= 1);
+        assert!((i32::from(dst[2]) - 150).abs() <= 1);
         assert_eq!(dst[3], 128);
     }
 

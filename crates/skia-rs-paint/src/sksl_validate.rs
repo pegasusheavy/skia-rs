@@ -1,4 +1,4 @@
-//! Semantic validation for SkSL programs.
+//! Semantic validation for `SkSL` programs.
 //!
 //! The [`crate::sksl`] module produces a syntactic AST, nothing more.
 //! That AST will happily describe programs that reference undeclared
@@ -29,7 +29,7 @@
 //!   result as `Float`). Adding a real struct-field check requires
 //!   threading [`crate::sksl::StructDecl`] information through the
 //!   checker and is left for a future pass.
-//! - **Overload resolution** — SkSL allows multiple functions with the
+//! - **Overload resolution** — `SkSL` allows multiple functions with the
 //!   same name but different parameter types. The parser does not
 //!   support this (the [`SkslProgram::functions`] vector is a flat
 //!   name->decl map), so the validator doesn't either. Built-ins with
@@ -38,7 +38,7 @@
 //! - **Implicit numeric conversions beyond equal types** — `float` and
 //!   `int` are not silently interchanged. Code that mixes them should
 //!   wrap the value explicitly (`float(i)` or `int(f)`). This matches
-//!   strict SkSL semantics and keeps the checker simple.
+//!   strict `SkSL` semantics and keeps the checker simple.
 //! - **Array types and indexing correctness** — arrays parse, but
 //!   indexing an array currently yields the array's element type
 //!   without bounds checking.
@@ -51,8 +51,8 @@
 use crate::sksl::{BinaryOp, Expr, FnDecl, SkslProgram, SkslType, Stmt, UnaryOp};
 use std::collections::HashMap;
 
-/// A semantic error discovered while validating an SkSL program.
-#[derive(Debug, Clone, PartialEq)]
+/// A semantic error discovered while validating an `SkSL` program.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
     /// A name was referenced that is not a local, parameter, uniform,
     /// or global function.
@@ -113,51 +113,48 @@ pub enum ValidationError {
 impl std::fmt::Display for ValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ValidationError::UndeclaredVariable(n) => {
-                write!(f, "undeclared variable '{}'", n)
+            Self::UndeclaredVariable(n) => {
+                write!(f, "undeclared variable '{n}'")
             }
-            ValidationError::TypeMismatch {
+            Self::TypeMismatch {
                 expected,
                 actual,
                 context,
             } => write!(
                 f,
-                "type mismatch in {}: expected {}, got {}",
-                context, expected, actual
+                "type mismatch in {context}: expected {expected}, got {actual}"
             ),
-            ValidationError::ArityMismatch {
+            Self::ArityMismatch {
                 function,
                 expected,
                 actual,
             } => write!(
                 f,
-                "function '{}' takes {} arg(s), got {}",
-                function, expected, actual
+                "function '{function}' takes {expected} arg(s), got {actual}"
             ),
-            ValidationError::ReturnTypeMismatch {
+            Self::ReturnTypeMismatch {
                 function,
                 expected,
                 actual,
             } => write!(
                 f,
-                "function '{}' declared return type {} but returns {}",
-                function, expected, actual
+                "function '{function}' declared return type {expected} but returns {actual}"
             ),
-            ValidationError::MissingReturn(n) => {
-                write!(f, "function '{}' is missing a return statement", n)
+            Self::MissingReturn(n) => {
+                write!(f, "function '{n}' is missing a return statement")
             }
-            ValidationError::InvalidOperator { op, lhs, rhs } => {
+            Self::InvalidOperator { op, lhs, rhs } => {
                 if rhs.is_empty() {
-                    write!(f, "invalid operator '{}' on {}", op, lhs)
+                    write!(f, "invalid operator '{op}' on {lhs}")
                 } else {
-                    write!(f, "invalid operator '{}' between {} and {}", op, lhs, rhs)
+                    write!(f, "invalid operator '{op}' between {lhs} and {rhs}")
                 }
             }
-            ValidationError::InvalidSwizzle { field, base } => {
-                write!(f, "invalid swizzle '.{}' on {}", field, base)
+            Self::InvalidSwizzle { field, base } => {
+                write!(f, "invalid swizzle '.{field}' on {base}")
             }
-            ValidationError::NotAssignable(ctx) => {
-                write!(f, "expression is not assignable: {}", ctx)
+            Self::NotAssignable(ctx) => {
+                write!(f, "expression is not assignable: {ctx}")
             }
         }
     }
@@ -278,7 +275,7 @@ impl<'a> Validator<'a> {
                         return Err(ValidationError::TypeMismatch {
                             expected: ty.to_string(),
                             actual: init_ty.to_string(),
-                            context: format!("variable '{}' initializer", name),
+                            context: format!("variable '{name}' initializer"),
                         });
                     }
                 }
@@ -512,7 +509,7 @@ impl<'a> Validator<'a> {
 
             Expr::Assign { target, value } => {
                 if !is_assignable(target) {
-                    return Err(ValidationError::NotAssignable(format!("{:?}", target)));
+                    return Err(ValidationError::NotAssignable(format!("{target:?}")));
                 }
                 let tt = self.validate_expr(target)?;
                 let vt = self.validate_expr(value)?;
@@ -528,7 +525,7 @@ impl<'a> Validator<'a> {
 
             Expr::CompoundAssign { target, op, value } => {
                 if !is_assignable(target) {
-                    return Err(ValidationError::NotAssignable(format!("{:?}", target)));
+                    return Err(ValidationError::NotAssignable(format!("{target:?}")));
                 }
                 let tt = self.validate_expr(target)?;
                 let vt = self.validate_expr(value)?;
@@ -544,7 +541,7 @@ impl<'a> Validator<'a> {
 
             Expr::PostIncDec { expr, .. } | Expr::PreIncDec { expr, .. } => {
                 if !is_assignable(expr) {
-                    return Err(ValidationError::NotAssignable(format!("{:?}", expr)));
+                    return Err(ValidationError::NotAssignable(format!("{expr:?}")));
                 }
                 let t = self.validate_expr(expr)?;
                 if !is_numeric(&t) {
@@ -576,7 +573,7 @@ impl<'a> Validator<'a> {
                     return Err(ValidationError::TypeMismatch {
                         expected: expected.to_string(),
                         actual: actual.to_string(),
-                        context: format!("argument to '{}'", name),
+                        context: format!("argument to '{name}'"),
                     });
                 }
             }
@@ -628,8 +625,8 @@ impl<'a> Validator<'a> {
                 .apply(&arg_types)
                 .ok_or_else(|| ValidationError::InvalidOperator {
                     op: name.to_string(),
-                    lhs: arg_types.first().map(|t| t.to_string()).unwrap_or_default(),
-                    rhs: arg_types.get(1).map(|t| t.to_string()).unwrap_or_default(),
+                    lhs: arg_types.first().map(std::string::ToString::to_string).unwrap_or_default(),
+                    rhs: arg_types.get(1).map(std::string::ToString::to_string).unwrap_or_default(),
                 });
         }
 
@@ -708,7 +705,7 @@ fn types_compatible(expected: &SkslType, actual: &SkslType) -> bool {
     )
 }
 
-fn is_numeric(ty: &SkslType) -> bool {
+const fn is_numeric(ty: &SkslType) -> bool {
     matches!(
         ty,
         SkslType::Int
@@ -726,14 +723,14 @@ fn is_numeric(ty: &SkslType) -> bool {
     )
 }
 
-fn is_integer(ty: &SkslType) -> bool {
+const fn is_integer(ty: &SkslType) -> bool {
     matches!(ty, SkslType::Int)
 }
 
 /// Binary op result typing. Returns None when the operator/types pair
 /// is invalid (e.g. `bool + bool`).
 fn result_type_for_binop(op: BinaryOp, lhs: &SkslType, rhs: &SkslType) -> Option<SkslType> {
-    use BinaryOp::*;
+    use BinaryOp::{Add, Sub, Mul, Div, Mod, Eq, NotEq, Lt, LtEq, Gt, GtEq, And, Or, BitAnd, BitOr, BitXor, Shl, Shr};
     match op {
         Add | Sub | Mul | Div | Mod => {
             if !is_numeric(lhs) || !is_numeric(rhs) {
@@ -819,11 +816,11 @@ fn result_type_for_unop(op: UnaryOp, t: &SkslType) -> Option<SkslType> {
     }
 }
 
-fn is_scalar_numeric(ty: &SkslType) -> bool {
+const fn is_scalar_numeric(ty: &SkslType) -> bool {
     matches!(ty, SkslType::Int | SkslType::Float | SkslType::Half)
 }
 
-fn is_vector_or_matrix(ty: &SkslType) -> bool {
+const fn is_vector_or_matrix(ty: &SkslType) -> bool {
     matches!(
         ty,
         SkslType::Vec2
@@ -847,17 +844,17 @@ enum BuiltinArity {
 }
 
 impl BuiltinArity {
-    fn accepts(self, n: usize) -> bool {
+    const fn accepts(self, n: usize) -> bool {
         match self {
-            BuiltinArity::Exact(k) => n == k,
-            BuiltinArity::Range(lo, hi) => n >= lo && n <= hi,
+            Self::Exact(k) => n == k,
+            Self::Range(lo, hi) => n >= lo && n <= hi,
         }
     }
 
-    fn canonical(self) -> usize {
+    const fn canonical(self) -> usize {
         match self {
-            BuiltinArity::Exact(k) => k,
-            BuiltinArity::Range(_, hi) => hi,
+            Self::Exact(k) => k,
+            Self::Range(_, hi) => hi,
         }
     }
 }
@@ -893,12 +890,12 @@ enum SkslTypeTag {
 impl BuiltinReturn {
     fn apply(self, args: &[SkslType]) -> Option<SkslType> {
         match self {
-            BuiltinReturn::Fixed(tag) => Some(tag_to_type(tag)),
-            BuiltinReturn::SameAsFirst => args
+            Self::Fixed(tag) => Some(tag_to_type(tag)),
+            Self::SameAsFirst => args
                 .first()
                 .cloned()
                 .map(|t| if is_numeric(&t) { t } else { SkslType::Float }),
-            BuiltinReturn::ScalarFromVec => {
+            Self::ScalarFromVec => {
                 let first = args.first()?;
                 if is_numeric(first) {
                     Some(SkslType::Float)
@@ -910,7 +907,7 @@ impl BuiltinReturn {
     }
 }
 
-fn tag_to_type(tag: SkslTypeTag) -> SkslType {
+const fn tag_to_type(tag: SkslTypeTag) -> SkslType {
     match tag {
         SkslTypeTag::Float => SkslType::Float,
         SkslTypeTag::Vec3 => SkslType::Vec3,
@@ -924,8 +921,8 @@ fn tag_to_type(tag: SkslTypeTag) -> SkslType {
 /// few type coercion helpers). Each entry states the accepted arity
 /// and a rule for computing the return type.
 fn builtin_signature(name: &str) -> Option<(BuiltinArity, BuiltinReturn)> {
-    use BuiltinArity::*;
-    use BuiltinReturn::*;
+    use BuiltinArity::{Exact, Range};
+    use BuiltinReturn::{SameAsFirst, ScalarFromVec, Fixed};
     Some(match name {
         // Component-wise scalar/vector ops: result shape == arg shape.
         "abs" | "sign" | "floor" | "ceil" | "fract" | "sin" | "cos" | "tan" | "asin" | "acos"

@@ -4,7 +4,6 @@
 //! and resolving multisampled surfaces.
 
 use crate::TextureFormat;
-use skia_rs_core::Scalar;
 
 /// MSAA sample count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -24,58 +23,63 @@ pub enum SampleCount {
 
 impl SampleCount {
     /// Get the numeric sample count.
-    pub fn count(&self) -> u32 {
+    #[must_use] 
+    pub const fn count(&self) -> u32 {
         *self as u32
     }
 
     /// Check if MSAA is enabled (sample count > 1).
+    #[must_use] 
     pub fn is_msaa(&self) -> bool {
-        *self != SampleCount::S1
+        *self != Self::S1
     }
 
     /// Get the next lower sample count.
-    pub fn lower(&self) -> Self {
+    #[must_use] 
+    pub const fn lower(&self) -> Self {
         match self {
-            SampleCount::S16 => SampleCount::S8,
-            SampleCount::S8 => SampleCount::S4,
-            SampleCount::S4 => SampleCount::S2,
-            SampleCount::S2 | SampleCount::S1 => SampleCount::S1,
+            Self::S16 => Self::S8,
+            Self::S8 => Self::S4,
+            Self::S4 => Self::S2,
+            Self::S2 | Self::S1 => Self::S1,
         }
     }
 
     /// Get the next higher sample count.
-    pub fn higher(&self) -> Self {
+    #[must_use] 
+    pub const fn higher(&self) -> Self {
         match self {
-            SampleCount::S1 => SampleCount::S2,
-            SampleCount::S2 => SampleCount::S4,
-            SampleCount::S4 => SampleCount::S8,
-            SampleCount::S8 | SampleCount::S16 => SampleCount::S16,
+            Self::S1 => Self::S2,
+            Self::S2 => Self::S4,
+            Self::S4 => Self::S8,
+            Self::S8 | Self::S16 => Self::S16,
         }
     }
 
     /// Create from a numeric value.
-    pub fn from_count(count: u32) -> Self {
+    #[must_use] 
+    pub const fn from_count(count: u32) -> Self {
         match count {
-            1 => SampleCount::S1,
-            2 => SampleCount::S2,
-            4 => SampleCount::S4,
-            8 => SampleCount::S8,
-            16 => SampleCount::S16,
-            _ if count > 8 => SampleCount::S16,
-            _ if count > 4 => SampleCount::S8,
-            _ if count > 2 => SampleCount::S4,
-            _ if count > 1 => SampleCount::S2,
-            _ => SampleCount::S1,
+            1 => Self::S1,
+            2 => Self::S2,
+            4 => Self::S4,
+            8 => Self::S8,
+            16 => Self::S16,
+            _ if count > 8 => Self::S16,
+            _ if count > 4 => Self::S8,
+            _ if count > 2 => Self::S4,
+            _ if count > 1 => Self::S2,
+            _ => Self::S1,
         }
     }
 
     /// All sample counts from lowest to highest.
-    pub const ALL: [SampleCount; 5] = [
-        SampleCount::S1,
-        SampleCount::S2,
-        SampleCount::S4,
-        SampleCount::S8,
-        SampleCount::S16,
+    pub const ALL: [Self; 5] = [
+        Self::S1,
+        Self::S2,
+        Self::S4,
+        Self::S8,
+        Self::S16,
     ];
 }
 
@@ -96,7 +100,8 @@ pub struct MsaaConfig {
 
 impl MsaaConfig {
     /// Create a new MSAA configuration.
-    pub fn new(
+    #[must_use] 
+    pub const fn new(
         sample_count: SampleCount,
         color_format: TextureFormat,
         width: u32,
@@ -112,22 +117,24 @@ impl MsaaConfig {
     }
 
     /// Add depth/stencil buffer.
-    pub fn with_depth_stencil(mut self, format: TextureFormat) -> Self {
+    #[must_use] 
+    pub const fn with_depth_stencil(mut self, format: TextureFormat) -> Self {
         self.depth_stencil_format = Some(format);
         self
     }
 
     /// Calculate memory usage estimate.
+    #[must_use] 
     pub fn memory_estimate(&self) -> u64 {
-        let color_bytes = self.color_format.bytes_per_pixel() as u64;
-        let samples = self.sample_count.count() as u64;
-        let pixels = self.width as u64 * self.height as u64;
+        let color_bytes = u64::from(self.color_format.bytes_per_pixel());
+        let samples = u64::from(self.sample_count.count());
+        let pixels = u64::from(self.width) * u64::from(self.height);
 
         let color_size = pixels * color_bytes * samples;
 
         let depth_size = self
             .depth_stencil_format
-            .map_or(0, |fmt| pixels * fmt.bytes_per_pixel() as u64 * samples);
+            .map_or(0, |fmt| pixels * u64::from(fmt.bytes_per_pixel()) * samples);
 
         color_size + depth_size
     }
@@ -228,7 +235,7 @@ impl MsaaQuality {
 
 /// Sample positions for various MSAA modes.
 pub mod sample_positions {
-    use super::*;
+    use super::SampleCount;
 
     /// Standard 2x MSAA sample positions.
     pub const MSAA_2X: [(f32, f32); 2] = [(0.25, 0.25), (0.75, 0.75)];
@@ -254,7 +261,8 @@ pub mod sample_positions {
     ];
 
     /// Get sample positions for a sample count.
-    pub fn get_positions(sample_count: SampleCount) -> &'static [(f32, f32)] {
+    #[must_use] 
+    pub const fn get_positions(sample_count: SampleCount) -> &'static [(f32, f32)] {
         match sample_count {
             SampleCount::S1 => &[(0.5, 0.5)],
             SampleCount::S2 => &MSAA_2X,
@@ -274,21 +282,25 @@ impl CoverageMask {
     pub const NONE: Self = Self(0);
 
     /// All samples covered (for given sample count).
-    pub fn all(sample_count: SampleCount) -> Self {
+    #[must_use] 
+    pub const fn all(sample_count: SampleCount) -> Self {
         Self((1 << sample_count.count()) - 1)
     }
 
     /// Check if a specific sample is covered.
-    pub fn is_covered(&self, sample: u32) -> bool {
+    #[must_use] 
+    pub const fn is_covered(&self, sample: u32) -> bool {
         (self.0 & (1 << sample)) != 0
     }
 
     /// Count covered samples.
-    pub fn count(&self) -> u32 {
+    #[must_use] 
+    pub const fn count(&self) -> u32 {
         self.0.count_ones()
     }
 
     /// Calculate coverage percentage.
+    #[must_use] 
     pub fn coverage(&self, sample_count: SampleCount) -> f32 {
         self.count() as f32 / sample_count.count() as f32
     }

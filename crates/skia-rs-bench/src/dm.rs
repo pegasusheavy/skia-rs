@@ -23,7 +23,6 @@
 //! runner.run();
 //! ```
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -145,13 +144,14 @@ impl Default for RasterRenderer {
 
 impl RasterRenderer {
     /// Create a new raster renderer
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self
     }
 }
 
 impl Renderer for RasterRenderer {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "raster"
     }
 
@@ -193,6 +193,7 @@ impl Gm {
     }
 
     /// Add a tag
+    #[must_use] 
     pub fn with_tag(mut self, tag: &str) -> Self {
         self.tags.push(tag.to_string());
         self
@@ -213,7 +214,7 @@ impl Source for Gm {
     }
 
     fn tags(&self) -> Vec<&str> {
-        self.tags.iter().map(|s| s.as_str()).collect()
+        self.tags.iter().map(std::string::String::as_str).collect()
     }
 }
 
@@ -222,6 +223,7 @@ pub struct StandardGms;
 
 impl StandardGms {
     /// Get all standard GMs
+    #[must_use] 
     pub fn all() -> Vec<Arc<dyn Source>> {
         vec![
             Arc::new(Self::simple_rect()),
@@ -238,6 +240,7 @@ impl StandardGms {
     }
 
     /// Simple rectangle GM
+    #[must_use] 
     pub fn simple_rect() -> Gm {
         Gm::new("simple_rect", 200, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -251,6 +254,7 @@ impl StandardGms {
     }
 
     /// Circles GM
+    #[must_use] 
     pub fn circles() -> Gm {
         Gm::new("circles", 300, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -262,7 +266,7 @@ impl StandardGms {
                 paint.set_color32(*color);
                 paint.set_anti_alias(true);
 
-                let cx = 50.0 + i as f32 * 100.0;
+                let cx = (i as f32).mul_add(100.0, 50.0);
                 canvas.draw_circle(Point::new(cx, 100.0), 40.0, &paint);
             }
         })
@@ -270,6 +274,7 @@ impl StandardGms {
     }
 
     /// Paths GM
+    #[must_use] 
     pub fn paths() -> Gm {
         Gm::new("paths", 200, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -311,6 +316,7 @@ impl StandardGms {
     }
 
     /// Gradients GM
+    #[must_use] 
     pub fn gradients() -> Gm {
         Gm::new("gradients", 300, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -326,7 +332,7 @@ impl StandardGms {
                 let b = (255.0 * t) as u8;
                 paint.set_color32(Color::from_argb(255, r, 0, b));
                 canvas.draw_rect(
-                    &Rect::from_xywh(10.0 + i as f32 * 1.3, 20.0, 2.0, 60.0),
+                    &Rect::from_xywh((i as f32).mul_add(1.3, 10.0), 20.0, 2.0, 60.0),
                     &paint,
                 );
             }
@@ -343,6 +349,7 @@ impl StandardGms {
     }
 
     /// Transforms GM
+    #[must_use] 
     pub fn transforms() -> Gm {
         Gm::new("transforms", 300, 300, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -363,6 +370,7 @@ impl StandardGms {
     }
 
     /// Clipping GM
+    #[must_use] 
     pub fn clipping() -> Gm {
         Gm::new("clipping", 200, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -381,6 +389,7 @@ impl StandardGms {
     }
 
     /// Blend modes GM
+    #[must_use] 
     pub fn blend_modes() -> Gm {
         Gm::new("blend_modes", 300, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -405,6 +414,7 @@ impl StandardGms {
     }
 
     /// Stroke styles GM
+    #[must_use] 
     pub fn stroke_styles() -> Gm {
         Gm::new("stroke_styles", 300, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -417,7 +427,7 @@ impl StandardGms {
             // Different stroke widths
             for (i, width) in [1.0, 2.0, 4.0, 8.0].iter().enumerate() {
                 paint.set_stroke_width(*width);
-                let y = 30.0 + i as f32 * 40.0;
+                let y = (i as f32).mul_add(40.0, 30.0);
                 canvas.draw_rect(&Rect::from_xywh(20.0, y, 260.0, 0.0), &paint);
             }
         })
@@ -425,6 +435,7 @@ impl StandardGms {
     }
 
     /// Antialiasing GM
+    #[must_use] 
     pub fn antialiasing() -> Gm {
         Gm::new("antialiasing", 200, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -456,6 +467,7 @@ impl StandardGms {
     }
 
     /// Alpha blending GM
+    #[must_use] 
     pub fn alpha_blending() -> Gm {
         Gm::new("alpha_blending", 200, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -497,7 +509,7 @@ impl PngSink {
 }
 
 impl Sink for PngSink {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "png"
     }
 
@@ -512,7 +524,7 @@ impl Sink for PngSink {
 
         // Create output directory
         std::fs::create_dir_all(&self.output_dir).map_err(|e| SinkError {
-            message: format!("Failed to create output directory: {}", e),
+            message: format!("Failed to create output directory: {e}"),
         })?;
 
         let filename = format!("{}_{}.png", result.source, result.renderer);
@@ -520,7 +532,7 @@ impl Sink for PngSink {
 
         // Write PNG (simplified - would use actual PNG encoder)
         std::fs::write(&path, pixels).map_err(|e| SinkError {
-            message: format!("Failed to write PNG: {}", e),
+            message: format!("Failed to write PNG: {e}"),
         })?;
 
         Ok(())
@@ -564,7 +576,7 @@ impl ComparisonSink {
 }
 
 impl Sink for ComparisonSink {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "comparison"
     }
 
@@ -589,7 +601,7 @@ impl Sink for ComparisonSink {
             let total = pixels.len().min(ref_pixels.len());
 
             for i in 0..total {
-                let diff = (pixels[i] as i32 - ref_pixels[i] as i32).unsigned_abs();
+                let diff = (i32::from(pixels[i]) - i32::from(ref_pixels[i])).unsigned_abs();
                 if diff > (self.tolerance * 255.0) as u32 {
                     diff_count += 1;
                 }
@@ -639,6 +651,7 @@ impl Default for DmRunner {
 
 impl DmRunner {
     /// Create a new DM runner
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             sources: Vec::new(),
@@ -675,11 +688,12 @@ impl DmRunner {
     }
 
     /// Enable parallel execution
-    pub fn set_parallel(&mut self, parallel: bool) {
+    pub const fn set_parallel(&mut self, parallel: bool) {
         self.parallel = parallel;
     }
 
     /// Run all tests
+    #[must_use] 
     pub fn run(&self) -> DmReport {
         let mut report = DmReport::new();
         let start = Instant::now();
@@ -803,6 +817,7 @@ impl DmReport {
     }
 
     /// Generate a summary string
+    #[must_use] 
     pub fn summary(&self) -> String {
         format!(
             "DM Report: {} total, {} passed, {} failed, {} skipped, {} crashed in {:?}",
@@ -816,7 +831,8 @@ impl DmReport {
     }
 
     /// Check if all tests passed
-    pub fn all_passed(&self) -> bool {
+    #[must_use] 
+    pub const fn all_passed(&self) -> bool {
         self.stats.failed == 0 && self.stats.crashed == 0
     }
 }

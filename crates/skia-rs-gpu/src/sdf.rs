@@ -3,7 +3,7 @@
 //! This module provides utilities for generating and rendering SDFs,
 //! which enable resolution-independent rendering of text and vector shapes.
 
-use skia_rs_core::{Point, Rect, Scalar};
+use skia_rs_core::{Point, Rect};
 
 /// SDF generation configuration.
 #[derive(Debug, Clone)]
@@ -31,7 +31,8 @@ impl Default for SdfConfig {
 
 impl SdfConfig {
     /// Create a configuration for high-resolution SDF.
-    pub fn high_res() -> Self {
+    #[must_use] 
+    pub const fn high_res() -> Self {
         Self {
             size: 128,
             padding: 8,
@@ -41,7 +42,8 @@ impl SdfConfig {
     }
 
     /// Create a configuration for compact SDF.
-    pub fn compact() -> Self {
+    #[must_use] 
+    pub const fn compact() -> Self {
         Self {
             size: 32,
             padding: 2,
@@ -77,6 +79,7 @@ impl Default for SdfRenderParams {
 
 impl SdfRenderParams {
     /// Create parameters for crisp rendering.
+    #[must_use] 
     pub fn crisp(spread: f32) -> Self {
         Self {
             smoothing: 0.1 / spread,
@@ -87,6 +90,7 @@ impl SdfRenderParams {
     }
 
     /// Create parameters for soft rendering.
+    #[must_use] 
     pub fn soft(spread: f32) -> Self {
         Self {
             smoothing: 0.5 / spread,
@@ -97,6 +101,7 @@ impl SdfRenderParams {
     }
 
     /// Create parameters with outline.
+    #[must_use] 
     pub fn with_outline(spread: f32, outline_width: f32) -> Self {
         Self {
             smoothing: 0.25 / spread,
@@ -118,6 +123,7 @@ impl SdfRenderParams {
 /// For a 256×256 mask with spread 16 the old implementation touched ~17M
 /// pixels per direction (quadratic in spread). The new implementation
 /// touches 64k pixels per pass regardless of spread.
+#[must_use] 
 pub fn generate_sdf_from_mask(mask: &[u8], width: u32, height: u32, spread: f32) -> Vec<f32> {
     let w = width as usize;
     let h = height as usize;
@@ -224,14 +230,11 @@ fn distance_transform_1d(f: &mut [f32]) {
 
     // Find first non-infinite index; if the entire input is infinite, the
     // result is also infinite (no source pixel anywhere).
-    let first_finite = match input.iter().position(|&v| v < big) {
-        Some(i) => i,
-        None => {
-            for v in f.iter_mut() {
-                *v = big;
-            }
-            return;
+    let first_finite = if let Some(i) = input.iter().position(|&v| v < big) { i } else {
+        for v in f.iter_mut() {
+            *v = big;
         }
+        return;
     };
 
     // Indices of parabolas in the lower envelope, and the boundaries
@@ -286,7 +289,7 @@ fn distance_transform_1d(f: &mut [f32]) {
             f[q] = big;
         } else {
             let d = q as f32 - p as f32;
-            f[q] = d * d + fp;
+            f[q] = d.mul_add(d, fp);
         }
     }
 }
@@ -299,6 +302,7 @@ fn distance_transform_1d(f: &mut [f32]) {
 /// signed distance in this crate's convention) maps above 128. The positive
 /// side is scaled by 127/128 to avoid overflowing 255, and the byte is
 /// rounded to nearest.
+#[must_use] 
 pub fn sdf_to_texture(sdf: &[f32], spread: f32) -> Vec<u8> {
     let mag = spread.max(1e-6);
     sdf.iter()
@@ -313,6 +317,7 @@ pub fn sdf_to_texture(sdf: &[f32], spread: f32) -> Vec<u8> {
 }
 
 /// Sample SDF at a point with bilinear filtering.
+#[must_use] 
 pub fn sample_sdf_bilinear(sdf: &[f32], width: u32, height: u32, x: f32, y: f32) -> f32 {
     let x0 = (x.floor() as i32).clamp(0, width as i32 - 1) as u32;
     let y0 = (y.floor() as i32).clamp(0, height as i32 - 1) as u32;
@@ -327,13 +332,14 @@ pub fn sample_sdf_bilinear(sdf: &[f32], width: u32, height: u32, x: f32, y: f32)
     let d01 = sdf[(y1 * width + x0) as usize];
     let d11 = sdf[(y1 * width + x1) as usize];
 
-    let d0 = d00 * (1.0 - fx) + d10 * fx;
-    let d1 = d01 * (1.0 - fx) + d11 * fx;
+    let d0 = d00.mul_add(1.0 - fx, d10 * fx);
+    let d1 = d01.mul_add(1.0 - fx, d11 * fx);
 
     d0 * (1.0 - fy) + d1 * fy
 }
 
 /// Generate SDF for a circle.
+#[must_use] 
 pub fn generate_circle_sdf(size: u32, radius: f32) -> Vec<f32> {
     let mut sdf = Vec::with_capacity((size * size) as usize);
     let center = size as f32 * 0.5;
@@ -342,7 +348,7 @@ pub fn generate_circle_sdf(size: u32, radius: f32) -> Vec<f32> {
         for x in 0..size {
             let dx = x as f32 + 0.5 - center;
             let dy = y as f32 + 0.5 - center;
-            let dist = (dx * dx + dy * dy).sqrt() - radius;
+            let dist = dx.hypot(dy) - radius;
             sdf.push(dist);
         }
     }
@@ -351,6 +357,7 @@ pub fn generate_circle_sdf(size: u32, radius: f32) -> Vec<f32> {
 }
 
 /// Generate SDF for a rounded rectangle.
+#[must_use] 
 pub fn generate_rounded_rect_sdf(size: u32, rect: Rect, radius: f32) -> Vec<f32> {
     let mut sdf = Vec::with_capacity((size * size) as usize);
 
@@ -373,13 +380,13 @@ fn sdf_rounded_rect(x: f32, y: f32, rect: &Rect, radius: f32) -> f32 {
     let center = rect.center();
     let cx = center.x;
     let cy = center.y;
-    let hw = rect.width() * 0.5 - radius;
-    let hh = rect.height() * 0.5 - radius;
+    let hw = rect.width().mul_add(0.5, -radius);
+    let hh = rect.height().mul_add(0.5, -radius);
 
     let dx = (x - cx).abs() - hw;
     let dy = (y - cy).abs() - hh;
 
-    let outside_dist = (dx.max(0.0).powi(2) + dy.max(0.0).powi(2)).sqrt();
+    let outside_dist = dx.max(0.0).hypot(dy.max(0.0));
     let inside_dist = dx.max(dy).min(0.0);
 
     outside_dist + inside_dist - radius
@@ -402,6 +409,7 @@ pub struct MsdfData {
 
 impl MsdfData {
     /// Create empty MSDF data.
+    #[must_use] 
     pub fn new(width: u32, height: u32) -> Self {
         let size = (width * height) as usize;
         Self {
@@ -414,6 +422,7 @@ impl MsdfData {
     }
 
     /// Convert to RGB texture data.
+    #[must_use] 
     pub fn to_texture(&self, spread: f32) -> Vec<u8> {
         let size = (self.width * self.height) as usize;
         let mut data = Vec::with_capacity(size * 3);
@@ -432,6 +441,7 @@ impl MsdfData {
     }
 
     /// Sample median value for MSDF rendering.
+    #[must_use] 
     pub fn sample_median(&self, x: f32, y: f32) -> f32 {
         let r = sample_sdf_bilinear(&self.r, self.width, self.height, x, y);
         let g = sample_sdf_bilinear(&self.g, self.width, self.height, x, y);
@@ -483,7 +493,8 @@ pub struct SdfTextInstance {
 
 impl SdfTextBatch {
     /// Create a new batch.
-    pub fn new(params: SdfRenderParams) -> Self {
+    #[must_use] 
+    pub const fn new(params: SdfRenderParams) -> Self {
         Self {
             instances: Vec::new(),
             params,
@@ -500,8 +511,8 @@ impl SdfTextBatch {
     ) {
         self.instances.push(SdfTextInstance {
             position: Point::new(
-                position.x + metrics.offset.x * scale,
-                position.y + metrics.offset.y * scale,
+                metrics.offset.x.mul_add(scale, position.x),
+                metrics.offset.y.mul_add(scale, position.y),
             ),
             uv: metrics.uv,
             size: [metrics.size[0] * scale, metrics.size[1] * scale],
@@ -511,11 +522,13 @@ impl SdfTextBatch {
     }
 
     /// Check if empty.
+    #[must_use] 
     pub fn is_empty(&self) -> bool {
         self.instances.is_empty()
     }
 
     /// Get instance count.
+    #[must_use] 
     pub fn len(&self) -> usize {
         self.instances.len()
     }

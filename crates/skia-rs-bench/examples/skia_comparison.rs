@@ -4,7 +4,7 @@
 //! against reference timings from the original Skia library.
 //!
 //! Usage:
-//!   cargo run --example skia_comparison -p skia-rs-bench --release
+//!   cargo run --example `skia_comparison` -p skia-rs-bench --release
 
 use skia_rs_bench::skia_comparison::{
     BenchmarkRunner, ComparisonReport, ComparisonResult, reference_timings,
@@ -226,8 +226,8 @@ fn main() {
     let outer = 100.0;
     let inner = 40.0;
     for i in 0..5 {
-        let angle_o = (i as f32 * 72.0 - 90.0).to_radians();
-        let angle_i = (i as f32 * 72.0 + 36.0 - 90.0).to_radians();
+        let angle_o = (i as f32).mul_add(72.0, -90.0).to_radians();
+        let angle_i = ((i as f32).mul_add(72.0, 36.0) - 90.0).to_radians();
         let ox = cx + outer * angle_o.cos();
         let oy = cy + outer * angle_o.sin();
         let ix = cx + inner * angle_i.cos();
@@ -262,13 +262,13 @@ fn main() {
 
     // Save reports
     if let Err(e) = report.save("skia_comparison_report.md") {
-        eprintln!("Failed to save markdown report: {}", e);
+        eprintln!("Failed to save markdown report: {e}");
     } else {
         println!("Saved: skia_comparison_report.md");
     }
 
     if let Err(e) = report.save_json("skia_comparison_report.json") {
-        eprintln!("Failed to save JSON report: {}", e);
+        eprintln!("Failed to save JSON report: {e}");
     } else {
         println!("Saved: skia_comparison_report.json");
     }

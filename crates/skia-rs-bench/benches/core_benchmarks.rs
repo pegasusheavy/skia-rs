@@ -12,7 +12,7 @@ fn bench_point_operations(c: &mut Criterion) {
 
     // Point creation
     group.bench_function("new", |b| {
-        b.iter(|| Point::new(black_box(100.0), black_box(200.0)))
+        b.iter(|| Point::new(black_box(100.0), black_box(200.0)));
     });
 
     // Point addition
@@ -48,13 +48,13 @@ fn bench_point_operations(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("batch_normalize", size),
             &points,
-            |b, points| b.iter(|| points.iter().map(|p| p.normalize()).collect::<Vec<_>>()),
+            |b, points| b.iter(|| points.iter().map(skia_rs_core::Point::normalize).collect::<Vec<_>>()),
         );
 
         group.bench_with_input(
             BenchmarkId::new("batch_length", size),
             &points,
-            |b, points| b.iter(|| points.iter().map(|p| p.length()).fold(0.0, |a, b| a + b)),
+            |b, points| b.iter(|| points.iter().map(skia_rs_core::Point::length).fold(0.0, |a, b| a + b)),
         );
     }
 
@@ -73,7 +73,7 @@ fn bench_rect_operations(c: &mut Criterion) {
                 black_box(100.0),
                 black_box(200.0),
             )
-        })
+        });
     });
 
     group.bench_function("from_xywh", |b| {
@@ -84,7 +84,7 @@ fn bench_rect_operations(c: &mut Criterion) {
                 black_box(90.0),
                 black_box(180.0),
             )
-        })
+        });
     });
 
     // Rect queries
@@ -99,30 +99,30 @@ fn bench_rect_operations(c: &mut Criterion) {
     group.bench_function("is_empty", |b| b.iter(|| black_box(rect).is_empty()));
 
     group.bench_function("contains_hit", |b| {
-        b.iter(|| black_box(rect).contains(black_box(point_inside)))
+        b.iter(|| black_box(rect).contains(black_box(point_inside)));
     });
 
     group.bench_function("contains_miss", |b| {
-        b.iter(|| black_box(rect).contains(black_box(point_outside)))
+        b.iter(|| black_box(rect).contains(black_box(point_outside)));
     });
 
     // Rect operations
     let rect2 = Rect::new(50.0, 80.0, 150.0, 250.0);
 
     group.bench_function("intersect", |b| {
-        b.iter(|| black_box(rect).intersect(black_box(&rect2)))
+        b.iter(|| black_box(rect).intersect(black_box(&rect2)));
     });
 
     group.bench_function("join", |b| {
-        b.iter(|| black_box(rect).join(black_box(&rect2)))
+        b.iter(|| black_box(rect).join(black_box(&rect2)));
     });
 
     group.bench_function("offset", |b| {
-        b.iter(|| black_box(rect).offset(black_box(10.0), black_box(20.0)))
+        b.iter(|| black_box(rect).offset(black_box(10.0), black_box(20.0)));
     });
 
     group.bench_function("inset", |b| {
-        b.iter(|| black_box(rect).inset(black_box(5.0), black_box(5.0)))
+        b.iter(|| black_box(rect).inset(black_box(5.0), black_box(5.0)));
     });
 
     // Batch operations
@@ -133,7 +133,7 @@ fn bench_rect_operations(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(size as u64));
         group.bench_with_input(BenchmarkId::new("batch_union", size), &rects, |b, rects| {
-            b.iter(|| rects.iter().fold(Rect::EMPTY, |acc, r| acc.join(r)))
+            b.iter(|| rects.iter().fold(Rect::EMPTY, |acc, r| acc.join(r)));
         });
     }
 
@@ -145,11 +145,11 @@ fn bench_color_operations(c: &mut Criterion) {
 
     // Color creation
     group.bench_function("from_argb", |b| {
-        b.iter(|| Color::from_argb(black_box(255), black_box(128), black_box(64), black_box(32)))
+        b.iter(|| Color::from_argb(black_box(255), black_box(128), black_box(64), black_box(32)));
     });
 
     group.bench_function("from_rgb", |b| {
-        b.iter(|| Color::from_rgb(black_box(128), black_box(64), black_box(32)))
+        b.iter(|| Color::from_rgb(black_box(128), black_box(64), black_box(32)));
     });
 
     // Component extraction
@@ -158,7 +158,7 @@ fn bench_color_operations(c: &mut Criterion) {
         b.iter(|| {
             let c = black_box(color);
             (c.alpha(), c.red(), c.green(), c.blue())
-        })
+        });
     });
 
     // Color conversion
@@ -166,7 +166,7 @@ fn bench_color_operations(c: &mut Criterion) {
 
     // Premultiply
     group.bench_function("premultiply", |b| {
-        b.iter(|| premultiply_color(black_box(color)))
+        b.iter(|| premultiply_color(black_box(color)));
     });
 
     // Batch operations
@@ -184,14 +184,14 @@ fn bench_color_operations(c: &mut Criterion) {
                         .iter()
                         .map(|c| premultiply_color(*c))
                         .collect::<Vec<_>>()
-                })
+                });
             },
         );
 
         group.bench_with_input(
             BenchmarkId::new("batch_to_color4f", size),
             &colors,
-            |b, colors| b.iter(|| colors.iter().map(|c| c.to_color4f()).collect::<Vec<_>>()),
+            |b, colors| b.iter(|| colors.iter().map(skia_rs_core::Color::to_color4f).collect::<Vec<_>>()),
         );
     }
 
@@ -210,7 +210,7 @@ fn bench_color4f_operations(c: &mut Criterion) {
                 black_box(0.125),
                 black_box(0.8),
             )
-        })
+        });
     });
 
     // Color4f operations
@@ -222,7 +222,7 @@ fn bench_color4f_operations(c: &mut Criterion) {
     group.bench_function("premul", |b| b.iter(|| black_box(c1).premul()));
 
     group.bench_function("lerp", |b| {
-        b.iter(|| black_box(c1).lerp(black_box(&c2), black_box(0.5)))
+        b.iter(|| black_box(c1).lerp(black_box(&c2), black_box(0.5)));
     });
 
     // Batch operations
@@ -234,13 +234,13 @@ fn bench_color4f_operations(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("batch_premul", size),
             &colors,
-            |b, colors| b.iter(|| colors.iter().map(|c| c.premul()).collect::<Vec<_>>()),
+            |b, colors| b.iter(|| colors.iter().map(skia_rs_core::Color4f::premul).collect::<Vec<_>>()),
         );
 
         group.bench_with_input(
             BenchmarkId::new("batch_to_color", size),
             &colors,
-            |b, colors| b.iter(|| colors.iter().map(|c| c.to_color()).collect::<Vec<_>>()),
+            |b, colors| b.iter(|| colors.iter().map(skia_rs_core::Color4f::to_color).collect::<Vec<_>>()),
         );
     }
 
@@ -253,7 +253,7 @@ fn bench_scalar_operations(c: &mut Criterion) {
     let values: Vec<Scalar> = (0..1000).map(|i| i as Scalar * 0.001).collect();
 
     group.bench_function("nearly_zero", |b| {
-        b.iter(|| values.iter().filter(|&&x| x.abs() < 1e-6).count())
+        b.iter(|| values.iter().filter(|&&x| x.abs() < 1e-6).count());
     });
 
     group.bench_function("nearly_equal", |b| {
@@ -262,11 +262,11 @@ fn bench_scalar_operations(c: &mut Criterion) {
                 .windows(2)
                 .filter(|w| (w[0] - w[1]).abs() < 1e-6)
                 .count()
-        })
+        });
     });
 
     group.bench_function("is_finite", |b| {
-        b.iter(|| values.iter().filter(|&&x| x.is_finite()).count())
+        b.iter(|| values.iter().filter(|&&x| x.is_finite()).count());
     });
 
     group.bench_function("interp", |b| {
@@ -274,8 +274,8 @@ fn bench_scalar_operations(c: &mut Criterion) {
             let a = black_box(0.0_f32);
             let b_val = black_box(100.0_f32);
             let t = black_box(0.5_f32);
-            a + (b_val - a) * t
-        })
+            (b_val - a).mul_add(t, a)
+        });
     });
 
     group.finish();

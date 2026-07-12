@@ -22,18 +22,20 @@ pub enum FillType {
 impl FillType {
     /// Check if this is an inverse fill type.
     #[inline]
+    #[must_use] 
     pub const fn is_inverse(&self) -> bool {
-        matches!(self, FillType::InverseWinding | FillType::InverseEvenOdd)
+        matches!(self, Self::InverseWinding | Self::InverseEvenOdd)
     }
 
     /// Convert to the inverse fill type.
     #[inline]
+    #[must_use] 
     pub const fn inverse(&self) -> Self {
         match self {
-            FillType::Winding => FillType::InverseWinding,
-            FillType::EvenOdd => FillType::InverseEvenOdd,
-            FillType::InverseWinding => FillType::Winding,
-            FillType::InverseEvenOdd => FillType::EvenOdd,
+            Self::Winding => Self::InverseWinding,
+            Self::EvenOdd => Self::InverseEvenOdd,
+            Self::InverseWinding => Self::Winding,
+            Self::InverseEvenOdd => Self::EvenOdd,
         }
     }
 }
@@ -59,12 +61,13 @@ pub enum Verb {
 impl Verb {
     /// Number of points consumed by this verb.
     #[inline]
+    #[must_use] 
     pub const fn point_count(&self) -> usize {
         match self {
-            Verb::Move | Verb::Line => 1,
-            Verb::Quad | Verb::Conic => 2,
-            Verb::Cubic => 3,
-            Verb::Close => 0,
+            Self::Move | Self::Line => 1,
+            Self::Quad | Self::Conic => 2,
+            Self::Cubic => 3,
+            Self::Close => 0,
         }
     }
 }
@@ -94,11 +97,11 @@ pub enum PathConvexity {
 }
 
 impl PathConvexity {
-    fn from_u8(v: u8) -> Self {
+    const fn from_u8(v: u8) -> Self {
         match v {
-            1 => PathConvexity::Convex,
-            2 => PathConvexity::Concave,
-            _ => PathConvexity::Unknown,
+            1 => Self::Convex,
+            2 => Self::Concave,
+            _ => Self::Unknown,
         }
     }
 }
@@ -116,7 +119,7 @@ pub struct Path {
     pub(crate) fill_type: FillType,
     /// Cached bounds (lazily computed).
     pub(crate) bounds: Option<Rect>,
-    /// Cached convexity (stored as u8 for Send+Sync via AtomicU8).
+    /// Cached convexity (stored as u8 for Send+Sync via `AtomicU8`).
     pub(crate) convexity: AtomicU8,
 }
 
@@ -156,7 +159,7 @@ impl PartialEq for Path {
 }
 
 #[inline]
-fn axis_of(p: Point, axis: usize) -> Scalar {
+const fn axis_of(p: Point, axis: usize) -> Scalar {
     if axis == 0 { p.x } else { p.y }
 }
 
@@ -189,19 +192,20 @@ fn record_axis_bound(
 impl Path {
     /// Create a new empty path.
     #[inline]
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Get the fill type.
     #[inline]
-    pub fn fill_type(&self) -> FillType {
+    pub const fn fill_type(&self) -> FillType {
         self.fill_type
     }
 
     /// Set the fill type.
     #[inline]
-    pub fn set_fill_type(&mut self, fill_type: FillType) {
+    pub const fn set_fill_type(&mut self, fill_type: FillType) {
         self.fill_type = fill_type;
     }
 
@@ -265,7 +269,7 @@ impl Path {
     }
 
     /// Iterate over the path elements.
-    pub fn iter(&self) -> PathIter<'_> {
+    pub const fn iter(&self) -> PathIter<'_> {
         PathIter {
             path: self,
             verb_index: 0,
@@ -813,7 +817,7 @@ impl Path {
     /// Unlike `bounds()`, this computes the bounds from the actual curve
     /// extents, not the control-point bounding box. For cubic and quadratic
     /// Bezier curves with control points outside the actual curve range,
-    /// tight_bounds() may be significantly smaller than bounds().
+    /// `tight_bounds()` may be significantly smaller than `bounds()`.
     ///
     /// Conics fall back to control-polygon bounds (exact extrema for rational
     /// curves would require solving a quartic).
@@ -862,12 +866,12 @@ impl Path {
                         let s = axis_of(current, axis);
                         let cv = axis_of(c, axis);
                         let e = axis_of(p, axis);
-                        let denom = s - 2.0 * cv + e;
+                        let denom = 2.0f32.mul_add(-cv, s) + e;
                         if denom.abs() > 1e-9 {
                             let t = (s - cv) / denom;
                             if t > 0.0 && t < 1.0 {
                                 let mt = 1.0 - t;
-                                let val = mt * mt * s + 2.0 * mt * t * cv + t * t * e;
+                                let val = (t * t).mul_add(e, (mt * mt).mul_add(s, 2.0 * mt * t * cv));
                                 record_axis_bound(
                                     axis, val, &mut min_x, &mut max_x, &mut min_y, &mut max_y,
                                 );
@@ -887,8 +891,8 @@ impl Path {
                         let c1v = axis_of(c1, axis);
                         let c2v = axis_of(c2, axis);
                         let e = axis_of(p, axis);
-                        let a = 3.0 * (e - 3.0 * c2v + 3.0 * c1v - s);
-                        let b = 6.0 * (c2v - 2.0 * c1v + s);
+                        let a = 3.0 * (3.0f32.mul_add(c1v, 3.0f32.mul_add(-c2v, e)) - s);
+                        let b = 6.0 * (2.0f32.mul_add(-c1v, c2v) + s);
                         let cc = 3.0 * (c1v - s);
 
                         let mut roots: [Scalar; 2] = [Scalar::NAN, Scalar::NAN];
@@ -915,10 +919,7 @@ impl Path {
                             let t = roots[i];
                             if t.is_finite() && t > 0.0 && t < 1.0 {
                                 let mt = 1.0 - t;
-                                let val = mt * mt * mt * s
-                                    + 3.0 * mt * mt * t * c1v
-                                    + 3.0 * mt * t * t * c2v
-                                    + t * t * t * e;
+                                let val = (t * t * t).mul_add(e, (3.0 * mt * t * t).mul_add(c2v, (mt * mt * mt).mul_add(s, 3.0 * mt * mt * t * c1v)));
                                 record_axis_bound(
                                     axis, val, &mut min_x, &mut max_x, &mut min_y, &mut max_y,
                                 );
@@ -1064,15 +1065,15 @@ fn find_min_max_x_at_y(pts: &[Point], index: usize) -> (usize, usize) {
 
 /// cross product of (p1 - p0) and (p2 - p0) (ported from `cross_prod`, f64 promotion).
 fn cross_prod(p0: Point, p1: Point, p2: Point) -> Scalar {
-    let cross = (p1.x - p0.x) * (p2.y - p0.y) - (p1.y - p0.y) * (p2.x - p0.x);
+    let cross = (p1.x - p0.x).mul_add(p2.y - p0.y, -((p1.y - p0.y) * (p2.x - p0.x)));
     if cross == 0.0 {
-        let p0x = p0.x as f64;
-        let p0y = p0.y as f64;
-        let p1x = p1.x as f64;
-        let p1y = p1.y as f64;
-        let p2x = p2.x as f64;
-        let p2y = p2.y as f64;
-        return ((p1x - p0x) * (p2y - p0y) - (p1y - p0y) * (p2x - p0x)) as Scalar;
+        let p0x = f64::from(p0.x);
+        let p0y = f64::from(p0.y);
+        let p1x = f64::from(p1.x);
+        let p1y = f64::from(p1.y);
+        let p2x = f64::from(p2.x);
+        let p2y = f64::from(p2.y);
+        return (p1x - p0x).mul_add(p2y - p0y, -((p1y - p0y) * (p2x - p0x))) as Scalar;
     }
     cross
 }
@@ -1095,12 +1096,12 @@ fn try_crossprod(pts: &[Point], index: usize) -> Scalar {
 /// Ported from `rect_make_dir`: encode an axis-aligned edge direction (0..3).
 #[inline]
 fn rect_make_dir(dx: Scalar, dy: Scalar) -> i32 {
-    ((dx != 0.0) as i32) | (((dx > 0.0 || dy > 0.0) as i32) << 1)
+    i32::from(dx != 0.0) | (i32::from(dx > 0.0 || dy > 0.0) << 1)
 }
 
 /// Build a sorted rect spanning two corner points.
 #[inline]
-fn rect_from_corners(a: Point, b: Point) -> Rect {
+const fn rect_from_corners(a: Point, b: Point) -> Rect {
     Rect::new(a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y))
 }
 
@@ -1231,7 +1232,7 @@ fn is_rect_contour(points: &[Point], verbs: &[Verb]) -> Option<Rect> {
         curr_verb += 1;
     }
 
-    if corners < 3 || corners > 4 {
+    if !(3..=4).contains(&corners) {
         return None;
     }
     let cx = first_pt.x - last_pt.x;
@@ -1258,11 +1259,7 @@ fn between(a: Scalar, b: Scalar, c: Scalar) -> bool {
 fn sign_as_int(x: Scalar) -> i32 {
     if x < 0.0 {
         -1
-    } else if x > 0.0 {
-        1
-    } else {
-        0
-    }
+    } else { i32::from(x > 0.0) }
 }
 
 /// Ported from `checkOnCurve`.
@@ -1302,7 +1299,7 @@ fn winding_line(a: Point, b: Point, x: Scalar, y: Scalar, on_curve_count: &mut i
     if y == y1 {
         return 0;
     }
-    let cross = (x1 - x0) * (y - a.y) - dy * (x - x0);
+    let cross = (x1 - x0).mul_add(y - a.y, -(dy * (x - x0)));
 
     if cross == 0.0 {
         if x != x1 || y != b.y {
@@ -1369,10 +1366,10 @@ mod convex {
                 if !vx.is_finite() || !vy.is_finite() {
                     return Some(true);
                 }
-                let sx = (vx < 0.0) as i32;
-                let sy = (vy < 0.0) as i32;
-                *dxes += (sx != *last_sx) as i32;
-                *dyes += (sy != *last_sy) as i32;
+                let sx = i32::from(vx < 0.0);
+                let sy = i32::from(vy < 0.0);
+                *dxes += i32::from(sx != *last_sx);
+                *dyes += i32::from(sy != *last_sy);
                 if *dxes > 3 || *dyes > 3 {
                     return Some(true);
                 }
@@ -1421,7 +1418,7 @@ mod convex {
     }
 
     impl Convexicator {
-        pub fn new() -> Self {
+        pub const fn new() -> Self {
             Self {
                 first_pt: Point::zero(),
                 first_vec: Point::zero(),
@@ -1433,15 +1430,15 @@ mod convex {
             }
         }
 
-        pub fn first_direction(&self) -> FirstDir {
+        pub const fn first_direction(&self) -> FirstDir {
             self.first_direction
         }
 
-        pub fn reversals(&self) -> i32 {
+        pub const fn reversals(&self) -> i32 {
             self.reversals
         }
 
-        pub fn set_move_pt(&mut self, pt: Point) {
+        pub const fn set_move_pt(&mut self, pt: Point) {
             self.first_pt = pt;
             self.last_pt = pt;
             self.expected_dir = DirChange::Invalid;
@@ -1549,7 +1546,7 @@ pub struct PathIter<'a> {
     weight_index: usize,
 }
 
-impl<'a> Iterator for PathIter<'a> {
+impl Iterator for PathIter<'_> {
     type Item = PathElement;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1707,9 +1704,7 @@ mod tests {
         let expected = std::f32::consts::FRAC_PI_2;
         assert!(
             (len - expected).abs() < 0.05,
-            "expected ~π/2 = {}, got {}",
-            expected,
-            len
+            "expected ~π/2 = {expected}, got {len}"
         );
     }
 
@@ -1722,7 +1717,7 @@ mod tests {
         builder.cubic_to(1.0, 0.0, 2.0, 0.0, 3.0, 0.0);
         let path = builder.build();
         let len = path.length();
-        assert!((len - 3.0).abs() < 0.1, "expected 3.0, got {}", len);
+        assert!((len - 3.0).abs() < 0.1, "expected 3.0, got {len}");
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! This example measures memory allocation patterns for common operations.
 //!
 //! Usage:
-//!   cargo run --example memory_profile -p skia-rs-bench --release
+//!   cargo run --example `memory_profile` -p skia-rs-bench --release
 
 use skia_rs_bench::memory::{self, MemoryProfile};
 use skia_rs_canvas::Surface;
@@ -136,7 +136,7 @@ fn main() {
     // Create a path for repeated drawing
     let mut builder = PathBuilder::new();
     for i in 0..5 {
-        let angle = (i as f32 * 72.0 - 90.0).to_radians();
+        let angle = (i as f32).mul_add(72.0, -90.0).to_radians();
         let x = 50.0 * angle.cos();
         let y = 50.0 * angle.sin();
         if i == 0 {
@@ -199,7 +199,7 @@ fn main() {
     // Estimate for common operations
     let surface_4k = 3840 * 2160 * 4;
     println!("Estimated memory for common scenarios:");
-    println!("- 4K surface: {} MB", surface_4k as f64 / 1024.0 / 1024.0);
+    println!("- 4K surface: {} MB", f64::from(surface_4k) / 1024.0 / 1024.0);
     println!(
         "- 10 layers of 1080p: {} MB",
         10.0 * 1920.0 * 1080.0 * 4.0 / 1024.0 / 1024.0

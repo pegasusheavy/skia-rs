@@ -38,7 +38,8 @@ pub enum VertexFormat {
 
 impl VertexFormat {
     /// Get the size in bytes.
-    pub fn size(&self) -> u32 {
+    #[must_use] 
+    pub const fn size(&self) -> u32 {
         match self {
             Self::Float32 | Self::Sint32 | Self::Uint32 => 4,
             Self::Float32x2 | Self::Sint32x2 | Self::Uint32x2 => 8,
@@ -248,6 +249,7 @@ impl BlendComponent {
 
 /// Blend state configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub struct BlendState {
     /// Color blend component.
     pub color: BlendComponent,
@@ -255,14 +257,6 @@ pub struct BlendState {
     pub alpha: BlendComponent,
 }
 
-impl Default for BlendState {
-    fn default() -> Self {
-        Self {
-            color: BlendComponent::default(),
-            alpha: BlendComponent::default(),
-        }
-    }
-}
 
 impl BlendState {
     /// Standard alpha blending.
@@ -297,7 +291,8 @@ impl ColorWriteMask {
     pub const NONE: Self = Self(0);
 
     /// Check if a component is enabled.
-    pub fn contains(&self, other: Self) -> bool {
+    #[must_use] 
+    pub const fn contains(&self, other: Self) -> bool {
         (self.0 & other.0) == other.0
     }
 }
@@ -329,7 +324,8 @@ pub struct ColorTargetState {
 
 impl ColorTargetState {
     /// Create with no blending.
-    pub fn new(format: TextureFormat) -> Self {
+    #[must_use] 
+    pub const fn new(format: TextureFormat) -> Self {
         Self {
             format,
             blend: None,
@@ -338,7 +334,8 @@ impl ColorTargetState {
     }
 
     /// Set blend state.
-    pub fn with_blend(mut self, blend: BlendState) -> Self {
+    #[must_use] 
+    pub const fn with_blend(mut self, blend: BlendState) -> Self {
         self.blend = Some(blend);
         self
     }
@@ -491,6 +488,7 @@ pub struct RenderPipelineDescriptor {
 
 impl RenderPipelineDescriptor {
     /// Create a simple pipeline with vertex and fragment shaders.
+    #[must_use] 
     pub fn new(vertex_shader: &str, fragment_shader: &str) -> Self {
         Self {
             label: None,
@@ -513,31 +511,36 @@ impl RenderPipelineDescriptor {
     }
 
     /// Add a vertex buffer layout.
+    #[must_use] 
     pub fn with_vertex_buffer(mut self, layout: VertexBufferLayout) -> Self {
         self.vertex_buffers.push(layout);
         self
     }
 
     /// Add a color target.
+    #[must_use] 
     pub fn with_color_target(mut self, target: ColorTargetState) -> Self {
         self.color_targets.push(target);
         self
     }
 
     /// Set primitive state.
-    pub fn with_primitive(mut self, primitive: PrimitiveState) -> Self {
+    #[must_use] 
+    pub const fn with_primitive(mut self, primitive: PrimitiveState) -> Self {
         self.primitive = primitive;
         self
     }
 
     /// Set depth/stencil state.
-    pub fn with_depth_stencil(mut self, state: DepthStencilState) -> Self {
+    #[must_use] 
+    pub const fn with_depth_stencil(mut self, state: DepthStencilState) -> Self {
         self.depth_stencil = Some(state);
         self
     }
 
     /// Set multisample state.
-    pub fn with_multisample(mut self, state: MultisampleState) -> Self {
+    #[must_use] 
+    pub const fn with_multisample(mut self, state: MultisampleState) -> Self {
         self.multisample = state;
         self
     }
@@ -556,6 +559,7 @@ pub struct ComputePipelineDescriptor {
 
 impl ComputePipelineDescriptor {
     /// Create a new compute pipeline descriptor.
+    #[must_use] 
     pub fn new(shader: &str) -> Self {
         Self {
             label: None,
@@ -625,6 +629,7 @@ fn hash_str(s: &str) -> u64 {
 
 impl PipelineKey {
     /// Create a key from a render pipeline descriptor.
+    #[must_use] 
     pub fn from_descriptor(desc: &RenderPipelineDescriptor) -> Self {
         use std::hash::{Hash, Hasher};
 

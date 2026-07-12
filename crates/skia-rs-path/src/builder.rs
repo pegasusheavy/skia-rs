@@ -13,12 +13,14 @@ pub struct PathBuilder {
 impl PathBuilder {
     /// Create a new path builder.
     #[inline]
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Create a path builder with specified fill type.
     #[inline]
+    #[must_use] 
     pub fn with_fill_type(fill_type: FillType) -> Self {
         let mut builder = Self::new();
         builder.path.fill_type = fill_type;
@@ -27,7 +29,7 @@ impl PathBuilder {
 
     /// Set the fill type.
     #[inline]
-    pub fn fill_type(&mut self, fill_type: FillType) -> &mut Self {
+    pub const fn fill_type(&mut self, fill_type: FillType) -> &mut Self {
         self.path.fill_type = fill_type;
         self
     }
@@ -139,8 +141,8 @@ impl PathBuilder {
     /// Uses four quarter-circle conics of weight √2/2 (upstream
     /// `gFourQuarterCircleConics`), CW starting at the 3-o'clock point.
     pub fn add_oval(&mut self, rect: &Rect) -> &mut Self {
-        let cx = (rect.left + rect.right) / 2.0;
-        let cy = (rect.top + rect.bottom) / 2.0;
+        let cx = f32::midpoint(rect.left, rect.right);
+        let cy = f32::midpoint(rect.top, rect.bottom);
         let rx = rect.width() / 2.0;
         let ry = rect.height() / 2.0;
 
@@ -174,7 +176,7 @@ impl PathBuilder {
         let rx = rx.min(rect.width() / 2.0);
         let ry = ry.min(rect.height() / 2.0);
 
-        const KAPPA: Scalar = 0.5522847498;
+        const KAPPA: Scalar = 0.552_284_8;
         let kx = rx * KAPPA;
         let ky = ry * KAPPA;
 
@@ -488,13 +490,13 @@ impl PathBuilder {
         let (sin_start, cos_start) = start_angle.sin_cos();
         let (sin_end, cos_end) = end_angle.sin_cos();
 
-        let x0 = cx + rx * cos_start;
-        let y0 = cy + ry * sin_start;
-        let mut p1 = Point::new(x0 - k * rx * sin_start, y0 + k * ry * cos_start);
-        let x3 = cx + rx * cos_end;
-        let y3 = cy + ry * sin_end;
+        let x0 = rx.mul_add(cos_start, cx);
+        let y0 = ry.mul_add(sin_start, cy);
+        let mut p1 = Point::new((k * rx).mul_add(-sin_start, x0), (k * ry).mul_add(cos_start, y0));
+        let x3 = rx.mul_add(cos_end, cx);
+        let y3 = ry.mul_add(sin_end, cy);
         let mut p3 = Point::new(x3, y3);
-        let mut p2 = Point::new(x3 + k * rx * sin_end, y3 - k * ry * cos_end);
+        let mut p2 = Point::new((k * rx).mul_add(sin_end, x3), (k * ry).mul_add(-cos_end, y3));
 
         if let Some(m) = rot {
             p1 = m.map_point(p1);
@@ -525,8 +527,8 @@ impl PathBuilder {
         // Step 1: Compute (x1', y1')
         let dx = (x1 - x2) / 2.0;
         let dy = (y1 - y2) / 2.0;
-        let x1p = cos_phi * dx + sin_phi * dy;
-        let y1p = -sin_phi * dx + cos_phi * dy;
+        let x1p = cos_phi.mul_add(dx, sin_phi * dy);
+        let y1p = (-sin_phi).mul_add(dx, cos_phi * dy);
 
         // Scale radii if needed
         let lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
@@ -542,7 +544,7 @@ impl PathBuilder {
         let x1p2 = x1p * x1p;
         let y1p2 = y1p * y1p;
 
-        let mut sq = ((rx2 * ry2 - rx2 * y1p2 - ry2 * x1p2) / (rx2 * y1p2 + ry2 * x1p2)).max(0.0);
+        let mut sq = (ry2.mul_add(-x1p2, rx2.mul_add(ry2, -(rx2 * y1p2))) / rx2.mul_add(y1p2, ry2 * x1p2)).max(0.0);
         sq = sq.sqrt();
         if large_arc == sweep {
             sq = -sq;
@@ -552,8 +554,8 @@ impl PathBuilder {
         let cyp = -sq * ry * x1p / rx;
 
         // Step 3: Compute (cx, cy)
-        let cx = cos_phi * cxp - sin_phi * cyp + (x1 + x2) / 2.0;
-        let cy = sin_phi * cxp + cos_phi * cyp + (y1 + y2) / 2.0;
+        let cx = cos_phi.mul_add(cxp, -(sin_phi * cyp)) + f32::midpoint(x1, x2);
+        let cy = sin_phi.mul_add(cxp, cos_phi * cyp) + f32::midpoint(y1, y2);
 
         // Step 4: Compute angles
         let theta1 = angle_between(1.0, 0.0, (x1p - cxp) / rx, (y1p - cyp) / ry);
@@ -581,12 +583,12 @@ impl PathBuilder {
 
 /// Compute angle between two vectors.
 fn angle_between(ux: Scalar, uy: Scalar, vx: Scalar, vy: Scalar) -> Scalar {
-    let n = (ux * ux + uy * uy).sqrt() * (vx * vx + vy * vy).sqrt();
+    let n = ux.hypot(uy) * vx.hypot(vy);
     if n == 0.0 {
         return 0.0;
     }
-    let c = (ux * vx + uy * vy) / n;
-    let s = ux * vy - uy * vx;
+    let c = ux.mul_add(vx, uy * vy) / n;
+    let s = ux.mul_add(vy, -(uy * vx));
     s.atan2(c.clamp(-1.0, 1.0))
 }
 
@@ -698,9 +700,7 @@ mod tests {
         );
         assert!(
             (start.x - expected.x).abs() < 0.5 && (start.y - expected.y).abs() < 0.5,
-            "full-circle arc start {:?} should honor 45deg start {:?}",
-            start,
-            expected
+            "full-circle arc start {start:?} should honor 45deg start {expected:?}"
         );
     }
 
@@ -714,8 +714,7 @@ mod tests {
         let last = path.last_point().unwrap();
         assert!(
             (last.x - 40.0).abs() < 0.1 && (last.y - 30.0).abs() < 0.1,
-            "rotated arc endpoint {:?} must land on target (40, 30)",
-            last
+            "rotated arc endpoint {last:?} must land on target (40, 30)"
         );
     }
 

@@ -25,6 +25,7 @@ pub struct TrackingAllocator {
 
 impl TrackingAllocator {
     /// Create a new tracking allocator.
+    #[must_use] 
     pub const fn new() -> Self {
         Self { inner: System }
     }
@@ -39,7 +40,7 @@ static DEALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
 static TRACKING_ENABLED: AtomicBool = AtomicBool::new(false);
 
 unsafe impl GlobalAlloc for TrackingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 { unsafe {
         let ptr = self.inner.alloc(layout);
 
         if TRACKING_ENABLED.load(Ordering::Relaxed) && !ptr.is_null() {
@@ -64,7 +65,7 @@ unsafe impl GlobalAlloc for TrackingAllocator {
         }
 
         ptr
-    }
+    }}
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if TRACKING_ENABLED.load(Ordering::Relaxed) {
@@ -131,11 +132,13 @@ pub struct MemoryStats {
 
 impl MemoryStats {
     /// Get the current memory in use.
-    pub fn current(&self) -> usize {
+    #[must_use] 
+    pub const fn current(&self) -> usize {
         self.allocated.saturating_sub(self.deallocated)
     }
 
     /// Get bytes per allocation (average).
+    #[must_use] 
     pub fn bytes_per_alloc(&self) -> f64 {
         if self.alloc_count == 0 {
             0.0
@@ -145,6 +148,7 @@ impl MemoryStats {
     }
 
     /// Format stats as human-readable string.
+    #[must_use] 
     pub fn format(&self) -> String {
         format!(
             "Memory: {} allocated, {} peak, {} allocs ({:.1} bytes/alloc)",
@@ -163,6 +167,7 @@ impl std::fmt::Display for MemoryStats {
 }
 
 /// Format bytes as human-readable string.
+#[must_use] 
 pub fn format_bytes(bytes: usize) -> String {
     const KB: usize = 1024;
     const MB: usize = KB * 1024;
@@ -175,7 +180,7 @@ pub fn format_bytes(bytes: usize) -> String {
     } else if bytes >= KB {
         format!("{:.2} KB", bytes as f64 / KB as f64)
     } else {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     }
 }
 
@@ -239,6 +244,7 @@ impl MemoryMeasurement {
     }
 
     /// Get the current stats (delta from start).
+    #[must_use] 
     pub fn current(&self) -> MemoryStats {
         let now = get_stats();
         MemoryStats {
@@ -251,6 +257,7 @@ impl MemoryMeasurement {
     }
 
     /// Finish measurement and return stats.
+    #[must_use] 
     pub fn finish(self) -> MemoryStats {
         let stats = self.current();
         disable_tracking();
@@ -293,6 +300,7 @@ pub struct MemoryProfile {
 
 impl MemoryProfile {
     /// Create a new memory profile.
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
@@ -310,6 +318,7 @@ impl MemoryProfile {
     }
 
     /// Generate a formatted report.
+    #[must_use] 
     pub fn report(&self) -> String {
         let mut report = String::new();
         report.push_str("Memory Profile Report\n");
@@ -374,42 +383,50 @@ pub mod size_of {
     use skia_rs_path::{Path, PathBuilder};
 
     /// Get size of Point.
-    pub fn point() -> usize {
+    #[must_use] 
+    pub const fn point() -> usize {
         std::mem::size_of::<Point>()
     }
 
     /// Get size of Rect.
-    pub fn rect() -> usize {
+    #[must_use] 
+    pub const fn rect() -> usize {
         std::mem::size_of::<Rect>()
     }
 
     /// Get size of Matrix (3x3).
-    pub fn matrix() -> usize {
+    #[must_use] 
+    pub const fn matrix() -> usize {
         std::mem::size_of::<Matrix>()
     }
 
     /// Get size of Matrix44 (4x4).
-    pub fn matrix44() -> usize {
+    #[must_use] 
+    pub const fn matrix44() -> usize {
         std::mem::size_of::<Matrix44>()
     }
 
     /// Get size of Color4f.
-    pub fn color4f() -> usize {
+    #[must_use] 
+    pub const fn color4f() -> usize {
         std::mem::size_of::<Color4f>()
     }
 
     /// Get size of Paint (base struct only).
-    pub fn paint() -> usize {
+    #[must_use] 
+    pub const fn paint() -> usize {
         std::mem::size_of::<Paint>()
     }
 
     /// Get size of Path (base struct only).
-    pub fn path() -> usize {
+    #[must_use] 
+    pub const fn path() -> usize {
         std::mem::size_of::<Path>()
     }
 
-    /// Get size of PathBuilder (base struct only).
-    pub fn path_builder() -> usize {
+    /// Get size of `PathBuilder` (base struct only).
+    #[must_use] 
+    pub const fn path_builder() -> usize {
         std::mem::size_of::<PathBuilder>()
     }
 

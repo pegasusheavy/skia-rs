@@ -3,10 +3,10 @@
 //! This module provides the main `Animation` type for loading and
 //! rendering Lottie animations.
 
-use crate::layers::{Layer, LayerContent, ShapeContent};
-use crate::model::{AssetModel, LottieModel};
+use crate::layers::{Layer, LayerContent};
+use crate::model::LottieModel;
 use crate::render::RenderContext;
-use crate::{Result, SkottieError};
+use crate::Result;
 use skia_rs_core::{Matrix, Rect, Scalar};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -144,66 +144,79 @@ impl Animation {
     }
 
     /// Get the animation name.
+    #[must_use] 
     pub fn name(&self) -> &str {
         &self.name
     }
 
     /// Get the Lottie format version.
+    #[must_use] 
     pub fn version(&self) -> &str {
         &self.version
     }
 
     /// Get the animation width.
-    pub fn width(&self) -> Scalar {
+    #[must_use] 
+    pub const fn width(&self) -> Scalar {
         self.width
     }
 
     /// Get the animation height.
-    pub fn height(&self) -> Scalar {
+    #[must_use] 
+    pub const fn height(&self) -> Scalar {
         self.height
     }
 
     /// Get the frame rate (fps).
-    pub fn fps(&self) -> Scalar {
+    #[must_use] 
+    pub const fn fps(&self) -> Scalar {
         self.frame_rate
     }
 
     /// Get the in point (first frame).
-    pub fn in_point(&self) -> Scalar {
+    #[must_use] 
+    pub const fn in_point(&self) -> Scalar {
         self.in_point
     }
 
     /// Get the out point (last frame).
-    pub fn out_point(&self) -> Scalar {
+    #[must_use] 
+    pub const fn out_point(&self) -> Scalar {
         self.out_point
     }
 
     /// Get the total number of frames.
+    #[must_use] 
     pub fn total_frames(&self) -> Scalar {
         self.out_point - self.in_point
     }
 
     /// Get the duration in seconds.
+    #[must_use] 
     pub fn duration(&self) -> Scalar {
         self.total_frames() / self.frame_rate
     }
 
     /// Get the current frame.
-    pub fn current_frame(&self) -> Scalar {
+    #[must_use] 
+    pub const fn current_frame(&self) -> Scalar {
         self.current_frame
     }
 
     /// Get the bounding rect.
-    pub fn bounds(&self) -> Rect {
+    #[must_use] 
+    pub const fn bounds(&self) -> Rect {
         Rect::from_xywh(0.0, 0.0, self.width, self.height)
     }
 
     /// Get the layers.
+    #[must_use] 
     pub fn layers(&self) -> &[Layer] {
         &self.layers
     }
 
     /// Get an asset by ID.
+    #[must_use] 
     pub fn asset(&self, id: &str) -> Option<&Asset> {
         self.assets.get(id)
     }
@@ -215,19 +228,19 @@ impl Animation {
 
     /// Seek to a normalized position (0.0 - 1.0).
     pub fn seek(&mut self, t: Scalar) {
-        let frame = self.in_point + t.clamp(0.0, 1.0) * self.total_frames();
+        let frame = t.clamp(0.0, 1.0).mul_add(self.total_frames(), self.in_point);
         self.seek_frame(frame);
     }
 
     /// Seek to a specific time in seconds.
     pub fn seek_time(&mut self, seconds: Scalar) {
-        let frame = self.in_point + seconds * self.frame_rate;
+        let frame = seconds.mul_add(self.frame_rate, self.in_point);
         self.seek_frame(frame);
     }
 
     /// Advance by a time delta in seconds.
     pub fn advance(&mut self, delta_seconds: Scalar) {
-        let new_frame = self.current_frame + delta_seconds * self.frame_rate;
+        let new_frame = delta_seconds.mul_add(self.frame_rate, self.current_frame);
 
         // Loop animation
         if new_frame >= self.out_point {
@@ -239,7 +252,7 @@ impl Animation {
 
     /// Advance by a time delta with optional looping.
     pub fn advance_with_loop(&mut self, delta_seconds: Scalar, should_loop: bool) {
-        let new_frame = self.current_frame + delta_seconds * self.frame_rate;
+        let new_frame = delta_seconds.mul_add(self.frame_rate, self.current_frame);
 
         if new_frame >= self.out_point {
             if should_loop {
@@ -287,8 +300,8 @@ impl Animation {
         let scale_y = rect.height() / self.height;
         let scale = scale_x.min(scale_y);
 
-        let offset_x = rect.left + (rect.width() - self.width * scale) / 2.0;
-        let offset_y = rect.top + (rect.height() - self.height * scale) / 2.0;
+        let offset_x = rect.left + self.width.mul_add(-scale, rect.width()) / 2.0;
+        let offset_y = rect.top + self.height.mul_add(-scale, rect.height()) / 2.0;
 
         ctx.save();
         ctx.concat(&Matrix::translate(offset_x, offset_y));
@@ -300,6 +313,7 @@ impl Animation {
     }
 
     /// Get statistics about the animation.
+    #[must_use] 
     pub fn stats(&self) -> AnimationStats {
         let mut shape_layer_count = 0;
         let mut precomp_layer_count = 0;
@@ -408,6 +422,7 @@ pub struct AnimationBuilder {
 
 impl AnimationBuilder {
     /// Create a new animation builder.
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }

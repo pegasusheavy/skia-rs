@@ -56,6 +56,7 @@ pub enum ImageFormat {
 
 impl ImageFormat {
     /// Detect format from magic bytes.
+    #[must_use] 
     pub fn from_magic(data: &[u8]) -> Self {
         if data.len() < 8 {
             return Self::Unknown;
@@ -121,7 +122,8 @@ impl ImageFormat {
     }
 
     /// Get the typical file extension for this format.
-    pub fn extension(&self) -> &'static str {
+    #[must_use] 
+    pub const fn extension(&self) -> &'static str {
         match self {
             Self::Png => "png",
             Self::Jpeg => "jpg",
@@ -137,7 +139,8 @@ impl ImageFormat {
     }
 
     /// Get the MIME type for this format.
-    pub fn mime_type(&self) -> &'static str {
+    #[must_use] 
+    pub const fn mime_type(&self) -> &'static str {
         match self {
             Self::Png => "image/png",
             Self::Jpeg => "image/jpeg",
@@ -194,12 +197,14 @@ pub struct EncoderQuality(u8);
 
 impl EncoderQuality {
     /// Create a quality setting (0-100).
+    #[must_use] 
     pub fn new(quality: u8) -> Self {
         Self(quality.min(100))
     }
 
     /// Get the quality value.
-    pub fn value(&self) -> u8 {
+    #[must_use] 
+    pub const fn value(&self) -> u8 {
         self.0
     }
 
@@ -246,7 +251,8 @@ pub struct PngDecoder;
 
 impl PngDecoder {
     /// Create a new PNG decoder.
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self
     }
 }
@@ -357,7 +363,8 @@ pub struct PngEncoder;
 
 impl PngEncoder {
     /// Create a new PNG encoder.
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self
     }
 }
@@ -429,7 +436,8 @@ pub struct JpegDecoder;
 
 impl JpegDecoder {
     /// Create a new JPEG decoder.
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self
     }
 }
@@ -453,8 +461,8 @@ impl ImageDecoder for JpegDecoder {
             .and_then(|bytes| skia_rs_core::IccProfile::from_bytes(&bytes))
             .map(|profile| profile.color_space().clone());
 
-        let width = info.width as i32;
-        let height = info.height as i32;
+        let width = i32::from(info.width);
+        let height = i32::from(info.height);
 
         // Convert to RGBA
         let rgba = match info.pixel_format {
@@ -517,19 +525,22 @@ pub struct JpegEncoder {
 
 impl JpegEncoder {
     /// Create a new JPEG encoder with default quality.
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self {
             quality: EncoderQuality::DEFAULT,
         }
     }
 
     /// Create a JPEG encoder with specified quality.
-    pub fn with_quality(quality: EncoderQuality) -> Self {
+    #[must_use] 
+    pub const fn with_quality(quality: EncoderQuality) -> Self {
         Self { quality }
     }
 
     /// Get the quality setting.
-    pub fn quality(&self) -> EncoderQuality {
+    #[must_use] 
+    pub const fn quality(&self) -> EncoderQuality {
         self.quality
     }
 }
@@ -611,7 +622,8 @@ pub struct GifDecoder;
 
 impl GifDecoder {
     /// Create a new GIF decoder.
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self
     }
 
@@ -645,16 +657,16 @@ impl GifDecoder {
 
         // Logical-screen (canvas) dimensions. Individual frames may be
         // smaller and are positioned via their left/top offsets.
-        let canvas_width = decoder.width() as i32;
-        let canvas_height = decoder.height() as i32;
+        let canvas_width = i32::from(decoder.width());
+        let canvas_height = i32::from(decoder.height());
 
         let mut frames = Vec::new();
         while let Some(frame) = decoder
             .read_next_frame()
             .map_err(|e| CodecError::DecodingError(e.to_string()))?
         {
-            let width = frame.width as i32;
-            let height = frame.height as i32;
+            let width = i32::from(frame.width);
+            let height = i32::from(frame.height);
             let info = crate::ImageInfo::new(
                 width,
                 height,
@@ -666,14 +678,14 @@ impl GifDecoder {
 
             frames.push(crate::AnimationFrame {
                 image,
-                delay: std::time::Duration::from_millis(frame.delay as u64 * 10),
+                delay: std::time::Duration::from_millis(u64::from(frame.delay) * 10),
                 dispose: frame.dispose.into(),
                 // GIF is palette/transparent-index only; it has no
                 // "blend" concept, and every renderer treats frames as
                 // alpha-blended over the canvas.
                 blend: crate::BlendMethod::Over,
-                x_offset: frame.left as i32,
-                y_offset: frame.top as i32,
+                x_offset: i32::from(frame.left),
+                y_offset: i32::from(frame.top),
             });
         }
 
@@ -800,7 +812,8 @@ pub struct WebpDecoder;
 
 impl WebpDecoder {
     /// Create a new WebP decoder.
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self
     }
 }
@@ -870,7 +883,8 @@ pub struct WebpEncoder {
 
 impl WebpEncoder {
     /// Create a new WebP encoder with default quality.
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self {
             quality: EncoderQuality::DEFAULT,
             lossless: false,
@@ -878,7 +892,8 @@ impl WebpEncoder {
     }
 
     /// Create a WebP encoder with specified quality.
-    pub fn with_quality(quality: EncoderQuality) -> Self {
+    #[must_use] 
+    pub const fn with_quality(quality: EncoderQuality) -> Self {
         Self {
             quality,
             lossless: false,
@@ -886,7 +901,8 @@ impl WebpEncoder {
     }
 
     /// Create a lossless WebP encoder.
-    pub fn lossless() -> Self {
+    #[must_use] 
+    pub const fn lossless() -> Self {
         Self {
             quality: EncoderQuality::DEFAULT,
             lossless: true,
@@ -936,7 +952,7 @@ impl ImageEncoder for WebpEncoder {
         let encoded = if self.lossless {
             encoder.encode_lossless()
         } else {
-            encoder.encode(self.quality.value() as f32)
+            encoder.encode(f32::from(self.quality.value()))
         };
 
         writer.write_all(&encoded).map_err(CodecError::Io)?;
@@ -965,7 +981,8 @@ pub struct BmpDecoder;
 
 impl BmpDecoder {
     /// Create a new BMP decoder.
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self
     }
 }
@@ -988,7 +1005,8 @@ pub struct BmpEncoder;
 
 impl BmpEncoder {
     /// Create a new BMP encoder.
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self
     }
 }
@@ -1016,7 +1034,7 @@ impl ImageEncoder for BmpEncoder {
 
         // BITMAPFILEHEADER (14 bytes)
         writer.write_all(b"BM")?; // Signature
-        writer.write_all(&(file_size as u32).to_le_bytes())?; // File size
+        writer.write_all(&file_size.to_le_bytes())?; // File size
         writer.write_all(&[0u8; 4])?; // Reserved
         writer.write_all(&(14u32 + 40).to_le_bytes())?; // Pixel data offset
 
@@ -1060,7 +1078,7 @@ impl ImageEncoder for BmpEncoder {
     }
 }
 
-/// Channel masks for a BI_BITFIELDS BMP.
+/// Channel masks for a `BI_BITFIELDS` BMP.
 #[derive(Debug, Clone, Copy)]
 struct BitfieldMasks {
     red: u32,
@@ -1072,7 +1090,7 @@ struct BitfieldMasks {
 impl BitfieldMasks {
     /// Extract `mask`'s channel out of `value` and scale it to a full 8-bit
     /// range (`round(raw * 255 / channel_max)`), matching `SkMasks`.
-    fn sample(&self, value: u32, mask: u32) -> u8 {
+    const fn sample(&self, value: u32, mask: u32) -> u8 {
         if mask == 0 {
             return 0;
         }
@@ -1130,8 +1148,7 @@ fn decode_bmp(data: &[u8]) -> CodecResult<Image> {
     // Only support uncompressed (BI_RGB) and BI_BITFIELDS.
     if compression != 0 && compression != 3 {
         return Err(CodecError::Unsupported(format!(
-            "BMP compression {} not supported",
-            compression
+            "BMP compression {compression} not supported"
         )));
     }
 
@@ -1153,8 +1170,7 @@ fn decode_bmp(data: &[u8]) -> CodecResult<Image> {
         8 => (width + 3) & !3,
         _ => {
             return Err(CodecError::Unsupported(format!(
-                "BMP {} bits per pixel not supported",
-                bits_per_pixel
+                "BMP {bits_per_pixel} bits per pixel not supported"
             )));
         }
     };
@@ -1233,7 +1249,7 @@ fn decode_bmp(data: &[u8]) -> CodecResult<Image> {
                     let dst = dst_row + x * 4;
                     if src + 1 < pixel_data.len() {
                         let value =
-                            u16::from_le_bytes([pixel_data[src], pixel_data[src + 1]]) as u32;
+                            u32::from(u16::from_le_bytes([pixel_data[src], pixel_data[src + 1]]));
                         rgba[dst] = m.sample(value, m.red);
                         rgba[dst + 1] = m.sample(value, m.green);
                         rgba[dst + 2] = m.sample(value, m.blue);
@@ -1323,8 +1339,7 @@ fn decode_bmp(data: &[u8]) -> CodecResult<Image> {
         }
         _ => {
             return Err(CodecError::Unsupported(format!(
-                "BMP {} bits per pixel not supported",
-                bits_per_pixel
+                "BMP {bits_per_pixel} bits per pixel not supported"
             )));
         }
     }
@@ -1350,7 +1365,8 @@ pub struct IcoDecoder;
 
 impl IcoDecoder {
     /// Create a new ICO decoder.
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self
     }
 }
@@ -1402,12 +1418,12 @@ fn decode_ico(data: &[u8]) -> CodecResult<Image> {
         let width = if data[entry_offset] == 0 {
             256
         } else {
-            data[entry_offset] as u32
+            u32::from(data[entry_offset])
         };
         let height = if data[entry_offset + 1] == 0 {
             256
         } else {
-            data[entry_offset + 1] as u32
+            u32::from(data[entry_offset + 1])
         };
 
         let size = width * height;
@@ -1497,8 +1513,7 @@ fn decode_ico_bmp(data: &[u8]) -> CodecResult<Image> {
         24 => (width * 3 + 3) & !3,
         _ => {
             return Err(CodecError::Unsupported(format!(
-                "ICO {} bits per pixel not supported",
-                bits_per_pixel
+                "ICO {bits_per_pixel} bits per pixel not supported"
             )));
         }
     };
@@ -1537,7 +1552,7 @@ fn decode_ico_bmp(data: &[u8]) -> CodecResult<Image> {
         24 => {
             // 24-bit BGR with separate alpha mask
             let row_size = (width * 3 + 3) & !3;
-            let mask_row_size = (width + 31) / 32 * 4;
+            let mask_row_size = width.div_ceil(32) * 4;
             let mask_offset = height * row_size;
 
             for y in 0..height {
@@ -1573,8 +1588,7 @@ fn decode_ico_bmp(data: &[u8]) -> CodecResult<Image> {
         }
         _ => {
             return Err(CodecError::Unsupported(format!(
-                "ICO {} bits per pixel not supported",
-                bits_per_pixel
+                "ICO {bits_per_pixel} bits per pixel not supported"
             )));
         }
     }
@@ -1601,7 +1615,8 @@ pub struct WbmpDecoder;
 
 impl WbmpDecoder {
     /// Create a new WBMP decoder.
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self
     }
 }
@@ -1629,7 +1644,8 @@ pub struct WbmpEncoder;
 
 impl WbmpEncoder {
     /// Create a new WBMP encoder.
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self
     }
 }
@@ -1660,7 +1676,7 @@ fn read_wbmp_int(data: &[u8], offset: &mut usize) -> Option<u32> {
         }
         let byte = data[*offset];
         *offset += 1;
-        value = (value << 7) | (byte & 0x7F) as u32;
+        value = (value << 7) | u32::from(byte & 0x7F);
         if byte & 0x80 == 0 {
             break;
         }
@@ -1697,8 +1713,7 @@ fn decode_wbmp(data: &[u8]) -> CodecResult<Image> {
         .ok_or_else(|| CodecError::InvalidData("Invalid WBMP type".into()))?;
     if type_field != 0 {
         return Err(CodecError::Unsupported(format!(
-            "WBMP type {} not supported",
-            type_field
+            "WBMP type {type_field} not supported"
         )));
     }
 
@@ -1724,7 +1739,7 @@ fn decode_wbmp(data: &[u8]) -> CodecResult<Image> {
     }
 
     // Calculate row size (bits rounded up to bytes)
-    let row_bytes = (width as usize + 7) / 8;
+    let row_bytes = (width as usize).div_ceil(8);
     let expected_size = offset + row_bytes * height as usize;
 
     if data.len() < expected_size {
@@ -1782,7 +1797,7 @@ fn encode_wbmp<W: Write>(image: &Image, writer: &mut W) -> CodecResult<()> {
     write_wbmp_int(writer, height)?;
 
     // Convert to 1-bit (use luminance threshold of 128)
-    let row_bytes = (width as usize + 7) / 8;
+    let row_bytes = (width as usize).div_ceil(8);
 
     for y in 0..height as usize {
         let mut row_data = vec![0u8; row_bytes];
@@ -1791,9 +1806,9 @@ fn encode_wbmp<W: Write>(image: &Image, writer: &mut W) -> CodecResult<()> {
             let pixel_idx = (y * width as usize + x) * 4;
 
             // Calculate luminance
-            let r = pixels[pixel_idx] as u32;
-            let g = pixels[pixel_idx + 1] as u32;
-            let b = pixels[pixel_idx + 2] as u32;
+            let r = u32::from(pixels[pixel_idx]);
+            let g = u32::from(pixels[pixel_idx + 1]);
+            let b = u32::from(pixels[pixel_idx + 2]);
             let luminance = (r * 299 + g * 587 + b * 114) / 1000;
 
             // Set bit if luminance > 128 (white)
@@ -1845,7 +1860,8 @@ pub struct AvifDecoder;
 
 impl AvifDecoder {
     /// Create a new AVIF decoder.
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self
     }
 }
@@ -1973,7 +1989,8 @@ pub struct AvifEncoder {
 
 impl AvifEncoder {
     /// Create a new AVIF encoder with default settings.
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self {
             quality: 80,
             speed: 6, // Balance between speed and quality
@@ -1981,12 +1998,14 @@ impl AvifEncoder {
     }
 
     /// Set the quality (0-100, higher is better quality but larger file).
+    #[must_use] 
     pub fn with_quality(mut self, quality: u8) -> Self {
         self.quality = quality.min(100);
         self
     }
 
     /// Set the encoding speed (1-10, higher is faster but lower quality).
+    #[must_use] 
     pub fn with_speed(mut self, speed: u8) -> Self {
         self.speed = speed.clamp(1, 10);
         self
@@ -2124,6 +2143,7 @@ pub enum BayerPattern {
 /// Returns an empty vector if the input length does not match
 /// `width * height` — this keeps the helper safe to call without
 /// propagating `Result` through every RAW pipeline.
+#[must_use] 
 pub fn demosaic_bayer(raw: &[u16], width: usize, height: usize, pattern: BayerPattern) -> Vec<u8> {
     if width == 0 || height == 0 || raw.len() != width * height {
         return Vec::new();
@@ -2152,7 +2172,7 @@ pub fn demosaic_bayer(raw: &[u16], width: usize, height: usize, pattern: BayerPa
     fn clamp_fetch(raw: &[u16], x: isize, y: isize, w: usize, h: usize) -> u32 {
         let cx = x.clamp(0, w as isize - 1) as usize;
         let cy = y.clamp(0, h as isize - 1) as usize;
-        raw[cy * w + cx] as u32
+        u32::from(raw[cy * w + cx])
     }
 
     let mut out = vec![0u8; width * height * 3];
@@ -2160,7 +2180,7 @@ pub fn demosaic_bayer(raw: &[u16], width: usize, height: usize, pattern: BayerPa
     for y in 0..height {
         for x in 0..width {
             let c = channel_at(pattern, x, y);
-            let v = raw[y * width + x] as u32;
+            let v = u32::from(raw[y * width + x]);
 
             // Cross = direct N/S/E/W neighbors; diag = NW/NE/SW/SE.
             let cross = (clamp_fetch(raw, x as isize - 1, y as isize, width, height)
@@ -2173,12 +2193,8 @@ pub fn demosaic_bayer(raw: &[u16], width: usize, height: usize, pattern: BayerPa
                 + clamp_fetch(raw, x as isize - 1, y as isize + 1, width, height)
                 + clamp_fetch(raw, x as isize + 1, y as isize + 1, width, height))
                 / 4;
-            let horiz = (clamp_fetch(raw, x as isize - 1, y as isize, width, height)
-                + clamp_fetch(raw, x as isize + 1, y as isize, width, height))
-                / 2;
-            let vert = (clamp_fetch(raw, x as isize, y as isize - 1, width, height)
-                + clamp_fetch(raw, x as isize, y as isize + 1, width, height))
-                / 2;
+            let horiz = u32::midpoint(clamp_fetch(raw, x as isize - 1, y as isize, width, height), clamp_fetch(raw, x as isize + 1, y as isize, width, height));
+            let vert = u32::midpoint(clamp_fetch(raw, x as isize, y as isize - 1, width, height), clamp_fetch(raw, x as isize, y as isize + 1, width, height));
 
             // Determine the green-axis layout: which of the two G
             // neighbor directions carries R vs B. The horizontal and
@@ -2226,6 +2242,7 @@ pub fn demosaic_bayer(raw: &[u16], width: usize, height: usize, pattern: BayerPa
 /// Convenience: [`demosaic_bayer`] with the most common [`BayerPattern::Rggb`]
 /// pattern.
 #[inline]
+#[must_use] 
 pub fn demosaic_bayer_rggb(raw: &[u16], width: usize, height: usize) -> Vec<u8> {
     demosaic_bayer(raw, width, height, BayerPattern::Rggb)
 }
@@ -2238,7 +2255,8 @@ pub struct RawDecoder;
 
 impl RawDecoder {
     /// Create a new RAW decoder.
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self
     }
 }
@@ -2523,8 +2541,7 @@ pub fn decode_image(data: &[u8]) -> CodecResult<Image> {
         ImageFormat::Avif => AvifDecoder::new().decode_bytes(data),
         ImageFormat::Raw => RawDecoder::new().decode_bytes(data),
         _ => Err(CodecError::Unsupported(format!(
-            "Format {:?} not supported",
-            format
+            "Format {format:?} not supported"
         ))),
     }
 }
@@ -2542,8 +2559,7 @@ pub fn get_image_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
         ImageFormat::Avif => get_avif_dimensions(data),
         ImageFormat::Raw => get_raw_dimensions(data),
         _ => Err(CodecError::Unsupported(format!(
-            "Format {:?} not supported",
-            format
+            "Format {format:?} not supported"
         ))),
     }
 }
@@ -2563,7 +2579,7 @@ fn get_png_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
 /// Returns true if `marker` is a Start-Of-Frame marker that carries frame
 /// dimensions. SOF markers span C0-CF *except* C4 (DHT), C8 (JPG), and CC
 /// (DAC), which are not frame headers.
-fn is_jpeg_sof_marker(marker: u8) -> bool {
+const fn is_jpeg_sof_marker(marker: u8) -> bool {
     matches!(marker,
         0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF)
 }
@@ -2604,8 +2620,8 @@ fn get_jpeg_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
             // Layout from the marker byte at `j`: length(2) at j+1..j+3,
             // then the SOF payload precision(1) height(2) width(2).
             if j + 7 < data.len() {
-                let height = u16::from_be_bytes([data[j + 4], data[j + 5]]) as i32;
-                let width = u16::from_be_bytes([data[j + 6], data[j + 7]]) as i32;
+                let height = i32::from(u16::from_be_bytes([data[j + 4], data[j + 5]]));
+                let width = i32::from(u16::from_be_bytes([data[j + 6], data[j + 7]]));
                 return Ok((width, height));
             }
             break;
@@ -2658,12 +2674,12 @@ fn get_ico_dimensions(data: &[u8]) -> CodecResult<(i32, i32)> {
         let width = if data[entry_offset] == 0 {
             256
         } else {
-            data[entry_offset] as i32
+            i32::from(data[entry_offset])
         };
         let height = if data[entry_offset + 1] == 0 {
             256
         } else {
-            data[entry_offset + 1] as i32
+            i32::from(data[entry_offset + 1])
         };
 
         if width * height > best_width * best_height {
@@ -2828,9 +2844,7 @@ mod tests {
                 assert_eq!(
                     src_pixels[src_off..src_off + 3],
                     dst_pixels[dst_off..dst_off + 3],
-                    "pixel mismatch at ({}, {})",
-                    x,
-                    y
+                    "pixel mismatch at ({x}, {y})"
                 );
             }
         }
@@ -3077,7 +3091,7 @@ mod tests {
         assert_eq!(&px[12..16], &[255, 255, 0, 255], "index 3 -> yellow");
     }
 
-    /// A 16-bit-per-channel RGB PNG must decode via STRIP_16 to the high
+    /// A 16-bit-per-channel RGB PNG must decode via `STRIP_16` to the high
     /// byte of each sample. Without the transform, the `png` crate yields a
     /// 6-byte-per-pixel buffer our RGBA8 path cannot interpret.
     #[cfg(feature = "png")]
@@ -3153,7 +3167,7 @@ mod tests {
     }
 
     /// Differential check for the shared premul rounding landed in core:
-    /// premul(200, a=130) must round to 102 (SkMulDiv255Round), not truncate
+    /// premul(200, a=130) must round to 102 (`SkMulDiv255Round`), not truncate
     /// to 101.
     #[test]
     fn test_premul_rounding_matches_skia() {
@@ -3164,9 +3178,9 @@ mod tests {
 
     // ---- BMP 32-bit alpha / bitfields -----------------------------------
 
-    /// Build a standalone 32-bit BI_RGB BMP by hand (BITMAPINFOHEADER). The
-    /// stored 4th byte is 0 (padding), but SkBmpCodec treats standalone
-    /// 32-bit BI_RGB as opaque (kBGRX), so decoded alpha must be 255.
+    /// Build a standalone 32-bit `BI_RGB` BMP by hand (BITMAPINFOHEADER). The
+    /// stored 4th byte is 0 (padding), but `SkBmpCodec` treats standalone
+    /// 32-bit `BI_RGB` as opaque (kBGRX), so decoded alpha must be 255.
     #[test]
     fn test_bmp_32bit_bi_rgb_is_opaque() {
         let mut bmp = build_bmp_header(1, 1, 32, 0);
@@ -3182,7 +3196,7 @@ mod tests {
         );
     }
 
-    /// A 32-bit BI_BITFIELDS BMP with explicit RGBA masks must honor them.
+    /// A 32-bit `BI_BITFIELDS` BMP with explicit RGBA masks must honor them.
     #[test]
     fn test_bmp_32bit_bitfields_applies_masks() {
         // Masks: R=0x00FF0000 G=0x0000FF00 B=0x000000FF A=0xFF000000.
@@ -3386,7 +3400,7 @@ mod tests {
         // Pixel (0,0) is outside the frame -> transparent.
         assert_eq!(&px[0..4], &[0, 0, 0, 0], "corner is transparent");
         // Pixel (1,1) is the frame's top-left -> white opaque.
-        let off = (1 * 4 + 1) * 4;
+        let off = (4 + 1) * 4;
         assert_eq!(
             &px[off..off + 4],
             &[255, 255, 255, 255],

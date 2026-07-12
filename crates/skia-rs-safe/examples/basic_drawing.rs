@@ -111,12 +111,12 @@ fn main() {
         match encoder.encode_bytes(&image) {
             Ok(png_data) => {
                 if let Err(e) = std::fs::write(output_path, &png_data) {
-                    eprintln!("Failed to write file: {}", e);
+                    eprintln!("Failed to write file: {e}");
                 } else {
-                    println!("\nSaved output to: {}", output_path);
+                    println!("\nSaved output to: {output_path}");
                 }
             }
-            Err(e) => eprintln!("Failed to encode PNG: {}", e),
+            Err(e) => eprintln!("Failed to encode PNG: {e}"),
         }
     }
 

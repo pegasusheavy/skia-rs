@@ -79,7 +79,7 @@ struct PathOps<'a> {
 }
 
 impl<'a> PathOps<'a> {
-    fn new(path1: &'a Path, path2: &'a Path, op: PathOp) -> Self {
+    const fn new(path1: &'a Path, path2: &'a Path, op: PathOp) -> Self {
         Self { path1, path2, op }
     }
 
@@ -188,7 +188,7 @@ struct Polygon {
 }
 
 impl Polygon {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             points: Vec::new(),
             is_hole: false,
@@ -253,7 +253,7 @@ impl Polygon {
 
 #[cfg(test)]
 fn is_left(p0: Point, p1: Point, p2: Point) -> Scalar {
-    (p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y)
+    (p1.x - p0.x).mul_add(p2.y - p0.y, -((p2.x - p0.x) * (p1.y - p0.y)))
 }
 
 /// Convert a path to a list of polygons.
@@ -372,13 +372,13 @@ fn linearize_cubic(
 fn distance_to_line(p: Point, line_start: Point, line_end: Point) -> Scalar {
     let dx = line_end.x - line_start.x;
     let dy = line_end.y - line_start.y;
-    let len_sq = dx * dx + dy * dy;
+    let len_sq = dx.mul_add(dx, dy * dy);
 
     if len_sq < 1e-10 {
         return p.distance(&line_start);
     }
 
-    let cross = (p.x - line_start.x) * dy - (p.y - line_start.y) * dx;
+    let cross = (p.x - line_start.x).mul_add(dy, -((p.y - line_start.y) * dx));
     cross.abs() / len_sq.sqrt()
 }
 
@@ -403,8 +403,8 @@ fn skia_polygons_to_geo(polys: &[Polygon]) -> MultiPolygon<f64> {
             .points
             .iter()
             .map(|p| Coord {
-                x: p.x as f64,
-                y: p.y as f64,
+                x: f64::from(p.x),
+                y: f64::from(p.y),
             })
             .collect();
 
@@ -617,7 +617,7 @@ mod tests {
         let polygon = &polygons[0];
         let mut arc_point_count = 0;
         for p in &polygon.points {
-            let dist_sq = p.x * p.x + p.y * p.y;
+            let dist_sq = p.x.mul_add(p.x, p.y * p.y);
             if dist_sq < 0.5 {
                 // Origin — skip
                 continue;
@@ -634,8 +634,7 @@ mod tests {
         // Verify we actually got subdivided arc points, not just endpoints.
         assert!(
             arc_point_count >= 4,
-            "Expected at least 4 arc points from subdivision, got {}",
-            arc_point_count
+            "Expected at least 4 arc points from subdivision, got {arc_point_count}"
         );
     }
 

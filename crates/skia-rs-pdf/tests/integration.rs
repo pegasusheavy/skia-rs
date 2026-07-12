@@ -3,11 +3,11 @@
 //! Covers:
 //! - Producing a PDF that mixes text, images, transparency, and PDF/A
 //!   metadata, and sanity-checking the resulting bytes (resources dict
-//!   populated; XObjects, Font, ExtGState all referenced; xref/trailer
+//!   populated; `XObjects`, Font, `ExtGState` all referenced; xref/trailer
 //!   present).
 //! - TrueType embedding: feeding a real `demo.ttf` through `PdfFont::
 //!   truetype` and asserting that the emitted PDF contains the font's
-//!   FontFile2 stream, a matching FontDescriptor, and populated Widths.
+//!   `FontFile2` stream, a matching `FontDescriptor`, and populated Widths.
 
 use skia_rs_core::{Color, Rect};
 use skia_rs_paint::Paint;
@@ -138,7 +138,7 @@ fn truetype_embedding_emits_fontfile2_and_widths() {
 
     // The TTF is compressed (flate) inside a FontFile2 stream. We detect it
     // via the object header marker.
-    assert!(s.contains("/FontFile2"), "no FontFile2 stream: {}", s);
+    assert!(s.contains("/FontFile2"), "no FontFile2 stream: {s}");
     assert!(s.contains("/FontDescriptor"), "no FontDescriptor reference");
     assert!(s.contains("/Subtype /TrueType"));
     // Subset prefix on the BaseFont (six uppercase letters + '+').
@@ -158,7 +158,7 @@ fn truetype_embedding_emits_fontfile2_and_widths() {
     );
 }
 
-/// The byte-level subsetter must produce a FontFile2 stream whose
+/// The byte-level subsetter must produce a `FontFile2` stream whose
 /// declared `/Length1` (the uncompressed byte length of the TTF data)
 /// does not exceed the original font size. For the demo fixture which
 /// has only 2 glyphs, the subset is typically comparable in size to the
@@ -273,8 +273,7 @@ fn type0_font_emits_descendant_fonts_array() {
     assert!(s.contains("/Subtype /Type0"), "{}", s);
     assert!(
         s.contains("/DescendantFonts ["),
-        "missing /DescendantFonts: {}",
-        s
+        "missing /DescendantFonts: {s}"
     );
     assert!(s.contains("/Subtype /CIDFontType2"));
     assert!(s.contains("/CIDToGIDMap /Identity"));
@@ -310,8 +309,7 @@ fn standard_font_encoding_is_omitted_only_for_symbolic_fonts() {
     let s = String::from_utf8_lossy(&buf);
     assert!(
         !s.contains("/Encoding"),
-        "Symbol must omit /Encoding to use its built-in encoding: {}",
-        s
+        "Symbol must omit /Encoding to use its built-in encoding: {s}"
     );
 
     let mut doc = PdfDocument::new();
@@ -329,8 +327,7 @@ fn standard_font_encoding_is_omitted_only_for_symbolic_fonts() {
     let s = String::from_utf8_lossy(&buf);
     assert!(
         !s.contains("/Encoding"),
-        "ZapfDingbats must omit /Encoding to use its built-in encoding: {}",
-        s
+        "ZapfDingbats must omit /Encoding to use its built-in encoding: {s}"
     );
 
     let mut doc = PdfDocument::new();
@@ -348,8 +345,7 @@ fn standard_font_encoding_is_omitted_only_for_symbolic_fonts() {
     let s = String::from_utf8_lossy(&buf);
     assert!(
         s.contains("/Encoding /WinAnsiEncoding"),
-        "Helvetica should keep /Encoding /WinAnsiEncoding: {}",
-        s
+        "Helvetica should keep /Encoding /WinAnsiEncoding: {s}"
     );
 }
 
@@ -358,7 +354,7 @@ fn standard_font_encoding_is_omitted_only_for_symbolic_fonts() {
 /// 2-byte CIDs. `draw_text`/`draw_text_with_font` don't yet resolve
 /// per-glyph CIDs, so drawing live text through such a font must fail
 /// closed with `Err(PdfError::Unsupported)` instead of silently emitting
-/// 1-byte WinAnsi codes against a 2-byte encoding, which would decode as
+/// 1-byte `WinAnsi` codes against a 2-byte encoding, which would decode as
 /// garbage glyphs.
 #[test]
 fn type0_font_draw_text_fails_closed() {
@@ -378,19 +374,17 @@ fn type0_font_draw_text_fails_closed() {
         Err(skia_rs_pdf::PdfError::Unsupported(msg)) => {
             assert!(
                 msg.contains("Type0"),
-                "expected message to mention Type0/CID font, got: {}",
-                msg
+                "expected message to mention Type0/CID font, got: {msg}"
             );
         }
         other => panic!(
             "draw_text against a Type0/Identity-H font must fail closed with \
-             Err(PdfError::Unsupported), not emit 1-byte codes; got {:?}",
-            other
+             Err(PdfError::Unsupported), not emit 1-byte codes; got {other:?}"
         ),
     }
 }
 
-/// PDF/A OutputIntents require a real, parseable ICC profile in
+/// PDF/A `OutputIntents` require a real, parseable ICC profile in
 /// `/DestOutputProfile` — a placeholder byte string is not valid ICC data
 /// and fails conformance even though the surrounding PDF object looks
 /// structurally correct. Decompress the emitted stream and check for the
@@ -551,7 +545,7 @@ fn build_synthetic_ttf(num_glyphs: u16, outline_bytes: usize) -> Vec<u8> {
     sorted.sort_by(|a, b| a.0.cmp(b.0));
 
     let n = sorted.len() as u16;
-    let entry_selector = (n as f64).log2() as u16;
+    let entry_selector = f64::from(n).log2() as u16;
     let search_range = (1u16 << entry_selector) * 16;
     let range_shift = n * 16 - search_range;
 
@@ -617,7 +611,7 @@ fn build_minimal_cmap(num_glyphs: u16) -> Vec<u8> {
     //   reservedPad(u16)=0, startCode[seg_count], idDelta[seg_count],
     //   idRangeOffset[seg_count], glyphIdArray (empty)
     let seg_count_x2 = seg_count * 2;
-    let entry_selector_4 = (seg_count as f64).log2() as u16;
+    let entry_selector_4 = f64::from(seg_count).log2() as u16;
     let search_range_4 = 2 * (1u16 << entry_selector_4);
     let range_shift_4 = seg_count_x2 - search_range_4;
 

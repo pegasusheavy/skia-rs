@@ -1,8 +1,8 @@
 //! Adaptive curve flattening utilities.
 //!
 //! Convert Bezier curves (quadratic, cubic, conic) into polylines with
-//! adaptive tolerance based on chord-midpoint deviation. Used by PathMeasure,
-//! DashEffect, stroke_to_fill, and boolean ops.
+//! adaptive tolerance based on chord-midpoint deviation. Used by `PathMeasure`,
+//! `DashEffect`, `stroke_to_fill`, and boolean ops.
 
 use skia_rs_core::{Point, Scalar};
 
@@ -74,20 +74,20 @@ fn flatten_cubic_recursive(
 ) {
     let dx = end.x - start.x;
     let dy = end.y - start.y;
-    let chord_len_sq = dx * dx + dy * dy;
+    let chord_len_sq = dx.mul_add(dx, dy * dy);
 
     let dev_of = |c: Point| -> Scalar {
         if chord_len_sq > 1e-9 {
-            let t = ((c.x - start.x) * dx + (c.y - start.y) * dy) / chord_len_sq;
-            let proj_x = start.x + t * dx;
-            let proj_y = start.y + t * dy;
+            let t = (c.x - start.x).mul_add(dx, (c.y - start.y) * dy) / chord_len_sq;
+            let proj_x = t.mul_add(dx, start.x);
+            let proj_y = t.mul_add(dy, start.y);
             let pdx = c.x - proj_x;
             let pdy = c.y - proj_y;
-            pdx * pdx + pdy * pdy
+            pdx.mul_add(pdx, pdy * pdy)
         } else {
             let pdx = c.x - start.x;
             let pdy = c.y - start.y;
-            pdx * pdx + pdy * pdy
+            pdx.mul_add(pdx, pdy * pdy)
         }
     };
 
@@ -128,11 +128,11 @@ pub fn flatten_conic_adaptive(
 
 fn eval_conic(start: Point, ctrl: Point, end: Point, w: Scalar, t: Scalar) -> Point {
     let mt = 1.0 - t;
-    let denom = mt * mt + 2.0 * w * t * mt + t * t;
+    let denom = t.mul_add(t, mt * mt + 2.0 * w * t * mt);
     let inv_denom = 1.0 / denom;
     Point::new(
-        (start.x * mt * mt + 2.0 * ctrl.x * w * t * mt + end.x * t * t) * inv_denom,
-        (start.y * mt * mt + 2.0 * ctrl.y * w * t * mt + end.y * t * t) * inv_denom,
+        (end.x * t).mul_add(t, (start.x * mt).mul_add(mt, 2.0 * ctrl.x * w * t * mt)) * inv_denom,
+        (end.y * t).mul_add(t, (start.y * mt).mul_add(mt, 2.0 * ctrl.y * w * t * mt)) * inv_denom,
     )
 }
 
@@ -248,7 +248,7 @@ mod tests {
             0.01,
         );
         for p in &output {
-            let r = (p.x * p.x + p.y * p.y).sqrt();
+            let r = p.x.hypot(p.y);
             assert!(
                 (r - 1.0).abs() < 0.05,
                 "Point not on unit circle: ({}, {})",

@@ -6,7 +6,7 @@
 //! - Adding metadata to the PDF
 //! - Saving the PDF to a file
 //!
-//! Run with: cargo run --example pdf_generator --features "pdf"
+//! Run with: cargo run --example `pdf_generator` --features "pdf"
 
 fn main() {
     #[cfg(feature = "pdf")]
