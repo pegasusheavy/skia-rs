@@ -209,20 +209,36 @@ pub fn render_svg(dom: &SvgDom, canvas: &mut Canvas<'_>) {
         apply_stylesheet(&mut working, &crate::css::Stylesheet::new());
     }
 
-    let ctx = RenderContext::new(&working);
-
     // Map the viewBox into the device viewport honouring preserveAspectRatio
     // (SkSVGSVG::onPrepareToRender + ComputeViewboxMatrix).
     let view_box = working.get_view_box();
-    if view_box.width() <= 0.0 || view_box.height() <= 0.0 {
-        return;
-    }
     let viewport = Rect::from_xywh(
         0.0,
         0.0,
         canvas.width() as Scalar,
         canvas.height() as Scalar,
     );
+
+    render_dom_into_viewport(&working, canvas, viewport, view_box);
+}
+
+/// Shared render prologue for [`render_svg`] and [`render_svg_in_container`]:
+/// builds the render context, maps `view_box` into `viewport` honouring
+/// `preserveAspectRatio`, and walks the DOM.
+///
+/// `working` must already have its stylesheet applied. No-ops when
+/// `view_box` is degenerate.
+fn render_dom_into_viewport(
+    working: &SvgDom,
+    canvas: &mut Canvas<'_>,
+    viewport: Rect,
+    view_box: Rect,
+) {
+    if view_box.width() <= 0.0 || view_box.height() <= 0.0 {
+        return;
+    }
+
+    let ctx = RenderContext::new(working);
     let content_matrix =
         compute_viewbox_matrix(&view_box, &viewport, working.preserve_aspect_ratio);
 
@@ -936,28 +952,12 @@ pub fn render_svg_in_container(
         apply_stylesheet(&mut working, &crate::css::Stylesheet::new());
     }
 
-    let ctx = RenderContext::new(&working);
-
     // The document viewport is the container; a viewBox (when present) is
     // mapped into it, otherwise the mapping is identity.
     let viewport = Rect::from_xywh(0.0, 0.0, container_w, container_h);
     let view_box = working.view_box.unwrap_or(viewport);
-    if view_box.width() <= 0.0 || view_box.height() <= 0.0 {
-        return;
-    }
-    let content_matrix =
-        compute_viewbox_matrix(&view_box, &viewport, working.preserve_aspect_ratio);
 
-    canvas.save();
-    canvas.concat(&content_matrix);
-    render_node(
-        &working.root,
-        canvas,
-        &ctx,
-        &PresentationState::initial(),
-        0,
-    );
-    canvas.restore();
+    render_dom_into_viewport(&working, canvas, viewport, view_box);
 }
 
 /// Render an SVG string to a new surface.
