@@ -5,6 +5,7 @@
 
 use crate::flatten::{flatten_conic_adaptive, flatten_cubic_adaptive, flatten_quad_adaptive};
 use crate::{Path, PathBuilder, PathElement};
+use skia_rs_core::cast::{ceil_to_i32, scalar_from_i32};
 use skia_rs_core::{Point, Scalar};
 
 /// Tolerance for flattening curves to polylines before stroking.
@@ -116,7 +117,7 @@ pub fn stroke_to_fill(path: &Path, params: &StrokeParams) -> Option<Path> {
     let mut current_contour: Vec<Point> = Vec::new();
     let mut current_closed = false;
 
-    for element in path.iter() {
+    for element in path {
         match element {
             PathElement::Move(p) => {
                 if !current_contour.is_empty() {
@@ -288,9 +289,9 @@ fn add_join(
             } else if delta < -std::f32::consts::PI {
                 delta += std::f32::consts::TAU;
             }
-            let n_segs = ((delta.abs() / std::f32::consts::FRAC_PI_4).ceil() as usize).max(4);
+            let n_segs = ceil_to_i32(delta.abs() / std::f32::consts::FRAC_PI_4).max(4);
             for k in 0..=n_segs {
-                let t = k as Scalar / n_segs as Scalar;
+                let t = scalar_from_i32(k) / scalar_from_i32(n_segs);
                 let a = delta.mul_add(t, start_angle);
                 left.push(Point::new(
                     a.cos().mul_add(half_width, vertex.x),
@@ -472,10 +473,10 @@ fn emit_cap_dot(builder: &mut PathBuilder, center: Point, half_width: Scalar, ca
             builder.close();
         }
         StrokeCap::Round => {
-            let steps = 16;
+            let steps: i32 = 16;
             builder.move_to(center.x + half_width, center.y);
             for i in 1..steps {
-                let a = (i as Scalar / steps as Scalar) * std::f32::consts::TAU;
+                let a = (scalar_from_i32(i) / scalar_from_i32(steps)) * std::f32::consts::TAU;
                 builder.line_to(
                     a.cos().mul_add(half_width, center.x),
                     a.sin().mul_add(half_width, center.y),
@@ -517,7 +518,7 @@ fn add_cap(
         }
         StrokeCap::Round => {
             // Approximate semicircle with line segments
-            let steps = 8;
+            let steps: i32 = 8;
             let start_angle = if is_start {
                 normal.y.atan2(normal.x)
             } else {
@@ -525,8 +526,8 @@ fn add_cap(
             };
 
             for i in 0..=steps {
-                let t = i as Scalar / steps as Scalar;
-                let angle = start_angle + t * std::f32::consts::PI;
+                let t = scalar_from_i32(i) / scalar_from_i32(steps);
+                let angle = t.mul_add(std::f32::consts::PI, start_angle);
                 let x = angle.cos().mul_add(half_width, center.x);
                 let y = angle.sin().mul_add(half_width, center.y);
                 builder.line_to(x, y);
@@ -652,10 +653,16 @@ mod tests {
             .with_join(StrokeJoin::Bevel)
             .with_miter_limit(10.0);
 
-        assert_eq!(params.width, 2.0);
+        #[allow(clippy::float_cmp, reason = "exact test assertion, values round-trip literals")]
+        {
+            assert_eq!(params.width, 2.0);
+        }
         assert_eq!(params.cap, StrokeCap::Round);
         assert_eq!(params.join, StrokeJoin::Bevel);
-        assert_eq!(params.miter_limit, 10.0);
+        #[allow(clippy::float_cmp, reason = "exact test assertion, values round-trip literals")]
+        {
+            assert_eq!(params.miter_limit, 10.0);
+        }
     }
 
     #[test]

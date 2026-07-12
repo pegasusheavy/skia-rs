@@ -104,10 +104,10 @@ fn flatten_cubic_recursive(
     let m3 = Point::new((ctrl2.x + end.x) * 0.5, (ctrl2.y + end.y) * 0.5);
     let m12 = Point::new((m1.x + m2.x) * 0.5, (m1.y + m2.y) * 0.5);
     let m23 = Point::new((m2.x + m3.x) * 0.5, (m2.y + m3.y) * 0.5);
-    let m123 = Point::new((m12.x + m23.x) * 0.5, (m12.y + m23.y) * 0.5);
+    let mid = Point::new((m12.x + m23.x) * 0.5, (m12.y + m23.y) * 0.5);
 
-    flatten_cubic_recursive(output, start, m1, m12, m123, tolerance, depth + 1);
-    flatten_cubic_recursive(output, m123, m23, m3, end, tolerance, depth + 1);
+    flatten_cubic_recursive(output, start, m1, m12, mid, tolerance, depth + 1);
+    flatten_cubic_recursive(output, mid, m23, m3, end, tolerance, depth + 1);
 }
 
 /// Flatten a conic (rational quadratic Bezier) into line segments.
@@ -136,6 +136,10 @@ fn eval_conic(start: Point, ctrl: Point, end: Point, w: Scalar, t: Scalar) -> Po
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "faithful port of the recursive conic flattening subdivision helper's parameter list (endpoints, weight, t-range, tolerance, depth)"
+)]
 fn flatten_conic_recursive(
     output: &mut Vec<Point>,
     start: Point,

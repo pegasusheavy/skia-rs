@@ -54,7 +54,7 @@ pub enum PathOp {
 ///
 /// [`BooleanOps`]: geo::BooleanOps
 pub fn op(path1: &Path, path2: &Path, op: PathOp) -> Option<Path> {
-    PathOps::new(path1, path2, op).compute()
+    Some(PathOps::new(path1, path2, op).compute())
 }
 
 /// Simplify a path by resolving self-intersections and overlaps.
@@ -83,23 +83,23 @@ impl<'a> PathOps<'a> {
         Self { path1, path2, op }
     }
 
-    fn compute(&self) -> Option<Path> {
+    fn compute(&self) -> Path {
         // Handle empty paths
         if self.path1.is_empty() && self.path2.is_empty() {
-            return Some(Path::new());
+            return Path::new();
         }
 
         if self.path1.is_empty() {
             return match self.op {
-                PathOp::Union | PathOp::ReverseDifference | PathOp::Xor => Some(self.path2.clone()),
-                PathOp::Difference | PathOp::Intersect => Some(Path::new()),
+                PathOp::Union | PathOp::ReverseDifference | PathOp::Xor => self.path2.clone(),
+                PathOp::Difference | PathOp::Intersect => Path::new(),
             };
         }
 
         if self.path2.is_empty() {
             return match self.op {
-                PathOp::Union | PathOp::Difference | PathOp::Xor => Some(self.path1.clone()),
-                PathOp::Intersect | PathOp::ReverseDifference => Some(Path::new()),
+                PathOp::Union | PathOp::Difference | PathOp::Xor => self.path1.clone(),
+                PathOp::Intersect | PathOp::ReverseDifference => Path::new(),
             };
         }
 
@@ -112,18 +112,18 @@ impl<'a> PathOps<'a> {
                 PathOp::Union => {
                     // Combine both paths
                     let mut builder = PathBuilder::new();
-                    self.add_path_to_builder(&mut builder, self.path1);
-                    self.add_path_to_builder(&mut builder, self.path2);
-                    Some(builder.build())
+                    Self::add_path_to_builder(&mut builder, self.path1);
+                    Self::add_path_to_builder(&mut builder, self.path2);
+                    builder.build()
                 }
-                PathOp::Intersect => Some(Path::new()),
-                PathOp::Difference => Some(self.path1.clone()),
-                PathOp::ReverseDifference => Some(self.path2.clone()),
+                PathOp::Intersect => Path::new(),
+                PathOp::Difference => self.path1.clone(),
+                PathOp::ReverseDifference => self.path2.clone(),
                 PathOp::Xor => {
                     let mut builder = PathBuilder::new();
-                    self.add_path_to_builder(&mut builder, self.path1);
-                    self.add_path_to_builder(&mut builder, self.path2);
-                    Some(builder.build())
+                    Self::add_path_to_builder(&mut builder, self.path1);
+                    Self::add_path_to_builder(&mut builder, self.path2);
+                    builder.build()
                 }
             };
         }
@@ -132,8 +132,8 @@ impl<'a> PathOps<'a> {
         self.compute_polygon_ops()
     }
 
-    fn add_path_to_builder(&self, builder: &mut PathBuilder, path: &Path) {
-        for elem in path.iter() {
+    fn add_path_to_builder(builder: &mut PathBuilder, path: &Path) {
+        for elem in path {
             match elem {
                 PathElement::Move(p) => {
                     builder.move_to(p.x, p.y);
@@ -157,7 +157,7 @@ impl<'a> PathOps<'a> {
         }
     }
 
-    fn compute_polygon_ops(&self) -> Option<Path> {
+    fn compute_polygon_ops(&self) -> Path {
         // Convert paths to polygons (linearize curves)
         let polys1 = path_to_polygons(self.path1, 0.5);
         let polys2 = path_to_polygons(self.path2, 0.5);
@@ -172,7 +172,7 @@ impl<'a> PathOps<'a> {
         };
 
         // Convert result back to path
-        Some(polygons_to_path(&result_polys))
+        polygons_to_path(&result_polys)
     }
 }
 
@@ -263,7 +263,7 @@ fn path_to_polygons(path: &Path, tolerance: Scalar) -> Vec<Polygon> {
     let mut current_point = Point::new(0.0, 0.0);
     let mut first_point = Point::new(0.0, 0.0);
 
-    for elem in path.iter() {
+    for elem in path {
         match elem {
             PathElement::Move(p) => {
                 if !current_poly.is_empty() {
@@ -442,6 +442,10 @@ fn skia_polygons_to_geo(polys: &[Polygon]) -> MultiPolygon<f64> {
 /// polygon as a separate subpath, so the ordering here matters:
 /// shells come first, then the matching holes, and `is_hole` is set
 /// correctly so downstream consumers can distinguish them.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "narrowing f64 (geo crate's coordinate type) back to Scalar (f32); path coordinates are f32 throughout, so this is an unavoidable boundary conversion at the boolean-ops adapter"
+)]
 fn geo_to_skia_polygons(mp: &MultiPolygon<f64>) -> Vec<Polygon> {
     let mut out = Vec::new();
     for poly in mp.iter() {

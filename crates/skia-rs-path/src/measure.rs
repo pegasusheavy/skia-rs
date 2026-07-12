@@ -138,7 +138,10 @@ impl PathMeasure {
         // inverted (start > stop) range.
         let start = start.max(0.0);
         let end = end.min(self.total_length);
-        if !(start < end) {
+        // Reject NaN or an inverted (start >= end) range. `partial_cmp` is used
+        // instead of negating `start < end` so NaN (which fails every ordered
+        // comparison) is handled explicitly rather than via De Morgan negation.
+        if start.partial_cmp(&end) != Some(std::cmp::Ordering::Less) {
             return None;
         }
 
@@ -220,6 +223,10 @@ impl PathMeasure {
         &contour.segments[idx]
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "faithful port of SkContourMeasureIter's per-verb contour length/segment accumulation"
+    )]
     fn compute_lengths(&mut self, path: &Path) {
         let mut current_contour: Option<Contour> = None;
         let mut current_pt = Point::new(0.0, 0.0);
@@ -241,7 +248,7 @@ impl PathMeasure {
             }
         };
 
-        for elem in path.iter() {
+        for elem in path {
             match elem {
                 PathElement::Move(p) => {
                     if let Some(c) = current_contour.take() {
@@ -364,7 +371,10 @@ mod tests {
     fn test_path_measure_empty_path() {
         let path = PathBuilder::new().build();
         let measure = PathMeasure::new(&path);
-        assert_eq!(measure.length(), 0.0);
+        #[allow(clippy::float_cmp, reason = "exact test assertion, value round-trips a literal")]
+        {
+            assert_eq!(measure.length(), 0.0);
+        }
         assert_eq!(measure.contour_count(), 0);
     }
 

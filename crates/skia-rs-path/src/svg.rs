@@ -14,6 +14,11 @@ use skia_rs_core::Scalar;
 /// let path = parse_svg_path("M 10 10 L 100 100 Z").unwrap();
 /// assert!(!path.is_empty());
 /// ```
+///
+/// # Errors
+///
+/// Returns [`SvgPathError`] if `d` is not well-formed SVG path data (e.g. an
+/// unknown command, a malformed number, or a missing initial `moveto`).
 pub fn parse_svg_path(d: &str) -> Result<Path, SvgPathError> {
     let parser = SvgPathParser::new(d);
     parser.parse()
@@ -573,11 +578,10 @@ mod tests {
         let path = parse_svg_path("M0 0 Q 10 10 20 0 S 40 10 50 0").unwrap();
         let c1 = path
             .iter()
-            .filter_map(|e| match e {
+            .find_map(|e| match e {
                 PathElement::Cubic(c1, _, _) => Some(c1),
                 _ => None,
             })
-            .next()
             .expect("expected cubic from S");
         assert!(
             (c1.x - 20.0).abs() < 1e-3 && (c1.y - 0.0).abs() < 1e-3,
@@ -592,11 +596,10 @@ mod tests {
         let path = parse_svg_path("M0 0 C 0 10 10 10 20 0 T 40 0").unwrap();
         let c = path
             .iter()
-            .filter_map(|e| match e {
+            .find_map(|e| match e {
                 PathElement::Quad(c, _) => Some(c),
                 _ => None,
             })
-            .next()
             .expect("expected quad from T");
         assert!(
             (c.x - 20.0).abs() < 1e-3 && (c.y - 0.0).abs() < 1e-3,

@@ -1,5 +1,6 @@
 //! Path data structure and iteration.
 
+use skia_rs_core::cast::scalar_from_i32;
 use skia_rs_core::{Point, Rect, Scalar};
 use smallvec::SmallVec;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -347,9 +348,8 @@ impl Path {
             return false;
         }
 
-        let start = match elements[0] {
-            PathElement::Move(p) => p,
-            _ => return false,
+        let PathElement::Move(start) = elements[0] else {
+            return false;
         };
         if !matches!(elements[5], PathElement::Close) {
             return false;
@@ -388,10 +388,8 @@ impl Path {
         }
 
         for elem in &elements[1..5] {
-            let end = match *elem {
-                PathElement::Cubic(_, _, p) => p,
-                PathElement::Conic(_, p, _) => p,
-                _ => return false,
+            let (PathElement::Cubic(_, _, end) | PathElement::Conic(_, end, _)) = *elem else {
+                return false;
             };
             if !on_cardinal(end) {
                 return false;
@@ -534,12 +532,19 @@ impl Path {
 
             // If there is more than 1 distinct point at the y-max, take the
             // x-min and x-max of them and subtract to compute the direction.
-            let cross = if pts[(index + 1) % n].y == pts[index].y {
+            #[allow(
+                clippy::float_cmp,
+                reason = "exact y equality mirrors upstream SkPathPriv::ComputeFirstDirection's bitwise comparison"
+            )]
+            let same_y = pts[(index + 1) % n].y == pts[index].y;
+            let cross = if same_y {
                 let (min_index, max_index) = find_min_max_x_at_y(pts, index);
                 if min_index == max_index {
                     try_crossprod(pts, index)
                 } else {
-                    (min_index as Scalar) - (max_index as Scalar)
+                    let min_i32 = i32::try_from(min_index).unwrap_or(i32::MAX);
+                    let max_i32 = i32::try_from(max_index).unwrap_or(i32::MAX);
+                    scalar_from_i32(min_i32) - scalar_from_i32(max_i32)
                 }
             } else {
                 try_crossprod(pts, index)
@@ -591,6 +596,11 @@ impl Path {
     /// Ported from `SkPathPriv::ReverseAddPath`: walks contours back-to-front,
     /// emitting `Move` first, points in reverse order with per-verb point-count
     /// handling, and preserving one `Close` per originally-closed contour.
+    #[allow(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        reason = "faithful port of SkPathPriv::ReverseAddPath's signed back-to-front index walk; converting to unsigned arithmetic risks changing underflow/panic behavior"
+    )]
     pub fn reverse(&mut self) {
         if self.verbs.is_empty() {
             return;
@@ -678,6 +688,7 @@ impl Path {
     }
 
     /// Create a transformed copy of the path.
+    #[must_use]
     pub fn transformed(&self, matrix: &skia_rs_core::Matrix) -> Self {
         let mut result = self.clone();
         result.transform(matrix);
@@ -709,6 +720,7 @@ impl Path {
         use crate::flatten::{
             flatten_conic_adaptive, flatten_cubic_adaptive, flatten_quad_adaptive,
         };
+        const TOL: Scalar = 0.1;
 
         let is_inverse = self.fill_type.is_inverse();
         if self.is_empty() {
@@ -728,10 +740,9 @@ impl Path {
         let mut current = Point::zero();
         let mut contour_start = Point::zero();
         let mut needs_close_line = false;
-        const TOL: Scalar = 0.1;
         let mut pts: Vec<Point> = Vec::with_capacity(32);
 
-        for element in self.iter() {
+        for element in self {
             match element {
                 PathElement::Move(p) => {
                     if needs_close_line {
@@ -821,6 +832,11 @@ impl Path {
     ///
     /// Conics fall back to control-polygon bounds (exact extrema for rational
     /// curves would require solving a quartic).
+    #[allow(
+        clippy::too_many_lines,
+        clippy::many_single_char_names,
+        reason = "faithful port of Skia's per-verb curve-extrema tight-bounds computation; short names (s, e, cv, c1v, c2v, a, b, cc) mirror the algebraic derivation"
+    )]
     pub fn tight_bounds(&self) -> Rect {
         if self.verbs.is_empty() {
             return Rect::EMPTY;
@@ -852,7 +868,7 @@ impl Path {
 
         let mut current = Point::new(0.0, 0.0);
 
-        for elem in self.iter() {
+        for elem in self {
             match elem {
                 PathElement::Move(p) | PathElement::Line(p) => {
                     include(p, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
@@ -915,8 +931,7 @@ impl Path {
                             }
                         }
 
-                        for i in 0..n_roots {
-                            let t = roots[i];
+                        for &t in &roots[..n_roots] {
                             if t.is_finite() && t > 0.0 && t < 1.0 {
                                 let mt = 1.0 - t;
                                 let val = (t * t * t).mul_add(e, (3.0 * mt * t * t).mul_add(c2v, (mt * mt * mt).mul_add(s, 3.0 * mt * mt * t * c1v)));
@@ -952,13 +967,13 @@ impl Path {
             flatten_conic_adaptive, flatten_cubic_adaptive, flatten_quad_adaptive,
         };
 
+        const TOL: Scalar = 0.25;
         let mut total = 0.0;
         let mut current = Point::zero();
         let mut contour_start = Point::zero();
-        const TOL: Scalar = 0.25;
         let mut pts: Vec<Point> = Vec::with_capacity(32);
 
-        for element in self.iter() {
+        for element in self {
             match element {
                 PathElement::Move(p) => {
                     current = p;
@@ -1041,17 +1056,20 @@ fn find_diff_pt(pts: &[Point], index: usize, inc: usize) -> usize {
 /// From `index` moving forward, find the xmin and xmax of contiguous same-Y points.
 /// Returns `(min_index, max_index)` (ported from `find_min_max_x_at_y`).
 fn find_min_max_x_at_y(pts: &[Point], index: usize) -> (usize, usize) {
-    let n = pts.len();
     let y = pts[index].y;
     let mut min = pts[index].x;
     let mut max = min;
     let mut min_index = index;
     let mut max_index = index;
-    for i in (index + 1)..n {
-        if pts[i].y != y {
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact y equality mirrors upstream find_min_max_x_at_y's bitwise comparison"
+    )]
+    for (i, p) in pts.iter().enumerate().skip(index + 1) {
+        if p.y != y {
             break;
         }
-        let x = pts[i].x;
+        let x = p.x;
         if x < min {
             min = x;
             min_index = i;
@@ -1064,6 +1082,10 @@ fn find_min_max_x_at_y(pts: &[Point], index: usize) -> (usize, usize) {
 }
 
 /// cross product of (p1 - p0) and (p2 - p0) (ported from `cross_prod`, f64 promotion).
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "f64 promotion is deliberately used to recover precision near-zero, then narrowed back to Scalar (f32); this is the whole point of the promotion and matches upstream cross_prod"
+)]
 fn cross_prod(p0: Point, p1: Point, p2: Point) -> Scalar {
     let cross = (p1.x - p0.x).mul_add(p2.y - p0.y, -((p1.y - p0.y) * (p2.x - p0.x)));
     if cross == 0.0 {
@@ -1079,6 +1101,10 @@ fn cross_prod(p0: Point, p1: Point, p2: Point) -> Scalar {
 }
 
 /// The `TRY_CROSSPROD` path from `ComputeFirstDirection`.
+#[allow(
+    clippy::float_cmp,
+    reason = "exact equality mirrors upstream TRY_CROSSPROD's bitwise comparisons"
+)]
 fn try_crossprod(pts: &[Point], index: usize) -> Scalar {
     let n = pts.len();
     let prev = find_diff_pt(pts, index, n - 1);
@@ -1131,6 +1157,10 @@ fn trivial_rect(pts: &[Point], vbs: &[Verb]) -> Option<Rect> {
 
 /// General port of `SkPathPriv::IsRectContour` for a single contour
 /// (`allowPartial = false`).
+#[allow(
+    clippy::too_many_lines,
+    reason = "faithful port of SkPathPriv::IsRectContour's edge-direction state machine"
+)]
 fn is_rect_contour(points: &[Point], verbs: &[Verb]) -> Option<Rect> {
     let verb_cnt = verbs.len();
     let mut pi = 0usize;
@@ -1189,7 +1219,6 @@ fn is_rect_contour(points: &[Point], verbs: &[Verb]) -> Option<Rect> {
                             if corners == 3 && verb == Verb::Line {
                                 third_corner = line_end;
                             }
-                            line_start = line_end;
                         } else {
                             directions[corners] = next_direction;
                             corners += 1;
@@ -1208,8 +1237,8 @@ fn is_rect_contour(points: &[Point], verbs: &[Verb]) -> Option<Rect> {
                                 }
                                 _ => return None, // too many direction changes
                             }
-                            line_start = line_end;
                         }
+                        line_start = line_end;
                     }
                 }
             }
@@ -1264,6 +1293,10 @@ fn sign_as_int(x: Scalar) -> i32 {
 
 /// Ported from `checkOnCurve`.
 #[inline]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact equality mirrors upstream checkOnCurve's bitwise comparisons"
+)]
 fn check_on_curve(x: Scalar, y: Scalar, start: Point, end: Point) -> bool {
     if start.y == end.y {
         between(start.x, x, end.x) && x != end.x
@@ -1277,6 +1310,10 @@ fn check_on_curve(x: Scalar, y: Scalar, start: Point, end: Point) -> bool {
 /// Ported from `winding_line` in `SkPathPriv.cpp`: returns +1/-1 for a crossing
 /// to the right of the point (sign encodes the edge's y-direction), 0 otherwise,
 /// and increments `on_curve_count` when the point lies on the edge.
+#[allow(
+    clippy::float_cmp,
+    reason = "exact equality mirrors upstream winding_line's bitwise comparisons"
+)]
 fn winding_line(a: Point, b: Point, x: Scalar, y: Scalar, on_curve_count: &mut i32) -> i32 {
     let x0 = a.x;
     let mut y0 = a.y;
@@ -1284,10 +1321,9 @@ fn winding_line(a: Point, b: Point, x: Scalar, y: Scalar, on_curve_count: &mut i
     let mut y1 = b.y;
 
     let dy = y1 - y0;
-    let mut dir = 1;
-    if y0 > y1 {
+    let (mut dir, swapped) = if y0 > y1 { (-1, true) } else { (1, false) };
+    if swapped {
         std::mem::swap(&mut y0, &mut y1);
-        dir = -1;
     }
     if y < y0 || y > y1 {
         return 0;
@@ -1319,8 +1355,8 @@ mod convex {
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum FirstDir {
-        CW,
-        CCW,
+        Cw,
+        Ccw,
         Unknown,
     }
 
@@ -1341,6 +1377,10 @@ mod convex {
 
     /// Quick concave test: counts direction-sign changes around the contour.
     /// Ported from `Convexicator::IsConcaveBySign`.
+    #[allow(
+        clippy::similar_names,
+        reason = "dxes/dyes and last_sx/last_sy mirror upstream Convexicator field names"
+    )]
     pub fn is_concave_by_sign(pts: &[Point]) -> bool {
         let count = pts.len();
         if count <= 3 {
@@ -1493,9 +1533,9 @@ mod convex {
                     if self.expected_dir == DirChange::Invalid {
                         self.expected_dir = dir;
                         self.first_direction = if dir == DirChange::Right {
-                            FirstDir::CW
+                            FirstDir::Cw
                         } else {
-                            FirstDir::CCW
+                            FirstDir::Ccw
                         };
                     } else if dir != self.expected_dir {
                         self.first_direction = FirstDir::Unknown;
@@ -1536,6 +1576,15 @@ pub enum PathElement {
     Cubic(Point, Point, Point),
     /// Close the path.
     Close,
+}
+
+impl<'a> IntoIterator for &'a Path {
+    type Item = PathElement;
+    type IntoIter = PathIter<'a>;
+
+    fn into_iter(self) -> PathIter<'a> {
+        self.iter()
+    }
 }
 
 /// Iterator over path elements.

@@ -1,7 +1,15 @@
 //! Path builder for constructing paths.
 
 use crate::{FillType, Path, Verb};
+use skia_rs_core::cast::{ceil_to_i32, scalar_from_i32};
 use skia_rs_core::{Point, Rect, Scalar};
+
+/// sqrt(2)/2, the conic weight for a 90-degree circular arc.
+const OVAL_CONIC_WEIGHT: Scalar = std::f32::consts::FRAC_1_SQRT_2;
+
+/// Cubic-bezier control-point factor approximating a circular arc with a
+/// rounded-rect corner radius (Skia's `SK_ScalarRoot2Over2` derived constant).
+const ROUND_RECT_KAPPA: Scalar = 0.552_284_8;
 
 /// Builder for constructing paths.
 #[derive(Debug, Clone, Default)]
@@ -145,15 +153,13 @@ impl PathBuilder {
         let cy = f32::midpoint(rect.top, rect.bottom);
         let rx = rect.width() / 2.0;
         let ry = rect.height() / 2.0;
-
-        // sqrt(2)/2, the conic weight for a 90-degree circular arc.
-        const W: Scalar = std::f32::consts::FRAC_1_SQRT_2;
+        let w = OVAL_CONIC_WEIGHT;
 
         self.move_to(cx + rx, cy)
-            .conic_to(cx + rx, cy + ry, cx, cy + ry, W)
-            .conic_to(cx - rx, cy + ry, cx - rx, cy, W)
-            .conic_to(cx - rx, cy - ry, cx, cy - ry, W)
-            .conic_to(cx + rx, cy - ry, cx + rx, cy, W)
+            .conic_to(cx + rx, cy + ry, cx, cy + ry, w)
+            .conic_to(cx - rx, cy + ry, cx - rx, cy, w)
+            .conic_to(cx - rx, cy - ry, cx, cy - ry, w)
+            .conic_to(cx + rx, cy - ry, cx + rx, cy, w)
             .close()
     }
 
@@ -176,9 +182,8 @@ impl PathBuilder {
         let rx = rx.min(rect.width() / 2.0);
         let ry = ry.min(rect.height() / 2.0);
 
-        const KAPPA: Scalar = 0.552_284_8;
-        let kx = rx * KAPPA;
-        let ky = ry * KAPPA;
+        let kx = rx * ROUND_RECT_KAPPA;
+        let ky = ry * ROUND_RECT_KAPPA;
 
         self.move_to(rect.left + rx, rect.top)
             .line_to(rect.right - rx, rect.top)
@@ -265,6 +270,10 @@ impl PathBuilder {
     /// Arc to a point using radii and rotation.
     ///
     /// This matches the SVG arc command semantics.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "faithful port of the SVG elliptical-arc command's fixed parameter list (rx, ry, x-axis-rotation, large-arc-flag, sweep-flag, x, y)"
+    )]
     pub fn arc_to(
         &mut self,
         rx: Scalar,
@@ -279,6 +288,10 @@ impl PathBuilder {
 
         // Get current point
         let current = self.current_point();
+        #[allow(
+            clippy::float_cmp,
+            reason = "exact degenerate-endpoint check mirrors upstream SkPath::ArcTo's bitwise comparison"
+        )]
         if current.x == x && current.y == y {
             return self;
         }
@@ -371,7 +384,7 @@ impl PathBuilder {
 
     /// Add another path to this builder.
     pub fn add_path(&mut self, path: &Path) -> &mut Self {
-        for element in path.iter() {
+        for element in path {
             match element {
                 crate::PathElement::Move(p) => {
                     self.move_to(p.x, p.y);
@@ -438,6 +451,10 @@ impl PathBuilder {
     /// The optional `rot` matrix (a rotation about the ellipse center) is
     /// applied to every emitted point, used to realize the SVG arc's
     /// x-axis-rotation.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "faithful port of Skia's addArcSegments helper geometry parameter list (center, radii, angles, rotation)"
+    )]
     fn add_arc_to_impl(
         &mut self,
         cx: Scalar,
@@ -449,9 +466,8 @@ impl PathBuilder {
         rot: Option<&skia_rs_core::Matrix>,
     ) {
         // Break arc into segments of at most 90 degrees
-        let num_segments =
-            ((sweep_angle.abs() / (std::f32::consts::FRAC_PI_2)).ceil() as i32).max(1);
-        let segment_angle = sweep_angle / num_segments as Scalar;
+        let num_segments = ceil_to_i32(sweep_angle.abs() / std::f32::consts::FRAC_PI_2).max(1);
+        let segment_angle = sweep_angle / scalar_from_i32(num_segments);
 
         let mut angle = start_angle;
         for _ in 0..num_segments {
@@ -462,6 +478,10 @@ impl PathBuilder {
     }
 
     /// Add a single arc segment (at most 90 degrees) as a cubic bezier.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "faithful port of Skia's addArcSegment helper geometry parameter list (center, radii, angles, rotation)"
+    )]
     fn add_arc_segment(
         &mut self,
         cx: Scalar,
@@ -508,6 +528,10 @@ impl PathBuilder {
     }
 
     /// Convert SVG arc to cubic bezier segments.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "faithful port of the W3C SVG arc-to-cubic conversion algorithm's fixed parameter list"
+    )]
     fn svg_arc_to_cubics(
         &mut self,
         x1: Scalar,

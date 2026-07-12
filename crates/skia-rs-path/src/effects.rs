@@ -7,6 +7,7 @@ use crate::{
     Path, PathBuilder, PathElement,
     flatten::{flatten_conic_adaptive, flatten_cubic_adaptive, flatten_quad_adaptive},
 };
+use skia_rs_core::cast::{ceil_to_i32, floor_to_i32, scalar_from_i32};
 use skia_rs_core::{Point, Scalar};
 use std::sync::Arc;
 
@@ -60,7 +61,7 @@ fn flatten_path_to_lines(path: &Path, tolerance: Scalar) -> Path {
     let mut contour_start = Point::new(0.0, 0.0);
     let mut points: Vec<Point> = Vec::with_capacity(16);
 
-    for elem in path.iter() {
+    for elem in path {
         match elem {
             PathElement::Move(p) => {
                 builder.move_to(p.x, p.y);
@@ -201,7 +202,10 @@ impl DashEffect {
             return;
         }
         let mut t = 0.0;
-        while t < 1.0 {
+        loop {
+            if t >= 1.0 {
+                break;
+            }
             let remaining_segment = segment_length * (1.0 - t);
 
             if *remaining_in_interval >= remaining_segment {
@@ -232,6 +236,10 @@ impl DashEffect {
 }
 
 impl PathEffect for DashEffect {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "faithful port of SkDashPath::InternalFilter's per-verb dash state machine"
+    )]
     fn apply(&self, path: &Path) -> Option<Path> {
         if path.is_empty() {
             return None;
@@ -257,7 +265,10 @@ impl PathEffect for DashEffect {
         let (mut interval_idx, interval_offset) = {
             let mut accumulated = 0.0;
             let mut idx = 0;
-            while accumulated + self.intervals[idx] <= phase {
+            loop {
+                if accumulated + self.intervals[idx] > phase {
+                    break;
+                }
                 accumulated += self.intervals[idx];
                 idx = (idx + 1) % self.intervals.len();
             }
@@ -267,7 +278,7 @@ impl PathEffect for DashEffect {
         let mut is_on = interval_idx % 2 == 0;
         let mut remaining_in_interval = self.intervals[interval_idx] - interval_offset;
 
-        for element in path.iter() {
+        for element in path {
             match element {
                 PathElement::Move(p) => {
                     current_pos = p;
@@ -276,7 +287,10 @@ impl PathEffect for DashEffect {
                     // Reset dash state for new contour
                     let mut accumulated = 0.0;
                     interval_idx = 0;
-                    while accumulated + self.intervals[interval_idx] <= phase {
+                    loop {
+                        if accumulated + self.intervals[interval_idx] > phase {
+                            break;
+                        }
                         accumulated += self.intervals[interval_idx];
                         interval_idx = (interval_idx + 1) % self.intervals.len();
                     }
@@ -315,9 +329,9 @@ impl PathEffect for DashEffect {
                 // For curves, we approximate with lines (simplified)
                 PathElement::Quad(ctrl, end) => {
                     // Subdivide and treat as lines
-                    let steps = 8;
+                    let steps: i32 = 8;
                     for i in 1..=steps {
-                        let t = i as Scalar / steps as Scalar;
+                        let t = scalar_from_i32(i) / scalar_from_i32(steps);
                         let p = quadratic_point(current_pos, ctrl, end, t);
                         if is_on {
                             builder.line_to(p.x, p.y);
@@ -327,9 +341,9 @@ impl PathEffect for DashEffect {
                 }
                 PathElement::Conic(ctrl, end, _weight) => {
                     // Approximate as quad
-                    let steps = 8;
+                    let steps: i32 = 8;
                     for i in 1..=steps {
-                        let t = i as Scalar / steps as Scalar;
+                        let t = scalar_from_i32(i) / scalar_from_i32(steps);
                         let p = quadratic_point(current_pos, ctrl, end, t);
                         if is_on {
                             builder.line_to(p.x, p.y);
@@ -338,9 +352,9 @@ impl PathEffect for DashEffect {
                     current_pos = end;
                 }
                 PathElement::Cubic(ctrl1, ctrl2, end) => {
-                    let steps = 12;
+                    let steps: i32 = 12;
                     for i in 1..=steps {
-                        let t = i as Scalar / steps as Scalar;
+                        let t = scalar_from_i32(i) / scalar_from_i32(steps);
                         let p = cubic_point(current_pos, ctrl1, ctrl2, end, t);
                         if is_on {
                             builder.line_to(p.x, p.y);
@@ -434,6 +448,10 @@ fn corner_contour_is_closed(elements: &[PathElement], move_idx: usize) -> bool {
 }
 
 impl PathEffect for CornerEffect {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "faithful port of SkCornerPathEffectImpl::onFilterPath's per-verb corner-rounding state machine"
+    )]
     fn apply(&self, path: &Path) -> Option<Path> {
         if path.is_empty() || self.radius <= 0.0 {
             return None;
@@ -603,10 +621,12 @@ impl DiscreteEffect {
     }
 
     /// Simple pseudo-random number generator.
-    fn random(&self, seed: u32) -> Scalar {
+    fn random(seed: u32) -> Scalar {
         // Simple LCG
-        let n = seed.wrapping_mul(1103515245).wrapping_add(12345);
-        (((n >> 16) & 0x7FFF) as Scalar / 32767.0).mul_add(2.0, -1.0)
+        let n = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+        let masked = u16::try_from((n >> 16) & 0x7FFF)
+            .expect("masked to 15 bits, always fits in u16");
+        (Scalar::from(masked) / 32767.0).mul_add(2.0, -1.0)
     }
 }
 
@@ -620,29 +640,28 @@ impl PathEffect for DiscreteEffect {
         let mut current_pos = Point::zero();
         let mut seed = self.seed;
 
-        for element in path.iter() {
+        for element in path {
             match element {
                 PathElement::Move(p) => {
-                    let dx = self.random(seed) * self.deviation;
+                    let dx = Self::random(seed) * self.deviation;
                     seed = seed.wrapping_add(1);
-                    let dy = self.random(seed) * self.deviation;
+                    let dy = Self::random(seed) * self.deviation;
                     seed = seed.wrapping_add(1);
                     builder.move_to(p.x + dx, p.y + dy);
                     current_pos = p;
                 }
                 PathElement::Line(end) => {
                     let length = current_pos.distance(&end);
-                    let num_segments = (length / self.seg_length).ceil() as usize;
-                    let num_segments = num_segments.max(1);
+                    let num_segments = ceil_to_i32(length / self.seg_length).max(1);
 
                     for i in 1..=num_segments {
-                        let t = i as Scalar / num_segments as Scalar;
+                        let t = scalar_from_i32(i) / scalar_from_i32(num_segments);
                         let x = (end.x - current_pos.x).mul_add(t, current_pos.x);
                         let y = (end.y - current_pos.y).mul_add(t, current_pos.y);
 
-                        let dx = self.random(seed) * self.deviation;
+                        let dx = Self::random(seed) * self.deviation;
                         seed = seed.wrapping_add(1);
-                        let dy = self.random(seed) * self.deviation;
+                        let dy = Self::random(seed) * self.deviation;
                         seed = seed.wrapping_add(1);
 
                         builder.line_to(x + dx, y + dy);
@@ -654,17 +673,17 @@ impl PathEffect for DiscreteEffect {
                 }
                 // For curves, subdivide into lines first
                 PathElement::Quad(ctrl, end) => {
-                    let steps = (quadratic_length(current_pos, ctrl, end) / self.seg_length).ceil()
-                        as usize;
-                    let steps = steps.max(4);
+                    let steps =
+                        ceil_to_i32(quadratic_length(current_pos, ctrl, end) / self.seg_length)
+                            .max(4);
 
                     for i in 1..=steps {
-                        let t = i as Scalar / steps as Scalar;
+                        let t = scalar_from_i32(i) / scalar_from_i32(steps);
                         let p = quadratic_point(current_pos, ctrl, end, t);
 
-                        let dx = self.random(seed) * self.deviation;
+                        let dx = Self::random(seed) * self.deviation;
                         seed = seed.wrapping_add(1);
-                        let dy = self.random(seed) * self.deviation;
+                        let dy = Self::random(seed) * self.deviation;
                         seed = seed.wrapping_add(1);
 
                         builder.line_to(p.x + dx, p.y + dy);
@@ -672,17 +691,17 @@ impl PathEffect for DiscreteEffect {
                     current_pos = end;
                 }
                 PathElement::Conic(ctrl, end, _w) => {
-                    let steps = (quadratic_length(current_pos, ctrl, end) / self.seg_length).ceil()
-                        as usize;
-                    let steps = steps.max(4);
+                    let steps =
+                        ceil_to_i32(quadratic_length(current_pos, ctrl, end) / self.seg_length)
+                            .max(4);
 
                     for i in 1..=steps {
-                        let t = i as Scalar / steps as Scalar;
+                        let t = scalar_from_i32(i) / scalar_from_i32(steps);
                         let p = quadratic_point(current_pos, ctrl, end, t);
 
-                        let dx = self.random(seed) * self.deviation;
+                        let dx = Self::random(seed) * self.deviation;
                         seed = seed.wrapping_add(1);
-                        let dy = self.random(seed) * self.deviation;
+                        let dy = Self::random(seed) * self.deviation;
                         seed = seed.wrapping_add(1);
 
                         builder.line_to(p.x + dx, p.y + dy);
@@ -690,17 +709,18 @@ impl PathEffect for DiscreteEffect {
                     current_pos = end;
                 }
                 PathElement::Cubic(ctrl1, ctrl2, end) => {
-                    let steps = (cubic_length(current_pos, ctrl1, ctrl2, end) / self.seg_length)
-                        .ceil() as usize;
-                    let steps = steps.max(4);
+                    let steps = ceil_to_i32(
+                        cubic_length(current_pos, ctrl1, ctrl2, end) / self.seg_length,
+                    )
+                    .max(4);
 
                     for i in 1..=steps {
-                        let t = i as Scalar / steps as Scalar;
+                        let t = scalar_from_i32(i) / scalar_from_i32(steps);
                         let p = cubic_point(current_pos, ctrl1, ctrl2, end, t);
 
-                        let dx = self.random(seed) * self.deviation;
+                        let dx = Self::random(seed) * self.deviation;
                         seed = seed.wrapping_add(1);
-                        let dy = self.random(seed) * self.deviation;
+                        let dy = Self::random(seed) * self.deviation;
                         seed = seed.wrapping_add(1);
 
                         builder.line_to(p.x + dx, p.y + dy);
@@ -799,7 +819,7 @@ impl PathEffect for TrimEffect {
                 let mut builder = PathBuilder::new();
                 if start_dist > 0.0 {
                     if let Some(before) = measure.get_segment(0.0, start_dist) {
-                        for elem in before.iter() {
+                        for elem in &before {
                             match elem {
                                 PathElement::Move(p) => {
                                     builder.move_to(p.x, p.y);
@@ -825,7 +845,7 @@ impl PathEffect for TrimEffect {
                 }
                 if end_dist < total {
                     if let Some(after) = measure.get_segment(end_dist, total) {
-                        for elem in after.iter() {
+                        for elem in &after {
                             match elem {
                                 PathElement::Move(p) => {
                                     builder.move_to(p.x, p.y);
@@ -1057,7 +1077,10 @@ impl PathEffect for Path1DEffect {
         }
 
         let mut distance = self.phase;
-        while distance < length {
+        loop {
+            if distance >= length {
+                break;
+            }
             // Get position and tangent at this distance
             let pos = measure.get_point_at(distance);
             let tangent = measure.get_tangent_at(distance);
@@ -1146,10 +1169,10 @@ impl PathEffect for Path2DEffect {
         let transformed_bounds = inverse.map_rect(&bounds);
 
         // Compute tile range
-        let start_x = transformed_bounds.left.floor() as i32 - 1;
-        let end_x = transformed_bounds.right.ceil() as i32 + 1;
-        let start_y = transformed_bounds.top.floor() as i32 - 1;
-        let end_y = transformed_bounds.bottom.ceil() as i32 + 1;
+        let start_x = floor_to_i32(transformed_bounds.left) - 1;
+        let end_x = ceil_to_i32(transformed_bounds.right) + 1;
+        let start_y = floor_to_i32(transformed_bounds.top) - 1;
+        let end_y = ceil_to_i32(transformed_bounds.bottom) + 1;
 
         // Limit iterations for safety
         let max_tiles = 1000;
@@ -1162,7 +1185,8 @@ impl PathEffect for Path2DEffect {
                 }
 
                 // Transform tile to world space
-                let tile_offset = skia_rs_core::Matrix::translate(x as Scalar, y as Scalar);
+                let tile_offset =
+                    skia_rs_core::Matrix::translate(scalar_from_i32(x), scalar_from_i32(y));
                 let tile_matrix = self.matrix.concat(&tile_offset);
                 let transformed_path = self.path.transformed(&tile_matrix);
 
@@ -1239,20 +1263,19 @@ impl PathEffect for Line2DEffect {
         let transformed_bounds = inverse.map_rect(&bounds);
 
         // Generate horizontal lines in transformed space
-        let start_y = transformed_bounds.top.floor() as i32 - 1;
-        let end_y = transformed_bounds.bottom.ceil() as i32 + 1;
+        let start_y = floor_to_i32(transformed_bounds.top) - 1;
+        let end_y = ceil_to_i32(transformed_bounds.bottom) + 1;
 
         // Limit iterations for safety
         let max_lines = 500;
-        let mut line_count = 0;
 
-        for y in start_y..=end_y {
+        for (line_count, y) in (start_y..=end_y).enumerate() {
             if line_count >= max_lines {
                 break;
             }
 
             // Create a line from left to right
-            let y_pos = y as Scalar;
+            let y_pos = scalar_from_i32(y);
             let p0 = Point::new(transformed_bounds.left - 10.0, y_pos);
             let p1 = Point::new(transformed_bounds.right + 10.0, y_pos);
 
@@ -1276,8 +1299,6 @@ impl PathEffect for Line2DEffect {
                 builder.line_to(world_p0.x - nx, world_p0.y - ny);
                 builder.close();
             }
-
-            line_count += 1;
         }
 
         Some(builder.build())
@@ -1355,7 +1376,10 @@ mod tests {
     fn test_dash_effect() {
         let dash = DashEffect::new(vec![10.0, 5.0], 0.0).unwrap();
         assert_eq!(dash.intervals().len(), 2);
-        assert_eq!(dash.phase(), 0.0);
+        #[allow(clippy::float_cmp, reason = "exact test assertion, value round-trips a literal")]
+        {
+            assert_eq!(dash.phase(), 0.0);
+        }
     }
 
     #[test]
@@ -1415,7 +1439,10 @@ mod tests {
     #[test]
     fn test_corner_effect() {
         let corner = CornerEffect::new(5.0).unwrap();
-        assert_eq!(corner.radius(), 5.0);
+        #[allow(clippy::float_cmp, reason = "exact test assertion, value round-trips a literal")]
+        {
+            assert_eq!(corner.radius(), 5.0);
+        }
     }
 
     #[test]
@@ -1447,8 +1474,11 @@ mod tests {
     #[test]
     fn test_discrete_effect() {
         let discrete = DiscreteEffect::new(10.0, 5.0, 42).unwrap();
-        assert_eq!(discrete.seg_length(), 10.0);
-        assert_eq!(discrete.deviation(), 5.0);
+        #[allow(clippy::float_cmp, reason = "exact test assertion, values round-trip literals")]
+        {
+            assert_eq!(discrete.seg_length(), 10.0);
+            assert_eq!(discrete.deviation(), 5.0);
+        }
     }
 
     #[test]
