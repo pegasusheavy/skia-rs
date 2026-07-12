@@ -315,6 +315,12 @@ impl<'a> Lexer<'a> {
 
         // Operators and delimiters
         self.chars.next();
+        self.scan_operator(ch)
+    }
+
+    /// Scan an operator or delimiter token starting with `ch` (which has
+    /// already been consumed from the character stream).
+    fn scan_operator(&mut self, ch: char) -> Token {
         match ch {
             '+' => {
                 if self.match_char('+') {
@@ -645,21 +651,15 @@ impl SkslType {
             Self::Void => "void",
             Self::Bool => "bool",
             Self::Int => "int",
-            Self::Float => "float",
-            Self::Half => "float", // GLSL uses float for mediump
-            Self::Vec2 => "vec2",
-            Self::Vec3 => "vec3",
-            Self::Vec4 => "vec4",
-            Self::Half2 => "vec2",
-            Self::Half3 => "vec3",
-            Self::Half4 => "vec4",
+            // GLSL uses float for mediump
+            Self::Float | Self::Half => "float",
+            Self::Vec2 | Self::Half2 => "vec2",
+            Self::Vec3 | Self::Half3 => "vec3",
+            Self::Vec4 | Self::Half4 => "vec4",
             Self::Mat2 => "mat2",
             Self::Mat3 => "mat3",
             Self::Mat4 => "mat4",
-            Self::Sampler2D => "sampler2D",
-            Self::Shader => "sampler2D",
-            Self::ColorFilter => "sampler2D",
-            Self::Blender => "sampler2D",
+            Self::Sampler2D | Self::Shader | Self::ColorFilter | Self::Blender => "sampler2D",
             Self::Array(_, _) => "array",
             Self::Struct(_) => "struct",
         }
@@ -683,10 +683,9 @@ impl SkslType {
             Self::Mat2 => "mat2x2<f32>",
             Self::Mat3 => "mat3x3<f32>",
             Self::Mat4 => "mat4x4<f32>",
-            Self::Sampler2D => "texture_2d<f32>",
-            Self::Shader => "texture_2d<f32>",
-            Self::ColorFilter => "texture_2d<f32>",
-            Self::Blender => "texture_2d<f32>",
+            Self::Sampler2D | Self::Shader | Self::ColorFilter | Self::Blender => {
+                "texture_2d<f32>"
+            }
             Self::Array(_, _) => "array",
             Self::Struct(_) => "struct",
         }
@@ -1089,6 +1088,12 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a complete `SkSL` program.
+    ///
+    /// # Errors
+    ///
+    /// Returns a descriptive error string if the token stream does not form
+    /// a well-formed `SkSL` program (unexpected token, unterminated
+    /// construct, etc.).
     pub fn parse_program(&mut self) -> Result<SkslProgram, String> {
         let mut program = SkslProgram::default();
 
@@ -1139,13 +1144,6 @@ impl<'a> Parser<'a> {
                 .take()
                 .unwrap_or_else(|| self.lexer.next_token()),
         )
-    }
-
-    fn peek(&mut self) -> &Token {
-        if self.peeked.is_none() {
-            self.peeked = Some(self.lexer.next_token());
-        }
-        self.peeked.as_ref().unwrap()
     }
 
     fn check(&self, expected: &Token) -> bool {
@@ -1250,7 +1248,9 @@ impl<'a> Parser<'a> {
         let array_size = if self.check(&Token::LBracket) {
             self.advance();
             let size = match self.advance() {
-                Token::IntLit(n) => n as usize,
+                Token::IntLit(n) => {
+                    usize::try_from(n).map_err(|_| format!("Array size must be non-negative, got {n}"))?
+                }
                 t => return Err(format!("Expected array size, got {t:?}")),
             };
             self.expect(&Token::RBracket)?;
