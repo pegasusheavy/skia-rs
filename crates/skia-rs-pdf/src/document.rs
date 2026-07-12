@@ -158,6 +158,11 @@ impl PdfDocument {
     /// Returns `Ok(())` if no level is set (PDF/A validation is opt-in) and
     /// otherwise delegates to [`PdfAValidator`]. This is called
     /// automatically from [`write_to`](Self::write_to) when PDF/A is on.
+    ///
+    /// # Errors
+    ///
+    /// Returns the list of [`PdfAError`]s reported by [`PdfAValidator`] if
+    /// the document does not conform to its configured PDF/A level.
     pub fn validate_pdfa(&self) -> Result<(), Vec<PdfAError>> {
         let Some(ref state) = self.pdfa else {
             return Ok(());
@@ -232,6 +237,11 @@ impl PdfDocument {
     /// Validates PDF/A conformance (when configured) before writing and
     /// returns a [`PdfError::Validation`] if validation fails. I/O errors
     /// are returned as [`PdfError::Io`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdfError::Validation`] if PDF/A conformance validation
+    /// fails, or [`PdfError::Io`] if writing to `writer` fails.
     pub fn write_to<W: Write>(&mut self, writer: &mut W) -> Result<(), PdfError> {
         // Sync PDF/A document model with current state before validating.
         self.sync_pdfa_model();
@@ -328,6 +338,11 @@ impl PdfDocument {
     /// Generate PDF bytes.
     ///
     /// Returns an error if PDF/A validation fails or I/O errors occur.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdfError::Validation`] if PDF/A conformance validation
+    /// fails, or [`PdfError::Io`] if writing to the internal buffer fails.
     pub fn to_bytes(&mut self) -> Result<Vec<u8>, PdfError> {
         let mut buffer = Vec::new();
         self.write_to(&mut buffer)?;

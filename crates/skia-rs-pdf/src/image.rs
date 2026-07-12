@@ -101,7 +101,11 @@ pub struct PdfImage {
 
 impl PdfImage {
     /// Create a new image from raw RGB data.
-    #[must_use] 
+    ///
+    /// # Panics
+    ///
+    /// Panics if `data.len() != width * height * 3`.
+    #[must_use]
     pub fn from_rgb(width: u32, height: u32, data: &[u8]) -> Self {
         assert_eq!(data.len(), (width * height * 3) as usize);
 
@@ -123,7 +127,11 @@ impl PdfImage {
     }
 
     /// Create a new image from raw RGBA data.
-    #[must_use] 
+    ///
+    /// # Panics
+    ///
+    /// Panics if `data.len() != width * height * 4`.
+    #[must_use]
     pub fn from_rgba(width: u32, height: u32, data: &[u8]) -> (Self, Self) {
         assert_eq!(data.len(), (width * height * 4) as usize);
 
@@ -170,7 +178,11 @@ impl PdfImage {
     }
 
     /// Create a new image from grayscale data.
-    #[must_use] 
+    ///
+    /// # Panics
+    ///
+    /// Panics if `data.len() != width * height`.
+    #[must_use]
     pub fn from_grayscale(width: u32, height: u32, data: &[u8]) -> Self {
         assert_eq!(data.len(), (width * height) as usize);
 

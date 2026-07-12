@@ -508,6 +508,11 @@ impl PdfAValidator {
     }
 
     /// Validate a document and return errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns the accumulated list of [`PdfAError`]s if the document does
+    /// not conform to the configured [`PdfALevel`].
     pub fn validate(&mut self, doc: &PdfADocument) -> Result<(), Vec<PdfAError>> {
         self.errors.clear();
 
@@ -746,6 +751,12 @@ impl PdfADocument {
     }
 
     /// Create XMP metadata with PDF/A identification.
+    ///
+    /// # Panics
+    ///
+    /// Does not panic in practice: the `expect` below fires only if the
+    /// `xmp_metadata` field set two lines above were somehow cleared
+    /// concurrently, which cannot happen through `&mut self`.
     pub fn create_xmp_metadata(&mut self, level: PdfALevel) -> &mut XmpMetadata {
         let doc_id = uuid_v4();
         let inst_id = uuid_v4();
@@ -806,14 +817,16 @@ fn uuid_v4() -> String {
 
     // Combine the clock and the counter through a splitmix64-style mixer
     // so the output bits look uniformly distributed.
-    let mut x = nanos ^ counter.wrapping_mul(0x9E3779B97F4A7C15);
-    x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94D049BB133111EB);
+    let mut x = nanos ^ counter.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     x ^= x >> 31;
 
-    let mut y = x.wrapping_mul(6364136223846793005).wrapping_add(counter);
-    y = (y ^ (y >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-    y = (y ^ (y >> 27)).wrapping_mul(0x94D049BB133111EB);
+    let mut y = x
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(counter);
+    y = (y ^ (y >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    y = (y ^ (y >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     y ^= y >> 31;
 
     format!(

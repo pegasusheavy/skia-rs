@@ -5,6 +5,10 @@ use std::io::{self, Write};
 /// A stream that can be written to PDF.
 pub trait PdfStream {
     /// Write the stream content.
+    ///
+    /// # Errors
+    ///
+    /// Returns any I/O error encountered while writing to `writer`.
     fn write_content<W: Write>(&self, writer: &mut W) -> io::Result<()>;
 
     /// Get the length of the stream.

@@ -423,7 +423,12 @@ impl PdfFont {
     /// original 2-byte codespace. If no characters were recorded the `CMap`
     /// falls back to the printable-ASCII range so the font is still
     /// searchable.
-    #[must_use] 
+    ///
+    /// # Panics
+    ///
+    /// Does not panic in practice: the printable-ASCII fallback range
+    /// (32..127) is entirely valid Unicode scalar values.
+    #[must_use]
     pub fn generate_to_unicode(&self) -> String {
         let is_simple = !matches!(
             self.font_type,
@@ -641,14 +646,14 @@ fn parse_truetype_metrics(data: &[u8]) -> TrueTypeMetrics {
 /// the same font produce the same tag (stable across runs).
 fn subset_tag_for(data: &[u8], name: &str) -> String {
     // FNV-1a 64.
-    let mut h: u64 = 0xcbf29ce484222325;
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in data {
         h ^= u64::from(b);
-        h = h.wrapping_mul(0x100000001b3);
+        h = h.wrapping_mul(0x100_0000_01b3);
     }
     for b in name.bytes() {
         h ^= u64::from(b);
-        h = h.wrapping_mul(0x100000001b3);
+        h = h.wrapping_mul(0x100_0000_01b3);
     }
     // Convert 64 bits into six base-26 letters.
     const LETTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";

@@ -142,6 +142,10 @@ impl<'a> PdfCanvas<'a> {
     /// Select a font for subsequent [`draw_text`](Self::draw_text) calls.
     ///
     /// `index` must be a valid index into the document's font manager.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index` is out of range for the document's font manager.
     pub fn set_font(&mut self, index: usize) {
         assert!(
             self.fonts.get(index).is_some(),
@@ -410,6 +414,12 @@ impl<'a> PdfCanvas<'a> {
     ///
     /// Returns `Err(PdfError::Unsupported)` if no font is selected; use
     /// [`draw_text_with_font`] to provide one explicitly.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(PdfError::Unsupported)` if no font is currently
+    /// selected, or if the selected font is a Type0/CID font (see
+    /// [`draw_text_with_font`]).
     pub fn draw_text(
         &mut self,
         text: &str,
@@ -431,6 +441,11 @@ impl<'a> PdfCanvas<'a> {
     /// Returns `Err(PdfError::Unsupported)` if `font_idx` names a Type0/CID
     /// font (registered via [`PdfFontManager::register_truetype_cid`]);
     /// live per-glyph CID text drawing is not yet implemented (see below).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(PdfError::Unsupported)` if `font_idx` names a Type0/CID
+    /// font.
     ///
     /// # Panics
     ///
@@ -543,6 +558,11 @@ impl<'a> PdfCanvas<'a> {
     /// The image is painted at the given position at its natural size in
     /// user-space units (1 unit == 1/72 inch). Use [`concat`] or [`save`]/
     /// [`restore`] to scale as needed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `image_idx` is out of range for the document's image
+    /// manager.
     pub fn draw_image(&mut self, image_idx: usize, x: Scalar, y: Scalar, w: Scalar, h: Scalar) {
         assert!(
             self.images.get(image_idx).is_some(),
