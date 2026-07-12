@@ -2380,6 +2380,7 @@ name = "skia-rs-canvas"
 version = "0.3.0"
 dependencies = [
  "proptest",
+ "skia-rs-canvas",
  "skia-rs-codec",
  "skia-rs-core",
  "skia-rs-paint",
