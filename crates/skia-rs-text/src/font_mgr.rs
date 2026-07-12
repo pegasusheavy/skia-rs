@@ -88,7 +88,7 @@ pub struct TypefaceEntry {
 
 impl DefaultFontMgr {
     /// Create a new default font manager.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         let mut mgr = Self {
             families: Vec::new(),
@@ -291,7 +291,7 @@ pub struct FontFallback {
 
 impl FontFallback {
     /// Create a new empty fallback chain.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -320,7 +320,7 @@ impl FontFallback {
     }
 
     /// Get the fallback chain.
-    #[must_use] 
+    #[must_use]
     pub fn chain(&self) -> &[TypefaceRef] {
         &self.fallback_chain
     }

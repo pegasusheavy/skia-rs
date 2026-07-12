@@ -148,7 +148,7 @@ impl Default for RasterRenderer {
 
 impl RasterRenderer {
     /// Create a new raster renderer
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }
@@ -197,7 +197,7 @@ impl Gm {
     }
 
     /// Add a tag
-    #[must_use] 
+    #[must_use]
     pub fn with_tag(mut self, tag: &str) -> Self {
         self.tags.push(tag.to_string());
         self
@@ -227,7 +227,7 @@ pub struct StandardGms;
 
 impl StandardGms {
     /// Get all standard GMs
-    #[must_use] 
+    #[must_use]
     pub fn all() -> Vec<Arc<dyn Source>> {
         vec![
             Arc::new(Self::simple_rect()),
@@ -244,7 +244,7 @@ impl StandardGms {
     }
 
     /// Simple rectangle GM
-    #[must_use] 
+    #[must_use]
     pub fn simple_rect() -> Gm {
         Gm::new("simple_rect", 200, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -365,7 +365,7 @@ impl StandardGms {
     }
 
     /// Transforms GM
-    #[must_use] 
+    #[must_use]
     pub fn transforms() -> Gm {
         Gm::new("transforms", 300, 300, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -386,7 +386,7 @@ impl StandardGms {
     }
 
     /// Clipping GM
-    #[must_use] 
+    #[must_use]
     pub fn clipping() -> Gm {
         Gm::new("clipping", 200, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -405,7 +405,7 @@ impl StandardGms {
     }
 
     /// Blend modes GM
-    #[must_use] 
+    #[must_use]
     pub fn blend_modes() -> Gm {
         Gm::new("blend_modes", 300, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -455,7 +455,7 @@ impl StandardGms {
     }
 
     /// Antialiasing GM
-    #[must_use] 
+    #[must_use]
     pub fn antialiasing() -> Gm {
         Gm::new("antialiasing", 200, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -690,7 +690,7 @@ impl Default for DmRunner {
 
 impl DmRunner {
     /// Create a new DM runner
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             sources: Vec::new(),
@@ -732,7 +732,7 @@ impl DmRunner {
     }
 
     /// Run all tests
-    #[must_use] 
+    #[must_use]
     pub fn run(&self) -> DmReport {
         let mut report = DmReport::new();
         let start = Instant::now();
@@ -858,7 +858,7 @@ impl DmReport {
     }
 
     /// Generate a summary string
-    #[must_use] 
+    #[must_use]
     pub fn summary(&self) -> String {
         format!(
             "DM Report: {} total, {} passed, {} failed, {} skipped, {} crashed in {:?}",
@@ -872,7 +872,7 @@ impl DmReport {
     }
 
     /// Check if all tests passed
-    #[must_use] 
+    #[must_use]
     pub const fn all_passed(&self) -> bool {
         self.stats.failed == 0 && self.stats.crashed == 0
     }

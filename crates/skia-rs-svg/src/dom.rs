@@ -28,7 +28,7 @@ pub struct SvgDom {
 
 impl SvgDom {
     /// Create a new empty SVG DOM.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -106,8 +106,7 @@ impl Default for PreserveAspectRatio {
 }
 
 /// SVG node types.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub enum SvgNodeKind {
     /// Root SVG element.
     Svg,
@@ -145,7 +144,6 @@ pub enum SvgNodeKind {
     /// Unknown element.
     Unknown(String),
 }
-
 
 /// SVG node (element in the DOM tree).
 ///

@@ -81,9 +81,7 @@ impl Value {
         match self {
             Self::Int(i) => *i,
             Self::Float(f) => saturate_to_i32(*f),
-            Self::Bool(b) => {
-                i32::from(*b)
-            }
+            Self::Bool(b) => i32::from(*b),
             _ => {
                 debug_assert!(
                     false,
@@ -343,16 +341,12 @@ impl Interp<'_> {
                 ControlFlow::Normal
             }
             Stmt::VarDecl { name, init, .. } => {
-                let v = init
-                    .as_ref()
-                    .map_or(Value::Void, |e| self.compute_expr(e));
+                let v = init.as_ref().map_or(Value::Void, |e| self.compute_expr(e));
                 self.declare(name, v);
                 ControlFlow::Normal
             }
             Stmt::Return(expr) => {
-                let v = expr
-                    .as_ref()
-                    .map_or(Value::Void, |e| self.compute_expr(e));
+                let v = expr.as_ref().map_or(Value::Void, |e| self.compute_expr(e));
                 ControlFlow::Return(v)
             }
             Stmt::Break => ControlFlow::Break,
@@ -936,7 +930,10 @@ fn mat_mul(l: &Value, r: &Value) -> Option<Value> {
         (Value::Vec4(v), Value::Mat4(m)) => {
             let mut out = [0.0f32; 4];
             for (j, slot) in out.iter_mut().enumerate() {
-                *slot = v[3].mul_add(m[j * 4 + 3], v[2].mul_add(m[j * 4 + 2], v[0].mul_add(m[j * 4], v[1] * m[j * 4 + 1])));
+                *slot = v[3].mul_add(
+                    m[j * 4 + 3],
+                    v[2].mul_add(m[j * 4 + 2], v[0].mul_add(m[j * 4], v[1] * m[j * 4 + 1])),
+                );
             }
             Some(Value::Vec4(out))
         }

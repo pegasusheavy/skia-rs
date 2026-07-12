@@ -90,7 +90,7 @@ pub struct Mask {
 
 impl Mask {
     /// Create a new mask.
-    #[must_use] 
+    #[must_use]
     pub fn new(mode: MaskMode) -> Self {
         Self {
             name: String::new(),
@@ -110,14 +110,15 @@ impl Mask {
             path: AnimatedProperty::from_lottie(&model.path),
             opacity: AnimatedProperty::from_lottie(&model.opacity),
             inverted: model.inverted,
-            expansion: model
-                .expansion
-                .as_ref().map_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(0.0)), AnimatedProperty::from_lottie),
+            expansion: model.expansion.as_ref().map_or_else(
+                || AnimatedProperty::static_value(KeyframeValue::Scalar(0.0)),
+                AnimatedProperty::from_lottie,
+            ),
         }
     }
 
     /// Get the mask path at a specific frame.
-    #[must_use] 
+    #[must_use]
     pub fn path_at(&self, frame: Scalar) -> Option<Path> {
         let value = self.path.value_at(frame);
 
@@ -128,20 +129,20 @@ impl Mask {
     }
 
     /// Get the opacity at a specific frame (0.0 - 1.0).
-    #[must_use] 
+    #[must_use]
     pub fn opacity_at(&self, frame: Scalar) -> Scalar {
         let opacity = self.opacity.value_at(frame).as_scalar().unwrap_or(100.0);
         (opacity / 100.0).clamp(0.0, 1.0)
     }
 
     /// Get the expansion at a specific frame.
-    #[must_use] 
+    #[must_use]
     pub fn expansion_at(&self, frame: Scalar) -> Scalar {
         self.expansion.value_at(frame).as_scalar().unwrap_or(0.0)
     }
 
     /// Check if this mask affects rendering (not None mode with zero opacity).
-    #[must_use] 
+    #[must_use]
     pub fn is_active(&self, frame: Scalar) -> bool {
         self.mode != MaskMode::None && self.opacity_at(frame) > 0.0
     }
@@ -219,7 +220,7 @@ pub struct MaskGroup {
 
 impl MaskGroup {
     /// Create a new empty mask group.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -230,7 +231,7 @@ impl MaskGroup {
     }
 
     /// Check if the group has any active masks.
-    #[must_use] 
+    #[must_use]
     pub fn has_active_masks(&self, frame: Scalar) -> bool {
         self.masks.iter().any(|m| m.is_active(frame))
     }
@@ -243,7 +244,7 @@ impl MaskGroup {
 /// inverts an individual mask's geometry (relative to `bounds`); the
 /// *first* mask in the stack always draws in "source" mode, with its
 /// effective inversion flipped when its own mode is Subtract.
-#[must_use] 
+#[must_use]
 pub fn build_clip(masks: &[Mask], frame: Scalar, bounds: Rect) -> Option<Path> {
     let mut result: Option<Path> = None;
 

@@ -148,7 +148,11 @@ impl ImageInfo {
     /// Returns [`PixelError::InvalidDimensions`] if `width` or `height` is
     /// negative.
     #[inline]
-    pub const fn new_n32(width: i32, height: i32, alpha_type: AlphaType) -> Result<Self, PixelError> {
+    pub const fn new_n32(
+        width: i32,
+        height: i32,
+        alpha_type: AlphaType,
+    ) -> Result<Self, PixelError> {
         Self::new(width, height, ColorType::n32(), alpha_type)
     }
 
@@ -439,8 +443,8 @@ impl<'a> Pixmap<'a> {
             return None;
         }
         let bpp = self.info.bytes_per_pixel();
-        let offset =
-            usize::try_from(y).unwrap_or(0) * self.row_bytes + usize::try_from(x).unwrap_or(0) * bpp;
+        let offset = usize::try_from(y).unwrap_or(0) * self.row_bytes
+            + usize::try_from(x).unwrap_or(0) * bpp;
         Some(&self.pixels[offset..offset + bpp])
     }
 }
@@ -776,7 +780,9 @@ fn convert_row(
     width: usize,
     alpha_conv: AlphaConversion,
 ) -> Result<(), PixelError> {
-    use ColorType::{Rgba8888, Bgra8888, Rgb888, Rgb565, Gray8, Alpha8, RgbaF16, RgbaF16Norm, RgbaF32};
+    use ColorType::{
+        Alpha8, Bgra8888, Gray8, Rgb565, Rgb888, Rgba8888, RgbaF16, RgbaF16Norm, RgbaF32,
+    };
 
     // Same format - just copy
     if src_type == dst_type {
@@ -1070,7 +1076,10 @@ fn apply_alpha_conversion(
     width: usize,
     alpha_conv: AlphaConversion,
 ) {
-    use ColorType::{Rgba8888, Bgra8888, Srgba8888, RgbaF16, RgbaF16Norm, RgbaF32, Alpha8, A16Unorm, A16Float, Argb4444, Rgba1010102, Bgra1010102, R16G16B16A16Unorm};
+    use ColorType::{
+        A16Float, A16Unorm, Alpha8, Argb4444, Bgra8888, Bgra1010102, R16G16B16A16Unorm, Rgba8888,
+        Rgba1010102, RgbaF16, RgbaF16Norm, RgbaF32, Srgba8888,
+    };
     let premul = match alpha_conv {
         AlphaConversion::None => return,
         AlphaConversion::Premultiply => true,
@@ -1568,7 +1577,11 @@ mod tests {
             "green ~127, got {}",
             dst[1]
         );
-        assert!((i32::from(dst[2]) - 63).abs() <= 1, "blue ~63, got {}", dst[2]);
+        assert!(
+            (i32::from(dst[2]) - 63).abs() <= 1,
+            "blue ~63, got {}",
+            dst[2]
+        );
         assert_eq!(dst[3], 128);
     }
 

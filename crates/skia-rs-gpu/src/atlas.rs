@@ -13,13 +13,13 @@ pub struct AtlasEntryId(u64);
 
 impl AtlasEntryId {
     /// Create a new entry ID.
-    #[must_use] 
+    #[must_use]
     pub const fn new(id: u64) -> Self {
         Self(id)
     }
 
     /// Get the raw ID value.
-    #[must_use] 
+    #[must_use]
     pub const fn raw(&self) -> u64 {
         self.0
     }
@@ -47,7 +47,7 @@ impl AtlasRegion {
     /// sampling never reaches into a neighbouring entry's texels (the classic
     /// atlas-bleed artifact). This matches Skia's convention of sampling at
     /// texel centers for atlased content.
-    #[must_use] 
+    #[must_use]
     pub fn uv_rect(&self, atlas_width: u32, atlas_height: u32) -> [f32; 4] {
         let half_w = 0.5 / scalar_from_u32(atlas_width);
         let half_h = 0.5 / scalar_from_u32(atlas_height);
@@ -199,7 +199,7 @@ pub struct TextureAtlas {
 
 impl TextureAtlas {
     /// Create a new texture atlas.
-    #[must_use] 
+    #[must_use]
     pub fn new(config: AtlasConfig) -> Self {
         let mut layers = Vec::with_capacity(config.max_layers as usize);
         layers.push(AtlasLayer::new(config.width, config.height));
@@ -215,31 +215,31 @@ impl TextureAtlas {
     }
 
     /// Get atlas configuration.
-    #[must_use] 
+    #[must_use]
     pub const fn config(&self) -> &AtlasConfig {
         &self.config
     }
 
     /// Get current generation.
-    #[must_use] 
+    #[must_use]
     pub const fn generation(&self) -> u64 {
         self.generation
     }
 
     /// Get number of active layers.
-    #[must_use] 
+    #[must_use]
     pub fn layer_count(&self) -> u32 {
         u32_from_usize(self.layers.len())
     }
 
     /// Get number of entries.
-    #[must_use] 
+    #[must_use]
     pub fn entry_count(&self) -> usize {
         self.entries.len()
     }
 
     /// Look up an existing entry.
-    #[must_use] 
+    #[must_use]
     pub fn lookup(&self, id: AtlasEntryId) -> Option<&AtlasRegion> {
         self.entries.get(&id)
     }
@@ -340,7 +340,7 @@ impl TextureAtlas {
     }
 
     /// Number of entries currently marked as freed but not yet repacked.
-    #[must_use] 
+    #[must_use]
     pub fn freed_count(&self) -> usize {
         self.freed.len()
     }
@@ -471,7 +471,7 @@ pub struct AtlasManager {
 
 impl AtlasManager {
     /// Create a new atlas manager with default configuration.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             path: TextureAtlas::new(AtlasConfig {
@@ -499,7 +499,7 @@ impl AtlasManager {
     }
 
     /// Get path atlas.
-    #[must_use] 
+    #[must_use]
     pub const fn path_atlas(&self) -> &TextureAtlas {
         &self.path
     }
@@ -510,7 +510,7 @@ impl AtlasManager {
     }
 
     /// Get glyph atlas.
-    #[must_use] 
+    #[must_use]
     pub const fn glyph_atlas(&self) -> &TextureAtlas {
         &self.glyph
     }
@@ -521,7 +521,7 @@ impl AtlasManager {
     }
 
     /// Get color atlas.
-    #[must_use] 
+    #[must_use]
     pub const fn color_atlas(&self) -> &TextureAtlas {
         &self.color
     }

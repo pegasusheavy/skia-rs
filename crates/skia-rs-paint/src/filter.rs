@@ -64,13 +64,13 @@ pub struct ColorMatrixFilter {
 
 impl ColorMatrixFilter {
     /// Create a new color matrix filter.
-    #[must_use] 
+    #[must_use]
     pub const fn new(matrix: [Scalar; 20]) -> Self {
         Self { matrix }
     }
 
     /// Create an identity color matrix.
-    #[must_use] 
+    #[must_use]
     pub const fn identity() -> Self {
         Self::new([
             1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
@@ -79,7 +79,7 @@ impl ColorMatrixFilter {
     }
 
     /// Create a saturation filter.
-    #[must_use] 
+    #[must_use]
     pub fn saturation(sat: Scalar) -> Self {
         let s = sat;
         let ms = 1.0 - s;
@@ -115,7 +115,7 @@ impl ColorMatrixFilter {
     ///
     /// A value of 0.0 is no change; positive values brighten, negative darken.
     /// Implemented as adding `amount` to the RGB bias (translation column).
-    #[must_use] 
+    #[must_use]
     pub const fn brightness(amount: Scalar) -> Self {
         let mut m = [0.0f32; 20];
         m[0] = 1.0;
@@ -131,7 +131,7 @@ impl ColorMatrixFilter {
     /// Create a color matrix filter that adjusts contrast.
     ///
     /// A value of 1.0 is no change; values > 1 increase contrast, < 1 decrease.
-    #[must_use] 
+    #[must_use]
     pub fn contrast(amount: Scalar) -> Self {
         // result = (src - 0.5) * amount + 0.5
         //        = src * amount + (0.5 - 0.5 * amount)
@@ -148,7 +148,7 @@ impl ColorMatrixFilter {
     }
 
     /// Create a color matrix filter that rotates hue by `degrees`.
-    #[must_use] 
+    #[must_use]
     pub fn hue_rotate(degrees: Scalar) -> Self {
         let r = degrees.to_radians();
         let cos_a = r.cos();
@@ -180,7 +180,7 @@ impl ColorMatrixFilter {
     }
 
     /// Create a color matrix filter that inverts RGB channels.
-    #[must_use] 
+    #[must_use]
     pub const fn invert() -> Self {
         let m = [
             -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 1.0, 0.0, 0.0,
@@ -190,7 +190,7 @@ impl ColorMatrixFilter {
     }
 
     /// Create a color matrix filter that applies a sepia tone.
-    #[must_use] 
+    #[must_use]
     pub const fn sepia() -> Self {
         let m = [
             0.393, 0.769, 0.189, 0.0, 0.0, 0.349, 0.686, 0.168, 0.0, 0.0, 0.272, 0.534, 0.131, 0.0,
@@ -201,7 +201,7 @@ impl ColorMatrixFilter {
 
     /// Create a color matrix filter that converts to grayscale using
     /// luminance weights (Rec. 601).
-    #[must_use] 
+    #[must_use]
     pub const fn grayscale() -> Self {
         let r = 0.299;
         let g = 0.587;
@@ -217,10 +217,22 @@ impl ColorFilter for ColorMatrixFilter {
     fn filter_color(&self, color: Color4f) -> Color4f {
         let m = &self.matrix;
         Color4f {
-            r: m[3].mul_add(color.a, m[2].mul_add(color.b, m[0].mul_add(color.r, m[1] * color.g))) + m[4],
-            g: m[8].mul_add(color.a, m[7].mul_add(color.b, m[5].mul_add(color.r, m[6] * color.g))) + m[9],
-            b: m[13].mul_add(color.a, m[12].mul_add(color.b, m[10].mul_add(color.r, m[11] * color.g))) + m[14],
-            a: m[18].mul_add(color.a, m[17].mul_add(color.b, m[15].mul_add(color.r, m[16] * color.g))) + m[19],
+            r: m[3].mul_add(
+                color.a,
+                m[2].mul_add(color.b, m[0].mul_add(color.r, m[1] * color.g)),
+            ) + m[4],
+            g: m[8].mul_add(
+                color.a,
+                m[7].mul_add(color.b, m[5].mul_add(color.r, m[6] * color.g)),
+            ) + m[9],
+            b: m[13].mul_add(
+                color.a,
+                m[12].mul_add(color.b, m[10].mul_add(color.r, m[11] * color.g)),
+            ) + m[14],
+            a: m[18].mul_add(
+                color.a,
+                m[17].mul_add(color.b, m[15].mul_add(color.r, m[16] * color.g)),
+            ) + m[19],
         }
     }
 
@@ -277,19 +289,19 @@ pub struct BlurMaskFilter {
 
 impl BlurMaskFilter {
     /// Create a new blur mask filter.
-    #[must_use] 
+    #[must_use]
     pub const fn new(style: BlurStyle, sigma: Scalar) -> Self {
         Self { style, sigma }
     }
 
     /// Get the blur style.
-    #[must_use] 
+    #[must_use]
     pub const fn style(&self) -> BlurStyle {
         self.style
     }
 
     /// Get the sigma value.
-    #[must_use] 
+    #[must_use]
     pub const fn sigma(&self) -> Scalar {
         self.sigma
     }
@@ -390,7 +402,7 @@ pub struct BlurImageFilter {
 
 impl BlurImageFilter {
     /// Create a new blur image filter.
-    #[must_use] 
+    #[must_use]
     pub const fn new(sigma_x: Scalar, sigma_y: Scalar, tile_mode: crate::shader::TileMode) -> Self {
         Self {
             sigma_x,
@@ -451,7 +463,7 @@ pub struct DropShadowImageFilter {
 
 impl DropShadowImageFilter {
     /// Create a new drop shadow filter.
-    #[must_use] 
+    #[must_use]
     pub const fn new(
         dx: Scalar,
         dy: Scalar,
@@ -602,7 +614,7 @@ impl ShaderMaskFilter {
     }
 
     /// Get the shader.
-    #[must_use] 
+    #[must_use]
     pub fn shader(&self) -> &crate::shader::ShaderRef {
         &self.shader
     }
@@ -633,13 +645,13 @@ pub struct TableMaskFilter {
 
 impl TableMaskFilter {
     /// Create a new table mask filter.
-    #[must_use] 
+    #[must_use]
     pub const fn new(table: [u8; 256]) -> Self {
         Self { table }
     }
 
     /// Create a gamma correction table.
-    #[must_use] 
+    #[must_use]
     pub fn gamma(gamma: Scalar) -> Self {
         let mut table = [0u8; 256];
         for (i, v) in table.iter_mut().enumerate() {
@@ -667,7 +679,7 @@ impl TableMaskFilter {
     }
 
     /// Get the lookup table.
-    #[must_use] 
+    #[must_use]
     pub const fn table(&self) -> &[u8; 256] {
         &self.table
     }
@@ -711,7 +723,7 @@ pub struct MorphologyImageFilter {
 
 impl MorphologyImageFilter {
     /// Create a dilate filter.
-    #[must_use] 
+    #[must_use]
     pub fn dilate(radius_x: Scalar, radius_y: Scalar, input: Option<ImageFilterRef>) -> Self {
         Self {
             morph_type: MorphologyType::Dilate,
@@ -722,7 +734,7 @@ impl MorphologyImageFilter {
     }
 
     /// Create an erode filter.
-    #[must_use] 
+    #[must_use]
     pub fn erode(radius_x: Scalar, radius_y: Scalar, input: Option<ImageFilterRef>) -> Self {
         Self {
             morph_type: MorphologyType::Erode,
@@ -733,19 +745,19 @@ impl MorphologyImageFilter {
     }
 
     /// Get the morphology type.
-    #[must_use] 
+    #[must_use]
     pub const fn morph_type(&self) -> MorphologyType {
         self.morph_type
     }
 
     /// Get the X radius.
-    #[must_use] 
+    #[must_use]
     pub const fn radius_x(&self) -> Scalar {
         self.radius_x
     }
 
     /// Get the Y radius.
-    #[must_use] 
+    #[must_use]
     pub const fn radius_y(&self) -> Scalar {
         self.radius_y
     }
@@ -775,7 +787,7 @@ impl ImageFilter for MorphologyImageFilter {
                 let input_data = input.serialize()?;
                 buf.push(1);
                 let len = u32::try_from(input_data.len()).unwrap_or(u32::MAX);
-        buf.extend_from_slice(&len.to_le_bytes());
+                buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&input_data);
             }
             None => buf.push(0),
@@ -869,7 +881,7 @@ impl ColorFilterImageFilter {
     }
 
     /// Get the color filter.
-    #[must_use] 
+    #[must_use]
     pub fn color_filter(&self) -> &ColorFilterRef {
         &self.color_filter
     }
@@ -894,7 +906,7 @@ impl ImageFilter for ColorFilterImageFilter {
                 let input_data = input.serialize()?;
                 buf.push(1);
                 let len = u32::try_from(input_data.len()).unwrap_or(u32::MAX);
-        buf.extend_from_slice(&len.to_le_bytes());
+                buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&input_data);
             }
             None => buf.push(0),
@@ -1024,7 +1036,7 @@ impl ImageFilter for DisplacementMapImageFilter {
                 let color_data = color.serialize()?;
                 buf.push(1);
                 let len = u32::try_from(color_data.len()).unwrap_or(u32::MAX);
-        buf.extend_from_slice(&len.to_le_bytes());
+                buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&color_data);
             }
             None => buf.push(0),
@@ -1120,7 +1132,7 @@ pub struct LightingImageFilter {
 
 impl LightingImageFilter {
     /// Create a diffuse lighting filter.
-    #[must_use] 
+    #[must_use]
     pub fn diffuse(
         light: LightType,
         surface_scale: Scalar,
@@ -1140,7 +1152,7 @@ impl LightingImageFilter {
     }
 
     /// Create a specular lighting filter.
-    #[must_use] 
+    #[must_use]
     pub fn specular(
         light: LightType,
         surface_scale: Scalar,
@@ -1224,7 +1236,7 @@ impl ImageFilter for LightingImageFilter {
                 let input_data = input.serialize()?;
                 buf.push(1);
                 let len = u32::try_from(input_data.len()).unwrap_or(u32::MAX);
-        buf.extend_from_slice(&len.to_le_bytes());
+                buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&input_data);
             }
             None => buf.push(0),
@@ -1306,7 +1318,7 @@ pub struct MergeImageFilter {
 
 impl MergeImageFilter {
     /// Create a merge filter with the given inputs.
-    #[must_use] 
+    #[must_use]
     pub fn new(inputs: Vec<Option<ImageFilterRef>>) -> Self {
         Self { inputs }
     }
@@ -1332,7 +1344,7 @@ impl ImageFilter for MergeImageFilter {
                     let filter_data = filter.serialize()?;
                     buf.push(1);
                     let len = u32::try_from(filter_data.len()).unwrap_or(u32::MAX);
-        buf.extend_from_slice(&len.to_le_bytes());
+                    buf.extend_from_slice(&len.to_le_bytes());
                     buf.extend_from_slice(&filter_data);
                 }
                 None => buf.push(0),
@@ -1363,7 +1375,7 @@ pub struct OffsetImageFilter {
 
 impl OffsetImageFilter {
     /// Create an offset filter.
-    #[must_use] 
+    #[must_use]
     pub fn new(dx: Scalar, dy: Scalar, input: Option<ImageFilterRef>) -> Self {
         Self { dx, dy, input }
     }
@@ -1388,7 +1400,7 @@ impl ImageFilter for OffsetImageFilter {
                 let input_data = input.serialize()?;
                 buf.push(1);
                 let len = u32::try_from(input_data.len()).unwrap_or(u32::MAX);
-        buf.extend_from_slice(&len.to_le_bytes());
+                buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&input_data);
             }
             None => buf.push(0),
@@ -1511,7 +1523,7 @@ impl ImageFilter for MatrixConvolutionImageFilter {
                 let input_data = input.serialize()?;
                 buf.push(1);
                 let len = u32::try_from(input_data.len()).unwrap_or(u32::MAX);
-        buf.extend_from_slice(&len.to_le_bytes());
+                buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&input_data);
             }
             None => buf.push(0),
@@ -1569,7 +1581,8 @@ impl ImageFilter for MatrixConvolutionImageFilter {
                             _ => continue, // Decal: transparent contribution
                         };
                         let sidx = (sy * width + sx) * 4;
-                        let kidx = usize::try_from(ky).unwrap_or(0) * usize::try_from(kw).unwrap_or(0)
+                        let kidx = usize::try_from(ky).unwrap_or(0)
+                            * usize::try_from(kw).unwrap_or(0)
                             + usize::try_from(kx).unwrap_or(0);
                         let k = self.kernel.get(kidx).copied().unwrap_or(0.0);
                         if self.convolve_alpha {
@@ -1622,7 +1635,7 @@ pub struct TileImageFilter {
 
 impl TileImageFilter {
     /// Create a tile filter.
-    #[must_use] 
+    #[must_use]
     pub fn new(src_rect: Rect, dst_rect: Rect, input: Option<ImageFilterRef>) -> Self {
         Self {
             src_rect,
@@ -1652,7 +1665,7 @@ impl ImageFilter for TileImageFilter {
                 let input_data = input.serialize()?;
                 buf.push(1);
                 let len = u32::try_from(input_data.len()).unwrap_or(u32::MAX);
-        buf.extend_from_slice(&len.to_le_bytes());
+                buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&input_data);
             }
             None => buf.push(0),
@@ -1710,7 +1723,7 @@ pub struct BlendImageFilter {
 
 impl BlendImageFilter {
     /// Create a blend filter.
-    #[must_use] 
+    #[must_use]
     pub fn new(
         mode: crate::BlendMode,
         background: Option<ImageFilterRef>,
@@ -1745,7 +1758,7 @@ impl ImageFilter for BlendImageFilter {
                 let bg_data = bg.serialize()?;
                 buf.push(1);
                 let len = u32::try_from(bg_data.len()).unwrap_or(u32::MAX);
-        buf.extend_from_slice(&len.to_le_bytes());
+                buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&bg_data);
             }
             None => buf.push(0),
@@ -1755,7 +1768,7 @@ impl ImageFilter for BlendImageFilter {
                 let fg_data = fg.serialize()?;
                 buf.push(1);
                 let len = u32::try_from(fg_data.len()).unwrap_or(u32::MAX);
-        buf.extend_from_slice(&len.to_le_bytes());
+                buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&fg_data);
             }
             None => buf.push(0),
@@ -1789,7 +1802,7 @@ pub struct ArithmeticImageFilter {
 
 impl ArithmeticImageFilter {
     /// Create an arithmetic blend filter.
-    #[must_use] 
+    #[must_use]
     pub fn new(
         k1: Scalar,
         k2: Scalar,
@@ -1836,7 +1849,7 @@ impl ImageFilter for ArithmeticImageFilter {
                 let bg_data = bg.serialize()?;
                 buf.push(1);
                 let len = u32::try_from(bg_data.len()).unwrap_or(u32::MAX);
-        buf.extend_from_slice(&len.to_le_bytes());
+                buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&bg_data);
             }
             None => buf.push(0),
@@ -1846,7 +1859,7 @@ impl ImageFilter for ArithmeticImageFilter {
                 let fg_data = fg.serialize()?;
                 buf.push(1);
                 let len = u32::try_from(fg_data.len()).unwrap_or(u32::MAX);
-        buf.extend_from_slice(&len.to_le_bytes());
+                buf.extend_from_slice(&len.to_le_bytes());
                 buf.extend_from_slice(&fg_data);
             }
             None => buf.push(0),

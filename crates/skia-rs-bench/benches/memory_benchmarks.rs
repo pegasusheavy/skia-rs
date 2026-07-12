@@ -11,8 +11,8 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use std::hint::black_box;
 
 use skia_rs_bench::{
-    generate_complex_path, generate_multi_contour_path, generate_simple_path,
-    generate_star, random_points, random_rects,
+    generate_complex_path, generate_multi_contour_path, generate_simple_path, generate_star,
+    random_points, random_rects,
 };
 use skia_rs_canvas::Surface;
 use skia_rs_core::{Color, Rect};

@@ -302,7 +302,7 @@ pub struct SolidColorGenerator {
 
 impl SolidColorGenerator {
     /// Create a new solid color generator.
-    #[must_use] 
+    #[must_use]
     pub fn new(width: i32, height: i32, color: [u8; 4]) -> Self {
         Self {
             info: ImageInfo::new(width, height, ColorType::Rgba8888, AlphaType::Premul),
@@ -361,7 +361,7 @@ impl EncodedImageGenerator {
     /// Create a generator from encoded data.
     ///
     /// Returns `None` if the data cannot be decoded.
-    #[must_use] 
+    #[must_use]
     pub fn new(data: Vec<u8>) -> Option<Self> {
         Self::from_shared(data.into())
     }
@@ -369,7 +369,7 @@ impl EncodedImageGenerator {
     /// Create a generator from shared encoded data.
     ///
     /// Decodes the payload up front to determine its native format.
-    #[must_use] 
+    #[must_use]
     pub fn from_shared(data: Arc<[u8]>) -> Option<Self> {
         let decoded = crate::decode_image(&data).ok()?;
 
@@ -382,7 +382,7 @@ impl EncodedImageGenerator {
     }
 
     /// Get a reference to the cached decoded image.
-    #[must_use] 
+    #[must_use]
     pub const fn decoded_image(&self) -> &crate::Image {
         &self.decoded
     }
@@ -462,10 +462,13 @@ impl ImageGenerator for EncodedImageGenerator {
         // (src, dst) pairs instead.
         matches!(
             (self.info.color_type, info.color_type),
-            (ColorType::Rgba8888 | ColorType::Bgra8888 | ColorType::Gray8 |
-ColorType::Alpha8, ColorType::Rgba8888) |
-(ColorType::Rgba8888 | ColorType::Bgra8888, ColorType::Bgra8888) |
-(ColorType::Rgba8888, ColorType::Gray8)
+            (
+                ColorType::Rgba8888 | ColorType::Bgra8888 | ColorType::Gray8 | ColorType::Alpha8,
+                ColorType::Rgba8888
+            ) | (
+                ColorType::Rgba8888 | ColorType::Bgra8888,
+                ColorType::Bgra8888
+            ) | (ColorType::Rgba8888, ColorType::Gray8)
         )
     }
 }
@@ -581,7 +584,9 @@ mod tests {
         // reads from the generator all produce the exact same bytes even
         // after we drop and recreate the destination buffer.
         let info = ImageInfo::new(4, 4, ColorType::Rgba8888, AlphaType::Unpremul);
-        let src_pixels: Vec<u8> = (0..(4 * 4 * 4)).map(|i| u8::try_from(i % 256).unwrap()).collect();
+        let src_pixels: Vec<u8> = (0..(4 * 4 * 4))
+            .map(|i| u8::try_from(i % 256).unwrap())
+            .collect();
         let src_image =
             crate::Image::from_raster_data(&info, &src_pixels, 16).expect("raster image");
         let encoded = crate::PngEncoder::new()

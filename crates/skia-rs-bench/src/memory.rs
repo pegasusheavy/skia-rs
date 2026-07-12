@@ -47,32 +47,34 @@ static DEALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
 static TRACKING_ENABLED: AtomicBool = AtomicBool::new(false);
 
 unsafe impl GlobalAlloc for TrackingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 { unsafe {
-        let ptr = self.inner.alloc(layout);
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        unsafe {
+            let ptr = self.inner.alloc(layout);
 
-        if TRACKING_ENABLED.load(Ordering::Relaxed) && !ptr.is_null() {
-            let size = layout.size();
-            let total = ALLOCATED.fetch_add(size, Ordering::Relaxed) + size;
-            ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+            if TRACKING_ENABLED.load(Ordering::Relaxed) && !ptr.is_null() {
+                let size = layout.size();
+                let total = ALLOCATED.fetch_add(size, Ordering::Relaxed) + size;
+                ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
 
-            // Update peak
-            let current = total - DEALLOCATED.load(Ordering::Relaxed);
-            let mut peak = PEAK.load(Ordering::Relaxed);
-            while current > peak {
-                match PEAK.compare_exchange_weak(
-                    peak,
-                    current,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => break,
-                    Err(p) => peak = p,
+                // Update peak
+                let current = total - DEALLOCATED.load(Ordering::Relaxed);
+                let mut peak = PEAK.load(Ordering::Relaxed);
+                while current > peak {
+                    match PEAK.compare_exchange_weak(
+                        peak,
+                        current,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => break,
+                        Err(p) => peak = p,
+                    }
                 }
             }
-        }
 
-        ptr
-    }}
+            ptr
+        }
+    }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if TRACKING_ENABLED.load(Ordering::Relaxed) {
@@ -139,7 +141,7 @@ pub struct MemoryStats {
 
 impl MemoryStats {
     /// Get the current memory in use.
-    #[must_use] 
+    #[must_use]
     pub const fn current(&self) -> usize {
         self.allocated.saturating_sub(self.deallocated)
     }
@@ -159,7 +161,7 @@ impl MemoryStats {
     }
 
     /// Format stats as human-readable string.
-    #[must_use] 
+    #[must_use]
     pub fn format(&self) -> String {
         format!(
             "Memory: {} allocated, {} peak, {} allocs ({:.1} bytes/alloc)",
@@ -278,7 +280,7 @@ impl MemoryMeasurement {
     }
 
     /// Finish measurement and return stats.
-    #[must_use] 
+    #[must_use]
     pub fn finish(self) -> MemoryStats {
         let stats = self.current();
         disable_tracking();
@@ -321,7 +323,7 @@ pub struct MemoryProfile {
 
 impl MemoryProfile {
     /// Create a new memory profile.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -339,7 +341,7 @@ impl MemoryProfile {
     }
 
     /// Generate a formatted report.
-    #[must_use] 
+    #[must_use]
     pub fn report(&self) -> String {
         let mut report = String::new();
         report.push_str("Memory Profile Report\n");
@@ -407,49 +409,49 @@ pub mod size_of {
     use skia_rs_path::{Path, PathBuilder};
 
     /// Get size of Point.
-    #[must_use] 
+    #[must_use]
     pub const fn point() -> usize {
         std::mem::size_of::<Point>()
     }
 
     /// Get size of Rect.
-    #[must_use] 
+    #[must_use]
     pub const fn rect() -> usize {
         std::mem::size_of::<Rect>()
     }
 
     /// Get size of Matrix (3x3).
-    #[must_use] 
+    #[must_use]
     pub const fn matrix() -> usize {
         std::mem::size_of::<Matrix>()
     }
 
     /// Get size of Matrix44 (4x4).
-    #[must_use] 
+    #[must_use]
     pub const fn matrix44() -> usize {
         std::mem::size_of::<Matrix44>()
     }
 
     /// Get size of Color4f.
-    #[must_use] 
+    #[must_use]
     pub const fn color4f() -> usize {
         std::mem::size_of::<Color4f>()
     }
 
     /// Get size of Paint (base struct only).
-    #[must_use] 
+    #[must_use]
     pub const fn paint() -> usize {
         std::mem::size_of::<Paint>()
     }
 
     /// Get size of Path (base struct only).
-    #[must_use] 
+    #[must_use]
     pub const fn path() -> usize {
         std::mem::size_of::<Path>()
     }
 
     /// Get size of `PathBuilder` (base struct only).
-    #[must_use] 
+    #[must_use]
     pub const fn path_builder() -> usize {
         std::mem::size_of::<PathBuilder>()
     }

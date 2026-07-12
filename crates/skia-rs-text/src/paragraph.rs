@@ -146,7 +146,7 @@ struct TextRun {
 
 impl ParagraphBuilder {
     /// Create a new paragraph builder with the given style.
-    #[must_use] 
+    #[must_use]
     pub const fn new(style: ParagraphStyle) -> Self {
         Self {
             style,
@@ -188,7 +188,7 @@ impl ParagraphBuilder {
     }
 
     /// Build the paragraph.
-    #[must_use] 
+    #[must_use]
     pub fn build(self) -> Paragraph {
         Paragraph {
             style: self.style,
@@ -578,7 +578,8 @@ impl Paragraph {
             // font only when the paragraph has no runs at all.
             let m = self
                 .runs
-                .first().map_or_else(|| Font::default().metrics(), |r| r.style.font.metrics());
+                .first()
+                .map_or_else(|| Font::default().metrics(), |r| r.style.font.metrics());
             ascent = m.ascent;
             descent = m.descent;
             leading = m.leading;
@@ -657,41 +658,38 @@ impl Paragraph {
     }
 
     /// Get the laid-out width.
-    #[must_use] 
+    #[must_use]
     pub fn max_intrinsic_width(&self) -> Scalar {
-        self.lines
-            .iter()
-            .map(|l| l.width)
-            .fold(0.0f32, f32::max)
+        self.lines.iter().map(|l| l.width).fold(0.0f32, f32::max)
     }
 
     /// Get the laid-out height.
-    #[must_use] 
+    #[must_use]
     pub const fn height(&self) -> Scalar {
         self.height
     }
 
     /// Get the number of lines.
-    #[must_use] 
+    #[must_use]
     pub fn line_count(&self) -> usize {
         self.lines.len()
     }
 
     /// Get the line height for a specific line.
-    #[must_use] 
+    #[must_use]
     pub fn line_height(&self, line: usize) -> Option<Scalar> {
         self.lines.get(line).map(|l| l.bounds.height())
     }
 
     /// Get the width of a specific line.
-    #[must_use] 
+    #[must_use]
     pub fn line_width(&self, line: usize) -> Option<Scalar> {
         self.lines.get(line).map(|l| l.width)
     }
 
     /// Get access to the laid-out lines (for decoration rendering, hit
     /// testing, etc.).
-    #[must_use] 
+    #[must_use]
     pub fn lines(&self) -> &[TextLine] {
         &self.lines
     }
@@ -701,7 +699,7 @@ impl Paragraph {
     /// Emits one glyph run per (line, fragment) so that downstream rendering
     /// can honour per-span font, color, and decoration. Glyph positions are
     /// absolute in the paragraph coordinate space.
-    #[must_use] 
+    #[must_use]
     pub fn to_text_blob(&self) -> Option<TextBlob> {
         if !self.laid_out || self.lines.is_empty() {
             return None;
@@ -727,7 +725,7 @@ impl Paragraph {
     }
 
     /// Get the bounding box of the laid-out text.
-    #[must_use] 
+    #[must_use]
     pub const fn bounds(&self) -> Rect {
         Rect::from_xywh(0.0, 0.0, self.width, self.height)
     }
@@ -794,7 +792,7 @@ pub struct LineBreaker {
 
 impl LineBreaker {
     /// Create a new line breaker for the given text.
-    #[must_use] 
+    #[must_use]
     pub fn new(text: &str) -> Self {
         let mut breaks = Vec::new();
         let mut last_was_space = false;
@@ -817,13 +815,13 @@ impl LineBreaker {
     }
 
     /// Get all break opportunities.
-    #[must_use] 
+    #[must_use]
     pub fn breaks(&self) -> &[usize] {
         &self.breaks
     }
 
     /// Find the best break point before a given position.
-    #[must_use] 
+    #[must_use]
     pub fn find_break_before(&self, pos: usize) -> usize {
         self.breaks
             .iter()
@@ -857,7 +855,7 @@ impl Default for Hyphenator {
 
 impl Hyphenator {
     /// Create a new hyphenator.
-    #[must_use] 
+    #[must_use]
     pub const fn new(min_prefix: usize, min_suffix: usize) -> Self {
         Self {
             min_prefix,
@@ -868,7 +866,7 @@ impl Hyphenator {
     /// Find hyphenation points in a word.
     ///
     /// Returns byte offsets where hyphens can be inserted.
-    #[must_use] 
+    #[must_use]
     pub fn hyphenate(&self, word: &str) -> Vec<usize> {
         let chars: Vec<char> = word.chars().collect();
         let char_count = chars.len();
@@ -884,10 +882,12 @@ impl Hyphenator {
             byte_offset += c.len_utf8();
 
             // Simple rule: allow hyphenation between vowels and consonants
-            if i >= self.min_prefix && char_count - i > self.min_suffix
-                && is_vowel(c) != is_vowel(chars.get(i + 1).copied().unwrap_or('x')) {
-                    points.push(byte_offset);
-                }
+            if i >= self.min_prefix
+                && char_count - i > self.min_suffix
+                && is_vowel(c) != is_vowel(chars.get(i + 1).copied().unwrap_or('x'))
+            {
+                points.push(byte_offset);
+            }
         }
 
         points

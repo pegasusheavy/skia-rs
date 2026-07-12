@@ -711,7 +711,12 @@ impl Path {
     #[must_use]
     pub fn get_bounds(&self) -> Rect {
         let b = self.inner.bounds();
-        Rect::new(to_f64(b.left), to_f64(b.top), to_f64(b.right), to_f64(b.bottom))
+        Rect::new(
+            to_f64(b.left),
+            to_f64(b.top),
+            to_f64(b.right),
+            to_f64(b.bottom),
+        )
     }
 
     /// Check if a point is inside the path.

@@ -58,7 +58,12 @@ impl Matrix44 {
 
     /// Creates a new matrix from row-major values.
     #[must_use]
-    pub const fn from_rows(r0: [Scalar; 4], r1: [Scalar; 4], r2: [Scalar; 4], r3: [Scalar; 4]) -> Self {
+    pub const fn from_rows(
+        r0: [Scalar; 4],
+        r1: [Scalar; 4],
+        r2: [Scalar; 4],
+        r3: [Scalar; 4],
+    ) -> Self {
         Self {
             values: [
                 r0[0], r1[0], r2[0], r3[0], // column 0

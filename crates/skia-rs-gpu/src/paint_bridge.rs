@@ -63,7 +63,7 @@ pub enum BuiltinShader {
 
 impl BuiltinShader {
     /// Return the vertex and fragment WGSL source for this built-in.
-    #[must_use] 
+    #[must_use]
     pub const fn wgsl_sources(self) -> (&'static str, &'static str) {
         match self {
             // `Unsupported` falls back to the solid-color built-in.
@@ -311,13 +311,13 @@ pub struct PaintUniforms {
 
 impl PaintUniforms {
     /// Number of bytes in the uniform block.
-    #[must_use] 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.bytes.len()
     }
 
     /// True if no uniform data is set.
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }
@@ -339,7 +339,7 @@ pub struct PaintPlan {
 /// Examines the paint's shader (if any) and blend mode, picks an appropriate
 /// built-in GPU shader, builds the pipeline descriptor and key, and packs
 /// the shader parameters into a uniform blob.
-#[must_use] 
+#[must_use]
 pub fn paint_to_pipeline(paint: &Paint) -> PaintPlan {
     let (blend, blend_class) = blend_mode_to_state(paint.blend_mode());
 
@@ -367,13 +367,13 @@ pub fn paint_to_pipeline(paint: &Paint) -> PaintPlan {
 /// Target format is `Rgba8Unorm` by default; callers that render to sRGB
 /// or other formats should call [`build_pipeline_descriptor_with_target`]
 /// directly.
-#[must_use] 
+#[must_use]
 pub fn build_pipeline_descriptor(selection: &PipelineSelection) -> RenderPipelineDescriptor {
     build_pipeline_descriptor_with_target(selection, TextureFormat::Rgba8Unorm)
 }
 
 /// Build a `RenderPipelineDescriptor` for a specific render target format.
-#[must_use] 
+#[must_use]
 pub fn build_pipeline_descriptor_with_target(
     selection: &PipelineSelection,
     target: TextureFormat,

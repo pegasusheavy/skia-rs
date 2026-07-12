@@ -48,13 +48,27 @@ fn bench_point_operations(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("batch_normalize", size),
             &points,
-            |b, points| b.iter(|| points.iter().map(skia_rs_core::Point::normalize).collect::<Vec<_>>()),
+            |b, points| {
+                b.iter(|| {
+                    points
+                        .iter()
+                        .map(skia_rs_core::Point::normalize)
+                        .collect::<Vec<_>>()
+                });
+            },
         );
 
         group.bench_with_input(
             BenchmarkId::new("batch_length", size),
             &points,
-            |b, points| b.iter(|| points.iter().map(skia_rs_core::Point::length).fold(0.0, |a, b| a + b)),
+            |b, points| {
+                b.iter(|| {
+                    points
+                        .iter()
+                        .map(skia_rs_core::Point::length)
+                        .fold(0.0, |a, b| a + b)
+                });
+            },
         );
     }
 
@@ -195,7 +209,14 @@ fn bench_color_operations(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("batch_to_color4f", size),
             &colors,
-            |b, colors| b.iter(|| colors.iter().map(skia_rs_core::Color::to_color4f).collect::<Vec<_>>()),
+            |b, colors| {
+                b.iter(|| {
+                    colors
+                        .iter()
+                        .map(skia_rs_core::Color::to_color4f)
+                        .collect::<Vec<_>>()
+                });
+            },
         );
     }
 
@@ -238,13 +259,27 @@ fn bench_color4f_operations(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("batch_premul", size),
             &colors,
-            |b, colors| b.iter(|| colors.iter().map(skia_rs_core::Color4f::premul).collect::<Vec<_>>()),
+            |b, colors| {
+                b.iter(|| {
+                    colors
+                        .iter()
+                        .map(skia_rs_core::Color4f::premul)
+                        .collect::<Vec<_>>()
+                });
+            },
         );
 
         group.bench_with_input(
             BenchmarkId::new("batch_to_color", size),
             &colors,
-            |b, colors| b.iter(|| colors.iter().map(skia_rs_core::Color4f::to_color).collect::<Vec<_>>()),
+            |b, colors| {
+                b.iter(|| {
+                    colors
+                        .iter()
+                        .map(skia_rs_core::Color4f::to_color)
+                        .collect::<Vec<_>>()
+                });
+            },
         );
     }
 

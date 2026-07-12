@@ -21,14 +21,14 @@ pub struct PathBuilder {
 impl PathBuilder {
     /// Create a new path builder.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Create a path builder with specified fill type.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn with_fill_type(fill_type: FillType) -> Self {
         let mut builder = Self::new();
         builder.path.fill_type = fill_type;
@@ -512,11 +512,17 @@ impl PathBuilder {
 
         let x0 = rx.mul_add(cos_start, cx);
         let y0 = ry.mul_add(sin_start, cy);
-        let mut p1 = Point::new((k * rx).mul_add(-sin_start, x0), (k * ry).mul_add(cos_start, y0));
+        let mut p1 = Point::new(
+            (k * rx).mul_add(-sin_start, x0),
+            (k * ry).mul_add(cos_start, y0),
+        );
         let x3 = rx.mul_add(cos_end, cx);
         let y3 = ry.mul_add(sin_end, cy);
         let mut p3 = Point::new(x3, y3);
-        let mut p2 = Point::new((k * rx).mul_add(sin_end, x3), (k * ry).mul_add(-cos_end, y3));
+        let mut p2 = Point::new(
+            (k * rx).mul_add(sin_end, x3),
+            (k * ry).mul_add(-cos_end, y3),
+        );
 
         if let Some(m) = rot {
             p1 = m.map_point(p1);
@@ -568,7 +574,9 @@ impl PathBuilder {
         let x1p2 = x1p * x1p;
         let y1p2 = y1p * y1p;
 
-        let mut sq = (ry2.mul_add(-x1p2, rx2.mul_add(ry2, -(rx2 * y1p2))) / rx2.mul_add(y1p2, ry2 * x1p2)).max(0.0);
+        let mut sq = (ry2.mul_add(-x1p2, rx2.mul_add(ry2, -(rx2 * y1p2)))
+            / rx2.mul_add(y1p2, ry2 * x1p2))
+        .max(0.0);
         sq = sq.sqrt();
         if large_arc == sweep {
             sq = -sq;

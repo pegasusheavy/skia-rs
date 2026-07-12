@@ -236,7 +236,11 @@ fn apply_image_tile(coord: Scalar, size: Scalar, mode: TileMode) -> Scalar {
         }
         TileMode::Mirror => {
             let n = coord.rem_euclid(2.0 * size);
-            if n < size { n } else { 2.0f32.mul_add(size, -n) - 1e-4 }
+            if n < size {
+                n
+            } else {
+                2.0f32.mul_add(size, -n) - 1e-4
+            }
         }
         TileMode::Decal => {
             if coord < 0.0 || coord >= size {
@@ -426,14 +430,14 @@ pub struct ColorShader {
 impl ColorShader {
     /// Create a new solid color shader.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn new(color: Color4f) -> Self {
         Self { color }
     }
 
     /// Get the color.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn color(&self) -> Color4f {
         self.color
     }
@@ -484,7 +488,7 @@ pub struct LinearGradient {
 
 impl LinearGradient {
     /// Create a new linear gradient.
-    #[must_use] 
+    #[must_use]
     pub const fn new(
         start: Point,
         end: Point,
@@ -504,14 +508,14 @@ impl LinearGradient {
     }
 
     /// Set the local matrix.
-    #[must_use] 
+    #[must_use]
     pub const fn with_local_matrix(mut self, matrix: Matrix) -> Self {
         self.local_matrix = Some(matrix);
         self
     }
 
     /// Set gradient flags.
-    #[must_use] 
+    #[must_use]
     pub const fn with_flags(mut self, flags: GradientFlags) -> Self {
         self.flags = flags;
         self
@@ -519,35 +523,35 @@ impl LinearGradient {
 
     /// Get the start point.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn start(&self) -> Point {
         self.start
     }
 
     /// Get the end point.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn end(&self) -> Point {
         self.end
     }
 
     /// Get the colors.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn colors(&self) -> &[Color4f] {
         &self.colors
     }
 
     /// Get the positions.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn positions(&self) -> Option<&[Scalar]> {
         self.positions.as_deref()
     }
 
     /// Get the tile mode.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn tile_mode(&self) -> TileMode {
         self.tile_mode
     }
@@ -645,7 +649,7 @@ pub struct RadialGradient {
 
 impl RadialGradient {
     /// Create a new radial gradient.
-    #[must_use] 
+    #[must_use]
     pub const fn new(
         center: Point,
         radius: Scalar,
@@ -665,14 +669,14 @@ impl RadialGradient {
     }
 
     /// Set the local matrix.
-    #[must_use] 
+    #[must_use]
     pub const fn with_local_matrix(mut self, matrix: Matrix) -> Self {
         self.local_matrix = Some(matrix);
         self
     }
 
     /// Set gradient flags.
-    #[must_use] 
+    #[must_use]
     pub const fn with_flags(mut self, flags: GradientFlags) -> Self {
         self.flags = flags;
         self
@@ -680,35 +684,35 @@ impl RadialGradient {
 
     /// Get the center point.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn center(&self) -> Point {
         self.center
     }
 
     /// Get the radius.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn radius(&self) -> Scalar {
         self.radius
     }
 
     /// Get the colors.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn colors(&self) -> &[Color4f] {
         &self.colors
     }
 
     /// Get the positions.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn positions(&self) -> Option<&[Scalar]> {
         self.positions.as_deref()
     }
 
     /// Get the tile mode.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn tile_mode(&self) -> TileMode {
         self.tile_mode
     }
@@ -803,7 +807,7 @@ impl SweepGradient {
     /// Create a new sweep gradient.
     ///
     /// Angles are in degrees, with 0 pointing right and increasing clockwise.
-    #[must_use] 
+    #[must_use]
     pub const fn new(
         center: Point,
         start_angle: Scalar,
@@ -825,20 +829,24 @@ impl SweepGradient {
     }
 
     /// Create a full sweep gradient (0-360 degrees).
-    #[must_use] 
-    pub const fn new_full(center: Point, colors: Vec<Color4f>, positions: Option<Vec<Scalar>>) -> Self {
+    #[must_use]
+    pub const fn new_full(
+        center: Point,
+        colors: Vec<Color4f>,
+        positions: Option<Vec<Scalar>>,
+    ) -> Self {
         Self::new(center, 0.0, 360.0, colors, positions, TileMode::Clamp)
     }
 
     /// Set the local matrix.
-    #[must_use] 
+    #[must_use]
     pub const fn with_local_matrix(mut self, matrix: Matrix) -> Self {
         self.local_matrix = Some(matrix);
         self
     }
 
     /// Set gradient flags.
-    #[must_use] 
+    #[must_use]
     pub const fn with_flags(mut self, flags: GradientFlags) -> Self {
         self.flags = flags;
         self
@@ -846,35 +854,35 @@ impl SweepGradient {
 
     /// Get the center point.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn center(&self) -> Point {
         self.center
     }
 
     /// Get the start angle in degrees.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn start_angle(&self) -> Scalar {
         self.start_angle
     }
 
     /// Get the end angle in degrees.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn end_angle(&self) -> Scalar {
         self.end_angle
     }
 
     /// Get the colors.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn colors(&self) -> &[Color4f] {
         &self.colors
     }
 
     /// Get the positions.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn positions(&self) -> Option<&[Scalar]> {
         self.positions.as_deref()
     }
@@ -973,7 +981,7 @@ pub struct TwoPointConicalGradient {
 
 impl TwoPointConicalGradient {
     /// Create a new two-point conical gradient.
-    #[must_use] 
+    #[must_use]
     pub const fn new(
         start_center: Point,
         start_radius: Scalar,
@@ -997,14 +1005,14 @@ impl TwoPointConicalGradient {
     }
 
     /// Set the local matrix.
-    #[must_use] 
+    #[must_use]
     pub const fn with_local_matrix(mut self, matrix: Matrix) -> Self {
         self.local_matrix = Some(matrix);
         self
     }
 
     /// Set gradient flags.
-    #[must_use] 
+    #[must_use]
     pub const fn with_flags(mut self, flags: GradientFlags) -> Self {
         self.flags = flags;
         self
@@ -1012,49 +1020,49 @@ impl TwoPointConicalGradient {
 
     /// Get the start center.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn start_center(&self) -> Point {
         self.start_center
     }
 
     /// Get the start radius.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn start_radius(&self) -> Scalar {
         self.start_radius
     }
 
     /// Get the end center.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn end_center(&self) -> Point {
         self.end_center
     }
 
     /// Get the end radius.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn end_radius(&self) -> Scalar {
         self.end_radius
     }
 
     /// Get the colors.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn colors(&self) -> &[Color4f] {
         &self.colors
     }
 
     /// Get the positions.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn positions(&self) -> Option<&[Scalar]> {
         self.positions.as_deref()
     }
 
     /// Get the tile mode.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn tile_mode(&self) -> TileMode {
         self.tile_mode
     }
@@ -1108,7 +1116,9 @@ impl Shader for TwoPointConicalGradient {
 
         let a = dr.mul_add(-dr, dx.mul_add(dx, dy * dy));
         let b = -2.0 * self.start_radius.mul_add(dr, ex.mul_add(dx, ey * dy));
-        let c = self.start_radius.mul_add(-self.start_radius, ex.mul_add(ex, ey * ey));
+        let c = self
+            .start_radius
+            .mul_add(-self.start_radius, ex.mul_add(ex, ey * ey));
 
         let t_opt = if a.abs() < 1e-7 {
             // Linear case (d.d == dr^2): B*t + C = 0
@@ -1259,7 +1269,7 @@ impl SamplingOptions {
 
 impl ImageShader {
     /// Create a new image shader.
-    #[must_use] 
+    #[must_use]
     pub const fn new(
         bounds: Rect,
         tile_mode_x: TileMode,
@@ -1278,8 +1288,12 @@ impl ImageShader {
     }
 
     /// Create an image shader with the same tile mode for both axes.
-    #[must_use] 
-    pub const fn with_tile_mode(bounds: Rect, tile_mode: TileMode, sampling: SamplingOptions) -> Self {
+    #[must_use]
+    pub const fn with_tile_mode(
+        bounds: Rect,
+        tile_mode: TileMode,
+        sampling: SamplingOptions,
+    ) -> Self {
         Self::new(bounds, tile_mode, tile_mode, sampling)
     }
 
@@ -1288,7 +1302,7 @@ impl ImageShader {
     /// Pixels are treated as premultiplied RGBA8 in the sRGB color space.
     /// The `image_info` should describe the width, height, color type, and
     /// row bytes of the pixel buffer.
-    #[must_use] 
+    #[must_use]
     pub const fn with_pixels(
         pixels: Arc<Vec<u8>>,
         image_info: skia_rs_core::pixel::ImageInfo,
@@ -1314,7 +1328,7 @@ impl ImageShader {
     }
 
     /// Set the local matrix.
-    #[must_use] 
+    #[must_use]
     pub const fn with_local_matrix(mut self, matrix: Matrix) -> Self {
         self.local_matrix = Some(matrix);
         self
@@ -1322,28 +1336,28 @@ impl ImageShader {
 
     /// Get the image bounds.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn bounds(&self) -> Rect {
         self.bounds
     }
 
     /// Get the X tile mode.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn tile_mode_x(&self) -> TileMode {
         self.tile_mode_x
     }
 
     /// Get the Y tile mode.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn tile_mode_y(&self) -> TileMode {
         self.tile_mode_y
     }
 
     /// Get the sampling options.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn sampling(&self) -> SamplingOptions {
         self.sampling
     }
@@ -1508,21 +1522,21 @@ impl BlendShader {
 
     /// Get the blend mode.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn blend_mode(&self) -> crate::BlendMode {
         self.blend_mode
     }
 
     /// Get the destination shader.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn dst(&self) -> &ShaderRef {
         &self.dst
     }
 
     /// Get the source shader.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn src(&self) -> &ShaderRef {
         &self.src
     }
@@ -1609,7 +1623,8 @@ impl PerlinNoiseGenerator {
         let mut grad_x = [0.0f32; 256];
         let mut grad_y = [0.0f32; 256];
         for (i, (gx, gy)) in grad_x.iter_mut().zip(grad_y.iter_mut()).enumerate() {
-            let angle = scalar_from_i32(i32::try_from(i).unwrap_or(0)) * std::f32::consts::TAU / 256.0;
+            let angle =
+                scalar_from_i32(i32::try_from(i).unwrap_or(0)) * std::f32::consts::TAU / 256.0;
             *gx = angle.cos();
             *gy = angle.sin();
         }
@@ -1723,7 +1738,7 @@ pub enum NoiseType {
 
 impl PerlinNoiseShader {
     /// Create a fractal noise shader.
-    #[must_use] 
+    #[must_use]
     pub const fn fractal_noise(
         base_frequency_x: Scalar,
         base_frequency_y: Scalar,
@@ -1742,7 +1757,7 @@ impl PerlinNoiseShader {
     }
 
     /// Create a turbulence shader.
-    #[must_use] 
+    #[must_use]
     pub const fn turbulence(
         base_frequency_x: Scalar,
         base_frequency_y: Scalar,
@@ -1827,7 +1842,10 @@ impl Shader for PerlinNoiseShader {
         let value = match self.noise_type {
             NoiseType::FractalNoise => {
                 // Map fractal noise from [-1, 1] to [0, 1]
-                generator.fractal_2d(fx, fy, octaves).mul_add(0.5, 0.5).clamp(0.0, 1.0)
+                generator
+                    .fractal_2d(fx, fy, octaves)
+                    .mul_add(0.5, 0.5)
+                    .clamp(0.0, 1.0)
             }
             NoiseType::Turbulence => generator.turbulence_2d(fx, fy, octaves),
         };
@@ -1891,14 +1909,14 @@ impl LocalMatrixShader {
 
     /// Get the inner shader.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn inner(&self) -> &ShaderRef {
         &self.inner
     }
 
     /// Get the matrix.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn matrix(&self) -> &Matrix {
         &self.matrix
     }
@@ -1968,21 +1986,21 @@ impl ComposeShader {
 
     /// Get the outer shader.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn outer(&self) -> &ShaderRef {
         &self.outer
     }
 
     /// Get the inner shader.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn inner(&self) -> &ShaderRef {
         &self.inner
     }
 
     /// Get the blend mode.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn blend_mode(&self) -> crate::BlendMode {
         self.blend_mode
     }
@@ -2030,7 +2048,7 @@ pub struct EmptyShader;
 
 impl EmptyShader {
     /// Create an empty shader.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }
@@ -2879,16 +2897,20 @@ fn deserialize_compose_shader(bytes: &[u8], offset: &mut usize) -> Option<Shader
 
 /// Convenience functions for creating shaders.
 pub mod shaders {
-    use super::{Color4f, ShaderRef, Arc, ColorShader, Point, Scalar, TileMode, LinearGradient, RadialGradient, SweepGradient, TwoPointConicalGradient, BlendShader, PerlinNoiseShader, Matrix, LocalMatrixShader, ComposeShader, EmptyShader};
+    use super::{
+        Arc, BlendShader, Color4f, ColorShader, ComposeShader, EmptyShader, LinearGradient,
+        LocalMatrixShader, Matrix, PerlinNoiseShader, Point, RadialGradient, Scalar, ShaderRef,
+        SweepGradient, TileMode, TwoPointConicalGradient,
+    };
 
     /// Create a solid color shader.
-    #[must_use] 
+    #[must_use]
     pub fn color(color: Color4f) -> ShaderRef {
         Arc::new(ColorShader::new(color))
     }
 
     /// Create a linear gradient shader.
-    #[must_use] 
+    #[must_use]
     pub fn linear_gradient(
         start: Point,
         end: Point,
@@ -2902,7 +2924,7 @@ pub mod shaders {
     }
 
     /// Create a radial gradient shader.
-    #[must_use] 
+    #[must_use]
     pub fn radial_gradient(
         center: Point,
         radius: Scalar,
@@ -2916,7 +2938,7 @@ pub mod shaders {
     }
 
     /// Create a sweep gradient shader.
-    #[must_use] 
+    #[must_use]
     pub fn sweep_gradient(
         center: Point,
         start_angle: Scalar,
@@ -2936,7 +2958,7 @@ pub mod shaders {
     }
 
     /// Create a two-point conical gradient shader.
-    #[must_use] 
+    #[must_use]
     pub fn two_point_conical_gradient(
         start_center: Point,
         start_radius: Scalar,
@@ -2963,7 +2985,7 @@ pub mod shaders {
     }
 
     /// Create a fractal noise shader.
-    #[must_use] 
+    #[must_use]
     pub fn fractal_noise(
         base_frequency_x: Scalar,
         base_frequency_y: Scalar,
@@ -2979,7 +3001,7 @@ pub mod shaders {
     }
 
     /// Create a turbulence shader.
-    #[must_use] 
+    #[must_use]
     pub fn turbulence(
         base_frequency_x: Scalar,
         base_frequency_y: Scalar,
@@ -3005,7 +3027,7 @@ pub mod shaders {
     }
 
     /// Create an empty (transparent) shader.
-    #[must_use] 
+    #[must_use]
     pub fn empty() -> ShaderRef {
         Arc::new(EmptyShader::new())
     }

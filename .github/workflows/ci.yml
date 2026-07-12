@@ -46,8 +46,10 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      # Allow warnings but deny errors - pedantic lints are advisory
-      - run: cargo clippy --workspace --all-targets -- -A clippy::pedantic -A clippy::nursery -A warnings
+      # Enforce clippy pedantic + nursery (configured as warnings in the
+      # workspace `[lints]` table) as hard errors. Justified false positives
+      # for the Skia port carry narrow `#[allow(..., reason = "...")]`.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
 
   # ==========================================================================
   # Build & Test Matrix

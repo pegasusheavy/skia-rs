@@ -169,7 +169,7 @@ impl Default for SkMatrixABI {
 
 impl SkMatrixABI {
     /// Identity matrix constant
-    #[must_use] 
+    #[must_use]
     pub const fn identity() -> Self {
         Self {
             values: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
@@ -196,7 +196,7 @@ impl Default for SkMatrix44ABI {
 
 impl SkMatrix44ABI {
     /// Identity matrix constant
-    #[must_use] 
+    #[must_use]
     pub const fn identity() -> Self {
         Self {
             values: [

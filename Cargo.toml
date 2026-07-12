@@ -158,3 +158,13 @@ opt-level = 3
 inherits = "release"
 debug = true
 lto = "thin"
+
+# Workspace-wide lint policy: pedantic + nursery are enforced (the CI clippy
+# job and the pre-push/pre-commit hooks run `-D warnings`, which promotes these
+# to errors). Individual, justified `#[allow(clippy::..., reason = "...")]`
+# attributes at item/module scope override this where a lint is a false
+# positive for a faithful Skia port. Each member crate opts in via
+# `[lints] workspace = true`.
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }

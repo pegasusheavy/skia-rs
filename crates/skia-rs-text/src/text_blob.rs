@@ -32,7 +32,7 @@ pub struct GlyphRun {
 
 impl GlyphRun {
     /// Create a new glyph run.
-    #[must_use] 
+    #[must_use]
     pub const fn new(font: Font, glyphs: Vec<u16>, positions: Vec<Point>, origin: Point) -> Self {
         Self {
             glyphs,
@@ -50,7 +50,7 @@ impl GlyphRun {
     /// matches `SkTextBlob`'s run bounds, which must contain every glyph's
     /// ink. The horizontal extent spans every glyph position with the right
     /// edge extended by the actual per-glyph advance from `hmtx`.
-    #[must_use] 
+    #[must_use]
     pub fn bounds(&self) -> Rect {
         if self.positions.is_empty() {
             return Rect::EMPTY;
@@ -68,7 +68,8 @@ impl GlyphRun {
             left = left.min(x);
             let advance = self
                 .glyphs
-                .get(i).map_or_else(|| self.font.size() * 0.5, |&g| self.font.glyph_advance(g));
+                .get(i)
+                .map_or_else(|| self.font.size() * 0.5, |&g| self.font.glyph_advance(g));
             right = right.max(x + advance);
         }
 
@@ -91,7 +92,7 @@ pub struct TextBlob {
 
 impl TextBlob {
     /// Create a text blob from runs.
-    #[must_use] 
+    #[must_use]
     pub fn from_runs(runs: Vec<GlyphRun>) -> Self {
         let bounds = if runs.is_empty() {
             Rect::EMPTY
@@ -115,7 +116,7 @@ impl TextBlob {
     /// Glyphs are positioned by their real per-glyph advances
     /// (`Font::glyph_advance`) so the blob width agrees with
     /// `Font::measure_text` — not the old uniform `size * 0.5` estimate.
-    #[must_use] 
+    #[must_use]
     pub fn from_text(text: &str, font: &Font, origin: Point) -> Self {
         let glyphs = font.text_to_glyphs(text);
         let mut positions = Vec::with_capacity(glyphs.len());
@@ -132,14 +133,14 @@ impl TextBlob {
 
     /// Get the bounds of the text blob.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn bounds(&self) -> Rect {
         self.bounds
     }
 
     /// Get the glyph runs.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn runs(&self) -> &[GlyphRun] {
         &self.runs
     }
@@ -151,7 +152,7 @@ impl TextBlob {
     /// clones-that-rebuild — unlike a pointer address, which is reused as
     /// blobs are freed and reallocated.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn unique_id(&self) -> u32 {
         self.unique_id
     }
@@ -177,7 +178,7 @@ impl Default for TextBlobBuilder {
 
 impl TextBlobBuilder {
     /// Create a new text blob builder.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             runs: Vec::new(),
@@ -276,7 +277,7 @@ impl TextBlobBuilder {
     }
 
     /// Build the text blob.
-    #[must_use] 
+    #[must_use]
     pub fn build(mut self) -> Option<TextBlob> {
         self.flush_run();
 

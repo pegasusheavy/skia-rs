@@ -92,8 +92,8 @@ impl PixelBuffer {
         if x < 0 || x >= self.width || y < 0 || y >= self.height {
             return None;
         }
-        let offset = usize::try_from(y).unwrap_or(0) * self.stride
-            + usize::try_from(x).unwrap_or(0) * 4;
+        let offset =
+            usize::try_from(y).unwrap_or(0) * self.stride + usize::try_from(x).unwrap_or(0) * 4;
         Some(Color::from_argb(
             self.pixels[offset + 3],
             self.pixels[offset],
@@ -108,8 +108,8 @@ impl PixelBuffer {
         if x < 0 || x >= self.width || y < 0 || y >= self.height {
             return;
         }
-        let offset = usize::try_from(y).unwrap_or(0) * self.stride
-            + usize::try_from(x).unwrap_or(0) * 4;
+        let offset =
+            usize::try_from(y).unwrap_or(0) * self.stride + usize::try_from(x).unwrap_or(0) * 4;
         self.pixels[offset] = color.red();
         self.pixels[offset + 1] = color.green();
         self.pixels[offset + 2] = color.blue();

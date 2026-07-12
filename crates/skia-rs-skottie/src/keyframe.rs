@@ -10,8 +10,7 @@ use crate::model::{AnimatedValue, TangentModel};
 use skia_rs_core::Scalar;
 
 /// Easing function for keyframe interpolation.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Easing {
     /// Linear interpolation.
     #[default]
@@ -31,10 +30,9 @@ pub enum Easing {
     },
 }
 
-
 impl Easing {
     /// Create a bezier easing from tangent models.
-    #[must_use] 
+    #[must_use]
     pub fn from_tangents(out_tangent: &TangentModel, in_tangent: &TangentModel) -> Self {
         Self::Bezier {
             out_x: out_tangent.x.first(),
@@ -45,7 +43,7 @@ impl Easing {
     }
 
     /// Evaluate the easing function at time t (0..1).
-    #[must_use] 
+    #[must_use]
     pub fn evaluate(&self, t: Scalar) -> Scalar {
         match self {
             Self::Linear => t,
@@ -139,7 +137,7 @@ pub struct Keyframe {
 
 impl Keyframe {
     /// Create a new keyframe.
-    #[must_use] 
+    #[must_use]
     pub const fn new(time: Scalar, value: KeyframeValue) -> Self {
         Self {
             time,
@@ -151,7 +149,7 @@ impl Keyframe {
     }
 
     /// Set the easing function.
-    #[must_use] 
+    #[must_use]
     pub const fn with_easing(mut self, easing: Easing) -> Self {
         self.easing = easing;
         self
@@ -178,7 +176,7 @@ pub enum KeyframeValue {
 
 impl KeyframeValue {
     /// Get as scalar.
-    #[must_use] 
+    #[must_use]
     pub const fn as_scalar(&self) -> Option<Scalar> {
         match self {
             Self::Scalar(v) => Some(*v),
@@ -192,7 +190,7 @@ impl KeyframeValue {
     /// Bodymovin frequently exports positions/anchors as 3-component
     /// arrays (with a z of 0 for 2D layers); accept `Vec3` by taking the
     /// first two components.
-    #[must_use] 
+    #[must_use]
     pub const fn as_vec2(&self) -> Option<[Scalar; 2]> {
         match self {
             Self::Vec2(v) => Some(*v),
@@ -203,7 +201,7 @@ impl KeyframeValue {
     }
 
     /// Get as vec3.
-    #[must_use] 
+    #[must_use]
     pub const fn as_vec3(&self) -> Option<[Scalar; 3]> {
         match self {
             Self::Vec3(v) => Some(*v),
@@ -214,7 +212,7 @@ impl KeyframeValue {
     }
 
     /// Get as color.
-    #[must_use] 
+    #[must_use]
     pub const fn as_color(&self) -> Option<[Scalar; 4]> {
         match self {
             Self::Color(v) => Some(*v),
@@ -224,7 +222,7 @@ impl KeyframeValue {
     }
 
     /// Get as a raw float array (e.g. gradient stop tables).
-    #[must_use] 
+    #[must_use]
     pub fn as_float_array(&self) -> Option<&[Scalar]> {
         match self {
             Self::FloatArray(v) => Some(v),
@@ -233,15 +231,14 @@ impl KeyframeValue {
     }
 
     /// Interpolate between two values.
-    #[must_use] 
+    #[must_use]
     pub fn lerp(&self, other: &Self, t: Scalar) -> Self {
         match (self, other) {
-            (Self::Scalar(a), Self::Scalar(b)) => {
-                Self::Scalar(a + (b - a) * t)
-            }
-            (Self::Vec2(a), Self::Vec2(b)) => {
-                Self::Vec2([(b[0] - a[0]).mul_add(t, a[0]), (b[1] - a[1]).mul_add(t, a[1])])
-            }
+            (Self::Scalar(a), Self::Scalar(b)) => Self::Scalar(a + (b - a) * t),
+            (Self::Vec2(a), Self::Vec2(b)) => Self::Vec2([
+                (b[0] - a[0]).mul_add(t, a[0]),
+                (b[1] - a[1]).mul_add(t, a[1]),
+            ]),
             (Self::Vec3(a), Self::Vec3(b)) => Self::Vec3([
                 (b[0] - a[0]).mul_add(t, a[0]),
                 (b[1] - a[1]).mul_add(t, a[1]),
@@ -254,14 +251,12 @@ impl KeyframeValue {
                 (b[3] - a[3]).mul_add(t, a[3]),
             ]),
             (Self::Path(a), Self::Path(b)) => Self::Path(a.lerp(b, t)),
-            (Self::FloatArray(a), Self::FloatArray(b)) if a.len() == b.len() => {
-                Self::FloatArray(
-                    a.iter()
-                        .zip(b.iter())
-                        .map(|(x, y)| x + (y - x) * t)
-                        .collect(),
-                )
-            }
+            (Self::FloatArray(a), Self::FloatArray(b)) if a.len() == b.len() => Self::FloatArray(
+                a.iter()
+                    .zip(b.iter())
+                    .map(|(x, y)| x + (y - x) * t)
+                    .collect(),
+            ),
             // Mismatched types - return first
             _ => self.clone(),
         }
@@ -283,7 +278,7 @@ pub struct PathData {
 
 impl PathData {
     /// Create an empty path.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             vertices: Vec::new(),
@@ -294,7 +289,7 @@ impl PathData {
     }
 
     /// Interpolate between two paths.
-    #[must_use] 
+    #[must_use]
     pub fn lerp(&self, other: &Self, t: Scalar) -> Self {
         let len = self.vertices.len().min(other.vertices.len());
 
@@ -302,24 +297,34 @@ impl PathData {
             vertices: (0..len)
                 .map(|i| {
                     [
-                        (other.vertices[i][0] - self.vertices[i][0]).mul_add(t, self.vertices[i][0]),
-                        (other.vertices[i][1] - self.vertices[i][1]).mul_add(t, self.vertices[i][1]),
+                        (other.vertices[i][0] - self.vertices[i][0])
+                            .mul_add(t, self.vertices[i][0]),
+                        (other.vertices[i][1] - self.vertices[i][1])
+                            .mul_add(t, self.vertices[i][1]),
                     ]
                 })
                 .collect(),
             in_tangents: (0..len)
                 .map(|i| {
                     [
-                        (other.in_tangents.get(i).map_or(0.0, |v| v[0]) - self.in_tangents.get(i).map_or(0.0, |v| v[0])).mul_add(t, self.in_tangents.get(i).map_or(0.0, |v| v[0])),
-                        (other.in_tangents.get(i).map_or(0.0, |v| v[1]) - self.in_tangents.get(i).map_or(0.0, |v| v[1])).mul_add(t, self.in_tangents.get(i).map_or(0.0, |v| v[1])),
+                        (other.in_tangents.get(i).map_or(0.0, |v| v[0])
+                            - self.in_tangents.get(i).map_or(0.0, |v| v[0]))
+                        .mul_add(t, self.in_tangents.get(i).map_or(0.0, |v| v[0])),
+                        (other.in_tangents.get(i).map_or(0.0, |v| v[1])
+                            - self.in_tangents.get(i).map_or(0.0, |v| v[1]))
+                        .mul_add(t, self.in_tangents.get(i).map_or(0.0, |v| v[1])),
                     ]
                 })
                 .collect(),
             out_tangents: (0..len)
                 .map(|i| {
                     [
-                        (other.out_tangents.get(i).map_or(0.0, |v| v[0]) - self.out_tangents.get(i).map_or(0.0, |v| v[0])).mul_add(t, self.out_tangents.get(i).map_or(0.0, |v| v[0])),
-                        (other.out_tangents.get(i).map_or(0.0, |v| v[1]) - self.out_tangents.get(i).map_or(0.0, |v| v[1])).mul_add(t, self.out_tangents.get(i).map_or(0.0, |v| v[1])),
+                        (other.out_tangents.get(i).map_or(0.0, |v| v[0])
+                            - self.out_tangents.get(i).map_or(0.0, |v| v[0]))
+                        .mul_add(t, self.out_tangents.get(i).map_or(0.0, |v| v[0])),
+                        (other.out_tangents.get(i).map_or(0.0, |v| v[1])
+                            - self.out_tangents.get(i).map_or(0.0, |v| v[1]))
+                        .mul_add(t, self.out_tangents.get(i).map_or(0.0, |v| v[1])),
                     ]
                 })
                 .collect(),
@@ -343,7 +348,7 @@ pub struct AnimatedProperty {
 
 impl AnimatedProperty {
     /// Create a new animated property.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             keyframes: Vec::new(),
@@ -351,7 +356,7 @@ impl AnimatedProperty {
     }
 
     /// Create from a static value.
-    #[must_use] 
+    #[must_use]
     pub fn static_value(value: KeyframeValue) -> Self {
         Self {
             keyframes: vec![Keyframe::new(0.0, value)],
@@ -365,13 +370,13 @@ impl AnimatedProperty {
     }
 
     /// Check if this property is animated.
-    #[must_use] 
+    #[must_use]
     pub fn is_animated(&self) -> bool {
         self.keyframes.len() > 1
     }
 
     /// Get the value at a specific frame.
-    #[must_use] 
+    #[must_use]
     pub fn value_at(&self, frame: Scalar) -> KeyframeValue {
         if self.keyframes.is_empty() {
             return KeyframeValue::Scalar(0.0);
@@ -443,7 +448,7 @@ impl AnimatedProperty {
     }
 
     /// Parse from Lottie animated value.
-    #[must_use] 
+    #[must_use]
     pub fn from_lottie(value: &AnimatedValue) -> Self {
         match value {
             AnimatedValue::Animated { keyframes, .. } => {
@@ -563,7 +568,10 @@ fn spatial_bezier_at(
         // upstream's overshoot handling for sub/super-normal easing weights.
         let tan = measure.get_tangent_at(clamped)?;
         let overshoot = distance - clamped;
-        return Some([tan.x.mul_add(overshoot, point.x), tan.y.mul_add(overshoot, point.y)]);
+        return Some([
+            tan.x.mul_add(overshoot, point.x),
+            tan.y.mul_add(overshoot, point.y),
+        ]);
     }
 
     Some([point.x, point.y])
@@ -602,8 +610,7 @@ fn parse_json_value(value: &serde_json::Value) -> KeyframeValue {
         }
         serde_json::Value::Object(_) => {
             // Static (non-animated) bezier path value: `"k": {"i","o","v","c"}`.
-            parse_path_object(value)
-                .map_or(KeyframeValue::Scalar(0.0), KeyframeValue::Path)
+            parse_path_object(value).map_or(KeyframeValue::Scalar(0.0), KeyframeValue::Path)
         }
         serde_json::Value::Array(arr) => {
             // Animated bezier path value: `"s": [{"i","o","v","c"}]`.
@@ -649,7 +656,10 @@ fn parse_path_object(value: &serde_json::Value) -> Option<PathData> {
         vertices: get_points("v"),
         in_tangents: get_points("i"),
         out_tangents: get_points("o"),
-        closed: obj.get("c").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        closed: obj
+            .get("c")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
     })
 }
 

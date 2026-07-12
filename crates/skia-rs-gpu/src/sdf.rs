@@ -33,7 +33,7 @@ impl Default for SdfConfig {
 
 impl SdfConfig {
     /// Create a configuration for high-resolution SDF.
-    #[must_use] 
+    #[must_use]
     pub const fn high_res() -> Self {
         Self {
             size: 128,
@@ -44,7 +44,7 @@ impl SdfConfig {
     }
 
     /// Create a configuration for compact SDF.
-    #[must_use] 
+    #[must_use]
     pub const fn compact() -> Self {
         Self {
             size: 32,
@@ -81,7 +81,7 @@ impl Default for SdfRenderParams {
 
 impl SdfRenderParams {
     /// Create parameters for crisp rendering.
-    #[must_use] 
+    #[must_use]
     pub fn crisp(spread: f32) -> Self {
         Self {
             smoothing: 0.1 / spread,
@@ -92,7 +92,7 @@ impl SdfRenderParams {
     }
 
     /// Create parameters for soft rendering.
-    #[must_use] 
+    #[must_use]
     pub fn soft(spread: f32) -> Self {
         Self {
             smoothing: 0.5 / spread,
@@ -103,7 +103,7 @@ impl SdfRenderParams {
     }
 
     /// Create parameters with outline.
-    #[must_use] 
+    #[must_use]
     pub fn with_outline(spread: f32, outline_width: f32) -> Self {
         Self {
             smoothing: 0.25 / spread,
@@ -125,7 +125,7 @@ impl SdfRenderParams {
 /// For a 256×256 mask with spread 16 the old implementation touched ~17M
 /// pixels per direction (quadratic in spread). The new implementation
 /// touches 64k pixels per pass regardless of spread.
-#[must_use] 
+#[must_use]
 pub fn generate_sdf_from_mask(mask: &[u8], width: u32, height: u32, spread: f32) -> Vec<f32> {
     let w = width as usize;
     let h = height as usize;
@@ -320,7 +320,7 @@ fn index_from_isize(k: isize) -> usize {
 /// signed distance in this crate's convention) maps above 128. The positive
 /// side is scaled by 127/128 to avoid overflowing 255, and the byte is
 /// rounded to nearest.
-#[must_use] 
+#[must_use]
 pub fn sdf_to_texture(sdf: &[f32], spread: f32) -> Vec<u8> {
     let mag = spread.max(1e-6);
     sdf.iter()
@@ -334,12 +334,14 @@ pub fn sdf_to_texture(sdf: &[f32], spread: f32) -> Vec<u8> {
 }
 
 /// Sample SDF at a point with bilinear filtering.
-#[must_use] 
+#[must_use]
 pub fn sample_sdf_bilinear(sdf: &[f32], width: u32, height: u32, x: f32, y: f32) -> f32 {
     let width_i32 = i32::try_from(width).unwrap_or(i32::MAX);
     let height_i32 = i32::try_from(height).unwrap_or(i32::MAX);
-    let x0 = u32::try_from(skia_rs_core::cast::floor_to_i32(x).clamp(0, width_i32 - 1)).unwrap_or(0);
-    let y0 = u32::try_from(skia_rs_core::cast::floor_to_i32(y).clamp(0, height_i32 - 1)).unwrap_or(0);
+    let x0 =
+        u32::try_from(skia_rs_core::cast::floor_to_i32(x).clamp(0, width_i32 - 1)).unwrap_or(0);
+    let y0 =
+        u32::try_from(skia_rs_core::cast::floor_to_i32(y).clamp(0, height_i32 - 1)).unwrap_or(0);
     let x1 = (x0 + 1).min(width - 1);
     let y1 = (y0 + 1).min(height - 1);
 
@@ -358,7 +360,7 @@ pub fn sample_sdf_bilinear(sdf: &[f32], width: u32, height: u32, x: f32, y: f32)
 }
 
 /// Generate SDF for a circle.
-#[must_use] 
+#[must_use]
 pub fn generate_circle_sdf(size: u32, radius: f32) -> Vec<f32> {
     let mut sdf = Vec::with_capacity((size * size) as usize);
     let center = scalar_from_u32(size) * 0.5;
@@ -376,7 +378,7 @@ pub fn generate_circle_sdf(size: u32, radius: f32) -> Vec<f32> {
 }
 
 /// Generate SDF for a rounded rectangle.
-#[must_use] 
+#[must_use]
 pub fn generate_rounded_rect_sdf(size: u32, rect: Rect, radius: f32) -> Vec<f32> {
     let mut sdf = Vec::with_capacity((size * size) as usize);
 
@@ -428,7 +430,7 @@ pub struct MsdfData {
 
 impl MsdfData {
     /// Create empty MSDF data.
-    #[must_use] 
+    #[must_use]
     pub fn new(width: u32, height: u32) -> Self {
         let size = (width * height) as usize;
         Self {
@@ -441,7 +443,7 @@ impl MsdfData {
     }
 
     /// Convert to RGB texture data.
-    #[must_use] 
+    #[must_use]
     pub fn to_texture(&self, spread: f32) -> Vec<u8> {
         let size = (self.width * self.height) as usize;
         let mut data = Vec::with_capacity(size * 3);
@@ -516,7 +518,7 @@ pub struct SdfTextInstance {
 
 impl SdfTextBatch {
     /// Create a new batch.
-    #[must_use] 
+    #[must_use]
     pub const fn new(params: SdfRenderParams) -> Self {
         Self {
             instances: Vec::new(),
@@ -545,13 +547,13 @@ impl SdfTextBatch {
     }
 
     /// Check if empty.
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.instances.is_empty()
     }
 
     /// Get instance count.
-    #[must_use] 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.instances.len()
     }
@@ -568,7 +570,10 @@ mod tests {
     use crate::cast_util::u32_from_usize;
 
     #[test]
-    #[allow(clippy::float_cmp, reason = "exact literal values, no accumulated error")]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact literal values, no accumulated error"
+    )]
     fn test_sdf_config() {
         let config = SdfConfig::default();
         assert_eq!(config.size, 64);
@@ -579,7 +584,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp, reason = "exact literal values, no accumulated error")]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact literal values, no accumulated error"
+    )]
     fn test_sdf_render_params() {
         let params = SdfRenderParams::default();
         assert!(params.smoothing > 0.0);
@@ -785,7 +793,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp, reason = "exact literal values, no accumulated error")]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact literal values, no accumulated error"
+    )]
     fn test_sdf_text_batch() {
         let params = SdfRenderParams::default();
         let mut batch = SdfTextBatch::new(params);

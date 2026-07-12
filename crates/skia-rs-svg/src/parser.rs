@@ -4,7 +4,11 @@
 //! mixed text/element content) and walks the tree to build an `SvgDom`.
 
 use crate::css::Stylesheet;
-use crate::dom::{SvgDom, SvgNode, SvgNodeKind, SvgRect, SvgCircle, SvgEllipse, SvgLine, SvgText, TextAnchor, SvgImage, SvgLinearGradient, SvgRadialGradient, GradientStop, SpreadMethod, GradientUnits, PreserveAspectRatio, AlignX, AlignY, MeetOrSlice, SvgPaint};
+use crate::dom::{
+    AlignX, AlignY, GradientStop, GradientUnits, MeetOrSlice, PreserveAspectRatio, SpreadMethod,
+    SvgCircle, SvgDom, SvgEllipse, SvgImage, SvgLine, SvgLinearGradient, SvgNode, SvgNodeKind,
+    SvgPaint, SvgRadialGradient, SvgRect, SvgText, TextAnchor,
+};
 use skia_rs_core::{Color, Matrix, Point, Rect, Scalar};
 use skia_rs_path::parse_svg_path;
 use std::collections::HashMap;
@@ -165,10 +169,7 @@ fn build_node(
         )
     };
     let olen = |k: &str, dflt: &str| {
-        lctx.resolve(
-            attrs.get(k).map_or(dflt, String::as_str),
-            LengthType::Other,
-        )
+        lctx.resolve(attrs.get(k).map_or(dflt, String::as_str), LengthType::Other)
     };
 
     // <style> elements contribute to the document stylesheet rather than
@@ -341,7 +342,10 @@ fn apply_common_attrs(node: &mut SvgNode, attrs: &HashMap<String, String>) {
     node.id = attrs.get("id").cloned();
 
     if let Some(class) = attrs.get("class") {
-        node.classes = class.split_whitespace().map(std::string::ToString::to_string).collect();
+        node.classes = class
+            .split_whitespace()
+            .map(std::string::ToString::to_string)
+            .collect();
     }
 
     if let Some(transform) = attrs.get("transform") {
@@ -393,8 +397,7 @@ fn apply_common_attrs(node: &mut SvgNode, attrs: &HashMap<String, String>) {
     // Preserve `style="..."` so css::apply_stylesheet can reapply inline
     // declarations after stylesheet rules.
     if let Some(style) = attrs.get("style") {
-        node.attributes
-            .insert("style".to_string(), style.clone());
+        node.attributes.insert("style".to_string(), style.clone());
     }
 
     // Preserve a handful of non-standard attributes that downstream code
@@ -496,7 +499,7 @@ fn parse_gradient_units(s: Option<&str>) -> GradientUnits {
 /// default font size — this matches browsers when no parent font is set.
 /// Physical units (`cm`, `mm`, `in`, `pt`, `pc`) convert to CSS pixels at
 /// 96dpi.
-#[must_use] 
+#[must_use]
 pub fn parse_length(s: &str) -> Scalar {
     // Strip optional trailing unit; anything else is treated as a plain
     // number in user units. Ordered longest-first so that `1rem` matches
@@ -521,7 +524,7 @@ pub fn parse_length(s: &str) -> Scalar {
             return match *unit {
                 "pt" => n * 96.0 / 72.0,
                 "pc" | "em" | "rem" => n * 16.0, // 1pc = 12pt = 16px
-                "ex" | "ch" => n * 8.0, // rough x-height/0-character-width approximation
+                "ex" | "ch" => n * 8.0,          // rough x-height/0-character-width approximation
                 "vw" | "vh" | "vmin" | "vmax" => n * 10.0, // 1% of a 1000-unit viewport
                 "cm" => n * 96.0 / 2.54,
                 "mm" => n * 96.0 / 25.4,
@@ -576,9 +579,7 @@ impl LengthContext {
             LengthType::Horizontal => self.vw,
             LengthType::Vertical => self.vh,
             // https://www.w3.org/TR/SVG11/coords.html#Units_viewport_percentage
-            LengthType::Other => {
-                (1.0 / std::f32::consts::SQRT_2) * self.vw.hypot(self.vh)
-            }
+            LengthType::Other => (1.0 / std::f32::consts::SQRT_2) * self.vw.hypot(self.vh),
         }
     }
 

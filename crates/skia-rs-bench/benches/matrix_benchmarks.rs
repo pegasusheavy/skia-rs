@@ -121,7 +121,12 @@ fn bench_matrix_invert(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(size as u64));
         group.bench_with_input(BenchmarkId::new("batch", size), &matrices, |b, matrices| {
-            b.iter(|| matrices.iter().filter_map(skia_rs_core::Matrix::invert).count());
+            b.iter(|| {
+                matrices
+                    .iter()
+                    .filter_map(skia_rs_core::Matrix::invert)
+                    .count()
+            });
         });
     }
 

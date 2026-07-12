@@ -1453,9 +1453,12 @@ impl Matrix {
         let m = &self.values;
 
         // Compute the determinant in f64 to match Skia's precision.
-        let det = f64::from(m[0]) * (f64::from(m[4]) * f64::from(m[8]) - f64::from(m[5]) * f64::from(m[7]))
-            - f64::from(m[1]) * (f64::from(m[3]) * f64::from(m[8]) - f64::from(m[5]) * f64::from(m[6]))
-            + f64::from(m[2]) * (f64::from(m[3]) * f64::from(m[7]) - f64::from(m[4]) * f64::from(m[6]));
+        let det = f64::from(m[0])
+            * (f64::from(m[4]) * f64::from(m[8]) - f64::from(m[5]) * f64::from(m[7]))
+            - f64::from(m[1])
+                * (f64::from(m[3]) * f64::from(m[8]) - f64::from(m[5]) * f64::from(m[6]))
+            + f64::from(m[2])
+                * (f64::from(m[3]) * f64::from(m[7]) - f64::from(m[4]) * f64::from(m[6]));
 
         // Skia compares the f32-narrowed determinant against the tolerance.
         if f64::from((det as f32).abs()) <= THRESHOLD {

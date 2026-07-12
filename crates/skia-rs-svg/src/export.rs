@@ -3,7 +3,9 @@
 //! This module provides functionality to convert an `SvgDom` back to SVG markup,
 //! enabling round-trip editing and programmatic SVG generation.
 
-use crate::dom::{SvgDom, SvgNode, SvgNodeKind, TextAnchor, SpreadMethod, GradientUnits, GradientStop, SvgPaint};
+use crate::dom::{
+    GradientStop, GradientUnits, SpreadMethod, SvgDom, SvgNode, SvgNodeKind, SvgPaint, TextAnchor,
+};
 use skia_rs_core::{Color, Matrix, Scalar};
 use std::fmt::Write;
 
@@ -36,7 +38,7 @@ impl Default for SvgExportOptions {
 
 impl SvgExportOptions {
     /// Create options for minified output.
-    #[must_use] 
+    #[must_use]
     pub const fn minified() -> Self {
         Self {
             indent: String::new(),

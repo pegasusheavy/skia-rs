@@ -203,7 +203,7 @@ impl FontStyle {
     };
 
     /// Create a new font style.
-    #[must_use] 
+    #[must_use]
     pub const fn new(weight: FontWeight, width: FontWidth, slant: FontSlant) -> Self {
         Self {
             weight,

@@ -160,7 +160,7 @@ impl StencilCoverConfig {
     /// Build a config from a path's [`FillType`], carrying the inverse bit
     /// that [`StencilFillRule::from`] discards. `clip_bounds` bounds the
     /// cover pass for inverse fills (typically the device/clip rect).
-    #[must_use] 
+    #[must_use]
     pub fn from_fill_type(fill_type: FillType, clip_bounds: Option<Rect>) -> Self {
         Self {
             fill_rule: StencilFillRule::from(fill_type),
@@ -366,7 +366,10 @@ const fn cover_func(inverse: bool) -> StencilFunc {
 }
 
 /// Create stencil states for non-zero winding rule.
-const fn create_nonzero_stencil_states(two_sided: bool, inverse: bool) -> (StencilState, StencilState) {
+const fn create_nonzero_stencil_states(
+    two_sided: bool,
+    inverse: bool,
+) -> (StencilState, StencilState) {
     let cover_test = cover_func(inverse);
     if two_sided {
         let stencil = StencilState {
@@ -526,8 +529,14 @@ fn eval_cubic(p0: Point, p1: Point, p2: Point, p3: Point, t: Scalar) -> Point {
     let t2 = t * t;
     let t3 = t2 * t;
     Point::new(
-        t3.mul_add(p3.x, (3.0 * mt * t2).mul_add(p2.x, mt3 * p0.x + 3.0 * mt2 * t * p1.x)),
-        t3.mul_add(p3.y, (3.0 * mt * t2).mul_add(p2.y, mt3 * p0.y + 3.0 * mt2 * t * p1.y)),
+        t3.mul_add(
+            p3.x,
+            (3.0 * mt * t2).mul_add(p2.x, mt3 * p0.x + 3.0 * mt2 * t * p1.x),
+        ),
+        t3.mul_add(
+            p3.y,
+            (3.0 * mt * t2).mul_add(p2.y, mt3 * p0.y + 3.0 * mt2 * t * p1.y),
+        ),
     )
 }
 

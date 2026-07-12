@@ -61,7 +61,7 @@ const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 /// The returned [`SvgDom`] can be fed straight into the regular SVG
 /// rendering pipeline (`skia_rs_svg::render_svg_to_canvas` or similar)
 /// to rasterise the glyph.
-#[must_use] 
+#[must_use]
 pub fn glyph_svg_to_dom(raw: &[u8]) -> Option<SvgDom> {
     let decoded = decode_glyph_svg_bytes(raw)?;
     let text = std::str::from_utf8(&decoded).ok()?;
@@ -118,7 +118,7 @@ pub fn draw_glyph_svg(canvas: &mut Canvas<'_>, font: &Font, glyph: u16, origin: 
 /// that want to route the decompressed SVG through a different parser
 /// (e.g. `usvg`) or hand the decompressed text to disk. Returns
 /// `None` if gzip decompression fails.
-#[must_use] 
+#[must_use]
 pub fn decode_glyph_svg_bytes(raw: &[u8]) -> Option<Vec<u8>> {
     if raw.len() >= 2 && raw[..2] == GZIP_MAGIC {
         let mut decoder = GzDecoder::new(raw);

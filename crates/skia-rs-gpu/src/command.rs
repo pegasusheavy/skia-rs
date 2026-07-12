@@ -176,8 +176,7 @@ pub enum DrawCommand {
 pub use crate::pipeline::IndexFormat;
 
 /// Image data layout for copy operations.
-#[derive(Debug, Clone, Copy)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct ImageDataLayout {
     /// Offset into the buffer.
     pub offset: u64,
@@ -186,7 +185,6 @@ pub struct ImageDataLayout {
     /// Rows per image (for 3D textures).
     pub rows_per_image: Option<u32>,
 }
-
 
 /// Scissor rectangle.
 #[derive(Debug, Clone, Copy)]
@@ -203,7 +201,7 @@ pub struct ScissorRect {
 
 impl ScissorRect {
     /// Create a new scissor rect.
-    #[must_use] 
+    #[must_use]
     pub const fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
         Self {
             x,
@@ -219,7 +217,7 @@ impl ScissorRect {
     /// width/height shrink by the clipped-off amount, so the box's right/
     /// bottom edges stay put (rather than sliding right as they would if the
     /// original width were kept). Fully off-screen boxes collapse to zero.
-    #[must_use] 
+    #[must_use]
     pub fn from_rect(rect: &Rect) -> Self {
         let left = rect.left.max(0.0);
         let top = rect.top.max(0.0);
@@ -235,7 +233,7 @@ impl ScissorRect {
 
     /// Clamp the scissor box to a framebuffer of `fb_width` x `fb_height`,
     /// shrinking width/height so the box never extends past the edges.
-    #[must_use] 
+    #[must_use]
     pub fn clamp_to_framebuffer(&self, fb_width: u32, fb_height: u32) -> Self {
         let x = self.x.min(fb_width);
         let y = self.y.min(fb_height);
@@ -267,7 +265,7 @@ pub struct Viewport {
 
 impl Viewport {
     /// Create a new viewport.
-    #[must_use] 
+    #[must_use]
     pub const fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
         Self {
             x,
@@ -280,7 +278,7 @@ impl Viewport {
     }
 
     /// Set depth range.
-    #[must_use] 
+    #[must_use]
     pub const fn with_depth(mut self, min: f32, max: f32) -> Self {
         self.min_depth = min;
         self.max_depth = max;
@@ -299,7 +297,7 @@ pub struct CommandBuffer {
 
 impl CommandBuffer {
     /// Create a new empty command buffer.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             commands: Vec::new(),
@@ -308,7 +306,7 @@ impl CommandBuffer {
     }
 
     /// Create with capacity.
-    #[must_use] 
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             commands: Vec::with_capacity(capacity),
@@ -491,7 +489,7 @@ impl CommandBuffer {
     }
 
     /// Get the recorded commands.
-    #[must_use] 
+    #[must_use]
     pub fn commands(&self) -> &[DrawCommand] {
         &self.commands
     }
@@ -508,13 +506,13 @@ impl CommandBuffer {
     }
 
     /// Check if the buffer is empty.
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.commands.is_empty()
     }
 
     /// Get the number of commands.
-    #[must_use] 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.commands.len()
     }
@@ -530,7 +528,7 @@ pub struct CommandEncoder {
 
 impl CommandEncoder {
     /// Create a new command encoder.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             buffer: CommandBuffer::new(),
@@ -653,7 +651,7 @@ impl CommandEncoder {
     }
 
     /// Finish recording and return the command buffer.
-    #[must_use] 
+    #[must_use]
     pub fn finish(self) -> CommandBuffer {
         self.buffer
     }
@@ -916,7 +914,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp, reason = "exact literal values, no accumulated error")]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact literal values, no accumulated error"
+    )]
     fn test_viewport() {
         let viewport = Viewport::new(0.0, 0.0, 800.0, 600.0).with_depth(0.0, 1.0);
 

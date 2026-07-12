@@ -20,7 +20,7 @@ pub struct TessVertex {
 impl TessVertex {
     /// Create a new vertex.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn new(x: f32, y: f32, u: f32, v: f32) -> Self {
         Self {
             position: [x, y],
@@ -30,7 +30,7 @@ impl TessVertex {
 
     /// Create a vertex from a point.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn from_point(p: Point) -> Self {
         Self {
             position: [p.x, p.y],
@@ -53,13 +53,13 @@ pub struct TessMesh {
 
 impl TessMesh {
     /// Create a new empty mesh.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Create a mesh with preallocated capacity.
-    #[must_use] 
+    #[must_use]
     pub fn with_capacity(vertex_capacity: usize, index_capacity: usize) -> Self {
         Self {
             vertices: Vec::with_capacity(vertex_capacity),
@@ -74,13 +74,13 @@ impl TessMesh {
     }
 
     /// Check if empty.
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.vertices.is_empty() || self.indices.is_empty()
     }
 
     /// Number of triangles.
-    #[must_use] 
+    #[must_use]
     pub fn triangle_count(&self) -> usize {
         self.indices.len() / 3
     }
@@ -220,7 +220,7 @@ pub struct StrokeStyle {
 impl StrokeStyle {
     /// Create a style with the given width and Skia defaults (miter joins,
     /// butt caps, miter limit 4).
-    #[must_use] 
+    #[must_use]
     pub const fn new(width: Scalar) -> Self {
         Self {
             width,
@@ -231,21 +231,21 @@ impl StrokeStyle {
     }
 
     /// Builder: set the join style.
-    #[must_use] 
+    #[must_use]
     pub const fn with_join(mut self, join: StrokeJoin) -> Self {
         self.join = join;
         self
     }
 
     /// Builder: set the cap style.
-    #[must_use] 
+    #[must_use]
     pub const fn with_cap(mut self, cap: StrokeCap) -> Self {
         self.cap = cap;
         self
     }
 
     /// Builder: set the miter limit.
-    #[must_use] 
+    #[must_use]
     pub const fn with_miter_limit(mut self, limit: Scalar) -> Self {
         self.miter_limit = limit;
         self
@@ -264,7 +264,7 @@ pub struct PathTessellator {
 
 impl PathTessellator {
     /// Create a new tessellator with default quality.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             quality: TessQuality::default(),
@@ -274,7 +274,7 @@ impl PathTessellator {
     }
 
     /// Create a new tessellator with specified quality.
-    #[must_use] 
+    #[must_use]
     pub const fn with_quality(quality: TessQuality) -> Self {
         Self {
             quality,
@@ -608,8 +608,14 @@ impl PathTessellator {
         let t2 = t * t;
         let t3 = t2 * t;
         Point::new(
-            t3.mul_add(p3.x, (3.0 * mt * t2).mul_add(p2.x, mt3 * p0.x + 3.0 * mt2 * t * p1.x)),
-            t3.mul_add(p3.y, (3.0 * mt * t2).mul_add(p2.y, mt3 * p0.y + 3.0 * mt2 * t * p1.y)),
+            t3.mul_add(
+                p3.x,
+                (3.0 * mt * t2).mul_add(p2.x, mt3 * p0.x + 3.0 * mt2 * t * p1.x),
+            ),
+            t3.mul_add(
+                p3.y,
+                (3.0 * mt * t2).mul_add(p2.y, mt3 * p0.y + 3.0 * mt2 * t * p1.y),
+            ),
         )
     }
 
@@ -621,7 +627,9 @@ impl PathTessellator {
         if len_sq < 1e-10 {
             return (p.x - line_start.x).hypot(p.y - line_start.y);
         }
-        let num = (p.x - line_start.x).mul_add(dy, -((p.y - line_start.y) * dx)).abs();
+        let num = (p.x - line_start.x)
+            .mul_add(dy, -((p.y - line_start.y) * dx))
+            .abs();
         num / len_sq.sqrt()
     }
 
@@ -1147,7 +1155,7 @@ fn ear_clip_triangulate(points: &[Point], base_idx: TessIndex, mesh: &mut TessMe
 }
 
 /// Tessellate a rectangle.
-#[must_use] 
+#[must_use]
 pub fn tessellate_rect(rect: Rect) -> TessMesh {
     let mut mesh = TessMesh::with_capacity(4, 6);
 
@@ -1177,9 +1185,10 @@ pub fn tessellate_rounded_rect(rect: Rect, radius: Scalar, quality: TessQuality)
     }
 
     // Calculate number of segments for corners
-    let segments =
-        crate::cast_util::usize_from_scalar_sat((std::f32::consts::PI * r / quality.tolerance).ceil())
-            .clamp(4, MAX_POINTS_PER_CURVE as usize);
+    let segments = crate::cast_util::usize_from_scalar_sat(
+        (std::f32::consts::PI * r / quality.tolerance).ceil(),
+    )
+    .clamp(4, MAX_POINTS_PER_CURVE as usize);
 
     let center = rect.center();
     let center_idx = mesh.add_vertex(TessVertex::new(center.x, center.y, 0.5, 0.5));
@@ -1212,7 +1221,8 @@ pub fn tessellate_rounded_rect(rect: Rect, radius: Scalar, quality: TessQuality)
 
     // Bottom-right corner
     for i in 0..=segments {
-        let angle = (scalar_from_usize(i) / scalar_from_usize(segments)) * std::f32::consts::FRAC_PI_2;
+        let angle =
+            (scalar_from_usize(i) / scalar_from_usize(segments)) * std::f32::consts::FRAC_PI_2;
         let x = rect.right - r + r * angle.cos();
         let y = rect.bottom - r + r * angle.sin();
         let u = (x - rect.left) / rect.width();
@@ -1242,7 +1252,7 @@ pub fn tessellate_rounded_rect(rect: Rect, radius: Scalar, quality: TessQuality)
 }
 
 /// Tessellate a circle.
-#[must_use] 
+#[must_use]
 pub fn tessellate_circle(center: Point, radius: Scalar, quality: TessQuality) -> TessMesh {
     let mut mesh = TessMesh::new();
 
@@ -1255,7 +1265,8 @@ pub fn tessellate_circle(center: Point, radius: Scalar, quality: TessQuality) ->
 
     let mut edge_vertices = Vec::with_capacity(segments);
     for i in 0..segments {
-        let angle = (scalar_from_usize(i) / scalar_from_usize(segments)) * 2.0 * std::f32::consts::PI;
+        let angle =
+            (scalar_from_usize(i) / scalar_from_usize(segments)) * 2.0 * std::f32::consts::PI;
         let x = radius.mul_add(angle.cos(), center.x);
         let y = radius.mul_add(angle.sin(), center.y);
         let u = 0.5f32.mul_add(angle.cos(), 0.5);
@@ -1277,7 +1288,10 @@ mod tests {
     use skia_rs_path::PathBuilder;
 
     #[test]
-    #[allow(clippy::float_cmp, reason = "exact literal values, no accumulated error")]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact literal values, no accumulated error"
+    )]
     fn test_tess_vertex() {
         let v = TessVertex::new(1.0, 2.0, 0.5, 0.5);
         assert_eq!(v.position, [1.0, 2.0]);

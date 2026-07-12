@@ -124,7 +124,7 @@ impl DashEffect {
     ///
     /// `intervals` must have an even number of entries (on/off pairs).
     /// If odd, the pattern is duplicated to make it even.
-    #[must_use] 
+    #[must_use]
     pub fn new(intervals: Vec<Scalar>, phase: Scalar) -> Option<Self> {
         if intervals.is_empty() {
             return None;
@@ -159,25 +159,25 @@ impl DashEffect {
     }
 
     /// Create a simple dash pattern (dash length, gap length).
-    #[must_use] 
+    #[must_use]
     pub fn simple(dash: Scalar, gap: Scalar) -> Option<Self> {
         Self::new(vec![dash, gap], 0.0)
     }
 
     /// Create a dotted pattern.
-    #[must_use] 
+    #[must_use]
     pub fn dotted(dot_size: Scalar, gap: Scalar) -> Option<Self> {
         Self::new(vec![dot_size, gap], 0.0)
     }
 
     /// Get the intervals.
-    #[must_use] 
+    #[must_use]
     pub fn intervals(&self) -> &[Scalar] {
         &self.intervals
     }
 
     /// Get the phase.
-    #[must_use] 
+    #[must_use]
     pub const fn phase(&self) -> Scalar {
         self.phase
     }
@@ -388,7 +388,7 @@ pub struct CornerEffect {
 
 impl CornerEffect {
     /// Create a new corner effect.
-    #[must_use] 
+    #[must_use]
     pub fn new(radius: Scalar) -> Option<Self> {
         if radius <= 0.0 {
             return None;
@@ -397,7 +397,7 @@ impl CornerEffect {
     }
 
     /// Get the radius.
-    #[must_use] 
+    #[must_use]
     pub const fn radius(&self) -> Scalar {
         self.radius
     }
@@ -596,7 +596,7 @@ pub struct DiscreteEffect {
 
 impl DiscreteEffect {
     /// Create a new discrete effect.
-    #[must_use] 
+    #[must_use]
     pub fn new(seg_length: Scalar, deviation: Scalar, seed: u32) -> Option<Self> {
         if seg_length <= 0.0 {
             return None;
@@ -609,13 +609,13 @@ impl DiscreteEffect {
     }
 
     /// Get the segment length.
-    #[must_use] 
+    #[must_use]
     pub const fn seg_length(&self) -> Scalar {
         self.seg_length
     }
 
     /// Get the deviation.
-    #[must_use] 
+    #[must_use]
     pub const fn deviation(&self) -> Scalar {
         self.deviation
     }
@@ -624,8 +624,8 @@ impl DiscreteEffect {
     fn random(seed: u32) -> Scalar {
         // Simple LCG
         let n = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
-        let masked = u16::try_from((n >> 16) & 0x7FFF)
-            .expect("masked to 15 bits, always fits in u16");
+        let masked =
+            u16::try_from((n >> 16) & 0x7FFF).expect("masked to 15 bits, always fits in u16");
         (Scalar::from(masked) / 32767.0).mul_add(2.0, -1.0)
     }
 }
@@ -709,10 +709,9 @@ impl PathEffect for DiscreteEffect {
                     current_pos = end;
                 }
                 PathElement::Cubic(ctrl1, ctrl2, end) => {
-                    let steps = ceil_to_i32(
-                        cubic_length(current_pos, ctrl1, ctrl2, end) / self.seg_length,
-                    )
-                    .max(4);
+                    let steps =
+                        ceil_to_i32(cubic_length(current_pos, ctrl1, ctrl2, end) / self.seg_length)
+                            .max(4);
 
                     for i in 1..=steps {
                         let t = scalar_from_i32(i) / scalar_from_i32(steps);
@@ -767,7 +766,7 @@ pub enum TrimMode {
 
 impl TrimEffect {
     /// Create a new trim effect.
-    #[must_use] 
+    #[must_use]
     pub fn new(start: Scalar, end: Scalar, mode: TrimMode) -> Option<Self> {
         if !(0.0..=1.0).contains(&start) || !(0.0..=1.0).contains(&end) {
             return None;
@@ -776,19 +775,19 @@ impl TrimEffect {
     }
 
     /// Get the start position.
-    #[must_use] 
+    #[must_use]
     pub const fn start(&self) -> Scalar {
         self.start
     }
 
     /// Get the end position.
-    #[must_use] 
+    #[must_use]
     pub const fn end(&self) -> Scalar {
         self.end
     }
 
     /// Get the trim mode.
-    #[must_use] 
+    #[must_use]
     pub const fn mode(&self) -> TrimMode {
         self.mode
     }
@@ -970,8 +969,14 @@ fn cubic_point(p0: Point, p1: Point, p2: Point, p3: Point, t: Scalar) -> Point {
     let mt2 = mt * mt;
     let t2 = t * t;
     Point::new(
-        (t2 * t).mul_add(p3.x, (3.0 * mt * t2).mul_add(p2.x, (mt2 * mt).mul_add(p0.x, 3.0 * mt2 * t * p1.x))),
-        (t2 * t).mul_add(p3.y, (3.0 * mt * t2).mul_add(p2.y, (mt2 * mt).mul_add(p0.y, 3.0 * mt2 * t * p1.y))),
+        (t2 * t).mul_add(
+            p3.x,
+            (3.0 * mt * t2).mul_add(p2.x, (mt2 * mt).mul_add(p0.x, 3.0 * mt2 * t * p1.x)),
+        ),
+        (t2 * t).mul_add(
+            p3.y,
+            (3.0 * mt * t2).mul_add(p2.y, (mt2 * mt).mul_add(p0.y, 3.0 * mt2 * t * p1.y)),
+        ),
     )
 }
 
@@ -1223,7 +1228,7 @@ impl Line2DEffect {
     ///
     /// - `width`: The width of the lines.
     /// - `matrix`: The matrix defining the line pattern orientation and spacing.
-    #[must_use] 
+    #[must_use]
     pub fn new(width: Scalar, matrix: skia_rs_core::Matrix) -> Option<Self> {
         if width <= 0.0 {
             return None;
@@ -1232,13 +1237,13 @@ impl Line2DEffect {
     }
 
     /// Get the line width.
-    #[must_use] 
+    #[must_use]
     pub const fn width(&self) -> Scalar {
         self.width
     }
 
     /// Get the matrix.
-    #[must_use] 
+    #[must_use]
     pub const fn matrix(&self) -> &skia_rs_core::Matrix {
         &self.matrix
     }
@@ -1314,25 +1319,25 @@ impl PathEffect for Line2DEffect {
 // =============================================================================
 
 /// Create a dash path effect.
-#[must_use] 
+#[must_use]
 pub fn make_dash(intervals: Vec<Scalar>, phase: Scalar) -> Option<PathEffectRef> {
     DashEffect::new(intervals, phase).map(|e| Arc::new(e) as PathEffectRef)
 }
 
 /// Create a corner path effect.
-#[must_use] 
+#[must_use]
 pub fn make_corner(radius: Scalar) -> Option<PathEffectRef> {
     CornerEffect::new(radius).map(|e| Arc::new(e) as PathEffectRef)
 }
 
 /// Create a discrete path effect.
-#[must_use] 
+#[must_use]
 pub fn make_discrete(seg_length: Scalar, deviation: Scalar, seed: u32) -> Option<PathEffectRef> {
     DiscreteEffect::new(seg_length, deviation, seed).map(|e| Arc::new(e) as PathEffectRef)
 }
 
 /// Create a trim path effect.
-#[must_use] 
+#[must_use]
 pub fn make_trim(start: Scalar, end: Scalar, mode: TrimMode) -> Option<PathEffectRef> {
     TrimEffect::new(start, end, mode).map(|e| Arc::new(e) as PathEffectRef)
 }
@@ -1363,7 +1368,7 @@ pub fn make_path_2d(matrix: skia_rs_core::Matrix, path: Path) -> Option<PathEffe
 }
 
 /// Create a 2D line effect.
-#[must_use] 
+#[must_use]
 pub fn make_line_2d(width: Scalar, matrix: skia_rs_core::Matrix) -> Option<PathEffectRef> {
     Line2DEffect::new(width, matrix).map(|e| Arc::new(e) as PathEffectRef)
 }
@@ -1376,7 +1381,10 @@ mod tests {
     fn test_dash_effect() {
         let dash = DashEffect::new(vec![10.0, 5.0], 0.0).unwrap();
         assert_eq!(dash.intervals().len(), 2);
-        #[allow(clippy::float_cmp, reason = "exact test assertion, value round-trips a literal")]
+        #[allow(
+            clippy::float_cmp,
+            reason = "exact test assertion, value round-trips a literal"
+        )]
         {
             assert_eq!(dash.phase(), 0.0);
         }
@@ -1439,7 +1447,10 @@ mod tests {
     #[test]
     fn test_corner_effect() {
         let corner = CornerEffect::new(5.0).unwrap();
-        #[allow(clippy::float_cmp, reason = "exact test assertion, value round-trips a literal")]
+        #[allow(
+            clippy::float_cmp,
+            reason = "exact test assertion, value round-trips a literal"
+        )]
         {
             assert_eq!(corner.radius(), 5.0);
         }
@@ -1474,7 +1485,10 @@ mod tests {
     #[test]
     fn test_discrete_effect() {
         let discrete = DiscreteEffect::new(10.0, 5.0, 42).unwrap();
-        #[allow(clippy::float_cmp, reason = "exact test assertion, values round-trip literals")]
+        #[allow(
+            clippy::float_cmp,
+            reason = "exact test assertion, values round-trip literals"
+        )]
         {
             assert_eq!(discrete.seg_length(), 10.0);
             assert_eq!(discrete.deviation(), 5.0);

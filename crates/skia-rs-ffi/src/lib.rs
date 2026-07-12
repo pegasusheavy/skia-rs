@@ -183,7 +183,8 @@ impl<T> RefCounted<T> {
     /// # Safety
     /// Pointer must be valid and non-null.
     pub unsafe fn get_count(ptr: *const Self) -> u32 {
-        ptr.as_ref().map_or(0, |rc| rc.refcnt.load(Ordering::Relaxed))
+        ptr.as_ref()
+            .map_or(0, |rc| rc.refcnt.load(Ordering::Relaxed))
     }
 
     /// Check if this is the only reference.
@@ -656,7 +657,9 @@ pub type sk_surface_t = RefCounted<Surface>;
 /// Returns a surface with refcount of 1, or null on failure.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_surface_new_raster(width: i32, height: i32) -> *mut sk_surface_t {
-    catch_panic(|| Surface::new_raster_n32_premul(width, height).map_or(ptr::null_mut(), RefCounted::new))
+    catch_panic(|| {
+        Surface::new_raster_n32_premul(width, height).map_or(ptr::null_mut(), RefCounted::new)
+    })
 }
 
 /// Create a raster surface with specific image info.
@@ -895,7 +898,9 @@ pub unsafe extern "C" fn sk_paint_set_color4f(paint: *mut sk_paint_t, color: sk_
 /// Get the paint color as float RGBA.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_paint_get_color4f(paint: *const sk_paint_t) -> sk_color4f_t {
-    catch_panic(|| RefCounted::get_ref(paint).map_or_else(sk_color4f_t::default, |p| p.color().into()))
+    catch_panic(|| {
+        RefCounted::get_ref(paint).map_or_else(sk_color4f_t::default, |p| p.color().into())
+    })
 }
 
 /// Set the paint style.
@@ -978,8 +983,7 @@ pub unsafe extern "C" fn sk_paint_set_blend_mode(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_paint_get_blend_mode(paint: *const sk_paint_t) -> sk_blend_mode_t {
     catch_panic(|| {
-        RefCounted::get_ref(paint)
-            .map_or(BlendMode::SrcOver as u32, |p| p.blend_mode() as u32)
+        RefCounted::get_ref(paint).map_or(BlendMode::SrcOver as u32, |p| p.blend_mode() as u32)
     })
 }
 
@@ -2206,7 +2210,8 @@ pub unsafe extern "C" fn sk_image_from_color(
     color: sk_color_t,
 ) -> *mut sk_image_t {
     catch_panic(|| {
-        skia_rs_codec::Image::from_color(width, height, color).map_or(ptr::null_mut(), RefCounted::new)
+        skia_rs_codec::Image::from_color(width, height, color)
+            .map_or(ptr::null_mut(), RefCounted::new)
     })
 }
 
@@ -3964,7 +3969,11 @@ mod tests {
             // Unpremul surfaces.
             let mut px: *const u8 = ptr::null();
             let mut row_bytes: usize = 0;
-            assert!(!sk_surface_peek_pixels(surface, &raw mut px, &raw mut row_bytes));
+            assert!(!sk_surface_peek_pixels(
+                surface,
+                &raw mut px,
+                &raw mut row_bytes
+            ));
 
             let mut buf = vec![0u8; 2 * 2 * 4];
             let wrote = sk_surface_read_pixels(surface, buf.as_mut_ptr(), buf.len());
@@ -4154,7 +4163,12 @@ mod tests {
             // An out-of-range raw op value must be rejected, not silently
             // coerced into a Rust enum (which would be UB) or defaulted.
             assert!(!sk_canvas_clip_rect(canvas, &raw const rect, 2, false));
-            assert!(!sk_canvas_clip_rect(canvas, &raw const rect, u32::MAX, false));
+            assert!(!sk_canvas_clip_rect(
+                canvas,
+                &raw const rect,
+                u32::MAX,
+                false
+            ));
             sk_canvas_release(canvas);
             sk_surface_unref(surface);
         }
@@ -4480,12 +4494,20 @@ mod tests {
                 right: 20,
                 bottom: 20,
             };
-            assert!(sk_region_op_rect(r, &raw const other, SkRegionOp::Union as u32));
+            assert!(sk_region_op_rect(
+                r,
+                &raw const other,
+                SkRegionOp::Union as u32
+            ));
             assert!(sk_region_get_bounds(r, &raw mut bounds));
             assert_eq!(bounds.right, 20);
 
             // Test intersect op.
-            assert!(sk_region_op_rect(r, &raw const other, SkRegionOp::Intersect as u32));
+            assert!(sk_region_op_rect(
+                r,
+                &raw const other,
+                SkRegionOp::Intersect as u32
+            ));
 
             sk_region_ref(r);
             assert_eq!(sk_refcnt_get_count(r as *const sk_refcnt_t), 2);

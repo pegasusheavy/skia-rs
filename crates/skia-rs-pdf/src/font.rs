@@ -14,8 +14,8 @@
 //!   working. A six-letter subset prefix is prepended to the `BaseFont` name
 //!   per PDF convention.
 
-use skia_rs_core::cast::{floor_to_i32, saturate_to_i32};
 use skia_rs_core::Scalar;
+use skia_rs_core::cast::{floor_to_i32, saturate_to_i32};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
@@ -69,7 +69,7 @@ pub enum StandardFont {
 
 impl StandardFont {
     /// Get the PDF base font name.
-    #[must_use] 
+    #[must_use]
     pub const fn pdf_name(&self) -> &'static str {
         match self {
             Self::TimesRoman => "Times-Roman",
@@ -98,7 +98,7 @@ impl StandardFont {
     /// PDF/A validators flag it. Per spec, symbolic simple fonts should
     /// omit `/Encoding` entirely so the reader uses the font's built-in
     /// one.
-    #[must_use] 
+    #[must_use]
     pub const fn encoding(&self) -> Option<&'static str> {
         match self {
             Self::Symbol | Self::ZapfDingbats => None,
@@ -161,7 +161,7 @@ pub struct PdfFont {
 
 impl PdfFont {
     /// Create a new standard Type 1 font.
-    #[must_use] 
+    #[must_use]
     pub fn standard(font: StandardFont) -> Self {
         Self {
             font_type: PdfFontType::Type1,
@@ -198,7 +198,7 @@ impl PdfFont {
     /// while preserving every other table — callers do not need to do
     /// anything special; draws via [`PdfCanvas::draw_text`](crate::PdfCanvas::draw_text)
     /// record usage automatically.
-    #[must_use] 
+    #[must_use]
     pub fn truetype(name: &str, data: Vec<u8>) -> Self {
         let metrics = parse_truetype_metrics(&data);
         let subset_tag = subset_tag_for(&data, name);
@@ -247,7 +247,7 @@ impl PdfFont {
     /// than silently emit invalid 1-byte codes against the `/Identity-H`
     /// encoding. Use [`truetype`](Self::truetype) if you need to draw
     /// live text today.
-    #[must_use] 
+    #[must_use]
     pub fn truetype_cid(name: &str, data: Vec<u8>) -> Self {
         let metrics = parse_truetype_metrics(&data);
         let subset_tag = subset_tag_for(&data, name);
@@ -304,7 +304,7 @@ impl PdfFont {
 
     /// Return the `BaseFont` name as it should appear in PDF, including the
     /// `XXXXXX+` subset prefix when one is assigned.
-    #[must_use] 
+    #[must_use]
     pub fn pdf_base_font(&self) -> String {
         let bare = self.base_font.replace(' ', "");
         match self.subset_tag {
@@ -321,7 +321,7 @@ impl PdfFont {
     /// `/FontDescriptor`. `/CIDToGIDMap` is `/Identity` — glyph ids are
     /// used directly as CIDs, matching how [`record_char`](Self::record_char)
     /// resolves glyph ids from the font's `cmap`.
-    #[must_use] 
+    #[must_use]
     pub fn to_cid_font_dict(&self, id: u32, font_descriptor_id: u32) -> String {
         let mut dict = format!("{id} 0 obj\n<<\n");
         dict.push_str("/Type /Font\n");
@@ -364,9 +364,11 @@ impl PdfFont {
 
         let mut out = String::from("[");
         for gid in gids {
-            let w = face.glyph_hor_advance(ttf_parser::GlyphId(gid)).map_or(0, |a| {
-                u32::try_from(floor_to_i32(Scalar::from(a) * scale)).unwrap_or(0)
-            });
+            let w = face
+                .glyph_hor_advance(ttf_parser::GlyphId(gid))
+                .map_or(0, |a| {
+                    u32::try_from(floor_to_i32(Scalar::from(a) * scale)).unwrap_or(0)
+                });
             let _ = write!(out, " {gid} [{w}]");
         }
         out.push(']');
@@ -374,7 +376,7 @@ impl PdfFont {
     }
 
     /// Generate the font descriptor PDF object.
-    #[must_use] 
+    #[must_use]
     pub fn to_font_descriptor(&self, id: u32, font_file_id: Option<u32>) -> String {
         let mut dict = format!("{id} 0 obj\n<<\n");
         dict.push_str("/Type /FontDescriptor\n");
@@ -686,7 +688,7 @@ pub struct PdfFontManager {
 
 impl PdfFontManager {
     /// Create a new font manager.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -733,7 +735,7 @@ impl PdfFontManager {
     }
 
     /// Get font by index.
-    #[must_use] 
+    #[must_use]
     pub fn get(&self, index: usize) -> Option<&PdfFont> {
         self.fonts.get(index)
     }
@@ -744,7 +746,7 @@ impl PdfFontManager {
     }
 
     /// Get font by name.
-    #[must_use] 
+    #[must_use]
     pub fn get_by_name(&self, name: &str) -> Option<&PdfFont> {
         self.name_to_index
             .get(name)
@@ -752,7 +754,7 @@ impl PdfFontManager {
     }
 
     /// Get all fonts.
-    #[must_use] 
+    #[must_use]
     pub fn fonts(&self) -> &[PdfFont] {
         &self.fonts
     }
@@ -763,13 +765,13 @@ impl PdfFontManager {
     }
 
     /// Get number of fonts.
-    #[must_use] 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.fonts.len()
     }
 
     /// Check if empty.
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.fonts.is_empty()
     }

@@ -65,7 +65,7 @@ pub enum ImageFormat {
 
 impl ImageFormat {
     /// Detect format from magic bytes.
-    #[must_use] 
+    #[must_use]
     pub fn from_magic(data: &[u8]) -> Self {
         if data.len() < 8 {
             return Self::Unknown;
@@ -131,7 +131,7 @@ impl ImageFormat {
     }
 
     /// Get the typical file extension for this format.
-    #[must_use] 
+    #[must_use]
     pub const fn extension(&self) -> &'static str {
         match self {
             Self::Png => "png",
@@ -148,7 +148,7 @@ impl ImageFormat {
     }
 
     /// Get the MIME type for this format.
-    #[must_use] 
+    #[must_use]
     pub const fn mime_type(&self) -> &'static str {
         match self {
             Self::Png => "image/png",
@@ -221,13 +221,13 @@ pub struct EncoderQuality(u8);
 
 impl EncoderQuality {
     /// Create a quality setting (0-100).
-    #[must_use] 
+    #[must_use]
     pub fn new(quality: u8) -> Self {
         Self(quality.min(100))
     }
 
     /// Get the quality value.
-    #[must_use] 
+    #[must_use]
     pub const fn value(&self) -> u8 {
         self.0
     }
@@ -275,7 +275,7 @@ pub struct PngDecoder;
 
 impl PngDecoder {
     /// Create a new PNG decoder.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }
@@ -393,7 +393,7 @@ pub struct PngEncoder;
 
 impl PngEncoder {
     /// Create a new PNG encoder.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }
@@ -470,7 +470,7 @@ pub struct JpegDecoder;
 
 impl JpegDecoder {
     /// Create a new JPEG decoder.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }
@@ -561,7 +561,7 @@ pub struct JpegEncoder {
 
 impl JpegEncoder {
     /// Create a new JPEG encoder with default quality.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             quality: EncoderQuality::DEFAULT,
@@ -569,13 +569,13 @@ impl JpegEncoder {
     }
 
     /// Create a JPEG encoder with specified quality.
-    #[must_use] 
+    #[must_use]
     pub const fn with_quality(quality: EncoderQuality) -> Self {
         Self { quality }
     }
 
     /// Get the quality setting.
-    #[must_use] 
+    #[must_use]
     pub const fn quality(&self) -> EncoderQuality {
         self.quality
     }
@@ -663,7 +663,7 @@ pub struct GifDecoder;
 
 impl GifDecoder {
     /// Create a new GIF decoder.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }
@@ -718,11 +718,8 @@ impl GifDecoder {
                 skia_rs_core::ColorType::Rgba8888,
                 skia_rs_core::AlphaType::Unpremul,
             );
-            let image =
-                Image::from_raster_data(&info, &frame.buffer, usize::from(frame.width) * 4)
-                    .ok_or_else(|| {
-                        CodecError::DecodingError("Failed to build frame image".into())
-                    })?;
+            let image = Image::from_raster_data(&info, &frame.buffer, usize::from(frame.width) * 4)
+                .ok_or_else(|| CodecError::DecodingError("Failed to build frame image".into()))?;
 
             frames.push(crate::AnimationFrame {
                 image,
@@ -858,7 +855,7 @@ pub struct WebpDecoder;
 
 impl WebpDecoder {
     /// Create a new WebP decoder.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }
@@ -933,7 +930,7 @@ pub struct WebpEncoder {
 
 impl WebpEncoder {
     /// Create a new WebP encoder with default quality.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             quality: EncoderQuality::DEFAULT,
@@ -942,7 +939,7 @@ impl WebpEncoder {
     }
 
     /// Create a WebP encoder with specified quality.
-    #[must_use] 
+    #[must_use]
     pub const fn with_quality(quality: EncoderQuality) -> Self {
         Self {
             quality,
@@ -951,7 +948,7 @@ impl WebpEncoder {
     }
 
     /// Create a lossless WebP encoder.
-    #[must_use] 
+    #[must_use]
     pub const fn lossless() -> Self {
         Self {
             quality: EncoderQuality::DEFAULT,
@@ -1031,7 +1028,7 @@ pub struct BmpDecoder;
 
 impl BmpDecoder {
     /// Create a new BMP decoder.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }
@@ -1055,7 +1052,7 @@ pub struct BmpEncoder;
 
 impl BmpEncoder {
     /// Create a new BMP encoder.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }
@@ -1424,7 +1421,7 @@ pub struct IcoDecoder;
 
 impl IcoDecoder {
     /// Create a new ICO decoder.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }
@@ -1678,7 +1675,7 @@ pub struct WbmpDecoder;
 
 impl WbmpDecoder {
     /// Create a new WBMP decoder.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }
@@ -1707,7 +1704,7 @@ pub struct WbmpEncoder;
 
 impl WbmpEncoder {
     /// Create a new WBMP encoder.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }
@@ -1930,7 +1927,7 @@ pub struct AvifDecoder;
 
 impl AvifDecoder {
     /// Create a new AVIF decoder.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }
@@ -2059,7 +2056,7 @@ pub struct AvifEncoder {
 
 impl AvifEncoder {
     /// Create a new AVIF encoder with default settings.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             quality: 80,
@@ -2068,14 +2065,14 @@ impl AvifEncoder {
     }
 
     /// Set the quality (0-100, higher is better quality but larger file).
-    #[must_use] 
+    #[must_use]
     pub fn with_quality(mut self, quality: u8) -> Self {
         self.quality = quality.min(100);
         self
     }
 
     /// Set the encoding speed (1-10, higher is faster but lower quality).
-    #[must_use] 
+    #[must_use]
     pub fn with_speed(mut self, speed: u8) -> Self {
         self.speed = speed.clamp(1, 10);
         self
@@ -2337,7 +2334,7 @@ pub fn demosaic_bayer(raw: &[u16], width: usize, height: usize, pattern: BayerPa
 /// Convenience: [`demosaic_bayer`] with the most common [`BayerPattern::Rggb`]
 /// pattern.
 #[inline]
-#[must_use] 
+#[must_use]
 pub fn demosaic_bayer_rggb(raw: &[u16], width: usize, height: usize) -> Vec<u8> {
     demosaic_bayer(raw, width, height, BayerPattern::Rggb)
 }
@@ -2350,7 +2347,7 @@ pub struct RawDecoder;
 
 impl RawDecoder {
     /// Create a new RAW decoder.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }

@@ -50,13 +50,13 @@ pub struct LottieModel {
 
 impl LottieModel {
     /// Get the total number of frames.
-    #[must_use] 
+    #[must_use]
     pub fn total_frames(&self) -> Scalar {
         self.out_point - self.in_point
     }
 
     /// Get the duration in seconds.
-    #[must_use] 
+    #[must_use]
     pub fn duration(&self) -> Scalar {
         self.total_frames() / self.frame_rate
     }
@@ -271,7 +271,7 @@ pub enum TangentValue {
 
 impl TangentValue {
     /// Get the first value.
-    #[must_use] 
+    #[must_use]
     pub fn first(&self) -> Scalar {
         match self {
             Self::Single(v) => *v,
@@ -391,7 +391,7 @@ pub enum DirectionOrDash {
 
 impl DirectionOrDash {
     /// Get as a direction value, if this is a direction.
-    #[must_use] 
+    #[must_use]
     pub const fn as_direction(&self) -> Option<i32> {
         match self {
             Self::Direction(d) => Some(*d),

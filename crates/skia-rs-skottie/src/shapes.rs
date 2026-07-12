@@ -55,7 +55,7 @@ pub enum Shape {
 
 impl Shape {
     /// Parse from Lottie shape model.
-    #[must_use] 
+    #[must_use]
     pub fn from_lottie(model: &ShapeModel) -> Option<Self> {
         if model.hidden {
             return None;
@@ -96,7 +96,7 @@ pub struct ShapeGroup {
 
 impl ShapeGroup {
     /// Create a new empty group.
-    #[must_use] 
+    #[must_use]
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
@@ -106,7 +106,7 @@ impl ShapeGroup {
     }
 
     /// Parse from Lottie model.
-    #[must_use] 
+    #[must_use]
     pub fn from_lottie(model: &ShapeModel) -> Self {
         let mut group = Self::new(&model.name);
 
@@ -122,7 +122,7 @@ impl ShapeGroup {
     }
 
     /// Build paths for this group at a specific frame.
-    #[must_use] 
+    #[must_use]
     pub fn build_paths(&self, frame: Scalar) -> Vec<Path> {
         let mut paths = Vec::new();
 
@@ -203,7 +203,7 @@ impl RectangleShape {
     }
 
     /// Build a path at a specific frame.
-    #[must_use] 
+    #[must_use]
     pub fn to_path(&self, frame: Scalar) -> Option<Path> {
         // Circular-arc corner constant (matches SkRRect's cubic-bezier
         // approximation of a quarter circle), not the coarser quadratic
@@ -326,7 +326,7 @@ impl EllipseShape {
     }
 
     /// Build a path at a specific frame.
-    #[must_use] 
+    #[must_use]
     pub fn to_path(&self, frame: Scalar) -> Option<Path> {
         let pos = self
             .position
@@ -391,7 +391,7 @@ impl PathShape {
     }
 
     /// Build a path at a specific frame.
-    #[must_use] 
+    #[must_use]
     pub fn to_path(&self, frame: Scalar) -> Option<Path> {
         let value = self.path.value_at(frame);
 
@@ -532,7 +532,7 @@ impl PolystarShape {
     }
 
     /// Build a path at a specific frame.
-    #[must_use] 
+    #[must_use]
     pub fn to_path(&self, frame: Scalar) -> Option<Path> {
         let pos = self
             .position
@@ -562,8 +562,7 @@ impl PolystarShape {
 
         let is_star = self.star_type == 1;
         let step_count = if is_star { n * 2 } else { n };
-        let angle_step =
-            std::f32::consts::TAU / skia_rs_core::cast::scalar_from_i32(step_count);
+        let angle_step = std::f32::consts::TAU / skia_rs_core::cast::scalar_from_i32(step_count);
 
         for i in 0..step_count {
             let angle = rot_rad + angle_step * skia_rs_core::cast::scalar_from_i32(i);
@@ -611,9 +610,10 @@ impl FillShape {
                 .as_ref()
                 .map(AnimatedProperty::from_lottie)
                 .unwrap_or_default(),
-            opacity: model
-                .opacity
-                .as_ref().map_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(100.0)), AnimatedProperty::from_lottie),
+            opacity: model.opacity.as_ref().map_or_else(
+                || AnimatedProperty::static_value(KeyframeValue::Scalar(100.0)),
+                AnimatedProperty::from_lottie,
+            ),
             // "fl" shapes reuse the "r" key (roundness on "rc" shapes) for
             // fill rule: 1 = non-zero (default), 2 = even-odd.
             fill_rule: model
@@ -638,7 +638,7 @@ impl FillShape {
     }
 
     /// Get the `skia_rs_path::FillType` for this fill's rule.
-    #[must_use] 
+    #[must_use]
     pub const fn path_fill_type(&self) -> skia_rs_path::FillType {
         if self.fill_rule == 2 {
             skia_rs_path::FillType::EvenOdd
@@ -693,12 +693,14 @@ impl StrokeShape {
                 .as_ref()
                 .map(AnimatedProperty::from_lottie)
                 .unwrap_or_default(),
-            opacity: model
-                .opacity
-                .as_ref().map_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(100.0)), AnimatedProperty::from_lottie),
-            width: model
-                .stroke_width
-                .as_ref().map_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(1.0)), AnimatedProperty::from_lottie),
+            opacity: model.opacity.as_ref().map_or_else(
+                || AnimatedProperty::static_value(KeyframeValue::Scalar(100.0)),
+                AnimatedProperty::from_lottie,
+            ),
+            width: model.stroke_width.as_ref().map_or_else(
+                || AnimatedProperty::static_value(KeyframeValue::Scalar(1.0)),
+                AnimatedProperty::from_lottie,
+            ),
             line_cap,
             line_join,
             miter_limit: model.miter_limit.unwrap_or(4.0),
@@ -736,7 +738,7 @@ impl StrokeShape {
     }
 
     /// Get the color at a specific frame.
-    #[must_use] 
+    #[must_use]
     pub fn color_at(&self, frame: Scalar) -> Color4f {
         let c = self
             .color
@@ -748,13 +750,13 @@ impl StrokeShape {
     }
 
     /// Get the stroke width at a specific frame.
-    #[must_use] 
+    #[must_use]
     pub fn width_at(&self, frame: Scalar) -> Scalar {
         self.width.value_at(frame).as_scalar().unwrap_or(1.0)
     }
 
     /// Get the resolved dash intervals (on/off pairs) at a frame, if dashed.
-    #[must_use] 
+    #[must_use]
     pub fn dash_intervals_at(&self, frame: Scalar) -> Option<Vec<Scalar>> {
         if self.dashes.is_empty() {
             return None;
@@ -768,7 +770,7 @@ impl StrokeShape {
     }
 
     /// Get the dash phase/offset at a frame.
-    #[must_use] 
+    #[must_use]
     pub fn dash_offset_at(&self, frame: Scalar) -> Scalar {
         self.dash_offset.value_at(frame).as_scalar().unwrap_or(0.0)
     }
@@ -818,13 +820,11 @@ impl GradientFillShape {
                 .as_ref()
                 .map(|gc| AnimatedProperty::from_lottie(&gc.colors))
                 .unwrap_or_default(),
-            color_count: model
-                .gradient_colors
-                .as_ref()
-                .map_or(2, |gc| gc.count),
-            opacity: model
-                .opacity
-                .as_ref().map_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(100.0)), AnimatedProperty::from_lottie),
+            color_count: model.gradient_colors.as_ref().map_or(2, |gc| gc.count),
+            opacity: model.opacity.as_ref().map_or_else(
+                || AnimatedProperty::static_value(KeyframeValue::Scalar(100.0)),
+                AnimatedProperty::from_lottie,
+            ),
             highlight_length: model
                 .gradient_highlight_length
                 .as_ref()
@@ -841,7 +841,7 @@ impl GradientFillShape {
     }
 
     /// Resolve the color stops at a frame.
-    #[must_use] 
+    #[must_use]
     pub fn stops_at(&self, frame: Scalar) -> Vec<(Scalar, Color4f)> {
         resolve_gradient_stops(&self.colors, self.color_count, frame)
     }
@@ -908,16 +908,15 @@ impl GradientStrokeShape {
                 .as_ref()
                 .map(|gc| AnimatedProperty::from_lottie(&gc.colors))
                 .unwrap_or_default(),
-            color_count: model
-                .gradient_colors
-                .as_ref()
-                .map_or(2, |gc| gc.count),
-            opacity: model
-                .opacity
-                .as_ref().map_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(100.0)), AnimatedProperty::from_lottie),
-            width: model
-                .stroke_width
-                .as_ref().map_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(1.0)), AnimatedProperty::from_lottie),
+            color_count: model.gradient_colors.as_ref().map_or(2, |gc| gc.count),
+            opacity: model.opacity.as_ref().map_or_else(
+                || AnimatedProperty::static_value(KeyframeValue::Scalar(100.0)),
+                AnimatedProperty::from_lottie,
+            ),
+            width: model.stroke_width.as_ref().map_or_else(
+                || AnimatedProperty::static_value(KeyframeValue::Scalar(1.0)),
+                AnimatedProperty::from_lottie,
+            ),
             line_cap,
             line_join,
             highlight_length: model
@@ -934,7 +933,7 @@ impl GradientStrokeShape {
     }
 
     /// Resolve the color stops at a frame.
-    #[must_use] 
+    #[must_use]
     pub fn stops_at(&self, frame: Scalar) -> Vec<(Scalar, Color4f)> {
         resolve_gradient_stops(&self.colors, self.color_count, frame)
     }
@@ -1074,9 +1073,10 @@ impl TrimPathShape {
                 .as_ref()
                 .map(AnimatedProperty::from_lottie)
                 .unwrap_or_default(),
-            end: model
-                .trim_end
-                .as_ref().map_or_else(|| AnimatedProperty::static_value(KeyframeValue::Scalar(100.0)), AnimatedProperty::from_lottie),
+            end: model.trim_end.as_ref().map_or_else(
+                || AnimatedProperty::static_value(KeyframeValue::Scalar(100.0)),
+                AnimatedProperty::from_lottie,
+            ),
             offset: model
                 .opacity
                 .as_ref()
@@ -1089,7 +1089,7 @@ impl TrimPathShape {
     /// Get the resolved `(start, end, inverted)` trim interval at a frame,
     /// both in `0..=1`, matching upstream `TrimEffectAdapter::onSync`
     /// (`modules/skottie/src/layers/shapelayer/TrimPaths.cpp`).
-    #[must_use] 
+    #[must_use]
     pub fn resolved_at(&self, frame: Scalar) -> (Scalar, Scalar, bool) {
         let start = self.start.value_at(frame).as_scalar().unwrap_or(0.0) / 100.0;
         let end = self.end.value_at(frame).as_scalar().unwrap_or(100.0) / 100.0;
@@ -1126,7 +1126,7 @@ pub struct MergePathsShape {
 
 impl MergePathsShape {
     /// Parse from Lottie model.
-    #[must_use] 
+    #[must_use]
     pub fn from_lottie(model: &ShapeModel) -> Self {
         Self {
             name: model.name.clone(),
@@ -1173,7 +1173,7 @@ pub struct RepeaterShape {
 
 impl RepeaterShape {
     /// Parse from Lottie model.
-    #[must_use] 
+    #[must_use]
     pub fn from_lottie(model: &ShapeModel) -> Self {
         Self {
             name: model.name.clone(),
@@ -1195,7 +1195,7 @@ pub struct ShapeTransform {
 
 impl ShapeTransform {
     /// Parse from Lottie model.
-    #[must_use] 
+    #[must_use]
     pub fn from_lottie(model: &ShapeModel) -> Self {
         Self {
             name: model.name.clone(),

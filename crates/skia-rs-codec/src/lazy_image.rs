@@ -109,7 +109,7 @@ impl std::fmt::Debug for LazyImage {
 
 impl LazyImage {
     /// Create a lazy image from an image generator.
-    #[must_use] 
+    #[must_use]
     pub fn from_generator(generator: Box<dyn ImageGenerator>) -> Self {
         Self {
             inner: Arc::new(LazyImageInner {
@@ -124,14 +124,14 @@ impl LazyImage {
     }
 
     /// Create a lazy image from encoded data.
-    #[must_use] 
+    #[must_use]
     pub fn from_encoded(data: Vec<u8>) -> Option<Self> {
         let generator = crate::EncodedImageGenerator::new(data)?;
         Some(Self::from_generator(Box::new(generator)))
     }
 
     /// Create a lazy image from shared encoded data.
-    #[must_use] 
+    #[must_use]
     pub fn from_encoded_shared(data: Arc<[u8]>) -> Option<Self> {
         let generator = crate::EncodedImageGenerator::from_shared(data)?;
         Some(Self::from_generator(Box::new(generator)))
@@ -139,28 +139,28 @@ impl LazyImage {
 
     /// Get the image width.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn width(&self) -> i32 {
         self.inner.generator.width()
     }
 
     /// Get the image height.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn height(&self) -> i32 {
         self.inner.generator.height()
     }
 
     /// Get the image dimensions as (width, height).
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn dimensions(&self) -> (i32, i32) {
         (self.width(), self.height())
     }
 
     /// Get the image bounds as a rectangle.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn bounds(&self) -> Rect {
         Rect::from_xywh(
             0.0,
@@ -172,68 +172,68 @@ impl LazyImage {
 
     /// Get the image info.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn info(&self) -> &ImageInfo {
         self.inner.generator.info()
     }
 
     /// Get the color type.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn color_type(&self) -> ColorType {
         self.info().color_type
     }
 
     /// Get the alpha type.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn alpha_type(&self) -> AlphaType {
         self.info().alpha_type
     }
 
     /// Get the color space.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn color_space(&self) -> Option<&ColorSpace> {
         self.info().color_space()
     }
 
     /// Returns true if the image is opaque.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn is_opaque(&self) -> bool {
         self.info().is_opaque()
     }
 
     /// Get the unique ID.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn unique_id(&self) -> u32 {
         self.inner.generator.unique_id()
     }
 
     /// Get the current state of pixel generation.
-    #[must_use] 
+    #[must_use]
     pub fn state(&self) -> LazyImageState {
         self.inner.gen_state.lock().state
     }
 
     /// Check if pixels have been generated.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn is_generated(&self) -> bool {
         self.state() == LazyImageState::Generated
     }
 
     /// Check if generation has failed.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn is_failed(&self) -> bool {
         self.state() == LazyImageState::Failed
     }
 
     /// Get a reference to the original encoded data, if available.
-    #[must_use] 
+    #[must_use]
     pub fn ref_encoded_data(&self) -> Option<Arc<[u8]>> {
         self.inner.generator.ref_encoded_data()
     }
@@ -352,7 +352,7 @@ impl LazyImage {
     /// that would self-deadlock. Copy what you need and drop the guard.
     ///
     /// [`discard_pixels`]: LazyImage::discard_pixels
-    #[must_use] 
+    #[must_use]
     pub fn peek_pixels(&self) -> Option<PeekedPixels<'_>> {
         let guard = self.inner.gen_state.lock();
         if guard.state != LazyImageState::Generated || guard.cached.is_none() {
@@ -419,16 +419,15 @@ impl LazyImage {
     /// Convert to an immutable `Image`.
     ///
     /// This generates pixels if needed and creates a copy.
-    #[must_use] 
+    #[must_use]
     pub fn to_image(&self) -> Option<Image> {
         // Ensure pixels are generated
         self.ensure_pixels_generated().ok()?;
 
         let guard = self.inner.gen_state.lock();
-        let image = guard
-            .cached
-            .as_ref()
-            .and_then(|cached| Image::from_raster_data(self.info(), &cached.pixels, cached.row_bytes));
+        let image = guard.cached.as_ref().and_then(|cached| {
+            Image::from_raster_data(self.info(), &cached.pixels, cached.row_bytes)
+        });
         drop(guard);
         image
     }
@@ -436,7 +435,7 @@ impl LazyImage {
     /// Make a subset of this lazy image.
     ///
     /// Returns a new lazy image that will generate only the subset.
-    #[must_use] 
+    #[must_use]
     pub fn make_subset(&self, subset: &Rect) -> Option<Self> {
         // Generate full image first, then take subset
         let image = self.to_image()?;
@@ -449,7 +448,7 @@ impl LazyImage {
     /// Create a lazy image from an already-decoded image.
     ///
     /// This is useful for wrapping existing images in the lazy interface.
-    #[must_use] 
+    #[must_use]
     pub fn from_image(image: Image) -> Self {
         let generator = RasterImageGenerator::new(image);
         Self::from_generator(Box::new(generator))

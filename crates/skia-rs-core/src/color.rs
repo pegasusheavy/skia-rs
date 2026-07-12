@@ -232,12 +232,7 @@ impl Color {
         if it.next().is_some() {
             return None;
         }
-        Some(Self::from_argb(
-            f32_to_u8_sat(a * 255.0),
-            r,
-            g,
-            b,
-        ))
+        Some(Self::from_argb(f32_to_u8_sat(a * 255.0), r, g, b))
     }
 
     fn parse_hsl_inner(inner: &str, with_alpha: bool) -> Option<Self> {
@@ -283,16 +278,10 @@ impl Color {
     /// Split color function components on whitespace/comma, handling slash-separated alpha.
     fn split_components(s: &str) -> (Vec<&str>, Option<&str>) {
         if let Some((main, alpha)) = s.split_once('/') {
-            let parts: Vec<&str> = main
-                .split([' ', ','])
-                .filter(|p| !p.is_empty())
-                .collect();
+            let parts: Vec<&str> = main.split([' ', ',']).filter(|p| !p.is_empty()).collect();
             (parts, Some(alpha.trim()))
         } else {
-            let parts: Vec<&str> = s
-                .split([' ', ','])
-                .filter(|p| !p.is_empty())
-                .collect();
+            let parts: Vec<&str> = s.split([' ', ',']).filter(|p| !p.is_empty()).collect();
             (parts, None)
         }
     }

@@ -355,13 +355,13 @@ pub struct ValidationReport {
 
 impl ValidationReport {
     /// Convenience: true when the shader parses.
-    #[must_use] 
+    #[must_use]
     pub const fn is_valid(&self) -> bool {
         self.valid
     }
 
     /// Get the error message, if any.
-    #[must_use] 
+    #[must_use]
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }
@@ -375,7 +375,7 @@ pub struct ShaderCompiler {
 
 impl ShaderCompiler {
     /// Create a new shader compiler.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             validation_cache: parking_lot::RwLock::new(HashMap::new()),
@@ -470,9 +470,7 @@ impl ShaderCompiler {
 
     /// Get a combined shader module source.
     pub fn combine_shaders(&self, vertex: &str, fragment: &str) -> String {
-        format!(
-            "// Vertex Shader\n{vertex}\n\n// Fragment Shader\n{fragment}"
-        )
+        format!("// Vertex Shader\n{vertex}\n\n// Fragment Shader\n{fragment}")
     }
 }
 
@@ -490,7 +488,7 @@ pub struct ShaderLibrary {
 
 impl ShaderLibrary {
     /// Create a new shader library with built-in shaders.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         let mut shaders = HashMap::new();
 
@@ -534,7 +532,7 @@ impl ShaderLibrary {
     }
 
     /// Get a shader by name.
-    #[must_use] 
+    #[must_use]
     pub fn get(&self, name: &str) -> Option<&str> {
         self.shaders.get(name).map(std::string::String::as_str)
     }
@@ -545,7 +543,7 @@ impl ShaderLibrary {
     }
 
     /// Check if a shader exists.
-    #[must_use] 
+    #[must_use]
     pub fn contains(&self, name: &str) -> bool {
         self.shaders.contains_key(name)
     }

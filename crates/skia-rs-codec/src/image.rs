@@ -65,8 +65,13 @@ pub struct ImageInfo {
 
 impl ImageInfo {
     /// Create a new image info.
-    #[must_use] 
-    pub const fn new(width: i32, height: i32, color_type: ColorType, alpha_type: AlphaType) -> Self {
+    #[must_use]
+    pub const fn new(
+        width: i32,
+        height: i32,
+        color_type: ColorType,
+        alpha_type: AlphaType,
+    ) -> Self {
         Self {
             width,
             height,
@@ -78,56 +83,56 @@ impl ImageInfo {
 
     /// Get the width.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn width(&self) -> i32 {
         self.width
     }
 
     /// Get the height.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn height(&self) -> i32 {
         self.height
     }
 
     /// Get the color type.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn color_type(&self) -> ColorType {
         self.color_type
     }
 
     /// Get the alpha type.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn alpha_type(&self) -> AlphaType {
         self.alpha_type
     }
 
     /// Get the color space.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn color_space(&self) -> Option<&ColorSpace> {
         self.color_space.as_ref()
     }
 
     /// Returns true if dimensions are zero or negative.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.width <= 0 || self.height <= 0
     }
 
     /// Returns true if alpha is opaque.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn is_opaque(&self) -> bool {
         self.alpha_type == AlphaType::Opaque
     }
 
     /// Bytes per pixel.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn bytes_per_pixel(&self) -> usize {
         self.color_type.bytes_per_pixel()
     }
@@ -205,7 +210,7 @@ impl Image {
     /// Create an image from raw pixel data.
     ///
     /// The pixels are copied into the image.
-    #[must_use] 
+    #[must_use]
     pub fn from_raster_data(info: &ImageInfo, pixels: &[u8], row_bytes: usize) -> Option<Self> {
         if info.is_empty() {
             return None;
@@ -227,7 +232,7 @@ impl Image {
     }
 
     /// Create an image from owned pixel data.
-    #[must_use] 
+    #[must_use]
     pub fn from_raster_data_owned(
         info: ImageInfo,
         pixels: Vec<u8>,
@@ -253,7 +258,7 @@ impl Image {
     }
 
     /// Create a new RGBA image filled with a color.
-    #[must_use] 
+    #[must_use]
     pub fn from_color(width: i32, height: i32, color: u32) -> Option<Self> {
         if width <= 0 || height <= 0 {
             return None;
@@ -286,28 +291,28 @@ impl Image {
 
     /// Get the image width.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn width(&self) -> i32 {
         self.inner.info.width()
     }
 
     /// Get the image height.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn height(&self) -> i32 {
         self.inner.info.height()
     }
 
     /// Get the image dimensions as (width, height).
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn dimensions(&self) -> (i32, i32) {
         (self.width(), self.height())
     }
 
     /// Get the image bounds as a rectangle.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn bounds(&self) -> Rect {
         Rect::from_xywh(
             0.0,
@@ -319,42 +324,42 @@ impl Image {
 
     /// Get the image info.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn info(&self) -> &ImageInfo {
         &self.inner.info
     }
 
     /// Get the color type.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn color_type(&self) -> ColorType {
         self.inner.info.color_type()
     }
 
     /// Get the alpha type.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn alpha_type(&self) -> AlphaType {
         self.inner.info.alpha_type()
     }
 
     /// Get the color space.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn color_space(&self) -> Option<&ColorSpace> {
         self.inner.info.color_space()
     }
 
     /// Returns true if the image is opaque.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn is_opaque(&self) -> bool {
         self.inner.info.is_opaque()
     }
 
     /// Get the row bytes (stride).
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn row_bytes(&self) -> usize {
         self.inner.row_bytes
     }
@@ -366,7 +371,7 @@ impl Image {
     /// always compare unequal even if a later allocation reuses a freed
     /// image's memory. Cloning an `Image` shares the same ID.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn unique_id(&self) -> usize {
         usize::try_from(self.inner.unique_id).unwrap_or(usize::MAX)
     }
@@ -393,9 +398,10 @@ impl Image {
         let (Ok(src_x), Ok(src_y)) = (usize::try_from(src_x), usize::try_from(src_y)) else {
             return false;
         };
-        let (Ok(dst_width), Ok(dst_height)) =
-            (usize::try_from(dst_info.width()), usize::try_from(dst_info.height()))
-        else {
+        let (Ok(dst_width), Ok(dst_height)) = (
+            usize::try_from(dst_info.width()),
+            usize::try_from(dst_info.height()),
+        ) else {
             return false;
         };
 
@@ -466,7 +472,7 @@ impl Image {
     }
 
     /// Read a single pixel at (x, y).
-    #[must_use] 
+    #[must_use]
     pub fn read_pixel(&self, x: i32, y: i32) -> Option<skia_rs_core::Color4f> {
         if x < 0 || x >= self.width() || y < 0 || y >= self.height() {
             return None;
@@ -506,13 +512,13 @@ impl Image {
     }
 
     /// Get direct access to the pixel data (if available).
-    #[must_use] 
+    #[must_use]
     pub fn peek_pixels(&self) -> Option<&[u8]> {
         Some(&self.inner.pixels)
     }
 
     /// Create a subset of this image.
-    #[must_use] 
+    #[must_use]
     pub fn make_subset(&self, subset: &Rect) -> Option<Self> {
         use skia_rs_core::cast::saturate_to_i32;
         let x = saturate_to_i32(subset.left);
@@ -556,7 +562,7 @@ impl Image {
     ///
     /// For quality-sensitive scaling (photographs, downscaling), prefer
     /// [`Image::make_scaled_with`] with [`SamplingOptions::Linear`].
-    #[must_use] 
+    #[must_use]
     pub fn make_scaled(&self, width: i32, height: i32) -> Option<Self> {
         self.make_scaled_with(width, height, SamplingOptions::Nearest)
     }
@@ -573,7 +579,7 @@ impl Image {
     ///   cost bump.
     /// - [`SamplingOptions::Lanczos3`]: 6-tap per axis windowed sinc, best
     ///   quality for photographic downscaling.
-    #[must_use] 
+    #[must_use]
     pub fn make_scaled_with(
         &self,
         width: i32,
@@ -736,13 +742,20 @@ fn cubic_bc(t: f32, b: f32, c: f32) -> f32 {
     if t < 1.0 {
         let t2 = t * t;
         let t3 = t2 * t;
-        (6.0f32.mul_add(-c, 9.0f32.mul_add(-b, 12.0)).mul_add(t3, 6.0f32.mul_add(c, 12.0f32.mul_add(b, -18.0)) * t2) + 2.0f32.mul_add(-b, 6.0))
+        (6.0f32
+            .mul_add(-c, 9.0f32.mul_add(-b, 12.0))
+            .mul_add(t3, 6.0f32.mul_add(c, 12.0f32.mul_add(b, -18.0)) * t2)
+            + 2.0f32.mul_add(-b, 6.0))
             / 6.0
     } else if t < 2.0 {
         let t2 = t * t;
         let t3 = t2 * t;
-        ((-12.0f32).mul_add(b, -(48.0 * c)).mul_add(t, 6.0f32.mul_add(-c, -b).mul_add(t3, 6.0f32.mul_add(b, 30.0 * c) * t2))
-            + 8.0f32.mul_add(b, 24.0 * c))
+        ((-12.0f32).mul_add(b, -(48.0 * c)).mul_add(
+            t,
+            6.0f32
+                .mul_add(-c, -b)
+                .mul_add(t3, 6.0f32.mul_add(b, 30.0 * c) * t2),
+        ) + 8.0f32.mul_add(b, 24.0 * c))
             / 6.0
     } else {
         0.0
@@ -867,8 +880,7 @@ fn resample_nearest(
     }
 
     for dst_y in 0..height {
-        let src_y =
-            scalar_to_usize_floor((usize_to_scalar(dst_y) + 0.5) * y_scale).min(src_h - 1);
+        let src_y = scalar_to_usize_floor((usize_to_scalar(dst_y) + 0.5) * y_scale).min(src_h - 1);
         for dst_x in 0..width {
             let src_x =
                 scalar_to_usize_floor((usize_to_scalar(dst_x) + 0.5) * x_scale).min(src_w - 1);
@@ -903,13 +915,17 @@ fn resample_linear(
     let max_y = src_h.saturating_sub(1);
 
     for dst_y in 0..height {
-        let fy = (usize_to_scalar(dst_y) + 0.5).mul_add(y_scale, -0.5).max(0.0);
+        let fy = (usize_to_scalar(dst_y) + 0.5)
+            .mul_add(y_scale, -0.5)
+            .max(0.0);
         let y0 = scalar_to_usize_floor(fy).min(max_y);
         let y1 = (y0 + 1).min(max_y);
         let ty = fy - usize_to_scalar(y0);
 
         for dst_x in 0..width {
-            let fx = (usize_to_scalar(dst_x) + 0.5).mul_add(x_scale, -0.5).max(0.0);
+            let fx = (usize_to_scalar(dst_x) + 0.5)
+                .mul_add(x_scale, -0.5)
+                .max(0.0);
             let x0 = scalar_to_usize_floor(fx).min(max_x);
             let x1 = (x0 + 1).min(max_x);
             let tx = fx - usize_to_scalar(x0);

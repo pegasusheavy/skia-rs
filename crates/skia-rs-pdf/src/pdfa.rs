@@ -58,7 +58,7 @@ pub enum PdfALevel {
 
 impl PdfALevel {
     /// Get the PDF/A part number.
-    #[must_use] 
+    #[must_use]
     pub const fn part(&self) -> u8 {
         match self {
             Self::A1a | Self::A1b => 1,
@@ -68,7 +68,7 @@ impl PdfALevel {
     }
 
     /// Get the conformance level identifier.
-    #[must_use] 
+    #[must_use]
     pub const fn conformance(&self) -> &'static str {
         match self {
             Self::A1a | Self::A2a | Self::A3a => "A",
@@ -78,7 +78,7 @@ impl PdfALevel {
     }
 
     /// Get the minimum PDF version required.
-    #[must_use] 
+    #[must_use]
     pub const fn min_pdf_version(&self) -> &'static str {
         match self {
             Self::A1a | Self::A1b => "1.4",
@@ -87,31 +87,31 @@ impl PdfALevel {
     }
 
     /// Check if transparency is allowed.
-    #[must_use] 
+    #[must_use]
     pub const fn allows_transparency(&self) -> bool {
         !matches!(self, Self::A1a | Self::A1b)
     }
 
     /// Check if embedded files are allowed.
-    #[must_use] 
+    #[must_use]
     pub const fn allows_embedded_files(&self) -> bool {
         matches!(self, Self::A3a | Self::A3b | Self::A3u)
     }
 
     /// Check if JPEG2000 compression is allowed.
-    #[must_use] 
+    #[must_use]
     pub const fn allows_jpeg2000(&self) -> bool {
         !matches!(self, Self::A1a | Self::A1b)
     }
 
     /// Check if Unicode text is required.
-    #[must_use] 
+    #[must_use]
     pub const fn requires_unicode(&self) -> bool {
         matches!(self, Self::A2u | Self::A3u)
     }
 
     /// Check if structure (tagged PDF) is required.
-    #[must_use] 
+    #[must_use]
     pub const fn requires_structure(&self) -> bool {
         matches!(self, Self::A1a | Self::A2a | Self::A3a)
     }
@@ -253,7 +253,7 @@ pub struct XmpMetadata {
 
 impl XmpMetadata {
     /// Create new XMP metadata.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -273,7 +273,7 @@ impl XmpMetadata {
     }
 
     /// Set PDF/A level.
-    #[must_use] 
+    #[must_use]
     pub const fn with_pdfa_level(mut self, level: PdfALevel) -> Self {
         self.pdfa_level = Some(level);
         self
@@ -302,7 +302,8 @@ impl XmpMetadata {
         xmp.push('\n');
 
         if let Some(ref title) = self.title {
-            let _ = write!(xmp, 
+            let _ = write!(
+                xmp,
                 r#"      <dc:title><rdf:Alt><rdf:li xml:lang="x-default">{}</rdf:li></rdf:Alt></dc:title>"#,
                 escape_xml(title)
             );
@@ -310,7 +311,8 @@ impl XmpMetadata {
         }
 
         if let Some(ref author) = self.author {
-            let _ = write!(xmp, 
+            let _ = write!(
+                xmp,
                 r"      <dc:creator><rdf:Seq><rdf:li>{}</rdf:li></rdf:Seq></dc:creator>",
                 escape_xml(author)
             );
@@ -318,7 +320,8 @@ impl XmpMetadata {
         }
 
         if let Some(ref subject) = self.subject {
-            let _ = write!(xmp, 
+            let _ = write!(
+                xmp,
                 r#"      <dc:description><rdf:Alt><rdf:li xml:lang="x-default">{}</rdf:li></rdf:Alt></dc:description>"#,
                 escape_xml(subject)
             );
@@ -335,7 +338,8 @@ impl XmpMetadata {
         xmp.push('\n');
 
         if let Some(ref creator) = self.creator {
-            let _ = write!(xmp, 
+            let _ = write!(
+                xmp,
                 r"      <xmp:CreatorTool>{}</xmp:CreatorTool>",
                 escape_xml(creator)
             );
@@ -343,16 +347,12 @@ impl XmpMetadata {
         }
 
         if let Some(ref create_date) = self.create_date {
-            let _ = write!(xmp, 
-                r"      <xmp:CreateDate>{create_date}</xmp:CreateDate>"
-            );
+            let _ = write!(xmp, r"      <xmp:CreateDate>{create_date}</xmp:CreateDate>");
             xmp.push('\n');
         }
 
         if let Some(ref modify_date) = self.modify_date {
-            let _ = write!(xmp, 
-                r"      <xmp:ModifyDate>{modify_date}</xmp:ModifyDate>"
-            );
+            let _ = write!(xmp, r"      <xmp:ModifyDate>{modify_date}</xmp:ModifyDate>");
             xmp.push('\n');
         }
 
@@ -373,12 +373,10 @@ impl XmpMetadata {
         if let Some(level) = self.pdfa_level {
             xmp.push_str(r#"    <rdf:Description rdf:about="" xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/">"#);
             xmp.push('\n');
-            let _ = write!(xmp, 
-                r"      <pdfaid:part>{}</pdfaid:part>",
-                level.part()
-            );
+            let _ = write!(xmp, r"      <pdfaid:part>{}</pdfaid:part>", level.part());
             xmp.push('\n');
-            let _ = write!(xmp, 
+            let _ = write!(
+                xmp,
                 r"      <pdfaid:conformance>{}</pdfaid:conformance>",
                 level.conformance()
             );
@@ -393,14 +391,16 @@ impl XmpMetadata {
             xmp.push('\n');
 
             if let Some(ref doc_id) = self.document_id {
-                let _ = write!(xmp, 
+                let _ = write!(
+                    xmp,
                     r"      <xmpMM:DocumentID>uuid:{doc_id}</xmpMM:DocumentID>"
                 );
                 xmp.push('\n');
             }
 
             if let Some(ref inst_id) = self.instance_id {
-                let _ = write!(xmp, 
+                let _ = write!(
+                    xmp,
                     r"      <xmpMM:InstanceID>uuid:{inst_id}</xmpMM:InstanceID>"
                 );
                 xmp.push('\n');
@@ -456,7 +456,7 @@ pub struct OutputIntent {
 
 impl OutputIntent {
     /// Create sRGB output intent.
-    #[must_use] 
+    #[must_use]
     pub fn srgb() -> Self {
         Self {
             output_condition: "sRGB IEC61966-2.1".to_string(),
@@ -468,7 +468,7 @@ impl OutputIntent {
     }
 
     /// Create FOGRA39 (coated) output intent for print.
-    #[must_use] 
+    #[must_use]
     pub fn fogra39() -> Self {
         Self {
             output_condition: "FOGRA39".to_string(),
@@ -480,7 +480,7 @@ impl OutputIntent {
     }
 
     /// Create custom output intent with ICC profile.
-    #[must_use] 
+    #[must_use]
     pub fn custom(condition: &str, icc_profile: Vec<u8>) -> Self {
         Self {
             output_condition: condition.to_string(),
@@ -504,7 +504,7 @@ pub struct PdfAValidator {
 
 impl PdfAValidator {
     /// Create a new validator for the specified level.
-    #[must_use] 
+    #[must_use]
     pub const fn new(level: PdfALevel) -> Self {
         Self {
             level,
@@ -785,7 +785,7 @@ pub struct PdfADocument {
 
 impl PdfADocument {
     /// Create a new PDF/A document model.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -930,9 +930,7 @@ fn iso8601_now() -> String {
 
     let day = remaining_days + 1;
 
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
 }
 
 const fn is_leap_year(year: i64) -> bool {

@@ -378,7 +378,11 @@ impl<'a> Validator<'a> {
         Ok(None)
     }
 
-    fn validate_while(&mut self, cond: &Expr, body: &Stmt) -> Result<ReturnSignal, ValidationError> {
+    fn validate_while(
+        &mut self,
+        cond: &Expr,
+        body: &Stmt,
+    ) -> Result<ReturnSignal, ValidationError> {
         let ct = self.validate_expr(cond)?;
         if !matches!(ct, SkslType::Bool) {
             return Err(ValidationError::TypeMismatch {
@@ -575,7 +579,11 @@ impl<'a> Validator<'a> {
         }
     }
 
-    fn validate_assign(&mut self, target: &Expr, value: &Expr) -> Result<SkslType, ValidationError> {
+    fn validate_assign(
+        &mut self,
+        target: &Expr,
+        value: &Expr,
+    ) -> Result<SkslType, ValidationError> {
         if !is_assignable(target) {
             return Err(ValidationError::NotAssignable(format!("{target:?}")));
         }
@@ -679,8 +687,14 @@ impl<'a> Validator<'a> {
                 .apply(&arg_types)
                 .ok_or_else(|| ValidationError::InvalidOperator {
                     op: name.to_string(),
-                    lhs: arg_types.first().map(std::string::ToString::to_string).unwrap_or_default(),
-                    rhs: arg_types.get(1).map(std::string::ToString::to_string).unwrap_or_default(),
+                    lhs: arg_types
+                        .first()
+                        .map(std::string::ToString::to_string)
+                        .unwrap_or_default(),
+                    rhs: arg_types
+                        .get(1)
+                        .map(std::string::ToString::to_string)
+                        .unwrap_or_default(),
                 });
         }
 
@@ -783,7 +797,10 @@ const fn is_integer(ty: &SkslType) -> bool {
 /// Binary op result typing. Returns None when the operator/types pair
 /// is invalid (e.g. `bool + bool`).
 fn result_type_for_binop(op: BinaryOp, lhs: &SkslType, rhs: &SkslType) -> Option<SkslType> {
-    use BinaryOp::{Add, Sub, Mul, Div, Mod, Eq, NotEq, Lt, LtEq, Gt, GtEq, And, Or, BitAnd, BitOr, BitXor, Shl, Shr};
+    use BinaryOp::{
+        Add, And, BitAnd, BitOr, BitXor, Div, Eq, Gt, GtEq, Lt, LtEq, Mod, Mul, NotEq, Or, Shl,
+        Shr, Sub,
+    };
     match op {
         Add | Sub | Mul | Div | Mod => {
             if !is_numeric(lhs) || !is_numeric(rhs) {
@@ -975,7 +992,7 @@ const fn tag_to_type(tag: SkslTypeTag) -> SkslType {
 /// and a rule for computing the return type.
 fn builtin_signature(name: &str) -> Option<(BuiltinArity, BuiltinReturn)> {
     use BuiltinArity::{Exact, Range};
-    use BuiltinReturn::{SameAsFirst, ScalarFromVec, Fixed};
+    use BuiltinReturn::{Fixed, SameAsFirst, ScalarFromVec};
     Some(match name {
         // Component-wise scalar/vector ops: result shape == arg shape.
         "abs" | "sign" | "floor" | "ceil" | "fract" | "sin" | "cos" | "tan" | "asin" | "acos"

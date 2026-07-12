@@ -29,7 +29,7 @@ pub enum TextureFormat {
 
 impl TextureFormat {
     /// Get bytes per pixel.
-    #[must_use] 
+    #[must_use]
     pub const fn bytes_per_pixel(&self) -> u32 {
         match self {
             Self::R8Unorm => 1,
@@ -46,7 +46,7 @@ impl TextureFormat {
     }
 
     /// Convert from `ColorType`.
-    #[must_use] 
+    #[must_use]
     pub const fn from_color_type(color_type: ColorType) -> Option<Self> {
         match color_type {
             ColorType::Rgba8888 => Some(Self::Rgba8Unorm),
@@ -59,13 +59,13 @@ impl TextureFormat {
     }
 
     /// Check if this is a depth format.
-    #[must_use] 
+    #[must_use]
     pub const fn is_depth(&self) -> bool {
         matches!(self, Self::Depth24Stencil8 | Self::Depth32Float)
     }
 
     /// Check if this is an sRGB format.
-    #[must_use] 
+    #[must_use]
     pub const fn is_srgb(&self) -> bool {
         matches!(self, Self::Rgba8UnormSrgb | Self::Bgra8UnormSrgb)
     }
@@ -90,13 +90,13 @@ impl TextureUsage {
     pub const RENDER_TARGET: Self = Self(1 << 4);
 
     /// Check if this usage includes another.
-    #[must_use] 
+    #[must_use]
     pub const fn contains(&self, other: Self) -> bool {
         (self.0 & other.0) == other.0
     }
 
     /// Combine usages.
-    #[must_use] 
+    #[must_use]
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
@@ -133,8 +133,13 @@ pub struct TextureDescriptor {
 
 impl TextureDescriptor {
     /// Create a simple 2D texture descriptor.
-    #[must_use] 
-    pub const fn new_2d(width: u32, height: u32, format: TextureFormat, usage: TextureUsage) -> Self {
+    #[must_use]
+    pub const fn new_2d(
+        width: u32,
+        height: u32,
+        format: TextureFormat,
+        usage: TextureUsage,
+    ) -> Self {
         Self {
             width,
             height,
@@ -155,7 +160,7 @@ impl TextureDescriptor {
     }
 
     /// Set mip level count.
-    #[must_use] 
+    #[must_use]
     pub const fn with_mip_levels(mut self, count: u32) -> Self {
         self.mip_level_count = count;
         self

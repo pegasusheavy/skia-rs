@@ -19,7 +19,7 @@ pub struct Stylesheet {
 
 impl Stylesheet {
     /// Create an empty stylesheet.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self { rules: Vec::new() }
     }
@@ -217,7 +217,7 @@ impl CssSelector {
     }
 
     /// Calculate specificity (ID, class, element counts).
-    #[must_use] 
+    #[must_use]
     pub fn specificity(&self) -> (u32, u32, u32) {
         match self {
             Self::Universal => (0, 0, 0),
@@ -327,7 +327,7 @@ pub struct StyleDeclarations {
 
 impl StyleDeclarations {
     /// Create an empty declaration list.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self { decls: Vec::new() }
     }
@@ -342,7 +342,7 @@ impl StyleDeclarations {
     }
 
     /// Look up a property's value.
-    #[must_use] 
+    #[must_use]
     pub fn get(&self, property: &str) -> Option<&String> {
         self.decls
             .iter()
@@ -356,20 +356,20 @@ impl StyleDeclarations {
     }
 
     /// Number of declarations.
-    #[must_use] 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.decls.len()
     }
 
     /// Whether there are no declarations.
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.decls.is_empty()
     }
 }
 
 /// Parse CSS declarations from a string, preserving document order.
-#[must_use] 
+#[must_use]
 pub fn parse_declarations(s: &str) -> StyleDeclarations {
     let mut declarations = StyleDeclarations::new();
 
@@ -390,7 +390,7 @@ pub fn parse_declarations(s: &str) -> StyleDeclarations {
 }
 
 /// Parse an inline style attribute.
-#[must_use] 
+#[must_use]
 pub fn parse_inline_style(style: &str) -> StyleDeclarations {
     parse_declarations(style)
 }

@@ -23,14 +23,14 @@ pub enum FillType {
 impl FillType {
     /// Check if this is an inverse fill type.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn is_inverse(&self) -> bool {
         matches!(self, Self::InverseWinding | Self::InverseEvenOdd)
     }
 
     /// Convert to the inverse fill type.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn inverse(&self) -> Self {
         match self {
             Self::Winding => Self::InverseWinding,
@@ -62,7 +62,7 @@ pub enum Verb {
 impl Verb {
     /// Number of points consumed by this verb.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn point_count(&self) -> usize {
         match self {
             Self::Move | Self::Line => 1,
@@ -193,7 +193,7 @@ fn record_axis_bound(
 impl Path {
     /// Create a new empty path.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -887,7 +887,8 @@ impl Path {
                             let t = (s - cv) / denom;
                             if t > 0.0 && t < 1.0 {
                                 let mt = 1.0 - t;
-                                let val = (t * t).mul_add(e, (mt * mt).mul_add(s, 2.0 * mt * t * cv));
+                                let val =
+                                    (t * t).mul_add(e, (mt * mt).mul_add(s, 2.0 * mt * t * cv));
                                 record_axis_bound(
                                     axis, val, &mut min_x, &mut max_x, &mut min_y, &mut max_y,
                                 );
@@ -934,7 +935,13 @@ impl Path {
                         for &t in &roots[..n_roots] {
                             if t.is_finite() && t > 0.0 && t < 1.0 {
                                 let mt = 1.0 - t;
-                                let val = (t * t * t).mul_add(e, (3.0 * mt * t * t).mul_add(c2v, (mt * mt * mt).mul_add(s, 3.0 * mt * mt * t * c1v)));
+                                let val = (t * t * t).mul_add(
+                                    e,
+                                    (3.0 * mt * t * t).mul_add(
+                                        c2v,
+                                        (mt * mt * mt).mul_add(s, 3.0 * mt * mt * t * c1v),
+                                    ),
+                                );
                                 record_axis_bound(
                                     axis, val, &mut min_x, &mut max_x, &mut min_y, &mut max_y,
                                 );
@@ -1286,9 +1293,7 @@ fn between(a: Scalar, b: Scalar, c: Scalar) -> bool {
 
 #[inline]
 fn sign_as_int(x: Scalar) -> i32 {
-    if x < 0.0 {
-        -1
-    } else { i32::from(x > 0.0) }
+    if x < 0.0 { -1 } else { i32::from(x > 0.0) }
 }
 
 /// Ported from `checkOnCurve`.

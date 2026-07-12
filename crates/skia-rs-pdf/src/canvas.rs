@@ -122,19 +122,19 @@ impl<'a> PdfCanvas<'a> {
     }
 
     /// Get the width.
-    #[must_use] 
+    #[must_use]
     pub const fn width(&self) -> Scalar {
         self.width
     }
 
     /// Get the height.
-    #[must_use] 
+    #[must_use]
     pub const fn height(&self) -> Scalar {
         self.height
     }
 
     /// Get the object ID.
-    #[must_use] 
+    #[must_use]
     pub const fn object_id(&self) -> u32 {
         self.object_id
     }
@@ -166,7 +166,7 @@ impl<'a> PdfCanvas<'a> {
     }
 
     /// Finish this canvas, returning the page content and used-resource sets.
-    #[must_use] 
+    #[must_use]
     pub fn finish(self) -> PageContent {
         PageContent {
             width: self.width,
@@ -673,7 +673,7 @@ impl<'a> PdfCanvas<'a> {
 /// Handles `(`, `)`, `\\`, and non-printable bytes (mapped to octal
 /// escapes `\ddd`). Newlines and carriage returns get their dedicated
 /// escapes `\n` / `\r` so editors don't rewrap them.
-#[must_use] 
+#[must_use]
 pub fn escape_pdf_string(s: &str) -> String {
     let mut result = String::new();
     for c in s.chars() {
@@ -707,7 +707,7 @@ pub fn escape_pdf_string(s: &str) -> String {
 /// CP1252-specific remapping of the C1 control block, spelled out below.
 /// Anything else (undefined `WinAnsi` slots, or codepoints outside Latin-1)
 /// returns `None`.
-#[must_use] 
+#[must_use]
 pub fn winansi_byte(c: char) -> Option<u8> {
     match c {
         '\u{20}'..='\u{7E}' => Some(c as u8),
@@ -749,7 +749,7 @@ pub fn winansi_byte(c: char) -> Option<u8> {
 /// Byte-oriented counterpart to [`escape_pdf_string`] for text that is not
 /// valid UTF-8 on its own (`WinAnsi` bytes `0x80..=0xFF` don't roundtrip
 /// through `char`).
-#[must_use] 
+#[must_use]
 pub fn escape_pdf_bytes(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     for &b in bytes {
@@ -773,7 +773,7 @@ pub fn escape_pdf_bytes(bytes: &[u8]) -> Vec<u8> {
 
 /// Encode a UTF-8 string as an uppercase hex UTF-16BE literal with a BOM,
 /// for use inside a PDF hex-string `<FEFF...>`.
-#[must_use] 
+#[must_use]
 pub fn utf16be_hex(s: &str) -> String {
     let mut out = String::with_capacity(4 + s.len() * 4);
     // UTF-16BE BOM

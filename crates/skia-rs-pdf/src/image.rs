@@ -23,7 +23,7 @@ pub enum PdfColorSpace {
 
 impl PdfColorSpace {
     /// Get PDF name.
-    #[must_use] 
+    #[must_use]
     pub const fn pdf_name(&self) -> &'static str {
         match self {
             Self::DeviceGray => "DeviceGray",
@@ -34,7 +34,7 @@ impl PdfColorSpace {
     }
 
     /// Get number of components.
-    #[must_use] 
+    #[must_use]
     pub const fn components(&self) -> u8 {
         match self {
             Self::DeviceGray | Self::Indexed => 1,
@@ -61,7 +61,7 @@ pub enum PdfImageFilter {
 
 impl PdfImageFilter {
     /// Get PDF filter name.
-    #[must_use] 
+    #[must_use]
     pub const fn pdf_name(&self) -> Option<&'static str> {
         match self {
             Self::None => None,
@@ -202,7 +202,7 @@ impl PdfImage {
     }
 
     /// Create an image from JPEG data (pass-through, no re-encoding).
-    #[must_use] 
+    #[must_use]
     pub fn from_jpeg(width: u32, height: u32, jpeg_data: Vec<u8>) -> Self {
         // Detect color space from JPEG header
         let color_space = detect_jpeg_color_space(&jpeg_data);
@@ -227,7 +227,7 @@ impl PdfImage {
     }
 
     /// Generate the image `XObject` PDF dictionary.
-    #[must_use] 
+    #[must_use]
     pub fn to_pdf_xobject(&self, id: u32) -> Vec<u8> {
         let mut output = Vec::new();
 
@@ -289,14 +289,15 @@ fn detect_jpeg_color_space(data: &[u8]) -> PdfColorSpace {
                 && marker != 0xC4
                 && marker != 0xC8
                 && marker != 0xCC
-                && i + 9 < data.len() {
-                    let num_components = data[i + 9];
-                    return match num_components {
-                        1 => PdfColorSpace::DeviceGray,
-                        4 => PdfColorSpace::DeviceCMYK,
-                        _ => PdfColorSpace::DeviceRGB,
-                    };
-                }
+                && i + 9 < data.len()
+            {
+                let num_components = data[i + 9];
+                return match num_components {
+                    1 => PdfColorSpace::DeviceGray,
+                    4 => PdfColorSpace::DeviceCMYK,
+                    _ => PdfColorSpace::DeviceRGB,
+                };
+            }
 
             // Skip marker
             if i + 3 < data.len() && marker != 0xD8 && marker != 0xD9 {
@@ -322,7 +323,7 @@ pub struct PdfImageManager {
 
 impl PdfImageManager {
     /// Create a new image manager.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -367,7 +368,7 @@ impl PdfImageManager {
     }
 
     /// Get image by index.
-    #[must_use] 
+    #[must_use]
     pub fn get(&self, index: usize) -> Option<&PdfImage> {
         self.images.get(index)
     }
@@ -378,7 +379,7 @@ impl PdfImageManager {
     }
 
     /// Get all images.
-    #[must_use] 
+    #[must_use]
     pub fn images(&self) -> &[PdfImage] {
         &self.images
     }
@@ -389,13 +390,13 @@ impl PdfImageManager {
     }
 
     /// Get number of images.
-    #[must_use] 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.images.len()
     }
 
     /// Check if empty.
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.images.is_empty()
     }

@@ -91,7 +91,7 @@ pub enum UniformType {
 
 impl UniformType {
     /// Get the size in bytes.
-    #[must_use] 
+    #[must_use]
     pub const fn size_bytes(&self) -> usize {
         match self {
             Self::Float | Self::Int => 4,
@@ -104,7 +104,7 @@ impl UniformType {
     }
 
     /// Get the number of floats/ints.
-    #[must_use] 
+    #[must_use]
     pub const fn slot_count(&self) -> usize {
         match self {
             Self::Float | Self::Int => 1,
@@ -117,7 +117,7 @@ impl UniformType {
     }
 
     /// Check if this is a float type.
-    #[must_use] 
+    #[must_use]
     pub const fn is_float(&self) -> bool {
         matches!(
             self,
@@ -465,7 +465,9 @@ impl RuntimeEffect {
 
         // Uniforms
         for uniform in &self.uniforms {
-            let _ = writeln!(output, "uniform {} {};",
+            let _ = writeln!(
+                output,
+                "uniform {} {};",
                 Self::type_to_glsl(uniform.ty),
                 uniform.name
             );
@@ -658,7 +660,11 @@ impl RuntimeEffect {
                 format!("{}.{}", Self::expr_to_glsl(expr), field)
             }
             Expr::Index { expr, index } => {
-                format!("{}[{}]", Self::expr_to_glsl(expr), Self::expr_to_glsl(index))
+                format!(
+                    "{}[{}]",
+                    Self::expr_to_glsl(expr),
+                    Self::expr_to_glsl(index)
+                )
             }
             Expr::Ternary {
                 cond,
@@ -712,7 +718,9 @@ impl RuntimeEffect {
         if !self.uniforms.is_empty() {
             output.push_str("struct Uniforms {\n");
             for uniform in &self.uniforms {
-                let _ = writeln!(output, "    {}: {},",
+                let _ = writeln!(
+                    output,
+                    "    {}: {},",
                     uniform.name,
                     Self::type_to_wgsl(uniform.ty)
                 );
@@ -774,7 +782,9 @@ impl RuntimeEffect {
         if !scalar_uniforms.is_empty() {
             output.push_str("struct Uniforms {\n");
             for uniform in &scalar_uniforms {
-                let _ = writeln!(output, "    {}: {},",
+                let _ = writeln!(
+                    output,
+                    "    {}: {},",
                     uniform.name,
                     Self::type_to_wgsl(uniform.ty)
                 );
@@ -845,7 +855,9 @@ impl RuntimeEffect {
             // explicit constructor if needed.
             let returns_half = matches!(main.return_type, SkslType::Half4);
             if returns_half {
-                let _ = writeln!(output, "    return vec4<f32>(main({}));",
+                let _ = writeln!(
+                    output,
+                    "    return vec4<f32>(main({}));",
                     call_args.join(", ")
                 );
             } else {
@@ -956,7 +968,9 @@ impl RuntimeEffect {
             }
             Stmt::While { cond, body } => {
                 let mut output = format!("{ind}loop {{\n");
-                let _ = writeln!(output, "{}    if (!{}) {{ break; }}",
+                let _ = writeln!(
+                    output,
+                    "{}    if (!{}) {{ break; }}",
                     ind,
                     Self::expr_to_wgsl(cond)
                 );
@@ -979,7 +993,9 @@ impl RuntimeEffect {
                 } else {
                     output.push_str(&Self::stmt_to_wgsl(body, indent + 1));
                 }
-                let _ = writeln!(output, "{}    if (!{}) {{ break; }}",
+                let _ = writeln!(
+                    output,
+                    "{}    if (!{}) {{ break; }}",
                     ind,
                     Self::expr_to_wgsl(cond)
                 );
@@ -1045,7 +1061,11 @@ impl RuntimeEffect {
                 format!("{}.{}", Self::expr_to_wgsl(expr), field)
             }
             Expr::Index { expr, index } => {
-                format!("{}[{}]", Self::expr_to_wgsl(expr), Self::expr_to_wgsl(index))
+                format!(
+                    "{}[{}]",
+                    Self::expr_to_wgsl(expr),
+                    Self::expr_to_wgsl(index)
+                )
             }
             Expr::Ternary {
                 cond,
@@ -1102,7 +1122,9 @@ impl RuntimeEffect {
         if !self.uniforms.is_empty() {
             output.push_str("struct Uniforms {\n");
             for uniform in &self.uniforms {
-                let _ = writeln!(output, "    {} {};",
+                let _ = writeln!(
+                    output,
+                    "    {} {};",
                     Self::type_to_msl(uniform.ty),
                     uniform.name
                 );
@@ -1378,7 +1400,9 @@ impl RuntimeEffect {
         match uniform.ty {
             UniformType::Float => SkslValue::Float(read_scalar(o)),
             UniformType::Float2 => SkslValue::Vec2([read_scalar(o), read_scalar(o + 4)]),
-            UniformType::Float3 => SkslValue::Vec3([read_scalar(o), read_scalar(o + 4), read_scalar(o + 8)]),
+            UniformType::Float3 => {
+                SkslValue::Vec3([read_scalar(o), read_scalar(o + 4), read_scalar(o + 8)])
+            }
             UniformType::Float4 => SkslValue::Vec4([
                 read_scalar(o),
                 read_scalar(o + 4),
@@ -1409,7 +1433,10 @@ impl RuntimeEffect {
             UniformType::Int => SkslValue::Int(read_int(o)),
             UniformType::Int2 => {
                 // No vec2<i32> in the interpreter — fall back to float vec.
-                SkslValue::Vec2([scalar_from_i32(read_int(o)), scalar_from_i32(read_int(o + 4))])
+                SkslValue::Vec2([
+                    scalar_from_i32(read_int(o)),
+                    scalar_from_i32(read_int(o + 4)),
+                ])
             }
             UniformType::Int3 => SkslValue::Vec3([
                 scalar_from_i32(read_int(o)),
@@ -1630,7 +1657,7 @@ pub struct UniformData {
 
 impl UniformData {
     /// Create new uniform data with specified size.
-    #[must_use] 
+    #[must_use]
     pub fn new(size: usize) -> Self {
         Self {
             data: vec![0u8; size],
@@ -1694,7 +1721,7 @@ impl UniformData {
     }
 
     /// Get the raw data.
-    #[must_use] 
+    #[must_use]
     pub fn data(&self) -> &[u8] {
         &self.data
     }
@@ -1710,19 +1737,19 @@ pub struct RuntimeShader {
 
 impl RuntimeShader {
     /// Get the effect.
-    #[must_use] 
+    #[must_use]
     pub fn effect(&self) -> &RuntimeEffect {
         &self.effect
     }
 
     /// Get the uniforms.
-    #[must_use] 
+    #[must_use]
     pub const fn uniforms(&self) -> &UniformData {
         &self.uniforms
     }
 
     /// Get the children.
-    #[must_use] 
+    #[must_use]
     pub fn children(&self) -> &[Arc<dyn Shader>] {
         &self.children
     }
@@ -1766,19 +1793,19 @@ pub struct RuntimeColorFilter {
 
 impl RuntimeColorFilter {
     /// Get the effect.
-    #[must_use] 
+    #[must_use]
     pub fn effect(&self) -> &RuntimeEffect {
         &self.effect
     }
 
     /// Get the uniforms.
-    #[must_use] 
+    #[must_use]
     pub const fn uniforms(&self) -> &UniformData {
         &self.uniforms
     }
 
     /// Filter a color.
-    #[must_use] 
+    #[must_use]
     pub fn filter_color(&self, color: Color4f) -> Color4f {
         // Software fallback: run the SkSL interpreter on the parsed program.
         // Runtime color filters follow `half4 main(half4 color)`; we pass the
@@ -2077,10 +2104,7 @@ mod tests {
             msl.contains("float4"),
             "MSL should use float4 instead of vec4: {msl}"
         );
-        assert!(
-            !msl.contains("vec4"),
-            "MSL should not contain vec4: {msl}"
-        );
+        assert!(!msl.contains("vec4"), "MSL should not contain vec4: {msl}");
     }
 
     #[test]

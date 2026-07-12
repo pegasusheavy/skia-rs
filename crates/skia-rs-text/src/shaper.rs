@@ -90,25 +90,25 @@ pub struct Language(pub String);
 
 impl Language {
     /// English.
-    #[must_use] 
+    #[must_use]
     pub fn english() -> Self {
         Self("en".to_string())
     }
 
     /// Arabic.
-    #[must_use] 
+    #[must_use]
     pub fn arabic() -> Self {
         Self("ar".to_string())
     }
 
     /// Chinese (Simplified).
-    #[must_use] 
+    #[must_use]
     pub fn chinese_simplified() -> Self {
         Self("zh-Hans".to_string())
     }
 
     /// Japanese.
-    #[must_use] 
+    #[must_use]
     pub fn japanese() -> Self {
         Self("ja".to_string())
     }
@@ -122,7 +122,7 @@ pub struct Features {
 
 impl Features {
     /// Create empty feature set.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -140,14 +140,14 @@ impl Features {
     }
 
     /// Enable kerning.
-    #[must_use] 
+    #[must_use]
     pub fn with_kerning(mut self) -> Self {
         self.enable("kern");
         self
     }
 
     /// Enable ligatures.
-    #[must_use] 
+    #[must_use]
     pub fn with_ligatures(mut self) -> Self {
         self.enable("liga");
         self
@@ -168,7 +168,7 @@ impl Default for Shaper {
 
 impl Shaper {
     /// Create a new shaper.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self { font_db: None }
     }
@@ -189,7 +189,7 @@ impl Shaper {
     }
 
     /// Shape text with the given font.
-    #[must_use] 
+    #[must_use]
     pub fn shape(
         &self,
         text: &str,
@@ -264,7 +264,7 @@ impl Shaper {
     }
 
     /// Shape text with automatic script and direction detection.
-    #[must_use] 
+    #[must_use]
     pub fn shape_auto(&self, text: &str, font: &Font) -> Option<Vec<ShapedRun>> {
         // Detect direction and script
         let direction = detect_direction(text);
@@ -375,7 +375,7 @@ pub struct ParagraphLine {
 
 impl ParagraphLayout {
     /// Lay out text within a given width.
-    #[must_use] 
+    #[must_use]
     pub fn layout(text: &str, font: &Font, max_width: Scalar, shaper: &Shaper) -> Option<Self> {
         let runs = shaper.shape_auto(text, font)?;
         let line_height = font.spacing();
@@ -410,9 +410,9 @@ impl ParagraphLayout {
         }
 
         let width = lines.iter().map(|l| l.width).fold(0.0f32, f32::max);
-        let height = skia_rs_core::cast::scalar_from_i32(
-            i32::try_from(lines.len()).unwrap_or(i32::MAX),
-        ) * line_height;
+        let height =
+            skia_rs_core::cast::scalar_from_i32(i32::try_from(lines.len()).unwrap_or(i32::MAX))
+                * line_height;
 
         Some(Self {
             lines,

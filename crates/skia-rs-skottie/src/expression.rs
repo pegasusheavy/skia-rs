@@ -10,8 +10,7 @@ use skia_rs_core::Scalar;
 use std::collections::HashMap;
 
 /// Expression value types.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub enum Value {
     /// Numeric value.
     Number(Scalar),
@@ -28,7 +27,7 @@ pub enum Value {
 
 impl Value {
     /// Get as number.
-    #[must_use] 
+    #[must_use]
     pub const fn as_number(&self) -> Option<Scalar> {
         match self {
             Self::Number(n) => Some(*n),
@@ -38,7 +37,7 @@ impl Value {
     }
 
     /// Get as bool.
-    #[must_use] 
+    #[must_use]
     pub fn as_bool(&self) -> bool {
         match self {
             Self::Bool(b) => *b,
@@ -50,7 +49,7 @@ impl Value {
     }
 
     /// Get as array.
-    #[must_use] 
+    #[must_use]
     pub fn as_array(&self) -> Option<&[Scalar]> {
         match self {
             Self::Array(a) => Some(a),
@@ -58,7 +57,6 @@ impl Value {
         }
     }
 }
-
 
 /// Expression evaluation context.
 #[derive(Debug, Default)]
@@ -81,7 +79,7 @@ pub struct ExpressionContext {
 
 impl ExpressionContext {
     /// Create a new expression context.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -105,7 +103,7 @@ impl ExpressionContext {
     }
 
     /// Get a variable.
-    #[must_use] 
+    #[must_use]
     pub fn get_variable(&self, name: &str) -> Option<&Value> {
         self.variables.get(name)
     }
@@ -116,7 +114,7 @@ impl ExpressionContext {
     }
 
     /// Get a cached property.
-    #[must_use] 
+    #[must_use]
     pub fn get_cached_property(&self, path: &str) -> Option<&Value> {
         self.property_cache.get(path)
     }
@@ -131,7 +129,7 @@ pub struct ExpressionEvaluator {
 
 impl ExpressionEvaluator {
     /// Create a new evaluator.
-    #[must_use] 
+    #[must_use]
     pub fn new(source: &str) -> Self {
         Self {
             source: source.to_string(),
@@ -139,7 +137,7 @@ impl ExpressionEvaluator {
     }
 
     /// Evaluate the expression.
-    #[must_use] 
+    #[must_use]
     pub fn evaluate(&self, ctx: &ExpressionContext) -> Value {
         // Simple expression parser
         let source = self.source.trim();
@@ -314,21 +312,11 @@ impl ExpressionEvaluator {
             // Lottie-specific functions
             "linear" => {
                 if args.len() >= 5 {
-                    let t = Self::new(args[0])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let t_min = Self::new(args[1])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let t_max = Self::new(args[2])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let v_min = Self::new(args[3])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let v_max = Self::new(args[4])
-                        .evaluate(ctx)
-                        .as_number()?;
+                    let t = Self::new(args[0]).evaluate(ctx).as_number()?;
+                    let t_min = Self::new(args[1]).evaluate(ctx).as_number()?;
+                    let t_max = Self::new(args[2]).evaluate(ctx).as_number()?;
+                    let v_min = Self::new(args[3]).evaluate(ctx).as_number()?;
+                    let v_max = Self::new(args[4]).evaluate(ctx).as_number()?;
 
                     let normalized = (t - t_min) / (t_max - t_min);
                     let clamped = normalized.clamp(0.0, 1.0);
@@ -339,21 +327,11 @@ impl ExpressionEvaluator {
             }
             "ease" | "easeIn" | "easeOut" | "easeInOut" => {
                 if args.len() >= 5 {
-                    let t = Self::new(args[0])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let t_min = Self::new(args[1])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let t_max = Self::new(args[2])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let v_min = Self::new(args[3])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let v_max = Self::new(args[4])
-                        .evaluate(ctx)
-                        .as_number()?;
+                    let t = Self::new(args[0]).evaluate(ctx).as_number()?;
+                    let t_min = Self::new(args[1]).evaluate(ctx).as_number()?;
+                    let t_max = Self::new(args[2]).evaluate(ctx).as_number()?;
+                    let v_min = Self::new(args[3]).evaluate(ctx).as_number()?;
+                    let v_max = Self::new(args[4]).evaluate(ctx).as_number()?;
 
                     let normalized = ((t - t_min) / (t_max - t_min)).clamp(0.0, 1.0);
                     let eased = match name {
@@ -375,15 +353,9 @@ impl ExpressionEvaluator {
             }
             "clamp" => {
                 if args.len() >= 3 {
-                    let value = Self::new(args[0])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let min = Self::new(args[1])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let max = Self::new(args[2])
-                        .evaluate(ctx)
-                        .as_number()?;
+                    let value = Self::new(args[0]).evaluate(ctx).as_number()?;
+                    let min = Self::new(args[1]).evaluate(ctx).as_number()?;
+                    let max = Self::new(args[2]).evaluate(ctx).as_number()?;
                     Some(Value::Number(value.clamp(min, max)))
                 } else {
                     None
@@ -394,25 +366,20 @@ impl ExpressionEvaluator {
                 let seed = if args.is_empty() {
                     ctx.time
                 } else {
-                    Self::new(args[0])
-                        .evaluate(ctx)
-                        .as_number()
-                        .unwrap_or(0.0)
+                    Self::new(args[0]).evaluate(ctx).as_number().unwrap_or(0.0)
                 };
                 Some(Value::Number(pseudo_random(seed)))
             }
             "wiggle" => {
                 if args.len() >= 2 {
-                    let freq = Self::new(args[0])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let amp = Self::new(args[1])
-                        .evaluate(ctx)
-                        .as_number()?;
+                    let freq = Self::new(args[0]).evaluate(ctx).as_number()?;
+                    let amp = Self::new(args[1]).evaluate(ctx).as_number()?;
 
                     // Simple wiggle approximation
                     let t = ctx.time * freq;
-                    let noise = (t * 5.7).sin().mul_add(0.2, t.sin().mul_add(0.5, (t * 2.3).cos() * 0.3));
+                    let noise = (t * 5.7)
+                        .sin()
+                        .mul_add(0.2, t.sin().mul_add(0.5, (t * 2.3).cos() * 0.3));
                     Some(Value::Number(noise * amp))
                 } else {
                     None
@@ -467,7 +434,7 @@ pub struct ExpressionCompiler {
 
 impl ExpressionCompiler {
     /// Create a new compiler.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -494,7 +461,7 @@ pub struct CompiledExpression {
 
 impl CompiledExpression {
     /// Create a new compiled expression.
-    #[must_use] 
+    #[must_use]
     pub fn new(source: &str) -> Self {
         Self {
             evaluator: ExpressionEvaluator::new(source),
@@ -502,7 +469,7 @@ impl CompiledExpression {
     }
 
     /// Evaluate the expression.
-    #[must_use] 
+    #[must_use]
     pub fn evaluate(&self, ctx: &ExpressionContext) -> Value {
         self.evaluator.evaluate(ctx)
     }

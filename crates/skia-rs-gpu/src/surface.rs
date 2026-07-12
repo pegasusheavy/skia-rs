@@ -32,7 +32,7 @@ impl Default for GpuSurfaceProps {
 
 impl GpuSurfaceProps {
     /// Create new surface properties.
-    #[must_use] 
+    #[must_use]
     pub fn new(width: u32, height: u32) -> Self {
         Self {
             width,
@@ -42,21 +42,21 @@ impl GpuSurfaceProps {
     }
 
     /// Set format.
-    #[must_use] 
+    #[must_use]
     pub const fn with_format(mut self, format: TextureFormat) -> Self {
         self.format = format;
         self
     }
 
     /// Set sample count.
-    #[must_use] 
+    #[must_use]
     pub const fn with_sample_count(mut self, count: u32) -> Self {
         self.sample_count = count;
         self
     }
 
     /// Enable sRGB.
-    #[must_use] 
+    #[must_use]
     pub const fn with_srgb(mut self, srgb: bool) -> Self {
         self.srgb = srgb;
         self
@@ -113,7 +113,7 @@ impl Default for RenderPassDescriptor {
 
 impl RenderPassDescriptor {
     /// Create with no clearing.
-    #[must_use] 
+    #[must_use]
     pub const fn no_clear() -> Self {
         Self {
             clear_color: None,
@@ -123,7 +123,7 @@ impl RenderPassDescriptor {
     }
 
     /// Create with color clear only.
-    #[must_use] 
+    #[must_use]
     pub const fn color_clear(r: f32, g: f32, b: f32, a: f32) -> Self {
         Self {
             clear_color: Some([r, g, b, a]),

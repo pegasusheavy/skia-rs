@@ -63,7 +63,7 @@ impl Default for StrokeParams {
 
 impl StrokeParams {
     /// Create new stroke parameters.
-    #[must_use] 
+    #[must_use]
     pub fn new(width: Scalar) -> Self {
         Self {
             width,
@@ -72,21 +72,21 @@ impl StrokeParams {
     }
 
     /// Set the stroke cap.
-    #[must_use] 
+    #[must_use]
     pub const fn with_cap(mut self, cap: StrokeCap) -> Self {
         self.cap = cap;
         self
     }
 
     /// Set the stroke join.
-    #[must_use] 
+    #[must_use]
     pub const fn with_join(mut self, join: StrokeJoin) -> Self {
         self.join = join;
         self
     }
 
     /// Set the miter limit.
-    #[must_use] 
+    #[must_use]
     pub const fn with_miter_limit(mut self, limit: Scalar) -> Self {
         self.miter_limit = limit;
         self
@@ -653,13 +653,19 @@ mod tests {
             .with_join(StrokeJoin::Bevel)
             .with_miter_limit(10.0);
 
-        #[allow(clippy::float_cmp, reason = "exact test assertion, values round-trip literals")]
+        #[allow(
+            clippy::float_cmp,
+            reason = "exact test assertion, values round-trip literals"
+        )]
         {
             assert_eq!(params.width, 2.0);
         }
         assert_eq!(params.cap, StrokeCap::Round);
         assert_eq!(params.join, StrokeJoin::Bevel);
-        #[allow(clippy::float_cmp, reason = "exact test assertion, values round-trip literals")]
+        #[allow(
+            clippy::float_cmp,
+            reason = "exact test assertion, values round-trip literals"
+        )]
         {
             assert_eq!(params.miter_limit, 10.0);
         }

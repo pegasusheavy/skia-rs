@@ -324,8 +324,9 @@ impl<'a> Canvas<'a> {
                 scalar_from_i32(self.height),
             );
             let clip_bounds = self.clip_stack.bounds();
-            let hinted =
-                bounds.map_or(Some(clip_bounds), |b| ctm.map_rect(&b).intersect(&clip_bounds));
+            let hinted = bounds.map_or(Some(clip_bounds), |b| {
+                ctm.map_rect(&b).intersect(&clip_bounds)
+            });
             let device_rect = hinted
                 .and_then(|r| r.intersect(&device_full))
                 .map_or_else(|| IRect::new(0, 0, 0, 0), |r| r.round());
@@ -691,8 +692,12 @@ impl<'a> Canvas<'a> {
         // Fast path: full-device rect clip and no layer — bulk clear.
         if self.layer_stack.is_empty() {
             use skia_rs_core::cast::scalar_from_i32;
-            let full =
-                Rect::from_xywh(0.0, 0.0, scalar_from_i32(self.width), scalar_from_i32(self.height));
+            let full = Rect::from_xywh(
+                0.0,
+                0.0,
+                scalar_from_i32(self.width),
+                scalar_from_i32(self.height),
+            );
             if let crate::clip::ClipState::Rect(r) = self.clip_stack.current() {
                 if r.left <= full.left
                     && r.top <= full.top

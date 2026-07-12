@@ -60,7 +60,7 @@ impl ComparisonResult {
     }
 
     /// Format the ratio as a human-readable string.
-    #[must_use] 
+    #[must_use]
     pub fn format_ratio(&self) -> String {
         match self.ratio {
             Some(r) if r < 1.0 => format!("{:.1}x faster", 1.0 / r),
@@ -86,7 +86,7 @@ pub struct ComparisonReport {
 
 impl ComparisonReport {
     /// Create a new report.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         let mut report = Self::default();
         report.metadata.insert(
@@ -139,7 +139,8 @@ impl ComparisonReport {
         for result in &self.results {
             let skia_rs = format_duration(result.skia_rs_time);
             let skia = result
-                .skia_time.map_or_else(|| "-".to_string(), format_duration);
+                .skia_time
+                .map_or_else(|| "-".to_string(), format_duration);
             let ratio = result.format_ratio();
 
             let _ = writeln!(
@@ -215,7 +216,7 @@ impl ComparisonReport {
     }
 
     /// Convert to JSON string.
-    #[must_use] 
+    #[must_use]
     pub fn to_json(&self) -> String {
         let mut json = String::from("{\n");
 
@@ -286,7 +287,7 @@ impl Default for BenchmarkRunner {
 
 impl BenchmarkRunner {
     /// Create a new runner with default settings.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             iterations: 100,
@@ -295,14 +296,14 @@ impl BenchmarkRunner {
     }
 
     /// Set the number of iterations.
-    #[must_use] 
+    #[must_use]
     pub const fn iterations(mut self, n: usize) -> Self {
         self.iterations = n;
         self
     }
 
     /// Set the number of warmup iterations.
-    #[must_use] 
+    #[must_use]
     pub const fn warmup(mut self, n: usize) -> Self {
         self.warmup_iterations = n;
         self
@@ -361,12 +362,12 @@ impl BenchmarkRunner {
 ///
 /// Note: These should be updated based on actual Skia benchmark runs.
 pub mod reference_timings {
-    use super::{Duration, Path, HashMap, fs};
+    use super::{Duration, HashMap, Path, fs};
 
     /// Get reference timing for an operation.
     ///
     /// Returns None if no reference timing is available.
-    #[must_use] 
+    #[must_use]
     pub fn get(operation: &str) -> Option<Duration> {
         // These are placeholder values - should be replaced with
         // actual benchmark results from original Skia

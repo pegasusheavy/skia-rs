@@ -31,21 +31,21 @@ pub struct AnimatedImage {
 impl AnimatedImage {
     /// Returns the animation canvas size as `(width, height)`.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn canvas_dimensions(&self) -> (i32, i32) {
         (self.canvas_width, self.canvas_height)
     }
 
     /// Returns the number of frames.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn frame_count(&self) -> usize {
         self.frames.len()
     }
 
     /// Returns `true` if the animation has no frames.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.frames.is_empty()
     }
@@ -53,14 +53,14 @@ impl AnimatedImage {
     /// Sum of all per-frame delays. Useful for UI "total duration"
     /// displays. Note this is the sum for a single play-through — it does
     /// not account for `loop_count`.
-    #[must_use] 
+    #[must_use]
     pub fn total_duration(&self) -> Duration {
         self.frames.iter().map(|f| f.delay).sum()
     }
 
     /// Borrow a frame by index.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn frame(&self, index: usize) -> Option<&AnimationFrame> {
         self.frames.get(index)
     }

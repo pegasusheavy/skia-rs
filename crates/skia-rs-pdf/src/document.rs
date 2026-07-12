@@ -93,7 +93,7 @@ impl Default for PdfDocument {
 
 impl PdfDocument {
     /// Create a new PDF document.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             metadata: PdfMetadata::default(),
@@ -131,7 +131,7 @@ impl PdfDocument {
     }
 
     /// Return the active PDF/A level, if any.
-    #[must_use] 
+    #[must_use]
     pub fn pdfa_level(&self) -> Option<PdfALevel> {
         self.pdfa.as_ref().map(|s| s.level)
     }
@@ -215,7 +215,7 @@ impl PdfDocument {
     }
 
     /// Get the number of pages.
-    #[must_use] 
+    #[must_use]
     pub fn page_count(&self) -> usize {
         self.pages.len()
     }
@@ -290,8 +290,8 @@ impl PdfDocument {
 
         // Transparency: any ExtGState with alpha < 1 or non-Normal blend.
         for gs in self.transparency.ext_gstates() {
-            let has_alpha = gs.fill_alpha.is_some_and(|a| a < 1.0)
-                || gs.stroke_alpha.is_some_and(|a| a < 1.0);
+            let has_alpha =
+                gs.fill_alpha.is_some_and(|a| a < 1.0) || gs.stroke_alpha.is_some_and(|a| a < 1.0);
             let has_blend = gs
                 .blend_mode
                 .is_some_and(|m| m != crate::transparency::PdfBlendMode::Normal);
@@ -1021,10 +1021,7 @@ mod tests {
             s.contains("/XObject << /Im1"),
             "missing /XObject in Resources: {s}"
         );
-        assert!(
-            s.contains("/ExtGState << /GS1"),
-            "missing /ExtGState: {s}"
-        );
+        assert!(s.contains("/ExtGState << /GS1"), "missing /ExtGState: {s}");
         assert!(s.contains("/Subtype /Image"));
         assert!(s.contains("/Type /ExtGState"));
     }

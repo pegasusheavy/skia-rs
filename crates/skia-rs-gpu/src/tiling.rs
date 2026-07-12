@@ -62,7 +62,7 @@ pub struct TileInstance {
 }
 
 /// Generate tile instances for a given area.
-#[must_use] 
+#[must_use]
 pub fn generate_tiles(
     image_width: u32,
     image_height: u32,
@@ -184,7 +184,7 @@ fn axis_slots(
 }
 
 /// Calculate UV transform matrix for tiled rendering.
-#[must_use] 
+#[must_use]
 pub fn calculate_uv_transform(image_width: u32, image_height: u32, config: &TileConfig) -> Matrix {
     let scale_x =
         config.dest_rect.width() / (config.source_rect.width() * scalar_from_u32(image_width));
@@ -212,7 +212,7 @@ pub struct NinePatch {
 
 impl NinePatch {
     /// Create a new nine-patch configuration.
-    #[must_use] 
+    #[must_use]
     pub const fn new(left: f32, top: f32, right: f32, bottom: f32) -> Self {
         Self {
             left,
@@ -223,7 +223,7 @@ impl NinePatch {
     }
 
     /// Create a uniform nine-patch (same inset on all sides).
-    #[must_use] 
+    #[must_use]
     pub const fn uniform(inset: f32) -> Self {
         Self::new(inset, inset, inset, inset)
     }
@@ -400,7 +400,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp, reason = "exact literal values, no accumulated error")]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact literal values, no accumulated error"
+    )]
     fn test_mixed_tile_modes_repeat_x_clamp_y() {
         // Regression: a Clamp axis must NOT tile. With Repeat in X and Clamp
         // in Y, all tiles share one row: same y position and full dest height.
@@ -462,7 +465,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp, reason = "exact literal values, no accumulated error")]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact literal values, no accumulated error"
+    )]
     fn test_tile_instance() {
         let tile = TileInstance {
             position: Point::new(10.0, 20.0),

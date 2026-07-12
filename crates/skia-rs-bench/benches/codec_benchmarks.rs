@@ -146,9 +146,13 @@ fn bench_png_decode(c: &mut Criterion) {
         let decoder = PngDecoder::new();
 
         group.throughput(Throughput::Bytes(encoded_bytes.len() as u64));
-        group.bench_with_input(BenchmarkId::new("decode", name), &encoded_bytes, |b, encoded| {
-            b.iter(|| decoder.decode_bytes(black_box(encoded)).unwrap());
-        });
+        group.bench_with_input(
+            BenchmarkId::new("decode", name),
+            &encoded_bytes,
+            |b, encoded| {
+                b.iter(|| decoder.decode_bytes(black_box(encoded)).unwrap());
+            },
+        );
     }
 
     group.finish();
@@ -203,9 +207,13 @@ fn bench_jpeg_decode(c: &mut Criterion) {
         let decoder = JpegDecoder::new();
 
         group.throughput(Throughput::Bytes(encoded_bytes.len() as u64));
-        group.bench_with_input(BenchmarkId::new("decode", name), &encoded_bytes, |b, encoded| {
-            b.iter(|| decoder.decode_bytes(black_box(encoded)).unwrap());
-        });
+        group.bench_with_input(
+            BenchmarkId::new("decode", name),
+            &encoded_bytes,
+            |b, encoded| {
+                b.iter(|| decoder.decode_bytes(black_box(encoded)).unwrap());
+            },
+        );
     }
 
     group.finish();

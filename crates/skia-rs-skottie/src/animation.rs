@@ -3,10 +3,10 @@
 //! This module provides the main `Animation` type for loading and
 //! rendering Lottie animations.
 
+use crate::Result;
 use crate::layers::{Layer, LayerContent};
 use crate::model::LottieModel;
 use crate::render::RenderContext;
-use crate::Result;
 use skia_rs_core::{Matrix, Rect, Scalar};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -157,79 +157,79 @@ impl Animation {
     }
 
     /// Get the animation name.
-    #[must_use] 
+    #[must_use]
     pub fn name(&self) -> &str {
         &self.name
     }
 
     /// Get the Lottie format version.
-    #[must_use] 
+    #[must_use]
     pub fn version(&self) -> &str {
         &self.version
     }
 
     /// Get the animation width.
-    #[must_use] 
+    #[must_use]
     pub const fn width(&self) -> Scalar {
         self.width
     }
 
     /// Get the animation height.
-    #[must_use] 
+    #[must_use]
     pub const fn height(&self) -> Scalar {
         self.height
     }
 
     /// Get the frame rate (fps).
-    #[must_use] 
+    #[must_use]
     pub const fn fps(&self) -> Scalar {
         self.frame_rate
     }
 
     /// Get the in point (first frame).
-    #[must_use] 
+    #[must_use]
     pub const fn in_point(&self) -> Scalar {
         self.in_point
     }
 
     /// Get the out point (last frame).
-    #[must_use] 
+    #[must_use]
     pub const fn out_point(&self) -> Scalar {
         self.out_point
     }
 
     /// Get the total number of frames.
-    #[must_use] 
+    #[must_use]
     pub fn total_frames(&self) -> Scalar {
         self.out_point - self.in_point
     }
 
     /// Get the duration in seconds.
-    #[must_use] 
+    #[must_use]
     pub fn duration(&self) -> Scalar {
         self.total_frames() / self.frame_rate
     }
 
     /// Get the current frame.
-    #[must_use] 
+    #[must_use]
     pub const fn current_frame(&self) -> Scalar {
         self.current_frame
     }
 
     /// Get the bounding rect.
-    #[must_use] 
+    #[must_use]
     pub const fn bounds(&self) -> Rect {
         Rect::from_xywh(0.0, 0.0, self.width, self.height)
     }
 
     /// Get the layers.
-    #[must_use] 
+    #[must_use]
     pub fn layers(&self) -> &[Layer] {
         &self.layers
     }
 
     /// Get an asset by ID.
-    #[must_use] 
+    #[must_use]
     pub fn asset(&self, id: &str) -> Option<&Asset> {
         self.assets.get(id)
     }
@@ -241,7 +241,9 @@ impl Animation {
 
     /// Seek to a normalized position (0.0 - 1.0).
     pub fn seek(&mut self, t: Scalar) {
-        let frame = t.clamp(0.0, 1.0).mul_add(self.total_frames(), self.in_point);
+        let frame = t
+            .clamp(0.0, 1.0)
+            .mul_add(self.total_frames(), self.in_point);
         self.seek_frame(frame);
     }
 
@@ -326,7 +328,7 @@ impl Animation {
     }
 
     /// Get statistics about the animation.
-    #[must_use] 
+    #[must_use]
     pub fn stats(&self) -> AnimationStats {
         let mut shape_layer_count = 0;
         let mut precomp_layer_count = 0;
@@ -436,7 +438,7 @@ pub struct AnimationBuilder {
 
 impl AnimationBuilder {
     /// Create a new animation builder.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

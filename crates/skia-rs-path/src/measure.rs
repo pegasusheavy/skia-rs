@@ -45,20 +45,20 @@ impl PathMeasure {
 
     /// Get the total length of the path.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn length(&self) -> Scalar {
         self.total_length
     }
 
     /// Get the number of contours.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn contour_count(&self) -> usize {
         self.contour_lengths.len()
     }
 
     /// Get the length of a specific contour.
-    #[must_use] 
+    #[must_use]
     pub fn contour_length(&self, index: usize) -> Option<Scalar> {
         self.contour_lengths.get(index).copied()
     }
@@ -67,7 +67,7 @@ impl PathMeasure {
     ///
     /// The distance is pinned to `[0, length]` (like `SkContourMeasure::getPosTan`);
     /// `None` is only returned for NaN input or an empty path.
-    #[must_use] 
+    #[must_use]
     pub fn get_point_at(&self, distance: Scalar) -> Option<Point> {
         if distance.is_nan() || self.total_length <= 0.0 {
             return None;
@@ -91,7 +91,7 @@ impl PathMeasure {
     ///
     /// The distance is pinned to `[0, length]` (like `SkContourMeasure::getPosTan`);
     /// `None` is only returned for NaN input or an empty path.
-    #[must_use] 
+    #[must_use]
     pub fn get_tangent_at(&self, distance: Scalar) -> Option<Point> {
         if distance.is_nan() || self.total_length <= 0.0 {
             return None;
@@ -115,7 +115,7 @@ impl PathMeasure {
     /// given distance, and the local x-axis to the path's tangent
     /// direction at that distance. Useful for placing text or stamps
     /// along a path.
-    #[must_use] 
+    #[must_use]
     pub fn get_matrix_at(&self, distance: Scalar) -> Option<Matrix> {
         let position = self.get_point_at(distance)?;
         let tangent = self.get_tangent_at(distance)?;
@@ -131,7 +131,7 @@ impl PathMeasure {
     /// Returns a new Path containing the portion from `start` to `end`,
     /// constructed from line segments (curves in the source path are
     /// flattened during length computation).
-    #[must_use] 
+    #[must_use]
     pub fn get_segment(&self, start: Scalar, end: Scalar) -> Option<Path> {
         // Pin start/stop into the legal range like SkContourMeasure::getSegment:
         // clamp start up to 0 and stop down to length; reject only NaN or an
@@ -371,7 +371,10 @@ mod tests {
     fn test_path_measure_empty_path() {
         let path = PathBuilder::new().build();
         let measure = PathMeasure::new(&path);
-        #[allow(clippy::float_cmp, reason = "exact test assertion, value round-trips a literal")]
+        #[allow(
+            clippy::float_cmp,
+            reason = "exact test assertion, value round-trips a literal"
+        )]
         {
             assert_eq!(measure.length(), 0.0);
         }

@@ -13,7 +13,7 @@ use skia_rs_core::{Color, Color4f, Matrix, Point, Rect, Scalar};
 use skia_rs_path::{Path, PathBuilder};
 
 /// Create a deterministic RNG for reproducible benchmarks.
-#[must_use] 
+#[must_use]
 pub fn create_rng() -> XorShiftRng {
     use rand::SeedableRng;
     XorShiftRng::seed_from_u64(0xDEAD_BEEF_CAFE_BABE)

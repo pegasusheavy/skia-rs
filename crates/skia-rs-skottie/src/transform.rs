@@ -57,13 +57,13 @@ impl Default for Transform {
 
 impl Transform {
     /// Create a new identity transform.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Parse from Lottie transform model.
-    #[must_use] 
+    #[must_use]
     pub fn from_lottie(model: &TransformModel) -> Self {
         let mut transform = Self::new();
 
@@ -111,7 +111,7 @@ impl Transform {
     /// different things per `"ty"`); for `"tr"` items:
     /// `a`=anchor, `p`=position, `s`=scale (%), `r`=rotation (degrees),
     /// `o`=opacity (%), `sk`=skew (degrees), `sa`=skew axis (degrees).
-    #[must_use] 
+    #[must_use]
     pub fn from_shape_lottie(model: &ShapeModel) -> Self {
         let mut transform = Self::new();
 
@@ -141,21 +141,33 @@ impl Transform {
     }
 
     /// Check if this transform is animated.
-    #[must_use] 
+    #[must_use]
     pub fn is_animated(&self) -> bool {
         self.anchor.is_animated()
             || self.position.is_animated()
-            || self.position_x.as_ref().is_some_and(super::keyframe::AnimatedProperty::is_animated)
-            || self.position_y.as_ref().is_some_and(super::keyframe::AnimatedProperty::is_animated)
+            || self
+                .position_x
+                .as_ref()
+                .is_some_and(super::keyframe::AnimatedProperty::is_animated)
+            || self
+                .position_y
+                .as_ref()
+                .is_some_and(super::keyframe::AnimatedProperty::is_animated)
             || self.scale.is_animated()
             || self.rotation.is_animated()
             || self.opacity.is_animated()
-            || self.skew.as_ref().is_some_and(super::keyframe::AnimatedProperty::is_animated)
-            || self.skew_axis.as_ref().is_some_and(super::keyframe::AnimatedProperty::is_animated)
+            || self
+                .skew
+                .as_ref()
+                .is_some_and(super::keyframe::AnimatedProperty::is_animated)
+            || self
+                .skew_axis
+                .as_ref()
+                .is_some_and(super::keyframe::AnimatedProperty::is_animated)
     }
 
     /// Get the position at a specific frame.
-    #[must_use] 
+    #[must_use]
     pub fn position_at(&self, frame: Scalar) -> [Scalar; 2] {
         if self.position_x.is_some() || self.position_y.is_some() {
             // Separated position
@@ -177,13 +189,13 @@ impl Transform {
     }
 
     /// Get the anchor point at a specific frame.
-    #[must_use] 
+    #[must_use]
     pub fn anchor_at(&self, frame: Scalar) -> [Scalar; 2] {
         self.anchor.value_at(frame).as_vec2().unwrap_or([0.0, 0.0])
     }
 
     /// Get the scale at a specific frame (as factor, not percentage).
-    #[must_use] 
+    #[must_use]
     pub fn scale_at(&self, frame: Scalar) -> [Scalar; 2] {
         let scale = self
             .scale
@@ -194,14 +206,14 @@ impl Transform {
     }
 
     /// Get the rotation at a specific frame (in radians).
-    #[must_use] 
+    #[must_use]
     pub fn rotation_at(&self, frame: Scalar) -> Scalar {
         let degrees = self.rotation.value_at(frame).as_scalar().unwrap_or(0.0);
         degrees.to_radians()
     }
 
     /// Get the opacity at a specific frame (0.0 - 1.0).
-    #[must_use] 
+    #[must_use]
     pub fn opacity_at(&self, frame: Scalar) -> Scalar {
         let opacity = self.opacity.value_at(frame).as_scalar().unwrap_or(100.0);
         (opacity / 100.0).clamp(0.0, 1.0)
@@ -212,7 +224,7 @@ impl Transform {
     /// Per upstream `TransformAdapter2D::totalMatrix` (`Transform.cpp`),
     /// the skew angle is pinned to `[-85, 85]` degrees and negated before
     /// conversion to radians.
-    #[must_use] 
+    #[must_use]
     pub fn skew_at(&self, frame: Scalar) -> Option<Scalar> {
         self.skew.as_ref().map(|s| {
             let degrees = s.value_at(frame).as_scalar().unwrap_or(0.0);
@@ -222,7 +234,7 @@ impl Transform {
     }
 
     /// Get the skew axis at a specific frame (in radians).
-    #[must_use] 
+    #[must_use]
     pub fn skew_axis_at(&self, frame: Scalar) -> Option<Scalar> {
         self.skew_axis.as_ref().map(|s| {
             let degrees = s.value_at(frame).as_scalar().unwrap_or(0.0);
@@ -231,7 +243,7 @@ impl Transform {
     }
 
     /// Compute the transformation matrix at a specific frame.
-    #[must_use] 
+    #[must_use]
     pub fn matrix_at(&self, frame: Scalar) -> Matrix {
         let position = self.position_at(frame);
         let anchor = self.anchor_at(frame);
@@ -295,7 +307,7 @@ pub struct TransformSnapshot {
 
 impl TransformSnapshot {
     /// Create a snapshot from a transform at a specific frame.
-    #[must_use] 
+    #[must_use]
     pub fn from_transform(transform: &Transform, frame: Scalar) -> Self {
         Self {
             position: transform.position_at(frame),
@@ -309,7 +321,7 @@ impl TransformSnapshot {
     }
 
     /// Compute the matrix.
-    #[must_use] 
+    #[must_use]
     pub fn to_matrix(&self) -> Matrix {
         let mut matrix = Matrix::IDENTITY;
 

@@ -7,7 +7,10 @@
 //! the referenced `<clipPath>` element.
 
 use crate::css::apply_stylesheet;
-use crate::dom::{SvgPaint, SvgNode, SvgDom, PreserveAspectRatio, MeetOrSlice, AlignX, AlignY, SvgNodeKind, SvgText, TextAnchor, SvgImage, GradientUnits, GradientStop, SpreadMethod};
+use crate::dom::{
+    AlignX, AlignY, GradientStop, GradientUnits, MeetOrSlice, PreserveAspectRatio, SpreadMethod,
+    SvgDom, SvgImage, SvgNode, SvgNodeKind, SvgPaint, SvgText, TextAnchor,
+};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use skia_rs_canvas::{Canvas, ClipOp, SaveLayerFlags, SaveLayerRec, Surface};
@@ -301,8 +304,14 @@ fn compute_viewbox_matrix(view_box: &Rect, viewport: &Rect, par: PreserveAspectR
         ),
     };
 
-    let tx = (-view_box.left).mul_add(scale_x, view_box.width().mul_add(-scale_x, viewport.width()) * cx);
-    let ty = (-view_box.top).mul_add(scale_y, view_box.height().mul_add(-scale_y, viewport.height()) * cy);
+    let tx = (-view_box.left).mul_add(
+        scale_x,
+        view_box.width().mul_add(-scale_x, viewport.width()) * cx,
+    );
+    let ty = (-view_box.top).mul_add(
+        scale_y,
+        view_box.height().mul_add(-scale_y, viewport.height()) * cy,
+    );
 
     Matrix::translate(viewport.left + tx, viewport.top + ty)
         .concat(&Matrix::scale(scale_x, scale_y))
@@ -980,7 +989,7 @@ pub fn render_svg_in_container(
 }
 
 /// Render an SVG string to a new surface.
-#[must_use] 
+#[must_use]
 pub fn render_svg_string(svg: &str, width: i32, height: i32) -> Option<Surface> {
     let dom = crate::parse_svg(svg).ok()?;
     let mut surface = Surface::new_raster_n32_premul(width, height)?;
@@ -1161,10 +1170,7 @@ mod tests {
         </svg>"#;
         let surface = render_svg_string(svg, 20, 20).unwrap();
         let c = pixel_at(&surface, 10, 10).unwrap();
-        assert!(
-            c.red() > 200 && c.green() < 60,
-            "inherited red, got {c:?}"
-        );
+        assert!(c.red() > 200 && c.green() < 60, "inherited red, got {c:?}");
     }
 
     #[test]
@@ -1289,10 +1295,7 @@ mod tests {
         </svg>"#;
         let surface2 = render_svg_string(svg_butt, 30, 20).unwrap();
         let past2 = pixel_at(&surface2, 22, 10).unwrap();
-        assert!(
-            past2.red() > 200,
-            "butt cap does not extend, got {past2:?}"
-        );
+        assert!(past2.red() > 200, "butt cap does not extend, got {past2:?}");
     }
 
     #[test]

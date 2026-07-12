@@ -203,7 +203,7 @@ pub struct ValidationResult {
 
 impl ValidationResult {
     /// Create a valid result
-    #[must_use] 
+    #[must_use]
     pub const fn valid() -> Self {
         Self {
             is_valid: true,
@@ -214,7 +214,7 @@ impl ValidationResult {
     }
 
     /// Create an invalid result with a single error
-    #[must_use] 
+    #[must_use]
     pub fn error(error: ShaderError) -> Self {
         Self {
             is_valid: false,
@@ -322,7 +322,7 @@ impl Default for ShaderDebugger {
 
 impl ShaderDebugger {
     /// Create a new shader debugger
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             shader_cache: HashMap::new(),
@@ -383,13 +383,13 @@ impl ShaderDebugger {
     }
 
     /// Get information about a registered shader
-    #[must_use] 
+    #[must_use]
     pub fn get_shader_info(&self, id: u64) -> Option<&ShaderInfo> {
         self.shader_cache.get(&id)
     }
 
     /// Validate a shader
-    #[must_use] 
+    #[must_use]
     pub fn validate_shader(
         &self,
         source: &str,
@@ -589,9 +589,7 @@ impl ShaderDebugger {
         let close_braces = source.matches('}').count();
         if open_braces != close_braces {
             result.errors.push(ShaderError {
-                message: format!(
-                    "Mismatched braces: {open_braces} open, {close_braces} close"
-                ),
+                message: format!("Mismatched braces: {open_braces} open, {close_braces} close"),
                 line: 0,
                 column: 0,
                 code: Some("E002".to_string()),
@@ -699,7 +697,7 @@ impl ShaderDebugger {
     }
 
     /// Dump shader information for debugging
-    #[must_use] 
+    #[must_use]
     pub fn dump_shader(&self, id: u64) -> String {
         self.shader_cache.get(&id).map_or_else(
             || format!("Shader {id} not found"),
@@ -746,7 +744,7 @@ impl ShaderDebugger {
     }
 
     /// Get all registered shader IDs
-    #[must_use] 
+    #[must_use]
     pub fn get_shader_ids(&self) -> Vec<u64> {
         self.shader_cache.keys().copied().collect()
     }
@@ -772,7 +770,7 @@ pub struct ShaderProfiler {
 
 impl ShaderProfiler {
     /// Create a new shader profiler
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -794,7 +792,7 @@ impl ShaderProfiler {
     }
 
     /// Get average compilation time for a shader
-    #[must_use] 
+    #[must_use]
     pub fn avg_compile_time(&self, shader_id: u64) -> Option<Duration> {
         self.compile_times.get(&shader_id).map(|times| {
             let total: Duration = times.iter().sum();
@@ -812,7 +810,7 @@ impl ShaderProfiler {
     }
 
     /// Generate a profiling report
-    #[must_use] 
+    #[must_use]
     pub fn generate_report(&self) -> String {
         let mut output = String::new();
         output.push_str("=== Shader Profiling Report ===\n\n");

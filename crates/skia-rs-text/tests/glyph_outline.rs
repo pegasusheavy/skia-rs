@@ -787,7 +787,12 @@ fn glyph_path_applies_scale_x() {
     // Height unchanged.
     assert!((wb.height() - bb.height()).abs() < 0.5);
     // And glyph_advance scales the same way.
-    assert!(2.0f32.mul_add(-base.glyph_advance(1), wide.glyph_advance(1)).abs() < 0.01);
+    assert!(
+        2.0f32
+            .mul_add(-base.glyph_advance(1), wide.glyph_advance(1))
+            .abs()
+            < 0.01
+    );
 }
 
 #[test]

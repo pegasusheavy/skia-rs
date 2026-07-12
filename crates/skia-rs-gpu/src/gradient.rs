@@ -4,8 +4,8 @@
 //! into textures suitable for GPU sampling.
 
 use crate::cast_util::{scalar_from_u32, usize_from_scalar_sat};
-use skia_rs_core::cast::f32_to_u8_sat;
 use skia_rs_core::Color4f;
+use skia_rs_core::cast::f32_to_u8_sat;
 
 /// Gradient stop.
 #[derive(Debug, Clone, Copy)]
@@ -18,7 +18,7 @@ pub struct GradientStop {
 
 impl GradientStop {
     /// Create a new gradient stop.
-    #[must_use] 
+    #[must_use]
     pub const fn new(position: f32, color: Color4f) -> Self {
         Self {
             position: position.clamp(0.0, 1.0),
@@ -110,7 +110,7 @@ fn encode_texel(color: Color4f, config: &GradientTextureConfig) -> [u8; 4] {
 }
 
 /// Generate a 1D gradient texture.
-#[must_use] 
+#[must_use]
 pub fn generate_gradient_texture_1d(
     stops: &[GradientStop],
     tile_mode: GradientTileMode,
@@ -164,7 +164,7 @@ pub fn generate_gradient_texture_1d(
 }
 
 /// Generate a 2D radial gradient texture.
-#[must_use] 
+#[must_use]
 pub fn generate_radial_gradient_texture(
     stops: &[GradientStop],
     tile_mode: GradientTileMode,
@@ -202,7 +202,7 @@ pub fn generate_radial_gradient_texture(
 }
 
 /// Generate a sweep gradient texture.
-#[must_use] 
+#[must_use]
 pub fn generate_sweep_gradient_texture(
     stops: &[GradientStop],
     tile_mode: GradientTileMode,
@@ -312,7 +312,7 @@ fn linear_to_srgb(linear: f32) -> f32 {
 }
 
 /// Convert sRGB color component to linear.
-#[must_use] 
+#[must_use]
 pub fn srgb_to_linear(srgb: f32) -> f32 {
     if srgb <= 0.04045 {
         srgb / 12.92
@@ -332,7 +332,7 @@ pub struct GradientLUT {
 
 impl GradientLUT {
     /// Create a new gradient LUT from stops.
-    #[must_use] 
+    #[must_use]
     pub fn from_stops(stops: &[GradientStop], width: u32, tile_mode: GradientTileMode) -> Self {
         let config = GradientTextureConfig {
             width,
@@ -347,7 +347,7 @@ impl GradientLUT {
     }
 
     /// Sample the LUT at position t.
-    #[must_use] 
+    #[must_use]
     pub fn sample(&self, t: f32) -> Color4f {
         let t = t.clamp(0.0, 1.0);
         let x = usize_from_scalar_sat((t * scalar_from_u32(self.width - 1)).round());
@@ -371,7 +371,10 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(clippy::float_cmp, reason = "exact literal values, no accumulated error")]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact literal values, no accumulated error"
+    )]
     fn test_gradient_stop() {
         let stop = GradientStop::new(0.5, Color4f::from_rgb(1.0, 0.0, 0.0));
         assert_eq!(stop.position, 0.5);
@@ -379,7 +382,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp, reason = "exact literal values, no accumulated error")]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact literal values, no accumulated error"
+    )]
     fn test_gradient_stop_clamping() {
         let stop = GradientStop::new(1.5, Color4f::from_rgb(1.0, 0.0, 0.0));
         assert_eq!(stop.position, 1.0);

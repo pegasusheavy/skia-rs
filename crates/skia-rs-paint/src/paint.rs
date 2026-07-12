@@ -112,14 +112,14 @@ impl Default for Paint {
 impl Paint {
     /// Create a new paint with default settings.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Get the color as Color4f.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn color(&self) -> Color4f {
         self.color
     }
@@ -129,7 +129,7 @@ impl Paint {
     /// Float components are rounded to the nearest byte (Skia's
     /// `SkColor4f::toSkColor` rounding), not truncated.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn color32(&self) -> Color {
         Color::from_argb(
             color_component_to_byte(self.color.a),
@@ -161,7 +161,7 @@ impl Paint {
 
     /// Get the alpha value (0.0-1.0).
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn alpha(&self) -> Scalar {
         self.color.a
     }
@@ -175,7 +175,7 @@ impl Paint {
 
     /// Get the blend mode.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn blend_mode(&self) -> BlendMode {
         self.blend_mode
     }
@@ -189,7 +189,7 @@ impl Paint {
 
     /// Get the style.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn style(&self) -> Style {
         self.style
     }
@@ -203,7 +203,7 @@ impl Paint {
 
     /// Get the stroke width.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn stroke_width(&self) -> Scalar {
         self.stroke_width
     }
@@ -217,7 +217,7 @@ impl Paint {
 
     /// Get the stroke miter limit.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn stroke_miter(&self) -> Scalar {
         self.stroke_miter
     }
@@ -231,7 +231,7 @@ impl Paint {
 
     /// Get the stroke cap.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn stroke_cap(&self) -> StrokeCap {
         self.stroke_cap
     }
@@ -245,7 +245,7 @@ impl Paint {
 
     /// Get the stroke join.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn stroke_join(&self) -> StrokeJoin {
         self.stroke_join
     }
@@ -259,7 +259,7 @@ impl Paint {
 
     /// Get the shader.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn shader(&self) -> Option<&ShaderRef> {
         self.shader.as_ref()
     }
@@ -273,14 +273,14 @@ impl Paint {
 
     /// Check if the paint has a shader.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn has_shader(&self) -> bool {
         self.shader.is_some()
     }
 
     /// Get the mask filter.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn mask_filter(&self) -> Option<&MaskFilterRef> {
         self.mask_filter.as_ref()
     }
@@ -294,14 +294,14 @@ impl Paint {
 
     /// Check if the paint has a mask filter.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn has_mask_filter(&self) -> bool {
         self.mask_filter.is_some()
     }
 
     /// Get the color filter.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn color_filter(&self) -> Option<&ColorFilterRef> {
         self.color_filter.as_ref()
     }
@@ -315,14 +315,14 @@ impl Paint {
 
     /// Check if the paint has a color filter.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn has_color_filter(&self) -> bool {
         self.color_filter.is_some()
     }
 
     /// Get the image filter.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn image_filter(&self) -> Option<&ImageFilterRef> {
         self.image_filter.as_ref()
     }
@@ -336,14 +336,14 @@ impl Paint {
 
     /// Check if the paint has an image filter.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn has_image_filter(&self) -> bool {
         self.image_filter.is_some()
     }
 
     /// Get the path effect.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn path_effect(&self) -> Option<&PathEffectRef> {
         self.path_effect.as_ref()
     }
@@ -357,14 +357,14 @@ impl Paint {
 
     /// Check if the paint has a path effect.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn has_path_effect(&self) -> bool {
         self.path_effect.is_some()
     }
 
     /// Check if anti-aliasing is enabled.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn is_anti_alias(&self) -> bool {
         self.anti_alias
     }
@@ -378,7 +378,7 @@ impl Paint {
 
     /// Check if dithering is enabled.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn is_dither(&self) -> bool {
         self.dither
     }
@@ -392,7 +392,7 @@ impl Paint {
 
     /// Alias for `is_anti_alias` (Skia compatibility).
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn anti_alias(&self) -> bool {
         self.anti_alias
     }
@@ -417,7 +417,7 @@ impl Paint {
     /// Each optional section is: [1 byte present flag] [4 bytes length] [data].
     /// If a shader/filter does not support serialization (e.g., runtime shaders), the
     /// present flag is 0 and that field is omitted from deserialization.
-    #[must_use] 
+    #[must_use]
     pub fn serialize(&self) -> Vec<u8> {
         let mut data = Vec::with_capacity(17);
 
@@ -459,7 +459,11 @@ impl Paint {
         match self.shader.as_ref().and_then(|s| s.serialize()) {
             Some(shader_data) => {
                 data.push(1); // present
-                data.extend_from_slice(&u32::try_from(shader_data.len()).unwrap_or(u32::MAX).to_le_bytes());
+                data.extend_from_slice(
+                    &u32::try_from(shader_data.len())
+                        .unwrap_or(u32::MAX)
+                        .to_le_bytes(),
+                );
                 data.extend_from_slice(&shader_data);
             }
             None => data.push(0), // absent
@@ -469,7 +473,11 @@ impl Paint {
         match self.mask_filter.as_ref().and_then(|f| f.serialize()) {
             Some(filter_data) => {
                 data.push(1);
-                data.extend_from_slice(&u32::try_from(filter_data.len()).unwrap_or(u32::MAX).to_le_bytes());
+                data.extend_from_slice(
+                    &u32::try_from(filter_data.len())
+                        .unwrap_or(u32::MAX)
+                        .to_le_bytes(),
+                );
                 data.extend_from_slice(&filter_data);
             }
             None => data.push(0),
@@ -479,7 +487,11 @@ impl Paint {
         match self.color_filter.as_ref().and_then(|f| f.serialize()) {
             Some(filter_data) => {
                 data.push(1);
-                data.extend_from_slice(&u32::try_from(filter_data.len()).unwrap_or(u32::MAX).to_le_bytes());
+                data.extend_from_slice(
+                    &u32::try_from(filter_data.len())
+                        .unwrap_or(u32::MAX)
+                        .to_le_bytes(),
+                );
                 data.extend_from_slice(&filter_data);
             }
             None => data.push(0),
@@ -489,7 +501,11 @@ impl Paint {
         match self.image_filter.as_ref().and_then(|f| f.serialize()) {
             Some(filter_data) => {
                 data.push(1);
-                data.extend_from_slice(&u32::try_from(filter_data.len()).unwrap_or(u32::MAX).to_le_bytes());
+                data.extend_from_slice(
+                    &u32::try_from(filter_data.len())
+                        .unwrap_or(u32::MAX)
+                        .to_le_bytes(),
+                );
                 data.extend_from_slice(&filter_data);
             }
             None => data.push(0),

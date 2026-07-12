@@ -302,48 +302,51 @@ impl Layer {
                 LayerContent::Shape(ShapeContent { shapes })
             }
             LayerType::Text => {
-                let doc = model.text.as_ref().map_or_else(TextDocument::default, |text_data| {
-                    text_data
-                        .document
-                        .keyframes
-                        .first()
-                        .map(|kf| TextDocument {
-                            text: kf.data.text.clone(),
-                            font_size: kf.data.size,
-                            font_family: kf.data.font.clone(),
-                            fill_color: kf.data.fill_color.as_ref().map(|c| {
-                                Color::from_rgb(
-                                    skia_rs_core::cast::f32_to_u8_sat(
-                                        c.first().copied().unwrap_or(0.0) * 255.0,
-                                    ),
-                                    skia_rs_core::cast::f32_to_u8_sat(
-                                        c.get(1).copied().unwrap_or(0.0) * 255.0,
-                                    ),
-                                    skia_rs_core::cast::f32_to_u8_sat(
-                                        c.get(2).copied().unwrap_or(0.0) * 255.0,
-                                    ),
-                                )
-                            }),
-                            stroke_color: kf.data.stroke_color.as_ref().map(|c| {
-                                Color::from_rgb(
-                                    skia_rs_core::cast::f32_to_u8_sat(
-                                        c.first().copied().unwrap_or(0.0) * 255.0,
-                                    ),
-                                    skia_rs_core::cast::f32_to_u8_sat(
-                                        c.get(1).copied().unwrap_or(0.0) * 255.0,
-                                    ),
-                                    skia_rs_core::cast::f32_to_u8_sat(
-                                        c.get(2).copied().unwrap_or(0.0) * 255.0,
-                                    ),
-                                )
-                            }),
-                            stroke_width: kf.data.stroke_width.unwrap_or(0.0),
-                            justification: kf.data.justify.unwrap_or(0),
-                            tracking: kf.data.tracking.unwrap_or(0.0),
-                            line_height: kf.data.line_height.unwrap_or(0.0),
-                        })
-                        .unwrap_or_default()
-                });
+                let doc = model
+                    .text
+                    .as_ref()
+                    .map_or_else(TextDocument::default, |text_data| {
+                        text_data
+                            .document
+                            .keyframes
+                            .first()
+                            .map(|kf| TextDocument {
+                                text: kf.data.text.clone(),
+                                font_size: kf.data.size,
+                                font_family: kf.data.font.clone(),
+                                fill_color: kf.data.fill_color.as_ref().map(|c| {
+                                    Color::from_rgb(
+                                        skia_rs_core::cast::f32_to_u8_sat(
+                                            c.first().copied().unwrap_or(0.0) * 255.0,
+                                        ),
+                                        skia_rs_core::cast::f32_to_u8_sat(
+                                            c.get(1).copied().unwrap_or(0.0) * 255.0,
+                                        ),
+                                        skia_rs_core::cast::f32_to_u8_sat(
+                                            c.get(2).copied().unwrap_or(0.0) * 255.0,
+                                        ),
+                                    )
+                                }),
+                                stroke_color: kf.data.stroke_color.as_ref().map(|c| {
+                                    Color::from_rgb(
+                                        skia_rs_core::cast::f32_to_u8_sat(
+                                            c.first().copied().unwrap_or(0.0) * 255.0,
+                                        ),
+                                        skia_rs_core::cast::f32_to_u8_sat(
+                                            c.get(1).copied().unwrap_or(0.0) * 255.0,
+                                        ),
+                                        skia_rs_core::cast::f32_to_u8_sat(
+                                            c.get(2).copied().unwrap_or(0.0) * 255.0,
+                                        ),
+                                    )
+                                }),
+                                stroke_width: kf.data.stroke_width.unwrap_or(0.0),
+                                justification: kf.data.justify.unwrap_or(0),
+                                tracking: kf.data.tracking.unwrap_or(0.0),
+                                line_height: kf.data.line_height.unwrap_or(0.0),
+                            })
+                            .unwrap_or_default()
+                    });
                 LayerContent::Text(TextContent {
                     document: doc,
                     path: None,
@@ -401,7 +404,7 @@ impl Layer {
     }
 
     /// Check if this layer is visible at a specific frame.
-    #[must_use] 
+    #[must_use]
     pub fn is_visible_at(&self, frame: Scalar) -> bool {
         !self.hidden && frame >= self.in_point && frame < self.out_point
     }
@@ -413,7 +416,7 @@ impl Layer {
     /// precomp's content time is remapped — the precomp layer's own
     /// transform/opacity/masks evaluate at the unadjusted comp frame.
     /// `tm` (if present) overrides the linear `(t - st) / sr` mapping.
-    #[must_use] 
+    #[must_use]
     pub fn precomp_content_frame(&self, frame: Scalar, frame_rate: Scalar) -> Scalar {
         self.time_remap.as_ref().map_or_else(
             || {
@@ -432,25 +435,25 @@ impl Layer {
     }
 
     /// Get the opacity at a specific frame.
-    #[must_use] 
+    #[must_use]
     pub fn opacity_at(&self, frame: Scalar) -> Scalar {
         self.transform.opacity_at(frame)
     }
 
     /// Get the transform matrix at a specific frame.
-    #[must_use] 
+    #[must_use]
     pub fn matrix_at(&self, frame: Scalar) -> skia_rs_core::Matrix {
         self.transform.matrix_at(frame)
     }
 
     /// Check if this layer has masks.
-    #[must_use] 
+    #[must_use]
     pub fn has_masks(&self) -> bool {
         !self.masks.is_empty()
     }
 
     /// Check if this is a matte layer.
-    #[must_use] 
+    #[must_use]
     pub fn is_matte_layer(&self) -> bool {
         self.matte_mode.is_some() && self.matte_mode != Some(MatteMode::None)
     }

@@ -104,9 +104,11 @@ fn main() {
         skia_rs_core::AlphaType::Premul,
     );
 
-    if let Some(image) =
-        skia_rs_codec::Image::from_raster_data(&img_info, pixels, usize::try_from(width).unwrap() * 4)
-    {
+    if let Some(image) = skia_rs_codec::Image::from_raster_data(
+        &img_info,
+        pixels,
+        usize::try_from(width).unwrap() * 4,
+    ) {
         let encoder = PngEncoder::new();
         match encoder.encode_bytes(&image) {
             Ok(png_data) => {

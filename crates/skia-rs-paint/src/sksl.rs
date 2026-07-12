@@ -283,7 +283,7 @@ pub struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     /// Create a new lexer.
-    #[must_use] 
+    #[must_use]
     pub fn new(source: &'a str) -> Self {
         Self {
             source,
@@ -444,11 +444,10 @@ impl<'a> Lexer<'a> {
                     self.chars.next();
                     while let Some(&(_, c)) = self.chars.peek() {
                         self.chars.next();
-                        if c == '*'
-                            && self.chars.peek().is_some_and(|&(_, c)| c == '/') {
-                                self.chars.next();
-                                break;
-                            }
+                        if c == '*' && self.chars.peek().is_some_and(|&(_, c)| c == '/') {
+                            self.chars.next();
+                            break;
+                        }
                     }
                     continue;
                 }
@@ -645,7 +644,7 @@ impl std::fmt::Display for SkslType {
 
 impl SkslType {
     /// Get the GLSL type name.
-    #[must_use] 
+    #[must_use]
     pub const fn glsl_name(&self) -> &'static str {
         match self {
             Self::Void => "void",
@@ -666,7 +665,7 @@ impl SkslType {
     }
 
     /// Get the WGSL type name.
-    #[must_use] 
+    #[must_use]
     pub const fn wgsl_name(&self) -> &'static str {
         match self {
             Self::Void => "()",
@@ -683,45 +682,35 @@ impl SkslType {
             Self::Mat2 => "mat2x2<f32>",
             Self::Mat3 => "mat3x3<f32>",
             Self::Mat4 => "mat4x4<f32>",
-            Self::Sampler2D | Self::Shader | Self::ColorFilter | Self::Blender => {
-                "texture_2d<f32>"
-            }
+            Self::Sampler2D | Self::Shader | Self::ColorFilter | Self::Blender => "texture_2d<f32>",
             Self::Array(_, _) => "array",
             Self::Struct(_) => "struct",
         }
     }
 
     /// Check if this is a scalar type.
-    #[must_use] 
+    #[must_use]
     pub const fn is_scalar(&self) -> bool {
-        matches!(
-            self,
-            Self::Bool | Self::Int | Self::Float | Self::Half
-        )
+        matches!(self, Self::Bool | Self::Int | Self::Float | Self::Half)
     }
 
     /// Check if this is a vector type.
-    #[must_use] 
+    #[must_use]
     pub const fn is_vector(&self) -> bool {
         matches!(
             self,
-            Self::Vec2
-                | Self::Vec3
-                | Self::Vec4
-                | Self::Half2
-                | Self::Half3
-                | Self::Half4
+            Self::Vec2 | Self::Vec3 | Self::Vec4 | Self::Half2 | Self::Half3 | Self::Half4
         )
     }
 
     /// Check if this is a matrix type.
-    #[must_use] 
+    #[must_use]
     pub const fn is_matrix(&self) -> bool {
         matches!(self, Self::Mat2 | Self::Mat3 | Self::Mat4)
     }
 
     /// Get the number of components for vector types.
-    #[must_use] 
+    #[must_use]
     pub const fn vector_size(&self) -> Option<usize> {
         match self {
             Self::Vec2 | Self::Half2 => Some(2),
@@ -880,7 +869,7 @@ pub enum BinaryOp {
 
 impl BinaryOp {
     /// Get the GLSL operator string.
-    #[must_use] 
+    #[must_use]
     pub const fn glsl_str(&self) -> &'static str {
         match self {
             Self::Add => "+",
@@ -918,7 +907,7 @@ pub enum UnaryOp {
 
 impl UnaryOp {
     /// Get the GLSL operator string.
-    #[must_use] 
+    #[must_use]
     pub const fn glsl_str(&self) -> &'static str {
         match self {
             Self::Neg => "-",
@@ -1076,7 +1065,7 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     /// Create a new parser.
-    #[must_use] 
+    #[must_use]
     pub fn new(source: &'a str) -> Self {
         let mut lexer = Lexer::new(source);
         let current = lexer.next_token();
@@ -1137,7 +1126,6 @@ impl<'a> Parser<'a> {
     }
 
     fn advance(&mut self) -> Token {
-        
         std::mem::replace(
             &mut self.current,
             self.peeked
@@ -1248,9 +1236,8 @@ impl<'a> Parser<'a> {
         let array_size = if self.check(&Token::LBracket) {
             self.advance();
             let size = match self.advance() {
-                Token::IntLit(n) => {
-                    usize::try_from(n).map_err(|_| format!("Array size must be non-negative, got {n}"))?
-                }
+                Token::IntLit(n) => usize::try_from(n)
+                    .map_err(|_| format!("Array size must be non-negative, got {n}"))?,
                 t => return Err(format!("Expected array size, got {t:?}")),
             };
             self.expect(&Token::RBracket)?;

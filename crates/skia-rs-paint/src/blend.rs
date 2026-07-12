@@ -74,7 +74,7 @@ pub enum BlendMode {
 
 impl BlendMode {
     /// Get the name of the blend mode.
-    #[must_use] 
+    #[must_use]
     pub const fn name(&self) -> &'static str {
         match self {
             Self::Clear => "Clear",
@@ -110,7 +110,7 @@ impl BlendMode {
     }
 
     /// Create a blend mode from a u8 value.
-    #[must_use] 
+    #[must_use]
     pub const fn from_u8(value: u8) -> Option<Self> {
         match value {
             0 => Some(Self::Clear),
@@ -148,14 +148,14 @@ impl BlendMode {
 
     /// Check if this is a Porter-Duff mode.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn is_porter_duff(&self) -> bool {
         (*self as u8) <= (Self::Modulate as u8)
     }
 
     /// Check if this is a separable blend mode.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn is_separable(&self) -> bool {
         let v = *self as u8;
         v >= (Self::Screen as u8) && v <= (Self::Multiply as u8)
@@ -163,7 +163,7 @@ impl BlendMode {
 
     /// Check if this is a non-separable blend mode.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn is_non_separable(&self) -> bool {
         let v = *self as u8;
         v >= (Self::Hue as u8) && v <= (Self::Luminosity as u8)
@@ -177,7 +177,11 @@ impl BlendMode {
     /// The separable RGB modes apply the formula per-channel.
     /// Non-separable modes (Hue, Saturation, Color, Luminosity) operate
     /// on the RGB color as a whole, converting through HSL space.
-    #[must_use] 
+    #[must_use]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match arm per blend mode; mirrors upstream SkRasterPipeline_opts.h BLEND_MODE table — splitting it would obscure the 1:1 correspondence"
+    )]
     pub fn apply(&self, src: Color4f, dst: Color4f) -> Color4f {
         // Premultiplied alpha compositing formulas.
         // For Porter-Duff modes: result = Fa*src + Fb*dst, then clipped.
@@ -225,10 +229,16 @@ impl BlendMode {
                     }
             }),
             Self::Darken => separable_blend(src, dst, |s, d| {
-                d.mul_add(1.0 - src.a, s.mul_add(1.0 - dst.a, (s * dst.a).min(d * src.a)))
+                d.mul_add(
+                    1.0 - src.a,
+                    s.mul_add(1.0 - dst.a, (s * dst.a).min(d * src.a)),
+                )
             }),
             Self::Lighten => separable_blend(src, dst, |s, d| {
-                d.mul_add(1.0 - src.a, s.mul_add(1.0 - dst.a, (s * dst.a).max(d * src.a)))
+                d.mul_add(
+                    1.0 - src.a,
+                    s.mul_add(1.0 - dst.a, (s * dst.a).max(d * src.a)),
+                )
             }),
             // Upstream BLEND_MODE(colordodge):
             //   d == 0  -> s*inv(da)
@@ -245,7 +255,10 @@ impl BlendMode {
                 } else if s == sa {
                     d.mul_add(1.0 - sa, s)
                 } else {
-                    d.mul_add(1.0 - sa, sa.mul_add(da.min((d * sa) / (sa - s)), s * (1.0 - da)))
+                    d.mul_add(
+                        1.0 - sa,
+                        sa.mul_add(da.min((d * sa) / (sa - s)), s * (1.0 - da)),
+                    )
                 }
             }),
             // Upstream BLEND_MODE(colorburn):
@@ -263,7 +276,10 @@ impl BlendMode {
                 } else if s == 0.0 {
                     d * (1.0 - sa)
                 } else {
-                    d.mul_add(1.0 - sa, sa.mul_add(da - da.min((da - d) * sa / s), s * (1.0 - da)))
+                    d.mul_add(
+                        1.0 - sa,
+                        sa.mul_add(da - da.min((da - d) * sa / s), s * (1.0 - da)),
+                    )
                 }
             }),
             // Upstream BLEND_MODE(hardlight):
@@ -280,9 +296,9 @@ impl BlendMode {
             Self::SoftLight => {
                 separable_blend(src, dst, |s, d| soft_light_channel(s, d, src.a, dst.a))
             }
-            Self::Difference => {
-                separable_blend(src, dst, |s, d| 2.0f32.mul_add(-(s * dst.a).min(d * src.a), s + d))
-            }
+            Self::Difference => separable_blend(src, dst, |s, d| {
+                2.0f32.mul_add(-(s * dst.a).min(d * src.a), s + d)
+            }),
             Self::Exclusion => separable_blend(src, dst, |s, d| (2.0 * s).mul_add(-d, s + d)),
             Self::Multiply => separable_blend(src, dst, |s, d| {
                 s.mul_add(d, s.mul_add(1.0 - dst.a, d * (1.0 - src.a)))
@@ -339,7 +355,10 @@ fn soft_light_channel(s: f32, d: f32, sa: f32, da: f32) -> f32 {
     let dark_src = d * (s2 - sa).mul_add(1.0 - m, sa);
     let dark_dst = (m4 * m4 + m4).mul_add(m - 1.0, 7.0 * m);
     let lite_dst = m.sqrt() - m;
-    let lite_src = d.mul_add(sa, da * (s2 - sa) * if 4.0 * d <= da { dark_dst } else { lite_dst });
+    let lite_src = d.mul_add(
+        sa,
+        da * (s2 - sa) * if 4.0 * d <= da { dark_dst } else { lite_dst },
+    );
 
     s.mul_add(1.0 - da, d * (1.0 - sa)) + if s2 <= sa { dark_src } else { lite_src }
 }
@@ -376,9 +395,18 @@ fn non_separable_blend(src: Color4f, dst: Color4f, mode: NonSepMode) -> Color4f 
 
     // Composite over dst using src-over
     let a = src.a.mul_add(-dst.a, src.a + dst.a);
-    let r = dst.r.mul_add(1.0 - src.a, (blended[0] * src.a).mul_add(dst.a, src.r * (1.0 - dst.a)));
-    let g = dst.g.mul_add(1.0 - src.a, (blended[1] * src.a).mul_add(dst.a, src.g * (1.0 - dst.a)));
-    let b = dst.b.mul_add(1.0 - src.a, (blended[2] * src.a).mul_add(dst.a, src.b * (1.0 - dst.a)));
+    let r = dst.r.mul_add(
+        1.0 - src.a,
+        (blended[0] * src.a).mul_add(dst.a, src.r * (1.0 - dst.a)),
+    );
+    let g = dst.g.mul_add(
+        1.0 - src.a,
+        (blended[1] * src.a).mul_add(dst.a, src.g * (1.0 - dst.a)),
+    );
+    let b = dst.b.mul_add(
+        1.0 - src.a,
+        (blended[2] * src.a).mul_add(dst.a, src.b * (1.0 - dst.a)),
+    );
     Color4f::new(
         r.clamp(0.0, 1.0),
         g.clamp(0.0, 1.0),

@@ -147,7 +147,7 @@ impl<'a> RenderContext<'a> {
     }
 
     /// Get current opacity.
-    #[must_use] 
+    #[must_use]
     pub const fn current_opacity(&self) -> Scalar {
         self.current_opacity
     }
@@ -717,7 +717,10 @@ fn build_gradient_shader(
         // Rotate `e` around `s` by `highlight_angle` degrees.
         let ex = e.x - s.x;
         let ey = e.y - s.y;
-        let rotated_e = Point::new(ey.mul_add(-sin, ex.mul_add(cos, s.x)), ey.mul_add(cos, ex.mul_add(sin, s.y)));
+        let rotated_e = Point::new(
+            ey.mul_add(-sin, ex.mul_add(cos, s.x)),
+            ey.mul_add(cos, ex.mul_add(sin, s.y)),
+        );
 
         let eps = 1e-4;
         let h_len = (highlight_length * 0.01).clamp(-1.0 + eps, 1.0 - eps);

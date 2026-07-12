@@ -181,7 +181,12 @@ fn bench_blend_mode(c: &mut Criterion) {
     ];
 
     group.bench_function("name", |b| {
-        b.iter(|| modes.iter().map(skia_rs_paint::BlendMode::name).collect::<Vec<_>>());
+        b.iter(|| {
+            modes
+                .iter()
+                .map(skia_rs_paint::BlendMode::name)
+                .collect::<Vec<_>>()
+        });
     });
 
     group.finish();

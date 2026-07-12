@@ -6,15 +6,14 @@
 //! - Soft masks
 //! - Blend modes
 
-use skia_rs_core::cast::saturate_to_i32;
 use skia_rs_core::Scalar;
+use skia_rs_core::cast::saturate_to_i32;
 use skia_rs_paint::BlendMode;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
 /// Extended Graphics State for PDF transparency.
-#[derive(Debug, Clone, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ExtGraphicsState {
     /// Stroking alpha (CA).
     pub stroke_alpha: Option<Scalar>,
@@ -36,10 +35,9 @@ pub struct ExtGraphicsState {
     pub object_id: Option<u32>,
 }
 
-
 impl ExtGraphicsState {
     /// Create a new `ExtGraphicsState` with fill and stroke alpha.
-    #[must_use] 
+    #[must_use]
     pub fn with_alpha(alpha: Scalar) -> Self {
         Self {
             stroke_alpha: Some(alpha),
@@ -49,7 +47,7 @@ impl ExtGraphicsState {
     }
 
     /// Create a new `ExtGraphicsState` with blend mode.
-    #[must_use] 
+    #[must_use]
     pub fn with_blend_mode(mode: PdfBlendMode) -> Self {
         Self {
             blend_mode: Some(mode),
@@ -82,7 +80,7 @@ impl ExtGraphicsState {
     }
 
     /// Generate the `ExtGState` PDF dictionary.
-    #[must_use] 
+    #[must_use]
     pub fn to_pdf_dict(&self, id: u32) -> String {
         let mut dict = format!("{id} 0 obj\n<<\n");
         dict.push_str("/Type /ExtGState\n");
@@ -131,7 +129,7 @@ impl ExtGraphicsState {
     /// `TransparencyManager::add_ext_gstate` wrongly dedupe two distinct
     /// states that happen to share the same alpha/blend-mode into a single
     /// cached object, silently dropping the other attributes.
-    #[must_use] 
+    #[must_use]
     pub fn cache_key(&self) -> ExtGStateKey {
         ExtGStateKey {
             stroke_alpha: self.stroke_alpha.map(|a| saturate_to_i32(a * 1000.0)),
@@ -206,7 +204,7 @@ pub enum PdfBlendMode {
 
 impl PdfBlendMode {
     /// Get the PDF name for this blend mode.
-    #[must_use] 
+    #[must_use]
     pub const fn pdf_name(&self) -> &'static str {
         match self {
             Self::Normal => "Normal",
@@ -229,7 +227,7 @@ impl PdfBlendMode {
     }
 
     /// Convert from skia `BlendMode`.
-    #[must_use] 
+    #[must_use]
     pub const fn from_skia_blend_mode(mode: BlendMode) -> Option<Self> {
         match mode {
             BlendMode::SrcOver => Some(Self::Normal),
@@ -277,7 +275,7 @@ pub enum SoftMaskSubtype {
 
 impl SoftMask {
     /// Create an alpha soft mask.
-    #[must_use] 
+    #[must_use]
     pub const fn alpha(group_ref: u32) -> Self {
         Self {
             subtype: SoftMaskSubtype::Alpha,
@@ -288,7 +286,7 @@ impl SoftMask {
     }
 
     /// Create a luminosity soft mask.
-    #[must_use] 
+    #[must_use]
     pub const fn luminosity(group_ref: u32) -> Self {
         Self {
             subtype: SoftMaskSubtype::Luminosity,
@@ -299,7 +297,7 @@ impl SoftMask {
     }
 
     /// Generate the soft mask PDF dictionary.
-    #[must_use] 
+    #[must_use]
     pub fn to_pdf_dict(&self, id: u32) -> String {
         let mut dict = format!("{id} 0 obj\n<<\n");
         dict.push_str("/Type /Mask\n");
@@ -357,7 +355,7 @@ impl Default for TransparencyGroup {
 
 impl TransparencyGroup {
     /// Create a new transparency group.
-    #[must_use] 
+    #[must_use]
     pub fn new(bbox: [Scalar; 4]) -> Self {
         Self {
             bbox,
@@ -384,7 +382,7 @@ impl TransparencyGroup {
     }
 
     /// Generate the transparency group `XObject`.
-    #[must_use] 
+    #[must_use]
     pub fn to_pdf_xobject(&self, id: u32) -> Vec<u8> {
         use std::io::Write;
 
@@ -443,7 +441,7 @@ pub struct TransparencyManager {
 
 impl TransparencyManager {
     /// Create a new transparency manager.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -507,7 +505,7 @@ impl TransparencyManager {
     }
 
     /// Get all `ExtGState` objects.
-    #[must_use] 
+    #[must_use]
     pub fn ext_gstates(&self) -> &[ExtGraphicsState] {
         &self.ext_gstates
     }
@@ -518,13 +516,13 @@ impl TransparencyManager {
     }
 
     /// Get all soft masks.
-    #[must_use] 
+    #[must_use]
     pub fn soft_masks(&self) -> &[SoftMask] {
         &self.soft_masks
     }
 
     /// Get all transparency groups.
-    #[must_use] 
+    #[must_use]
     pub fn groups(&self) -> &[TransparencyGroup] {
         &self.groups
     }
