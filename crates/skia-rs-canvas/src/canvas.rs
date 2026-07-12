@@ -1670,7 +1670,7 @@ impl<'a> Canvas<'a> {
     ///
     /// When GPU and deferred backings land, this method will route to
     /// the backing's flush primitive.
-    pub fn flush(&mut self) {
+    pub const fn flush(&mut self) {
         // Currently a no-op for all supported backings. GPU/deferred
         // routing will be added when those backings are introduced.
     }
@@ -1684,7 +1684,7 @@ impl<'a> Canvas<'a> {
 // Null backings; adding recording variants is tracked by P5-9 / P5-6.
 // =============================================================================
 
-impl<'a> Canvas<'a> {
+impl Canvas<'_> {
     /// Draw an image at the specified position.
     #[cfg(feature = "codec")]
     pub fn draw_image(
@@ -1712,6 +1712,10 @@ impl<'a> Canvas<'a> {
         clippy::too_many_lines,
         reason = "per-pixel image-rect blit loop mirrors SkDraw's image-rect drawing; splitting the hot loop would obscure the pixel pipeline"
     )]
+    #[allow(
+        clippy::similar_names,
+        reason = "dst_x_start/dst_y_start/dst_x_end/dst_y_end and src_x/src_y are the natural names for a 2D pixel-rect blit loop"
+    )]
     pub fn draw_image_rect(
         &mut self,
         image: &skia_rs_codec::Image,
@@ -1722,7 +1726,7 @@ impl<'a> Canvas<'a> {
         use skia_rs_core::cast::{ceil_to_i32, floor_to_i32, saturate_to_i32, scalar_from_i32};
 
         let src_rect = src
-            .cloned()
+            .copied()
             .unwrap_or_else(|| skia_rs_core::IRect::new(0, 0, image.width(), image.height()));
         if dst.is_empty() || src_rect.width() <= 0 || src_rect.height() <= 0 {
             return;
@@ -1797,10 +1801,16 @@ impl<'a> Canvas<'a> {
 
                 // Truncate-toward-zero-then-saturate, matching the previous
                 // `as i32` cast exactly for all finite inputs.
-                let src_x =
-                    saturate_to_i32((scalar_from_i32(src_rect.left) + (local.x - dst.left) * scale_x).trunc());
-                let src_y =
-                    saturate_to_i32((scalar_from_i32(src_rect.top) + (local.y - dst.top) * scale_y).trunc());
+                let src_x = saturate_to_i32(
+                    (local.x - dst.left)
+                        .mul_add(scale_x, scalar_from_i32(src_rect.left))
+                        .trunc(),
+                );
+                let src_y = saturate_to_i32(
+                    (local.y - dst.top)
+                        .mul_add(scale_y, scalar_from_i32(src_rect.top))
+                        .trunc(),
+                );
                 if src_x < 0 || src_x >= image.width() || src_y < 0 || src_y >= image.height() {
                     continue;
                 }
@@ -1836,6 +1846,10 @@ impl<'a> Canvas<'a> {
 
     /// Draw an image with nine-patch stretching.
     #[cfg(feature = "codec")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "nine-patch stretching is nine sequential draw_image_rect calls (corners/edges/center); splitting would fragment one cohesive layout"
+    )]
     pub fn draw_image_nine(
         &mut self,
         image: &skia_rs_codec::Image,
@@ -2034,7 +2048,7 @@ impl<'a> Canvas<'a> {
             VertexMode::TriangleFan => {
                 let center = positions[0];
                 for i in 1..positions.len().saturating_sub(1) {
-                    let c0 = colors.and_then(|c| c.get(0).copied());
+                    let c0 = colors.and_then(|c| c.first().copied());
                     let c1 = colors.and_then(|c| c.get(i).copied());
                     let c2 = colors.and_then(|c| c.get(i + 1).copied());
                     self.draw_triangle(
@@ -2057,6 +2071,10 @@ impl<'a> Canvas<'a> {
     /// (pixel-center barycentric test), the clip is applied per pixel, paint
     /// alpha modulates the vertex colors, and the blended color is
     /// premultiplied for the premul pixel pipeline.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one vertex-color pair per triangle corner (p0/c0, p1/c1, p2/c2) plus paint mirrors the SkDraw triangle-rasterizer parameter shape; bundling would obscure the correspondence"
+    )]
     fn draw_triangle(
         &mut self,
         p0: Point,
@@ -2067,6 +2085,9 @@ impl<'a> Canvas<'a> {
         c2: Option<Color>,
         paint: &Paint,
     ) {
+        use skia_rs_core::cast::{ceil_to_i32, floor_to_i32, scalar_from_i32};
+        use skia_rs_core::mul_div_255_round;
+
         // The clip stack lives in a disjoint field; query it while holding
         // the mutable buffer borrow below.
         let clip_stack = &self.clip_stack;
@@ -2089,31 +2110,31 @@ impl<'a> Canvas<'a> {
         let default_color = paint.color32().to_color4f();
         let modulate =
             |c: skia_rs_core::Color4f| skia_rs_core::Color4f::new(c.r, c.g, c.b, c.a * paint_alpha);
-        let col0 = modulate(c0.map(|c| c.to_color4f()).unwrap_or(default_color));
-        let col1 = modulate(c1.map(|c| c.to_color4f()).unwrap_or(default_color));
-        let col2 = modulate(c2.map(|c| c.to_color4f()).unwrap_or(default_color));
+        let col0 = modulate(c0.map_or(default_color, |c| c.to_color4f()));
+        let col1 = modulate(c1.map_or(default_color, |c| c.to_color4f()));
+        let col2 = modulate(c2.map_or(default_color, |c| c.to_color4f()));
         let uniform = c0 == c1 && c1 == c2;
         let uniform_color = skia_rs_core::premultiply_color(col0.to_color());
 
         // Bounding box.
-        let min_x = p0.x.min(p1.x).min(p2.x).floor() as i32;
-        let max_x = p0.x.max(p1.x).max(p2.x).ceil() as i32;
-        let min_y = p0.y.min(p1.y).min(p2.y).floor() as i32;
-        let max_y = p0.y.max(p1.y).max(p2.y).ceil() as i32;
+        let min_x = floor_to_i32(p0.x.min(p1.x).min(p2.x));
+        let max_x = ceil_to_i32(p0.x.max(p1.x).max(p2.x));
+        let min_y = floor_to_i32(p0.y.min(p1.y).min(p2.y));
+        let max_y = ceil_to_i32(p0.y.max(p1.y).max(p2.y));
 
-        let denom = (p1.y - p2.y) * (p0.x - p2.x) + (p2.x - p1.x) * (p0.y - p2.y);
+        let denom = (p1.y - p2.y).mul_add(p0.x - p2.x, (p2.x - p1.x) * (p0.y - p2.y));
         if denom.abs() < 1e-7 {
             return; // degenerate triangle
         }
 
         for y in min_y..max_y {
             for x in min_x..max_x {
-                let px = x as Scalar + 0.5;
-                let py = y as Scalar + 0.5;
+                let px = scalar_from_i32(x) + 0.5;
+                let py = scalar_from_i32(y) + 0.5;
 
                 // Barycentric coordinates at the pixel center.
-                let w0 = ((p1.y - p2.y) * (px - p2.x) + (p2.x - p1.x) * (py - p2.y)) / denom;
-                let w1 = ((p2.y - p0.y) * (px - p2.x) + (p0.x - p2.x) * (py - p2.y)) / denom;
+                let w0 = (p1.y - p2.y).mul_add(px - p2.x, (p2.x - p1.x) * (py - p2.y)) / denom;
+                let w1 = (p2.y - p0.y).mul_add(px - p2.x, (p0.x - p2.x) * (py - p2.y)) / denom;
                 let w2 = 1.0 - w0 - w1;
                 if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
                     continue;
@@ -2128,10 +2149,10 @@ impl<'a> Canvas<'a> {
                 let mut color = if uniform {
                     uniform_color
                 } else {
-                    let r = col0.r * w0 + col1.r * w1 + col2.r * w2;
-                    let g = col0.g * w0 + col1.g * w1 + col2.g * w2;
-                    let b = col0.b * w0 + col1.b * w1 + col2.b * w2;
-                    let a = col0.a * w0 + col1.a * w1 + col2.a * w2;
+                    let r = col0.r.mul_add(w0, col1.r.mul_add(w1, col2.r * w2));
+                    let g = col0.g.mul_add(w0, col1.g.mul_add(w1, col2.g * w2));
+                    let b = col0.b.mul_add(w0, col1.b.mul_add(w1, col2.b * w2));
+                    let a = col0.a.mul_add(w0, col1.a.mul_add(w1, col2.a * w2));
                     skia_rs_core::premultiply_color(
                         skia_rs_core::Color4f::new(
                             r.clamp(0.0, 1.0),
@@ -2144,7 +2165,7 @@ impl<'a> Canvas<'a> {
                 };
 
                 if clip_cov < 255 {
-                    let s = |v: u8| ((v as u32 * clip_cov as u32 + 128) * 257 >> 16) as u8;
+                    let s = |v: u8| mul_div_255_round(u32::from(v), u32::from(clip_cov));
                     color = Color::from_argb(
                         s(color.alpha()),
                         s(color.red()),
@@ -2215,6 +2236,10 @@ pub enum VertexMode {
 fn build_round_rect_path(rect: &Rect, rx: Scalar, ry: Scalar) -> Path {
     use skia_rs_path::PathBuilder;
 
+    // Quarter-circle conics of weight sqrt(2)/2 — the exact circular-arc
+    // geometry Skia uses for round rect corners.
+    const W: Scalar = std::f32::consts::FRAC_1_SQRT_2;
+
     let mut builder = PathBuilder::new();
     if rx <= 0.0 || ry <= 0.0 || rect.is_empty() {
         builder.add_rect(rect);
@@ -2228,10 +2253,6 @@ fn build_round_rect_path(rect: &Rect, rx: Scalar, ry: Scalar) -> Path {
         .min(1.0);
     let rx = rx * scale;
     let ry = ry * scale;
-
-    // Quarter-circle conics of weight sqrt(2)/2 — the exact circular-arc
-    // geometry Skia uses for round rect corners.
-    const W: Scalar = std::f32::consts::FRAC_1_SQRT_2;
 
     builder.move_to(rect.left + rx, rect.top);
     builder.line_to(rect.right - rx, rect.top);
@@ -2274,12 +2295,9 @@ fn build_arc_path(oval: &Rect, start_angle: Scalar, sweep_angle: Scalar, use_cen
     // Wedge: center -> arc start -> arc -> close.
     let center = oval.center();
     builder.move_to(center.x, center.y);
-    for element in arc_path.iter() {
+    for element in &arc_path {
         match element {
-            PathElement::Move(p) => {
-                builder.line_to(p.x, p.y);
-            }
-            PathElement::Line(p) => {
+            PathElement::Move(p) | PathElement::Line(p) => {
                 builder.line_to(p.x, p.y);
             }
             PathElement::Quad(c, p) => {
@@ -2330,7 +2348,8 @@ pub struct ImageLattice {
 
 impl ImageLattice {
     /// Create a new image lattice.
-    pub fn new(x_divs: Vec<i32>, y_divs: Vec<i32>) -> Self {
+    #[must_use]
+    pub const fn new(x_divs: Vec<i32>, y_divs: Vec<i32>) -> Self {
         Self {
             x_divs,
             y_divs,
@@ -2369,6 +2388,7 @@ pub struct RSXform {
 
 impl RSXform {
     /// Create from rotation and scale.
+    #[must_use]
     pub fn from_radians(
         scale: Scalar,
         radians: Scalar,
@@ -2381,13 +2401,14 @@ impl RSXform {
         Self {
             scos: scale * cos,
             ssin: scale * sin,
-            tx: tx + -scale * (ax * cos - ay * sin),
-            ty: ty + -scale * (ax * sin + ay * cos),
+            tx: (-scale).mul_add(ax.mul_add(cos, -(ay * sin)), tx),
+            ty: (-scale).mul_add(ax.mul_add(sin, ay * cos), ty),
         }
     }
 
     /// Create a simple translation + scale.
-    pub fn from_scale_translate(scale: Scalar, tx: Scalar, ty: Scalar) -> Self {
+    #[must_use]
+    pub const fn from_scale_translate(scale: Scalar, tx: Scalar, ty: Scalar) -> Self {
         Self {
             scos: scale,
             ssin: 0.0,
@@ -2406,6 +2427,7 @@ impl RSXform {
     /// [ ssin   scos  ty ]
     /// [    0      0   1 ]
     /// ```
+    #[must_use]
     pub fn to_matrix(&self) -> Matrix {
         Matrix {
             values: [
