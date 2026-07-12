@@ -588,29 +588,29 @@ mod tests {
         let compiler = ShaderCompiler::new();
 
         // Syntax error: missing closing brace.
-        let bad_syntax = r#"
+        let bad_syntax = r"
 @vertex
 fn vs_main() -> @builtin(position) vec4<f32> {
     return vec4<f32>(0.0, 0.0, 0.0, 1.0);
-"#;
+";
         assert!(!compiler.validate(bad_syntax));
 
         // Undeclared identifier.
-        let undeclared = r#"
+        let undeclared = r"
 @vertex
 fn vs_main() -> @builtin(position) vec4<f32> {
     return undeclared_variable;
 }
-"#;
+";
         assert!(!compiler.validate(undeclared));
 
         // Wrong type in return.
-        let type_error = r#"
+        let type_error = r"
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
     return 42;
 }
-"#;
+";
         assert!(!compiler.validate(type_error));
 
         // The detailed report should include an error string for these.
@@ -663,13 +663,11 @@ fn fs_main() -> @location(0) vec4<f32> {
         ] {
             assert!(
                 src.contains(".rgb * ") && src.contains(".a"),
-                "shader {} must premultiply rgb by alpha",
-                name
+                "shader {name} must premultiply rgb by alpha"
             );
             assert!(
                 compiler.validate(src),
-                "shader {} must remain valid WGSL",
-                name
+                "shader {name} must remain valid WGSL"
             );
         }
     }

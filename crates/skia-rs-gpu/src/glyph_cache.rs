@@ -4,9 +4,10 @@
 //! storage in texture atlases for efficient GPU rendering.
 
 use crate::atlas::{AtlasAllocResult, AtlasConfig, AtlasEntryId, AtlasRegion, TextureAtlas};
+use crate::cast_util::{f64_from_u64, scalar_from_u32, u8_from_scalar_sat, u32_from_scalar_sat};
 use skia_rs_core::{Point, Rect, Scalar};
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 
 /// A unique key for identifying a glyph in the cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -32,9 +33,9 @@ impl GlyphKey {
         Self {
             font_id,
             glyph_id,
-            size_px: (size * 4.0) as u32, // Quarter pixel precision
-            sub_pixel_x: ((sub_pixel.x.fract() * 4.0) as u8).min(3),
-            sub_pixel_y: ((sub_pixel.y.fract() * 4.0) as u8).min(3),
+            size_px: u32_from_scalar_sat(size * 4.0), // Quarter pixel precision
+            sub_pixel_x: u8_from_scalar_sat(sub_pixel.x.fract() * 4.0).min(3),
+            sub_pixel_y: u8_from_scalar_sat(sub_pixel.y.fract() * 4.0).min(3),
             flags: 0,
         }
     }
@@ -85,7 +86,7 @@ impl GlyphCacheStats {
         if total == 0 {
             0.0
         } else {
-            self.hits as f64 / total as f64
+            f64_from_u64(self.hits) / f64_from_u64(total)
         }
     }
 }
@@ -234,7 +235,7 @@ impl GlyphCache {
             }
         };
 
-        let bounds = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
+        let bounds = Rect::from_xywh(0.0, 0.0, scalar_from_u32(width), scalar_from_u32(height));
 
         let glyph = CachedGlyph {
             entry_id,
@@ -400,7 +401,10 @@ impl GlyphBatch {
         self.instances.push(GlyphInstance {
             position: Point::new(position.x + glyph.offset.x, position.y + glyph.offset.y),
             uv,
-            size: [glyph.region.width as f32, glyph.region.height as f32],
+            size: [
+                scalar_from_u32(glyph.region.width),
+                scalar_from_u32(glyph.region.height),
+            ],
             color,
             layer: glyph.region.layer,
         });
@@ -455,6 +459,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp, reason = "exact literal values, no accumulated error")]
     fn test_glyph_cache_insert_lookup() {
         let mut cache = GlyphCache::default();
 
@@ -507,6 +512,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp, reason = "exact literal values, no accumulated error")]
     fn test_glyph_batch() {
         let mut batch = GlyphBatch::new(0);
         assert!(batch.is_empty());

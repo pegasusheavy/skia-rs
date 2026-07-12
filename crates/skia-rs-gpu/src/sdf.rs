@@ -3,6 +3,8 @@
 //! This module provides utilities for generating and rendering SDFs,
 //! which enable resolution-independent rendering of text and vector shapes.
 
+use crate::cast_util::{scalar_from_u32, scalar_from_usize};
+use skia_rs_core::cast::f32_to_u8_sat;
 use skia_rs_core::{Point, Rect};
 
 /// SDF generation configuration.
@@ -219,8 +221,8 @@ fn distance_transform_2d(f: &mut [f32], w: usize, h: usize) {
 /// envelope of parabolas `(i - q)² + f[q]`, then evaluate the envelope at
 /// each integer point. Runs in O(n).
 fn distance_transform_1d(f: &mut [f32]) {
-    let n = f.len();
-    if n == 0 {
+    let len = f.len();
+    if len == 0 {
         return;
     }
     let big = f32::MAX / 4.0;
@@ -230,68 +232,84 @@ fn distance_transform_1d(f: &mut [f32]) {
 
     // Find first non-infinite index; if the entire input is infinite, the
     // result is also infinite (no source pixel anywhere).
-    let first_finite = if let Some(i) = input.iter().position(|&v| v < big) { i } else {
-        for v in f.iter_mut() {
-            *v = big;
+    let Some(first_finite) = input.iter().position(|&value| value < big) else {
+        for value in f.iter_mut() {
+            *value = big;
         }
         return;
     };
 
     // Indices of parabolas in the lower envelope, and the boundaries
-    // between them. `k` is the index of the rightmost parabola in the
+    // between them. `env_top` is the index of the rightmost parabola in the
     // envelope.
-    let mut v = vec![0usize; n];
-    let mut z = vec![0.0f32; n + 1];
-    let mut k: isize = 0;
-    v[0] = first_finite;
-    z[0] = f32::NEG_INFINITY;
-    z[1] = f32::INFINITY;
+    let mut envelope_vertex = vec![0usize; len];
+    let mut envelope_bound = vec![0.0f32; len + 1];
+    let mut env_top: isize = 0;
+    envelope_vertex[0] = first_finite;
+    envelope_bound[0] = f32::NEG_INFINITY;
+    envelope_bound[1] = f32::INFINITY;
 
-    for q in (first_finite + 1)..n {
-        if input[q] >= big {
+    for parab in (first_finite + 1)..len {
+        if input[parab] >= big {
             continue;
         }
-        // Intersection of parabola q with parabola v[k].
+        // Intersection of parabola `parab` with parabola envelope_vertex[env_top].
         loop {
-            let p = v[k as usize];
-            let fp = input[p];
-            let fq = input[q];
-            let denom = 2.0 * (q as f32 - p as f32);
-            let s = ((fq + (q * q) as f32) - (fp + (p * p) as f32)) / denom;
-            if s <= z[k as usize] {
-                if k == 0 {
+            let top_idx = index_from_isize(env_top);
+            let vertex = envelope_vertex[top_idx];
+            let f_vertex = input[vertex];
+            let f_parab = input[parab];
+            let denom = 2.0 * (scalar_from_usize(parab) - scalar_from_usize(vertex));
+            let s = ((f_parab + scalar_from_usize(parab * parab))
+                - (f_vertex + scalar_from_usize(vertex * vertex)))
+                / denom;
+            if s <= envelope_bound[top_idx] {
+                if env_top == 0 {
                     // Replace the single parabola in the envelope.
-                    v[0] = q;
-                    z[0] = f32::NEG_INFINITY;
-                    z[1] = f32::INFINITY;
+                    envelope_vertex[0] = parab;
+                    envelope_bound[0] = f32::NEG_INFINITY;
+                    envelope_bound[1] = f32::INFINITY;
                     break;
                 }
-                k -= 1;
+                env_top -= 1;
             } else {
-                k += 1;
-                v[k as usize] = q;
-                z[k as usize] = s;
-                z[k as usize + 1] = f32::INFINITY;
+                env_top += 1;
+                let new_top = index_from_isize(env_top);
+                envelope_vertex[new_top] = parab;
+                envelope_bound[new_top] = s;
+                envelope_bound[new_top + 1] = f32::INFINITY;
                 break;
             }
         }
     }
 
     // Evaluate the lower envelope at each integer location.
-    let mut j: isize = 0;
-    for q in 0..n {
-        while j < k && z[j as usize + 1] < q as f32 {
-            j += 1;
+    let mut cursor: isize = 0;
+    for (out_idx, dst) in f.iter_mut().enumerate() {
+        while cursor < env_top
+            && envelope_bound[index_from_isize(cursor) + 1] < scalar_from_usize(out_idx)
+        {
+            cursor += 1;
         }
-        let p = v[j as usize];
-        let fp = input[p];
-        if fp >= big {
-            f[q] = big;
+        let vertex = envelope_vertex[index_from_isize(cursor)];
+        let f_vertex = input[vertex];
+        if f_vertex >= big {
+            *dst = big;
         } else {
-            let d = q as f32 - p as f32;
-            f[q] = d.mul_add(d, fp);
+            let d = scalar_from_usize(out_idx) - scalar_from_usize(vertex);
+            *dst = d.mul_add(d, f_vertex);
         }
     }
+}
+
+/// Convert a non-negative envelope index to `usize`.
+///
+/// # Panics
+/// Panics if `k` is negative, which cannot happen: `env_top`/`cursor` only
+/// ever decrease below zero via the `env_top == 0` early-return guard above.
+#[inline]
+fn index_from_isize(k: isize) -> usize {
+    usize::try_from(k).expect("envelope index must be non-negative")
 }
 
 /// Convert SDF to normalized texture data (0-255).
@@ -310,8 +328,7 @@ pub fn sdf_to_texture(sdf: &[f32], spread: f32) -> Vec<u8> {
             // Negate: inside (d < 0) -> positive -> high byte. Clamp the
             // positive range to mag*127/128 (Skia) so it never rounds to 256.
             let shifted = (-d).clamp(-mag, mag * 127.0 / 128.0) + mag;
-            let byte = (shifted / (2.0 * mag) * 256.0).round();
-            byte.clamp(0.0, 255.0) as u8
+            f32_to_u8_sat(shifted / (2.0 * mag) * 256.0)
         })
         .collect()
 }
@@ -319,8 +336,10 @@ pub fn sdf_to_texture(sdf: &[f32], spread: f32) -> Vec<u8> {
 /// Sample SDF at a point with bilinear filtering.
 #[must_use] 
 pub fn sample_sdf_bilinear(sdf: &[f32], width: u32, height: u32, x: f32, y: f32) -> f32 {
-    let x0 = (x.floor() as i32).clamp(0, width as i32 - 1) as u32;
-    let y0 = (y.floor() as i32).clamp(0, height as i32 - 1) as u32;
+    let width_i32 = i32::try_from(width).unwrap_or(i32::MAX);
+    let height_i32 = i32::try_from(height).unwrap_or(i32::MAX);
+    let x0 = u32::try_from(skia_rs_core::cast::floor_to_i32(x).clamp(0, width_i32 - 1)).unwrap_or(0);
+    let y0 = u32::try_from(skia_rs_core::cast::floor_to_i32(y).clamp(0, height_i32 - 1)).unwrap_or(0);
     let x1 = (x0 + 1).min(width - 1);
     let y1 = (y0 + 1).min(height - 1);
 
@@ -342,12 +361,12 @@ pub fn sample_sdf_bilinear(sdf: &[f32], width: u32, height: u32, x: f32, y: f32)
 #[must_use] 
 pub fn generate_circle_sdf(size: u32, radius: f32) -> Vec<f32> {
     let mut sdf = Vec::with_capacity((size * size) as usize);
-    let center = size as f32 * 0.5;
+    let center = scalar_from_u32(size) * 0.5;
 
     for y in 0..size {
         for x in 0..size {
-            let dx = x as f32 + 0.5 - center;
-            let dy = y as f32 + 0.5 - center;
+            let dx = scalar_from_u32(x) + 0.5 - center;
+            let dy = scalar_from_u32(y) + 0.5 - center;
             let dist = dx.hypot(dy) - radius;
             sdf.push(dist);
         }
@@ -363,8 +382,8 @@ pub fn generate_rounded_rect_sdf(size: u32, rect: Rect, radius: f32) -> Vec<f32>
 
     for y in 0..size {
         for x in 0..size {
-            let px = x as f32 + 0.5;
-            let py = y as f32 + 0.5;
+            let px = scalar_from_u32(x) + 0.5;
+            let py = scalar_from_u32(y) + 0.5;
 
             // Distance to rounded rectangle
             let dist = sdf_rounded_rect(px, py, &rect, radius);
@@ -432,16 +451,20 @@ impl MsdfData {
             let g = ((self.g[i] / spread + 1.0) * 0.5).clamp(0.0, 1.0);
             let b = ((self.b[i] / spread + 1.0) * 0.5).clamp(0.0, 1.0);
 
-            data.push((r * 255.0).round() as u8);
-            data.push((g * 255.0).round() as u8);
-            data.push((b * 255.0).round() as u8);
+            data.push(f32_to_u8_sat(r * 255.0));
+            data.push(f32_to_u8_sat(g * 255.0));
+            data.push(f32_to_u8_sat(b * 255.0));
         }
 
         data
     }
 
     /// Sample median value for MSDF rendering.
-    #[must_use] 
+    #[must_use]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "x/y position and r/g/b channel names are the standard convention"
+    )]
     pub fn sample_median(&self, x: f32, y: f32) -> f32 {
         let r = sample_sdf_bilinear(&self.r, self.width, self.height, x, y);
         let g = sample_sdf_bilinear(&self.g, self.width, self.height, x, y);
@@ -542,8 +565,10 @@ impl SdfTextBatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cast_util::u32_from_usize;
 
     #[test]
+    #[allow(clippy::float_cmp, reason = "exact literal values, no accumulated error")]
     fn test_sdf_config() {
         let config = SdfConfig::default();
         assert_eq!(config.size, 64);
@@ -554,6 +579,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp, reason = "exact literal values, no accumulated error")]
     fn test_sdf_render_params() {
         let params = SdfRenderParams::default();
         assert!(params.smoothing > 0.0);
@@ -636,7 +662,7 @@ mod tests {
             }
         }
 
-        let sdf = generate_sdf_from_mask(&mask, w as u32, h as u32, 10.0);
+        let sdf = generate_sdf_from_mask(&mask, u32_from_usize(w), u32_from_usize(h), 10.0);
         assert_eq!(sdf.len(), 64);
 
         // Centre of the square should be interior (negative).
@@ -649,7 +675,7 @@ mod tests {
 
         // A pixel at the boundary (row 2, column 2 is inside; row 1, col 2
         // is outside and adjacent) — its distance should be near 1.
-        let just_outside = sdf[1 * w + 2];
+        let just_outside = sdf[w + 2];
         assert!(just_outside > 0.0 && just_outside < 2.0);
     }
 
@@ -661,14 +687,12 @@ mod tests {
         let mut f = vec![inf; 7];
         f[3] = 0.0;
         distance_transform_1d(&mut f);
-        for i in 0..7 {
-            let expected = ((i as i32 - 3) * (i as i32 - 3)) as f32;
+        for (i, &value) in f.iter().enumerate() {
+            let signed_i = i32::try_from(i).unwrap_or(0) - 3;
+            let expected = scalar_from_u32(u32::try_from(signed_i * signed_i).unwrap_or(0));
             assert!(
-                (f[i] - expected).abs() < 1e-4,
-                "idx {}: {} vs {}",
-                i,
-                f[i],
-                expected
+                (value - expected).abs() < 1e-4,
+                "idx {i}: {value} vs {expected}"
             );
         }
     }
@@ -703,20 +727,16 @@ mod tests {
         let mut mask = vec![0u8; w * h];
         mask[16 * w + 16] = 255; // single interior pixel
 
-        let sdf = generate_sdf_from_mask(&mask, w as u32, h as u32, 100.0);
+        let sdf = generate_sdf_from_mask(&mask, u32_from_usize(w), u32_from_usize(h), 100.0);
         // The inside pixel has nearest outside at distance 1; with the
         // half-texel edge correction the signed distance is -(1 - 0.5) = -0.5.
-        assert!(
-            (sdf[16 * w + 16] + 0.5).abs() < 1e-4,
-            "expected -0.5, got {}",
-            sdf[16 * w + 16]
-        );
+        let inside = sdf[16 * w + 16];
+        assert!((inside + 0.5).abs() < 1e-4, "expected -0.5, got {inside}");
         // A pixel three away (outside): distance-to-inside 3 -> 3 - 0.5 = 2.5.
         let three_away = sdf[16 * w + 19];
         assert!(
             (three_away - 2.5).abs() < 1e-4,
-            "expected ~2.5, got {}",
-            three_away
+            "expected ~2.5, got {three_away}"
         );
     }
 
@@ -733,7 +753,7 @@ mod tests {
                 mask[y * w + x] = 255; // right half filled
             }
         }
-        let sdf = generate_sdf_from_mask(&mask, w as u32, h as u32, 10.0);
+        let sdf = generate_sdf_from_mask(&mask, u32_from_usize(w), u32_from_usize(h), 10.0);
         // Column 4 is the first inside column; column 3 is the last outside.
         let inside_edge = sdf[3 * w + 4];
         let outside_edge = sdf[3 * w + 3];
@@ -758,13 +778,14 @@ mod tests {
                 mask[y * w + x] = 255;
             }
         }
-        let sdf = generate_sdf_from_mask(&mask, w as u32, h as u32, 8.0);
+        let sdf = generate_sdf_from_mask(&mask, u32_from_usize(w), u32_from_usize(h), 8.0);
         let tex = sdf_to_texture(&sdf, 8.0);
         assert!(tex[3 * w + 3] > 128, "inside texel must be high");
         assert!(tex[0] < 128, "outside texel must be low");
     }
 
     #[test]
+    #[allow(clippy::float_cmp, reason = "exact literal values, no accumulated error")]
     fn test_sdf_text_batch() {
         let params = SdfRenderParams::default();
         let mut batch = SdfTextBatch::new(params);

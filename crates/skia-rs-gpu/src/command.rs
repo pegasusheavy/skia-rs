@@ -3,6 +3,8 @@
 //! This module provides abstractions for recording GPU commands and managing
 //! command buffer submission.
 
+use crate::cast_util::u32_from_scalar_sat;
+use skia_rs_core::cast::f32_to_u8_sat;
 use skia_rs_core::{Color, Rect};
 
 /// Draw command for batching.
@@ -224,10 +226,10 @@ impl ScissorRect {
         let right = rect.right.max(left);
         let bottom = rect.bottom.max(top);
         Self {
-            x: left as u32,
-            y: top as u32,
-            width: (right - left) as u32,
-            height: (bottom - top) as u32,
+            x: u32_from_scalar_sat(left),
+            y: u32_from_scalar_sat(top),
+            width: u32_from_scalar_sat(right - left),
+            height: u32_from_scalar_sat(bottom - top),
         }
     }
 
@@ -544,14 +546,20 @@ impl CommandEncoder {
         }
     }
 
+    /// Get the debug label, if any.
+    #[must_use]
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
+
     /// Begin a render pass.
     pub fn begin_render_pass(&mut self, desc: &RenderPassDescriptor) -> RenderPassEncoder<'_> {
         if let Some(color) = desc.clear_color {
             self.buffer.clear(Color::from_argb(
-                (color[3] * 255.0) as u8,
-                (color[0] * 255.0) as u8,
-                (color[1] * 255.0) as u8,
-                (color[2] * 255.0) as u8,
+                f32_to_u8_sat(color[3] * 255.0),
+                f32_to_u8_sat(color[0] * 255.0),
+                f32_to_u8_sat(color[1] * 255.0),
+                f32_to_u8_sat(color[2] * 255.0),
             ));
         }
         RenderPassEncoder { encoder: self }
@@ -908,6 +916,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp, reason = "exact literal values, no accumulated error")]
     fn test_viewport() {
         let viewport = Viewport::new(0.0, 0.0, 800.0, 600.0).with_depth(0.0, 1.0);
 

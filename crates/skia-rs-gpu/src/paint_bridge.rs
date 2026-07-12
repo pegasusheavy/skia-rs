@@ -66,16 +66,19 @@ impl BuiltinShader {
     #[must_use] 
     pub const fn wgsl_sources(self) -> (&'static str, &'static str) {
         match self {
-            Self::SolidColor => (builtin::SOLID_COLOR_VS, builtin::SOLID_COLOR_FS),
-            Self::LinearGradient => (builtin::GRADIENT_VS, builtin::LINEAR_GRADIENT_FS),
-            Self::RadialGradient => (builtin::GRADIENT_VS, builtin::RADIAL_GRADIENT_FS),
+            // `Unsupported` falls back to the solid-color built-in.
+            Self::SolidColor | Self::Unsupported => {
+                (builtin::SOLID_COLOR_VS, builtin::SOLID_COLOR_FS)
+            }
             // No dedicated sweep shader in the built-in library yet; linear
             // is the closest analogue (same vertex layout, same single-color
             // output semantics). Callers can override by registering a
             // custom shader in `ShaderLibrary`.
-            Self::SweepGradient => (builtin::GRADIENT_VS, builtin::LINEAR_GRADIENT_FS),
+            Self::LinearGradient | Self::SweepGradient => {
+                (builtin::GRADIENT_VS, builtin::LINEAR_GRADIENT_FS)
+            }
+            Self::RadialGradient => (builtin::GRADIENT_VS, builtin::RADIAL_GRADIENT_FS),
             Self::Image => (builtin::TEXTURED_VS, builtin::TEXTURED_FS),
-            Self::Unsupported => (builtin::SOLID_COLOR_VS, builtin::SOLID_COLOR_FS),
         }
     }
 }
@@ -98,7 +101,11 @@ pub enum BlendClass {
 /// `BlendClass::Advanced` tag so the caller knows it needs a read-modify-write
 /// strategy (destination texture binding + custom shader) rather than the
 /// fixed-function blender.
-#[must_use] 
+#[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive one-arm-per-BlendMode table; splitting it up would obscure the Porter-Duff mapping"
+)]
 pub const fn blend_mode_to_state(mode: BlendMode) -> (BlendState, BlendClass) {
     let (color, class) = match mode {
         BlendMode::Clear => (
@@ -404,17 +411,17 @@ pub fn build_pipeline_descriptor_with_target(
 }
 
 fn classify_paint_shader(paint: &Paint) -> (BuiltinShader, PaintUniforms) {
-    match paint.shader() {
-        None => {
+    paint.shader().map_or_else(
+        || {
             // Solid color from `paint.color()`.
             let c = paint.color();
             (
                 BuiltinShader::SolidColor,
                 pack_solid_color(c.r, c.g, c.b, c.a),
             )
-        }
-        Some(shader_ref) => classify_shader_ref(shader_ref, paint),
-    }
+        },
+        |shader_ref| classify_shader_ref(shader_ref, paint),
+    )
 }
 
 fn classify_shader_ref(shader_ref: &ShaderRef, paint: &Paint) -> (BuiltinShader, PaintUniforms) {
@@ -767,7 +774,7 @@ mod tests {
             BlendMode::Luminosity,
         ] {
             let (_state, class) = blend_mode_to_state(mode);
-            assert_eq!(class, BlendClass::Advanced, "mode {:?}", mode);
+            assert_eq!(class, BlendClass::Advanced, "mode {mode:?}");
         }
     }
 

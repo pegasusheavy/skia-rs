@@ -3,6 +3,8 @@
 //! This module provides utilities for converting gradient definitions
 //! into textures suitable for GPU sampling.
 
+use crate::cast_util::{scalar_from_u32, usize_from_scalar_sat};
+use skia_rs_core::cast::f32_to_u8_sat;
 use skia_rs_core::Color4f;
 
 /// Gradient stop.
@@ -100,10 +102,10 @@ fn encode_texel(color: Color4f, config: &GradientTextureConfig) -> [u8; 4] {
         b *= a;
     }
     [
-        (r * 255.0).round().clamp(0.0, 255.0) as u8,
-        (g * 255.0).round().clamp(0.0, 255.0) as u8,
-        (b * 255.0).round().clamp(0.0, 255.0) as u8,
-        (a * 255.0).round().clamp(0.0, 255.0) as u8,
+        f32_to_u8_sat(r * 255.0),
+        f32_to_u8_sat(g * 255.0),
+        f32_to_u8_sat(b * 255.0),
+        f32_to_u8_sat(a * 255.0),
     ]
 }
 
@@ -135,9 +137,11 @@ pub fn generate_gradient_texture_1d(
     if sorted_stops[0].position > 0.0 {
         sorted_stops.insert(0, GradientStop::new(0.0, sorted_stops[0].color));
     }
-    if sorted_stops.last().unwrap().position < 1.0 {
-        let last_color = sorted_stops.last().unwrap().color;
-        sorted_stops.push(GradientStop::new(1.0, last_color));
+    if let Some(last) = sorted_stops.last() {
+        if last.position < 1.0 {
+            let last_color = last.color;
+            sorted_stops.push(GradientStop::new(1.0, last_color));
+        }
     }
 
     for x in 0..config.width {
@@ -145,7 +149,7 @@ pub fn generate_gradient_texture_1d(
         // across [0, 1). For Repeat this makes the final texel hold the
         // t->1- color rather than wrapping (via rem_euclid) back to the
         // first stop, which produced a visible seam at the tile boundary.
-        let mut t = (x as f32 + 0.5) / config.width as f32;
+        let mut t = (scalar_from_u32(x) + 0.5) / scalar_from_u32(config.width);
 
         // Apply tile mode
         t = apply_tile_mode(t, tile_mode);
@@ -177,14 +181,14 @@ pub fn generate_radial_gradient_texture(
         sorted_stops.push(GradientStop::new(1.0, Color4f::black()));
     }
 
-    let center_x = config.width as f32 * 0.5;
-    let center_y = config.height as f32 * 0.5;
+    let center_x = scalar_from_u32(config.width) * 0.5;
+    let center_y = scalar_from_u32(config.height) * 0.5;
     let max_radius = center_x.hypot(center_y);
 
     for y in 0..config.height {
         for x in 0..config.width {
-            let dx = x as f32 - center_x;
-            let dy = y as f32 - center_y;
+            let dx = scalar_from_u32(x) - center_x;
+            let dy = scalar_from_u32(y) - center_y;
             let mut t = dx.hypot(dy) / max_radius;
 
             t = apply_tile_mode(t, tile_mode);
@@ -214,13 +218,13 @@ pub fn generate_sweep_gradient_texture(
         sorted_stops.push(GradientStop::new(1.0, Color4f::black()));
     }
 
-    let center_x = config.width as f32 * 0.5;
-    let center_y = config.height as f32 * 0.5;
+    let center_x = scalar_from_u32(config.width) * 0.5;
+    let center_y = scalar_from_u32(config.height) * 0.5;
 
     for y in 0..config.height {
         for x in 0..config.width {
-            let dx = x as f32 - center_x;
-            let dy = y as f32 - center_y;
+            let dx = scalar_from_u32(x) - center_x;
+            let dy = scalar_from_u32(y) - center_y;
 
             // Sweep angle origin is the +x axis, increasing clockwise in the
             // y-down device space, matching Skia's `xy_to_unit_angle`
@@ -300,7 +304,7 @@ fn sample_gradient(stops: &[GradientStop], t: f32) -> Color4f {
 
 /// Convert linear color component to sRGB.
 fn linear_to_srgb(linear: f32) -> f32 {
-    if linear <= 0.0031308 {
+    if linear <= 0.003_130_8 {
         linear * 12.92
     } else {
         1.055f32.mul_add(linear.powf(1.0 / 2.4), -0.055)
@@ -346,7 +350,7 @@ impl GradientLUT {
     #[must_use] 
     pub fn sample(&self, t: f32) -> Color4f {
         let t = t.clamp(0.0, 1.0);
-        let x = (t * (self.width - 1) as f32).round() as usize;
+        let x = usize_from_scalar_sat((t * scalar_from_u32(self.width - 1)).round());
         let idx = x * 4;
 
         if idx + 3 < self.data.len() {
@@ -367,6 +371,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::float_cmp, reason = "exact literal values, no accumulated error")]
     fn test_gradient_stop() {
         let stop = GradientStop::new(0.5, Color4f::from_rgb(1.0, 0.0, 0.0));
         assert_eq!(stop.position, 0.5);
@@ -374,6 +379,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp, reason = "exact literal values, no accumulated error")]
     fn test_gradient_stop_clamping() {
         let stop = GradientStop::new(1.5, Color4f::from_rgb(1.0, 0.0, 0.0));
         assert_eq!(stop.position, 1.0);
@@ -480,7 +486,7 @@ mod tests {
         };
         let px = generate_gradient_texture_1d(&stops, GradientTileMode::Clamp, &config);
         assert!(
-            (px[0] as i32 - 128).abs() <= 1,
+            (i32::from(px[0]) - 128).abs() <= 1,
             "premul-after-encode R should be ~128, got {}",
             px[0]
         );

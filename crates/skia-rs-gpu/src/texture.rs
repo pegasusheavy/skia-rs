@@ -34,10 +34,14 @@ impl TextureFormat {
         match self {
             Self::R8Unorm => 1,
             Self::Rg8Unorm => 2,
-            Self::Rgba8Unorm | Self::Rgba8UnormSrgb | Self::Bgra8Unorm | Self::Bgra8UnormSrgb => 4,
+            Self::Rgba8Unorm
+            | Self::Rgba8UnormSrgb
+            | Self::Bgra8Unorm
+            | Self::Bgra8UnormSrgb
+            | Self::Depth24Stencil8
+            | Self::Depth32Float => 4,
             Self::Rgba16Float => 8,
             Self::Rgba32Float => 16,
-            Self::Depth24Stencil8 | Self::Depth32Float => 4,
         }
     }
 
@@ -47,8 +51,7 @@ impl TextureFormat {
         match color_type {
             ColorType::Rgba8888 => Some(Self::Rgba8Unorm),
             ColorType::Bgra8888 => Some(Self::Bgra8Unorm),
-            ColorType::Alpha8 => Some(Self::R8Unorm),
-            ColorType::Gray8 => Some(Self::R8Unorm),
+            ColorType::Alpha8 | ColorType::Gray8 => Some(Self::R8Unorm),
             ColorType::RgbaF16 => Some(Self::Rgba16Float),
             ColorType::RgbaF32 => Some(Self::Rgba32Float),
             _ => None,
@@ -145,6 +148,7 @@ impl TextureDescriptor {
     }
 
     /// Set the label.
+    #[must_use]
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self

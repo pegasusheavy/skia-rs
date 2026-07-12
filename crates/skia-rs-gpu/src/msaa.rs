@@ -3,6 +3,7 @@
 //! This module provides utilities for managing MSAA render targets
 //! and resolving multisampled surfaces.
 
+use crate::cast_util::scalar_from_u32;
 use crate::TextureFormat;
 
 /// MSAA sample count.
@@ -267,8 +268,8 @@ pub mod sample_positions {
             SampleCount::S1 => &[(0.5, 0.5)],
             SampleCount::S2 => &MSAA_2X,
             SampleCount::S4 => &MSAA_4X,
-            SampleCount::S8 => &MSAA_8X,
-            SampleCount::S16 => &MSAA_8X, // Use 8x positions, implementation varies
+            // S16 uses 8x positions too; implementation varies.
+            SampleCount::S8 | SampleCount::S16 => &MSAA_8X,
         }
     }
 }
@@ -302,7 +303,7 @@ impl CoverageMask {
     /// Calculate coverage percentage.
     #[must_use] 
     pub fn coverage(&self, sample_count: SampleCount) -> f32 {
-        self.count() as f32 / sample_count.count() as f32
+        scalar_from_u32(self.count()) / scalar_from_u32(sample_count.count())
     }
 }
 

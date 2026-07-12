@@ -4,8 +4,9 @@
 //! of complex paths with correct winding rule handling.
 
 use crate::tessellation::{TessIndex, TessMesh, TessVertex};
+use skia_rs_core::cast::scalar_from_i32;
 use skia_rs_core::{Point, Rect, Scalar};
-use skia_rs_path::{FillType, Path, PathBuilder, PathElement};
+use skia_rs_path::{FillType, Path, PathElement};
 
 /// Fill rule for stencil operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -270,7 +271,7 @@ fn tessellate_path_for_stencil(path: &Path) -> TessMesh {
             *start = None;
         };
 
-    for element in path.iter() {
+    for element in path {
         match element {
             PathElement::Move(p) => {
                 // A new contour begins; implicitly close the previous one.
@@ -291,7 +292,7 @@ fn tessellate_path_for_stencil(path: &Path) -> TessMesh {
             PathElement::Quad(ctrl, end) => {
                 let steps = 8;
                 for i in 1..=steps {
-                    let t = i as Scalar / steps as Scalar;
+                    let t = scalar_from_i32(i) / scalar_from_i32(steps);
                     let p = eval_quad(current_point, ctrl, end, t);
                     let curr_vertex = mesh.add_vertex(TessVertex::from_point(p));
                     if let Some(prev) = prev_vertex {
@@ -304,7 +305,7 @@ fn tessellate_path_for_stencil(path: &Path) -> TessMesh {
             PathElement::Conic(ctrl, end, weight) => {
                 let steps = 8;
                 for i in 1..=steps {
-                    let t = i as Scalar / steps as Scalar;
+                    let t = scalar_from_i32(i) / scalar_from_i32(steps);
                     let p = eval_conic(current_point, ctrl, end, weight, t);
                     let curr_vertex = mesh.add_vertex(TessVertex::from_point(p));
                     if let Some(prev) = prev_vertex {
@@ -317,7 +318,7 @@ fn tessellate_path_for_stencil(path: &Path) -> TessMesh {
             PathElement::Cubic(ctrl1, ctrl2, end) => {
                 let steps = 12;
                 for i in 1..=steps {
-                    let t = i as Scalar / steps as Scalar;
+                    let t = scalar_from_i32(i) / scalar_from_i32(steps);
                     let p = eval_cubic(current_point, ctrl1, ctrl2, end, t);
                     let curr_vertex = mesh.add_vertex(TessVertex::from_point(p));
                     if let Some(prev) = prev_vertex {
@@ -533,6 +534,7 @@ fn eval_cubic(p0: Point, p1: Point, p2: Point, p3: Point, t: Scalar) -> Point {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skia_rs_path::PathBuilder;
 
     #[test]
     fn test_stencil_fill_rule_conversion() {
@@ -672,7 +674,7 @@ mod tests {
             .iter()
             .map(|v| v.position[0])
             .collect();
-        let max_x = xs.iter().cloned().fold(f32::MIN, f32::max);
+        let max_x = xs.iter().copied().fold(f32::MIN, f32::max);
         assert!(
             max_x >= 200.0,
             "inverse cover must span clip bounds, got max_x={max_x}"
