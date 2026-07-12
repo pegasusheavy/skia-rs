@@ -107,6 +107,22 @@ struct ParsedTypeface {
     avg_char_width: Option<i16>,
 }
 
+/// Read `xAvgCharWidth` from a raw `OS/2` table blob.
+///
+/// `xAvgCharWidth` is the first field after the `version` u16, i.e. a
+/// signed big-endian i16 at byte offset 2. Returns `None` when the table
+/// is too short to contain it (guarding truncated/malformed tables), so
+/// callers fall back to a bbox-derived estimate. ttf-parser does not
+/// surface this field, hence the manual offset read.
+#[inline]
+fn os2_avg_char_width(table: &[u8]) -> Option<i16> {
+    if table.len() >= 4 {
+        Some(i16::from_be_bytes([table[2], table[3]]))
+    } else {
+        None
+    }
+}
+
 /// Raw font metrics extracted from OpenType/TrueType tables.
 ///
 /// These values are in font design units, not scaled to a specific size.
@@ -374,8 +390,7 @@ impl Typeface {
                     avg_char_width: face
                         .raw_face()
                         .table(ttf_parser::Tag::from_bytes(b"OS/2"))
-                        .filter(|t| t.len() >= 4)
-                        .map(|t| i16::from_be_bytes([t[2], t[3]])),
+                        .and_then(os2_avg_char_width),
                 })
             })
             .as_ref()
@@ -471,5 +486,29 @@ mod tests {
         let tf = Typeface::default_typeface();
         assert_eq!(tf.char_to_glyph('A'), 65);
         assert_eq!(tf.char_to_glyph('a'), 97);
+    }
+
+    #[test]
+    fn os2_avg_char_width_reads_signed_be_i16_at_offset_2() {
+        // Synthetic OS/2 blob: version (offset 0..2) then xAvgCharWidth
+        // (offset 2..4) big-endian. 0x02F9 = 761. Trailing bytes stand in
+        // for the rest of the table and must be ignored.
+        let table = [0x00, 0x04, 0x02, 0xF9, 0xAB, 0xCD];
+        assert_eq!(os2_avg_char_width(&table), Some(761));
+    }
+
+    #[test]
+    fn os2_avg_char_width_reads_negative_value() {
+        // 0xFF9C big-endian as i16 is -100 — confirms the read is signed.
+        let table = [0x00, 0x05, 0xFF, 0x9C];
+        assert_eq!(os2_avg_char_width(&table), Some(-100));
+    }
+
+    #[test]
+    fn os2_avg_char_width_len_guard_rejects_short_table() {
+        // Fewer than 4 bytes cannot hold xAvgCharWidth; must yield None
+        // rather than panic, so callers use the bbox fallback.
+        assert_eq!(os2_avg_char_width(&[0x00, 0x04, 0x02]), None);
+        assert_eq!(os2_avg_char_width(&[]), None);
     }
 }
