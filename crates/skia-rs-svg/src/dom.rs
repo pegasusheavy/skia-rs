@@ -28,16 +28,19 @@ pub struct SvgDom {
 
 impl SvgDom {
     /// Create a new empty SVG DOM.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Get the intrinsic size.
-    pub fn intrinsic_size(&self) -> (Scalar, Scalar) {
+    #[must_use]
+    pub const fn intrinsic_size(&self) -> (Scalar, Scalar) {
         (self.width, self.height)
     }
 
     /// Get the view box or calculate from size.
+    #[must_use]
     pub fn get_view_box(&self) -> Rect {
         self.view_box
             .unwrap_or_else(|| Rect::from_xywh(0.0, 0.0, self.width, self.height))
@@ -103,11 +106,12 @@ impl Default for PreserveAspectRatio {
 }
 
 /// SVG node types.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum SvgNodeKind {
     /// Root SVG element.
     Svg,
     /// Group element.
+    #[default]
     Group,
     /// Rectangle.
     Rect(SvgRect),
@@ -122,7 +126,7 @@ pub enum SvgNodeKind {
     /// Polygon.
     Polygon(Vec<Point>),
     /// Path.
-    Path(Path),
+    Path(Box<Path>),
     /// Text.
     Text(SvgText),
     /// Image.
@@ -139,12 +143,6 @@ pub enum SvgNodeKind {
     ClipPath(String),
     /// Unknown element.
     Unknown(String),
-}
-
-impl Default for SvgNodeKind {
-    fn default() -> Self {
-        Self::Group
-    }
 }
 
 /// SVG node (element in the DOM tree).
@@ -184,7 +182,7 @@ pub struct SvgNode {
     /// Visibility.
     pub visible: bool,
     /// Child nodes.
-    pub children: Vec<SvgNode>,
+    pub children: Vec<Self>,
     /// Custom attributes.
     pub attributes: HashMap<String, String>,
 }
@@ -196,6 +194,7 @@ impl SvgNode {
     /// the render walk can resolve them against the parent presentation
     /// context. The `fill: black` initial value lives at the root of that
     /// context, not on every node.
+    #[must_use]
     pub fn new(kind: SvgNodeKind) -> Self {
         Self {
             kind,
@@ -216,12 +215,13 @@ impl SvgNode {
     }
 
     /// Add a child node.
-    pub fn add_child(&mut self, child: SvgNode) {
+    pub fn add_child(&mut self, child: Self) {
         self.children.push(child);
     }
 
     /// Find a node by ID.
-    pub fn find_by_id(&self, id: &str) -> Option<&SvgNode> {
+    #[must_use]
+    pub fn find_by_id(&self, id: &str) -> Option<&Self> {
         if self.id.as_deref() == Some(id) {
             return Some(self);
         }
@@ -234,6 +234,7 @@ impl SvgNode {
     }
 
     /// Get the bounds of this node.
+    #[must_use]
     pub fn bounds(&self) -> Rect {
         match &self.kind {
             SvgNodeKind::Rect(r) => Rect::from_xywh(r.x, r.y, r.width, r.height),

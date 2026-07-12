@@ -3,6 +3,15 @@
 //! This module provides a 4x4 matrix type for 3D transformations,
 //! corresponding to Skia's `SkM44` / `SkMatrix44`.
 
+#![allow(
+    clippy::suboptimal_flops,
+    reason = "matrix44 is a faithful port of Skia SkM44; mul_add's fused rounding diverges from Skia's fma-free reference arithmetic"
+)]
+#![allow(
+    clippy::float_cmp,
+    reason = "exact comparisons (identity/special-value checks) match Skia's exact SkScalar comparison"
+)]
+
 use crate::Scalar;
 use crate::geometry::{Matrix, Point, Point3};
 
@@ -42,12 +51,19 @@ impl Matrix44 {
 
     /// Creates a new matrix from column-major values.
     #[inline]
+    #[must_use]
     pub const fn from_cols(values: [Scalar; 16]) -> Self {
         Self { values }
     }
 
     /// Creates a new matrix from row-major values.
-    pub fn from_rows(r0: [Scalar; 4], r1: [Scalar; 4], r2: [Scalar; 4], r3: [Scalar; 4]) -> Self {
+    #[must_use]
+    pub const fn from_rows(
+        r0: [Scalar; 4],
+        r1: [Scalar; 4],
+        r2: [Scalar; 4],
+        r3: [Scalar; 4],
+    ) -> Self {
         Self {
             values: [
                 r0[0], r1[0], r2[0], r3[0], // column 0
@@ -60,11 +76,13 @@ impl Matrix44 {
 
     /// Creates the identity matrix.
     #[inline]
+    #[must_use]
     pub const fn identity() -> Self {
         Self::IDENTITY
     }
 
     /// Creates a translation matrix.
+    #[must_use]
     pub const fn translate(x: Scalar, y: Scalar, z: Scalar) -> Self {
         Self {
             values: [
@@ -77,6 +95,7 @@ impl Matrix44 {
     }
 
     /// Creates a scale matrix.
+    #[must_use]
     pub const fn scale(sx: Scalar, sy: Scalar, sz: Scalar) -> Self {
         Self {
             values: [
@@ -89,6 +108,7 @@ impl Matrix44 {
     }
 
     /// Creates a rotation matrix around the X axis.
+    #[must_use]
     pub fn rotate_x(radians: Scalar) -> Self {
         let (sin, cos) = radians.sin_cos();
         Self {
@@ -102,6 +122,7 @@ impl Matrix44 {
     }
 
     /// Creates a rotation matrix around the Y axis.
+    #[must_use]
     pub fn rotate_y(radians: Scalar) -> Self {
         let (sin, cos) = radians.sin_cos();
         Self {
@@ -115,6 +136,7 @@ impl Matrix44 {
     }
 
     /// Creates a rotation matrix around the Z axis.
+    #[must_use]
     pub fn rotate_z(radians: Scalar) -> Self {
         let (sin, cos) = radians.sin_cos();
         Self {
@@ -128,6 +150,7 @@ impl Matrix44 {
     }
 
     /// Creates a rotation matrix around an arbitrary axis.
+    #[must_use]
     pub fn rotate(axis: Point3, radians: Scalar) -> Self {
         let len = axis.length();
         if len == 0.0 {
@@ -164,6 +187,7 @@ impl Matrix44 {
     }
 
     /// Creates a look-at matrix (camera transformation).
+    #[must_use]
     pub fn look_at(eye: Point3, center: Point3, up: Point3) -> Self {
         let f = Point3::new(center.x - eye.x, center.y - eye.y, center.z - eye.z);
         let f_len = f.length();
@@ -204,6 +228,7 @@ impl Matrix44 {
     }
 
     /// Creates a perspective projection matrix.
+    #[must_use]
     pub fn perspective(fov_y: Scalar, aspect: Scalar, near: Scalar, far: Scalar) -> Self {
         let f = 1.0 / (fov_y / 2.0).tan();
         let nf = 1.0 / (near - far);
@@ -231,6 +256,7 @@ impl Matrix44 {
     }
 
     /// Creates an orthographic projection matrix.
+    #[must_use]
     pub fn ortho(
         left: Scalar,
         right: Scalar,
@@ -270,6 +296,7 @@ impl Matrix44 {
     /// This is a checked variant of [`Self::ortho`] that validates preconditions
     /// instead of producing infinity or NaN. Use this when the projection
     /// parameters come from untrusted sources.
+    #[must_use]
     pub fn ortho_checked(
         left: Scalar,
         right: Scalar,
@@ -284,10 +311,11 @@ impl Matrix44 {
         Some(Self::ortho(left, right, bottom, top, near, far))
     }
 
-    /// Build a perspective projection matrix, returning `None` if fov_y or aspect is zero.
+    /// Build a perspective projection matrix, returning `None` if `fov_y` or aspect is zero.
     ///
     /// This is a checked variant of [`Self::perspective`] that validates
     /// preconditions instead of producing infinity or NaN.
+    #[must_use]
     pub fn perspective_checked(
         fov_y: Scalar,
         aspect: Scalar,
@@ -301,6 +329,7 @@ impl Matrix44 {
     }
 
     /// Returns true if this is the identity matrix.
+    #[must_use]
     pub fn is_identity(&self) -> bool {
         *self == Self::IDENTITY
     }
@@ -311,9 +340,10 @@ impl Matrix44 {
     ///
     /// Panics if `row >= 4` or `col >= 4`.
     #[inline]
+    #[must_use]
     pub fn get(&self, row: usize, col: usize) -> Scalar {
-        assert!(row < 4, "row out of bounds: {} (must be < 4)", row);
-        assert!(col < 4, "col out of bounds: {} (must be < 4)", col);
+        assert!(row < 4, "row out of bounds: {row} (must be < 4)");
+        assert!(col < 4, "col out of bounds: {col} (must be < 4)");
         self.values[col * 4 + row]
     }
 
@@ -324,15 +354,20 @@ impl Matrix44 {
     /// Panics if `row >= 4` or `col >= 4`.
     #[inline]
     pub fn set(&mut self, row: usize, col: usize, value: Scalar) {
-        assert!(row < 4, "row out of bounds: {} (must be < 4)", row);
-        assert!(col < 4, "col out of bounds: {} (must be < 4)", col);
+        assert!(row < 4, "row out of bounds: {row} (must be < 4)");
+        assert!(col < 4, "col out of bounds: {col} (must be < 4)");
         self.values[col * 4 + row] = value;
     }
 
     /// Get a column as a 4-element array.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx >= 4`.
     #[inline]
+    #[must_use]
     pub fn col(&self, idx: usize) -> [Scalar; 4] {
-        assert!(idx < 4, "col index out of bounds: {} (must be < 4)", idx);
+        assert!(idx < 4, "col index out of bounds: {idx} (must be < 4)");
         let base = idx * 4;
         [
             self.values[base],
@@ -343,9 +378,14 @@ impl Matrix44 {
     }
 
     /// Get a row as a 4-element array.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx >= 4`.
     #[inline]
+    #[must_use]
     pub fn row(&self, idx: usize) -> [Scalar; 4] {
-        assert!(idx < 4, "row index out of bounds: {} (must be < 4)", idx);
+        assert!(idx < 4, "row index out of bounds: {idx} (must be < 4)");
         [
             self.values[idx],
             self.values[idx + 4],
@@ -355,6 +395,7 @@ impl Matrix44 {
     }
 
     /// Concatenates this matrix with another (self * other).
+    #[must_use]
     pub fn concat(&self, other: &Self) -> Self {
         let mut result = [0.0; 16];
 
@@ -375,6 +416,7 @@ impl Matrix44 {
     ///
     /// Matches `SkM44::preTranslate`: the translation is applied in the local
     /// (source) coordinate space, updating the last column.
+    #[must_use]
     pub fn pre_translate(&self, x: Scalar, y: Scalar, z: Scalar) -> Self {
         self.concat(&Self::translate(x, y, z))
     }
@@ -383,6 +425,7 @@ impl Matrix44 {
     ///
     /// Matches `SkM44::postTranslate`: the translation is applied in the
     /// destination coordinate space.
+    #[must_use]
     pub fn post_translate(&self, x: Scalar, y: Scalar, z: Scalar) -> Self {
         Self::translate(x, y, z).concat(self)
     }
@@ -390,16 +433,19 @@ impl Matrix44 {
     /// Pre-concatenates this matrix with a scale (`self * S`).
     ///
     /// Matches `SkM44::preScale`.
+    #[must_use]
     pub fn pre_scale(&self, sx: Scalar, sy: Scalar, sz: Scalar) -> Self {
         self.concat(&Self::scale(sx, sy, sz))
     }
 
     /// Post-concatenates this matrix with a scale (`S * self`).
+    #[must_use]
     pub fn post_scale(&self, sx: Scalar, sy: Scalar, sz: Scalar) -> Self {
         Self::scale(sx, sy, sz).concat(self)
     }
 
     /// Transforms a 3D point by this matrix.
+    #[must_use]
     pub fn map_point3(&self, point: Point3) -> Point3 {
         let x = self.get(0, 0) * point.x
             + self.get(0, 1) * point.y
@@ -426,6 +472,7 @@ impl Matrix44 {
     }
 
     /// Transforms a 2D point by this matrix (z=0, w=1).
+    #[must_use]
     pub fn map_point(&self, point: Point) -> Point {
         let x = self.get(0, 0) * point.x + self.get(0, 1) * point.y + self.get(0, 3);
         let y = self.get(1, 0) * point.x + self.get(1, 1) * point.y + self.get(1, 3);
@@ -439,6 +486,7 @@ impl Matrix44 {
     }
 
     /// Computes the determinant of this matrix.
+    #[must_use]
     pub fn determinant(&self) -> Scalar {
         let m = &self.values;
 
@@ -466,25 +514,30 @@ impl Matrix44 {
     /// matrix is reported singular only when the determinant is exactly zero or
     /// when the computed inverse contains a non-finite element (e.g. `1/det`
     /// overflowing on a denormalized determinant).
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "inverse is computed in f64 then narrowed to Scalar (f32), matching Skia's SkInvert4x4Matrix; the f64→f32 narrowing is intentional and has no safe std conversion"
+    )]
+    #[must_use]
     pub fn invert(&self) -> Option<Self> {
         let m = &self.values;
         // Column-major storage matches SkM44's fMat layout directly.
-        let a00 = m[0] as f64;
-        let a01 = m[1] as f64;
-        let a02 = m[2] as f64;
-        let a03 = m[3] as f64;
-        let a10 = m[4] as f64;
-        let a11 = m[5] as f64;
-        let a12 = m[6] as f64;
-        let a13 = m[7] as f64;
-        let a20 = m[8] as f64;
-        let a21 = m[9] as f64;
-        let a22 = m[10] as f64;
-        let a23 = m[11] as f64;
-        let a30 = m[12] as f64;
-        let a31 = m[13] as f64;
-        let a32 = m[14] as f64;
-        let a33 = m[15] as f64;
+        let a00 = f64::from(m[0]);
+        let a01 = f64::from(m[1]);
+        let a02 = f64::from(m[2]);
+        let a03 = f64::from(m[3]);
+        let a10 = f64::from(m[4]);
+        let a11 = f64::from(m[5]);
+        let a12 = f64::from(m[6]);
+        let a13 = f64::from(m[7]);
+        let a20 = f64::from(m[8]);
+        let a21 = f64::from(m[9]);
+        let a22 = f64::from(m[10]);
+        let a23 = f64::from(m[11]);
+        let a30 = f64::from(m[12]);
+        let a31 = f64::from(m[13]);
+        let a32 = f64::from(m[14]);
+        let a33 = f64::from(m[15]);
 
         let mut b00 = a00 * a11 - a01 * a10;
         let mut b01 = a00 * a12 - a02 * a10;
@@ -499,8 +552,7 @@ impl Matrix44 {
         let mut b10 = a21 * a33 - a23 * a31;
         let mut b11 = a22 * a33 - a23 * a32;
 
-        let determinant =
-            b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+        let determinant = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
         if determinant == 0.0 {
             return None;
         }
@@ -547,7 +599,8 @@ impl Matrix44 {
     }
 
     /// Returns the transpose of this matrix.
-    pub fn transpose(&self) -> Self {
+    #[must_use]
+    pub const fn transpose(&self) -> Self {
         Self {
             values: [
                 self.values[0],
@@ -571,6 +624,7 @@ impl Matrix44 {
     }
 
     /// Extracts the upper-left 3x3 as a 2D Matrix (ignoring z and perspective).
+    #[must_use]
     pub fn to_matrix(&self) -> Matrix {
         Matrix {
             values: [
@@ -588,7 +642,8 @@ impl Matrix44 {
     }
 
     /// Creates a 4x4 matrix from a 2D Matrix.
-    pub fn from_matrix(m: &Matrix) -> Self {
+    #[must_use]
+    pub const fn from_matrix(m: &Matrix) -> Self {
         Self {
             values: [
                 m.values[0],
@@ -765,7 +820,10 @@ mod tests {
         let t = Matrix44::translate(10.0, 0.0, 0.0);
         // preScale: self * S. Scaling then applying t's translation leaves the
         // translation column untouched (S doesn't move the origin).
-        assert_eq!(t.pre_scale(2.0, 2.0, 2.0), t.concat(&Matrix44::scale(2.0, 2.0, 2.0)));
+        assert_eq!(
+            t.pre_scale(2.0, 2.0, 2.0),
+            t.concat(&Matrix44::scale(2.0, 2.0, 2.0))
+        );
         // postScale: S * self. The translation column gets scaled by 2.
         let post = t.post_scale(2.0, 2.0, 2.0);
         assert_eq!(post, Matrix44::scale(2.0, 2.0, 2.0).concat(&t));

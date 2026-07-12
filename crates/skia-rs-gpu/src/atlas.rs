@@ -3,6 +3,7 @@
 //! This module provides texture atlas management for efficiently batching
 //! small paths, glyphs, and other small elements into larger textures.
 
+use crate::cast_util::{scalar_from_u32, u32_from_usize};
 use skia_rs_core::Rect;
 use std::collections::HashMap;
 
@@ -12,12 +13,14 @@ pub struct AtlasEntryId(u64);
 
 impl AtlasEntryId {
     /// Create a new entry ID.
-    pub fn new(id: u64) -> Self {
+    #[must_use]
+    pub const fn new(id: u64) -> Self {
         Self(id)
     }
 
     /// Get the raw ID value.
-    pub fn raw(&self) -> u64 {
+    #[must_use]
+    pub const fn raw(&self) -> u64 {
         self.0
     }
 }
@@ -44,24 +47,26 @@ impl AtlasRegion {
     /// sampling never reaches into a neighbouring entry's texels (the classic
     /// atlas-bleed artifact). This matches Skia's convention of sampling at
     /// texel centers for atlased content.
+    #[must_use]
     pub fn uv_rect(&self, atlas_width: u32, atlas_height: u32) -> [f32; 4] {
-        let half_w = 0.5 / atlas_width as f32;
-        let half_h = 0.5 / atlas_height as f32;
+        let half_w = 0.5 / scalar_from_u32(atlas_width);
+        let half_h = 0.5 / scalar_from_u32(atlas_height);
         [
-            self.x as f32 / atlas_width as f32 + half_w,
-            self.y as f32 / atlas_height as f32 + half_h,
-            (self.x + self.width) as f32 / atlas_width as f32 - half_w,
-            (self.y + self.height) as f32 / atlas_height as f32 - half_h,
+            scalar_from_u32(self.x) / scalar_from_u32(atlas_width) + half_w,
+            scalar_from_u32(self.y) / scalar_from_u32(atlas_height) + half_h,
+            scalar_from_u32(self.x + self.width) / scalar_from_u32(atlas_width) - half_w,
+            scalar_from_u32(self.y + self.height) / scalar_from_u32(atlas_height) - half_h,
         ]
     }
 
     /// Convert to a rect.
-    pub fn to_rect(&self) -> Rect {
+    #[must_use]
+    pub const fn to_rect(&self) -> Rect {
         Rect::from_xywh(
-            self.x as f32,
-            self.y as f32,
-            self.width as f32,
-            self.height as f32,
+            scalar_from_u32(self.x),
+            scalar_from_u32(self.y),
+            scalar_from_u32(self.width),
+            scalar_from_u32(self.height),
         )
     }
 }
@@ -120,7 +125,7 @@ struct AtlasLayer {
 }
 
 impl AtlasLayer {
-    fn new(width: u32, height: u32) -> Self {
+    const fn new(width: u32, height: u32) -> Self {
         Self {
             current_y: 0,
             current_shelf_height: 0,
@@ -166,7 +171,7 @@ impl AtlasLayer {
         None
     }
 
-    fn reset(&mut self) {
+    const fn reset(&mut self) {
         self.current_y = 0;
         self.current_shelf_height = 0;
         self.current_x = 0;
@@ -194,6 +199,7 @@ pub struct TextureAtlas {
 
 impl TextureAtlas {
     /// Create a new texture atlas.
+    #[must_use]
     pub fn new(config: AtlasConfig) -> Self {
         let mut layers = Vec::with_capacity(config.max_layers as usize);
         layers.push(AtlasLayer::new(config.width, config.height));
@@ -209,26 +215,31 @@ impl TextureAtlas {
     }
 
     /// Get atlas configuration.
-    pub fn config(&self) -> &AtlasConfig {
+    #[must_use]
+    pub const fn config(&self) -> &AtlasConfig {
         &self.config
     }
 
     /// Get current generation.
-    pub fn generation(&self) -> u64 {
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
         self.generation
     }
 
     /// Get number of active layers.
+    #[must_use]
     pub fn layer_count(&self) -> u32 {
-        self.layers.len() as u32
+        u32_from_usize(self.layers.len())
     }
 
     /// Get number of entries.
+    #[must_use]
     pub fn entry_count(&self) -> usize {
         self.entries.len()
     }
 
     /// Look up an existing entry.
+    #[must_use]
     pub fn lookup(&self, id: AtlasEntryId) -> Option<&AtlasRegion> {
         self.entries.get(&id)
     }
@@ -258,7 +269,7 @@ impl TextureAtlas {
                     y,
                     width,
                     height,
-                    layer: layer_idx as u32,
+                    layer: u32_from_usize(layer_idx),
                 };
 
                 self.entries.insert(id, region);
@@ -281,7 +292,7 @@ impl TextureAtlas {
                     y,
                     width,
                     height,
-                    layer: layer_idx as u32,
+                    layer: u32_from_usize(layer_idx),
                 };
 
                 self.entries.insert(id, region);
@@ -329,6 +340,7 @@ impl TextureAtlas {
     }
 
     /// Number of entries currently marked as freed but not yet repacked.
+    #[must_use]
     pub fn freed_count(&self) -> usize {
         self.freed.len()
     }
@@ -375,13 +387,15 @@ impl TextureAtlas {
         for (id, old_region) in sorted {
             let mut placed = false;
             for (layer_idx, layer) in self.layers.iter_mut().enumerate() {
-                if let Some((x, y)) = layer.allocate(old_region.width, old_region.height, self.config.padding) {
+                if let Some((x, y)) =
+                    layer.allocate(old_region.width, old_region.height, self.config.padding)
+                {
                     let new_region = AtlasRegion {
                         x,
                         y,
                         width: old_region.width,
                         height: old_region.height,
-                        layer: layer_idx as u32,
+                        layer: u32_from_usize(layer_idx),
                     };
                     self.entries.insert(id, new_region);
                     if (old_region.x, old_region.y, old_region.layer)
@@ -396,7 +410,9 @@ impl TextureAtlas {
 
             if !placed && self.layers.len() < self.config.max_layers as usize {
                 let mut new_layer = AtlasLayer::new(self.config.width, self.config.height);
-                if let Some((x, y)) = new_layer.allocate(old_region.width, old_region.height, self.config.padding) {
+                if let Some((x, y)) =
+                    new_layer.allocate(old_region.width, old_region.height, self.config.padding)
+                {
                     let layer_idx = self.layers.len();
                     self.layers.push(new_layer);
                     let new_region = AtlasRegion {
@@ -404,7 +420,7 @@ impl TextureAtlas {
                         y,
                         width: old_region.width,
                         height: old_region.height,
-                        layer: layer_idx as u32,
+                        layer: u32_from_usize(layer_idx),
                     };
                     self.entries.insert(id, new_region);
                     if (old_region.x, old_region.y, old_region.layer)
@@ -436,7 +452,7 @@ impl TextureAtlas {
 #[derive(Debug, Clone, Default)]
 pub struct CompactResult {
     /// Entries whose region moved during repacking. Each tuple is
-    /// (id, old_region, new_region).
+    /// (id, `old_region`, `new_region`).
     pub remapped: Vec<(AtlasEntryId, AtlasRegion, AtlasRegion)>,
     /// Entries that were freed and dropped from the atlas.
     pub removed: Vec<AtlasEntryId>,
@@ -446,32 +462,33 @@ pub struct CompactResult {
 #[derive(Debug)]
 pub struct AtlasManager {
     /// Path atlas.
-    path_atlas: TextureAtlas,
+    path: TextureAtlas,
     /// Glyph atlas (alpha).
-    glyph_atlas: TextureAtlas,
+    glyph: TextureAtlas,
     /// Color atlas (RGBA).
-    color_atlas: TextureAtlas,
+    color: TextureAtlas,
 }
 
 impl AtlasManager {
     /// Create a new atlas manager with default configuration.
+    #[must_use]
     pub fn new() -> Self {
         Self {
-            path_atlas: TextureAtlas::new(AtlasConfig {
+            path: TextureAtlas::new(AtlasConfig {
                 width: 2048,
                 height: 2048,
                 max_layers: 4,
                 padding: 2,
                 allow_resize: true,
             }),
-            glyph_atlas: TextureAtlas::new(AtlasConfig {
+            glyph: TextureAtlas::new(AtlasConfig {
                 width: 1024,
                 height: 1024,
                 max_layers: 2,
                 padding: 1,
                 allow_resize: true,
             }),
-            color_atlas: TextureAtlas::new(AtlasConfig {
+            color: TextureAtlas::new(AtlasConfig {
                 width: 1024,
                 height: 1024,
                 max_layers: 2,
@@ -482,40 +499,43 @@ impl AtlasManager {
     }
 
     /// Get path atlas.
-    pub fn path_atlas(&self) -> &TextureAtlas {
-        &self.path_atlas
+    #[must_use]
+    pub const fn path_atlas(&self) -> &TextureAtlas {
+        &self.path
     }
 
     /// Get mutable path atlas.
-    pub fn path_atlas_mut(&mut self) -> &mut TextureAtlas {
-        &mut self.path_atlas
+    pub const fn path_atlas_mut(&mut self) -> &mut TextureAtlas {
+        &mut self.path
     }
 
     /// Get glyph atlas.
-    pub fn glyph_atlas(&self) -> &TextureAtlas {
-        &self.glyph_atlas
+    #[must_use]
+    pub const fn glyph_atlas(&self) -> &TextureAtlas {
+        &self.glyph
     }
 
     /// Get mutable glyph atlas.
-    pub fn glyph_atlas_mut(&mut self) -> &mut TextureAtlas {
-        &mut self.glyph_atlas
+    pub const fn glyph_atlas_mut(&mut self) -> &mut TextureAtlas {
+        &mut self.glyph
     }
 
     /// Get color atlas.
-    pub fn color_atlas(&self) -> &TextureAtlas {
-        &self.color_atlas
+    #[must_use]
+    pub const fn color_atlas(&self) -> &TextureAtlas {
+        &self.color
     }
 
     /// Get mutable color atlas.
-    pub fn color_atlas_mut(&mut self) -> &mut TextureAtlas {
-        &mut self.color_atlas
+    pub const fn color_atlas_mut(&mut self) -> &mut TextureAtlas {
+        &mut self.color
     }
 
     /// Reset all atlases.
     pub fn reset_all(&mut self) {
-        self.path_atlas.reset();
-        self.glyph_atlas.reset();
-        self.color_atlas.reset();
+        self.path.reset();
+        self.glyph.reset();
+        self.color.reset();
     }
 }
 
@@ -566,12 +586,12 @@ mod tests {
         // 250 + 2*4 = 258 > 256 -> TooLarge even though 250 < 256.
         match atlas.allocate(250, 10) {
             AtlasAllocResult::TooLarge => {}
-            other => panic!("expected TooLarge, got {:?}", other),
+            other => panic!("expected TooLarge, got {other:?}"),
         }
         // Exactly-fits case (248 + 8 = 256) still succeeds.
         match atlas.allocate(248, 10) {
             AtlasAllocResult::Success(_, _) => {}
-            other => panic!("expected Success, got {:?}", other),
+            other => panic!("expected Success, got {other:?}"),
         }
     }
 
@@ -613,7 +633,10 @@ mod tests {
                     || b.x + b.width <= a.x
                     || a.y + a.height <= b.y
                     || b.y + b.height <= a.y;
-                assert!(disjoint, "compact produced overlapping regions {a:?} / {b:?}");
+                assert!(
+                    disjoint,
+                    "compact produced overlapping regions {a:?} / {b:?}"
+                );
             }
         }
     }
@@ -775,7 +798,7 @@ mod tests {
         // second shelf, but a 100x100 should not fit until we free & compact.
         match atlas.allocate(100, 100) {
             AtlasAllocResult::Full => {}
-            other => panic!("expected Full, got {:?}", other),
+            other => panic!("expected Full, got {other:?}"),
         }
 
         // Free all three entries and compact.
@@ -787,7 +810,7 @@ mod tests {
         // Now the 100x100 should fit.
         match atlas.allocate(100, 100) {
             AtlasAllocResult::Success(..) => {}
-            other => panic!("expected Success, got {:?}", other),
+            other => panic!("expected Success, got {other:?}"),
         }
     }
 

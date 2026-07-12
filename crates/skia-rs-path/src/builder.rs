@@ -1,7 +1,15 @@
 //! Path builder for constructing paths.
 
 use crate::{FillType, Path, Verb};
+use skia_rs_core::cast::{ceil_to_i32, scalar_from_i32};
 use skia_rs_core::{Point, Rect, Scalar};
+
+/// sqrt(2)/2, the conic weight for a 90-degree circular arc.
+const OVAL_CONIC_WEIGHT: Scalar = std::f32::consts::FRAC_1_SQRT_2;
+
+/// Cubic-bezier control-point factor approximating a circular arc with a
+/// rounded-rect corner radius (Skia's `SK_ScalarRoot2Over2` derived constant).
+const ROUND_RECT_KAPPA: Scalar = 0.552_284_8;
 
 /// Builder for constructing paths.
 #[derive(Debug, Clone, Default)]
@@ -13,12 +21,14 @@ pub struct PathBuilder {
 impl PathBuilder {
     /// Create a new path builder.
     #[inline]
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Create a path builder with specified fill type.
     #[inline]
+    #[must_use]
     pub fn with_fill_type(fill_type: FillType) -> Self {
         let mut builder = Self::new();
         builder.path.fill_type = fill_type;
@@ -27,7 +37,7 @@ impl PathBuilder {
 
     /// Set the fill type.
     #[inline]
-    pub fn fill_type(&mut self, fill_type: FillType) -> &mut Self {
+    pub const fn fill_type(&mut self, fill_type: FillType) -> &mut Self {
         self.path.fill_type = fill_type;
         self
     }
@@ -139,19 +149,17 @@ impl PathBuilder {
     /// Uses four quarter-circle conics of weight √2/2 (upstream
     /// `gFourQuarterCircleConics`), CW starting at the 3-o'clock point.
     pub fn add_oval(&mut self, rect: &Rect) -> &mut Self {
-        let cx = (rect.left + rect.right) / 2.0;
-        let cy = (rect.top + rect.bottom) / 2.0;
+        let cx = f32::midpoint(rect.left, rect.right);
+        let cy = f32::midpoint(rect.top, rect.bottom);
         let rx = rect.width() / 2.0;
         let ry = rect.height() / 2.0;
-
-        // sqrt(2)/2, the conic weight for a 90-degree circular arc.
-        const W: Scalar = std::f32::consts::FRAC_1_SQRT_2;
+        let w = OVAL_CONIC_WEIGHT;
 
         self.move_to(cx + rx, cy)
-            .conic_to(cx + rx, cy + ry, cx, cy + ry, W)
-            .conic_to(cx - rx, cy + ry, cx - rx, cy, W)
-            .conic_to(cx - rx, cy - ry, cx, cy - ry, W)
-            .conic_to(cx + rx, cy - ry, cx + rx, cy, W)
+            .conic_to(cx + rx, cy + ry, cx, cy + ry, w)
+            .conic_to(cx - rx, cy + ry, cx - rx, cy, w)
+            .conic_to(cx - rx, cy - ry, cx, cy - ry, w)
+            .conic_to(cx + rx, cy - ry, cx + rx, cy, w)
             .close()
     }
 
@@ -174,9 +182,8 @@ impl PathBuilder {
         let rx = rx.min(rect.width() / 2.0);
         let ry = ry.min(rect.height() / 2.0);
 
-        const KAPPA: Scalar = 0.5522847498;
-        let kx = rx * KAPPA;
-        let ky = ry * KAPPA;
+        let kx = rx * ROUND_RECT_KAPPA;
+        let ky = ry * ROUND_RECT_KAPPA;
 
         self.move_to(rect.left + rx, rect.top)
             .line_to(rect.right - rx, rect.top)
@@ -263,6 +270,10 @@ impl PathBuilder {
     /// Arc to a point using radii and rotation.
     ///
     /// This matches the SVG arc command semantics.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "faithful port of the SVG elliptical-arc command's fixed parameter list (rx, ry, x-axis-rotation, large-arc-flag, sweep-flag, x, y)"
+    )]
     pub fn arc_to(
         &mut self,
         rx: Scalar,
@@ -277,6 +288,10 @@ impl PathBuilder {
 
         // Get current point
         let current = self.current_point();
+        #[allow(
+            clippy::float_cmp,
+            reason = "exact degenerate-endpoint check mirrors upstream SkPath::ArcTo's bitwise comparison"
+        )]
         if current.x == x && current.y == y {
             return self;
         }
@@ -369,7 +384,7 @@ impl PathBuilder {
 
     /// Add another path to this builder.
     pub fn add_path(&mut self, path: &Path) -> &mut Self {
-        for element in path.iter() {
+        for element in path {
             match element {
                 crate::PathElement::Move(p) => {
                     self.move_to(p.x, p.y);
@@ -436,6 +451,10 @@ impl PathBuilder {
     /// The optional `rot` matrix (a rotation about the ellipse center) is
     /// applied to every emitted point, used to realize the SVG arc's
     /// x-axis-rotation.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "faithful port of Skia's addArcSegments helper geometry parameter list (center, radii, angles, rotation)"
+    )]
     fn add_arc_to_impl(
         &mut self,
         cx: Scalar,
@@ -447,9 +466,8 @@ impl PathBuilder {
         rot: Option<&skia_rs_core::Matrix>,
     ) {
         // Break arc into segments of at most 90 degrees
-        let num_segments =
-            ((sweep_angle.abs() / (std::f32::consts::FRAC_PI_2)).ceil() as i32).max(1);
-        let segment_angle = sweep_angle / num_segments as Scalar;
+        let num_segments = ceil_to_i32(sweep_angle.abs() / std::f32::consts::FRAC_PI_2).max(1);
+        let segment_angle = sweep_angle / scalar_from_i32(num_segments);
 
         let mut angle = start_angle;
         for _ in 0..num_segments {
@@ -460,6 +478,10 @@ impl PathBuilder {
     }
 
     /// Add a single arc segment (at most 90 degrees) as a cubic bezier.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "faithful port of Skia's addArcSegment helper geometry parameter list (center, radii, angles, rotation)"
+    )]
     fn add_arc_segment(
         &mut self,
         cx: Scalar,
@@ -488,13 +510,19 @@ impl PathBuilder {
         let (sin_start, cos_start) = start_angle.sin_cos();
         let (sin_end, cos_end) = end_angle.sin_cos();
 
-        let x0 = cx + rx * cos_start;
-        let y0 = cy + ry * sin_start;
-        let mut p1 = Point::new(x0 - k * rx * sin_start, y0 + k * ry * cos_start);
-        let x3 = cx + rx * cos_end;
-        let y3 = cy + ry * sin_end;
+        let x0 = rx.mul_add(cos_start, cx);
+        let y0 = ry.mul_add(sin_start, cy);
+        let mut p1 = Point::new(
+            (k * rx).mul_add(-sin_start, x0),
+            (k * ry).mul_add(cos_start, y0),
+        );
+        let x3 = rx.mul_add(cos_end, cx);
+        let y3 = ry.mul_add(sin_end, cy);
         let mut p3 = Point::new(x3, y3);
-        let mut p2 = Point::new(x3 + k * rx * sin_end, y3 - k * ry * cos_end);
+        let mut p2 = Point::new(
+            (k * rx).mul_add(sin_end, x3),
+            (k * ry).mul_add(-cos_end, y3),
+        );
 
         if let Some(m) = rot {
             p1 = m.map_point(p1);
@@ -506,6 +534,10 @@ impl PathBuilder {
     }
 
     /// Convert SVG arc to cubic bezier segments.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "faithful port of the W3C SVG arc-to-cubic conversion algorithm's fixed parameter list"
+    )]
     fn svg_arc_to_cubics(
         &mut self,
         x1: Scalar,
@@ -525,8 +557,8 @@ impl PathBuilder {
         // Step 1: Compute (x1', y1')
         let dx = (x1 - x2) / 2.0;
         let dy = (y1 - y2) / 2.0;
-        let x1p = cos_phi * dx + sin_phi * dy;
-        let y1p = -sin_phi * dx + cos_phi * dy;
+        let x1p = cos_phi.mul_add(dx, sin_phi * dy);
+        let y1p = (-sin_phi).mul_add(dx, cos_phi * dy);
 
         // Scale radii if needed
         let lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
@@ -542,7 +574,9 @@ impl PathBuilder {
         let x1p2 = x1p * x1p;
         let y1p2 = y1p * y1p;
 
-        let mut sq = ((rx2 * ry2 - rx2 * y1p2 - ry2 * x1p2) / (rx2 * y1p2 + ry2 * x1p2)).max(0.0);
+        let mut sq = (ry2.mul_add(-x1p2, rx2.mul_add(ry2, -(rx2 * y1p2)))
+            / rx2.mul_add(y1p2, ry2 * x1p2))
+        .max(0.0);
         sq = sq.sqrt();
         if large_arc == sweep {
             sq = -sq;
@@ -552,8 +586,8 @@ impl PathBuilder {
         let cyp = -sq * ry * x1p / rx;
 
         // Step 3: Compute (cx, cy)
-        let cx = cos_phi * cxp - sin_phi * cyp + (x1 + x2) / 2.0;
-        let cy = sin_phi * cxp + cos_phi * cyp + (y1 + y2) / 2.0;
+        let cx = cos_phi.mul_add(cxp, -(sin_phi * cyp)) + f32::midpoint(x1, x2);
+        let cy = sin_phi.mul_add(cxp, cos_phi * cyp) + f32::midpoint(y1, y2);
 
         // Step 4: Compute angles
         let theta1 = angle_between(1.0, 0.0, (x1p - cxp) / rx, (y1p - cyp) / ry);
@@ -581,12 +615,12 @@ impl PathBuilder {
 
 /// Compute angle between two vectors.
 fn angle_between(ux: Scalar, uy: Scalar, vx: Scalar, vy: Scalar) -> Scalar {
-    let n = (ux * ux + uy * uy).sqrt() * (vx * vx + vy * vy).sqrt();
+    let n = ux.hypot(uy) * vx.hypot(vy);
     if n == 0.0 {
         return 0.0;
     }
-    let c = (ux * vx + uy * vy) / n;
-    let s = ux * vy - uy * vx;
+    let c = ux.mul_add(vx, uy * vy) / n;
+    let s = ux.mul_add(vy, -(uy * vx));
     s.atan2(c.clamp(-1.0, 1.0))
 }
 
@@ -622,7 +656,10 @@ mod tests {
         b.close();
         b.close();
         let path = b.build();
-        assert_eq!(path.verbs().iter().filter(|v| **v == Verb::Close).count(), 1);
+        assert_eq!(
+            path.verbs().iter().filter(|v| **v == Verb::Close).count(),
+            1
+        );
     }
 
     #[test]
@@ -652,7 +689,14 @@ mod tests {
         let path = b.build();
         assert_eq!(
             path.verbs(),
-            &[Verb::Move, Verb::Conic, Verb::Conic, Verb::Conic, Verb::Conic, Verb::Close]
+            &[
+                Verb::Move,
+                Verb::Conic,
+                Verb::Conic,
+                Verb::Conic,
+                Verb::Conic,
+                Verb::Close
+            ]
         );
         assert!(path.is_oval());
     }
@@ -664,7 +708,10 @@ mod tests {
         let path = b.build();
         // Zero sweep must not produce NaN control points.
         for p in path.points() {
-            assert!(p.x.is_finite() && p.y.is_finite(), "arc produced non-finite point");
+            assert!(
+                p.x.is_finite() && p.y.is_finite(),
+                "arc produced non-finite point"
+            );
         }
     }
 
@@ -685,9 +732,7 @@ mod tests {
         );
         assert!(
             (start.x - expected.x).abs() < 0.5 && (start.y - expected.y).abs() < 0.5,
-            "full-circle arc start {:?} should honor 45deg start {:?}",
-            start,
-            expected
+            "full-circle arc start {start:?} should honor 45deg start {expected:?}"
         );
     }
 
@@ -701,8 +746,7 @@ mod tests {
         let last = path.last_point().unwrap();
         assert!(
             (last.x - 40.0).abs() < 0.1 && (last.y - 30.0).abs() < 0.1,
-            "rotated arc endpoint {:?} must land on target (40, 30)",
-            last
+            "rotated arc endpoint {last:?} must land on target (40, 30)"
         );
     }
 

@@ -6,7 +6,7 @@
 //! - Color filters
 //! - Mask filters (blur)
 //! - Image filters
-//! - Runtime effects (SkSL custom shaders)
+//! - Runtime effects (`SkSL` custom shaders)
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]

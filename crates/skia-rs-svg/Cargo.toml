@@ -28,3 +28,6 @@ flate2 = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+
+[lints]
+workspace = true

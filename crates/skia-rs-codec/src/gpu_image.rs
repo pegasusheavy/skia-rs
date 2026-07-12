@@ -5,7 +5,7 @@
 //! are handled by the `skia-rs-gpu` crate.
 
 use crate::ImageInfo;
-use skia_rs_core::{AlphaType, ColorType, Rect, Scalar};
+use skia_rs_core::{AlphaType, ColorType, Rect};
 use std::sync::Arc;
 
 /// Origin of a GPU texture.
@@ -49,16 +49,21 @@ pub enum GpuTextureFormat {
 impl GpuTextureFormat {
     /// Get bytes per pixel for this format.
     #[inline]
+    #[must_use]
     pub const fn bytes_per_pixel(&self) -> usize {
         match self {
-            Self::Rgba8Unorm | Self::Rgba8UnormSrgb | Self::Bgra8Unorm | Self::Bgra8UnormSrgb => 4,
-            Self::Rgb10a2Unorm => 4,
+            Self::Rgba8Unorm
+            | Self::Rgba8UnormSrgb
+            | Self::Bgra8Unorm
+            | Self::Bgra8UnormSrgb
+            | Self::Rgb10a2Unorm => 4,
             Self::Rgba16Float => 8,
         }
     }
 
-    /// Convert from ColorType.
-    pub fn from_color_type(color_type: ColorType) -> Option<Self> {
+    /// Convert from `ColorType`.
+    #[must_use]
+    pub const fn from_color_type(color_type: ColorType) -> Option<Self> {
         match color_type {
             ColorType::Rgba8888 => Some(Self::Rgba8Unorm),
             ColorType::Bgra8888 => Some(Self::Bgra8Unorm),
@@ -66,12 +71,16 @@ impl GpuTextureFormat {
         }
     }
 
-    /// Convert to ColorType.
-    pub fn to_color_type(&self) -> ColorType {
+    /// Convert to `ColorType`.
+    #[must_use]
+    pub const fn to_color_type(&self) -> ColorType {
         match self {
-            Self::Rgba8Unorm | Self::Rgba8UnormSrgb => ColorType::Rgba8888,
+            // `Rgb10a2Unorm`/`Rgba16Float` have no exact `ColorType` match;
+            // approximate as `Rgba8888`.
+            Self::Rgba8Unorm | Self::Rgba8UnormSrgb | Self::Rgb10a2Unorm | Self::Rgba16Float => {
+                ColorType::Rgba8888
+            }
             Self::Bgra8Unorm | Self::Bgra8UnormSrgb => ColorType::Bgra8888,
-            Self::Rgb10a2Unorm | Self::Rgba16Float => ColorType::Rgba8888, // Approximation
         }
     }
 }
@@ -112,6 +121,10 @@ pub trait GpuImageBackend: Send + Sync + std::fmt::Debug {
     /// Upload raster pixels to a new GPU texture, returning the backend
     /// handle. Called at most once per `GpuImage` when the raster cache
     /// is pushed to GPU.
+    ///
+    /// # Errors
+    /// Returns [`GpuImageError`] if the backend rejects the upload (e.g.
+    /// unsupported format or device-side failure).
     fn upload(
         &self,
         info: &ImageInfo,
@@ -122,6 +135,10 @@ pub trait GpuImageBackend: Send + Sync + std::fmt::Debug {
 
     /// Read back pixels from the GPU texture into the destination
     /// buffer in the specified info's layout.
+    ///
+    /// # Errors
+    /// Returns [`GpuImageError`] if the read-back fails (e.g. an invalid
+    /// handle or a device-side failure).
     fn read_back(
         &self,
         handle: &GpuTextureHandle,
@@ -139,6 +156,13 @@ pub trait GpuImageBackend: Send + Sync + std::fmt::Debug {
 
 /// A shared GPU image backend.
 pub type GpuImageBackendRef = Arc<dyn GpuImageBackend>;
+
+/// Allocate the next process-wide unique GPU image ID from a monotonic
+/// atomic counter, mirroring [`crate::image`]'s `next_image_id`.
+fn next_gpu_image_id() -> u64 {
+    static ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
 
 /// A GPU-backed image.
 ///
@@ -230,6 +254,7 @@ impl GpuImage {
     /// Create a GPU image from raster pixel data.
     ///
     /// The pixels are stored for later upload to GPU.
+    #[must_use]
     pub fn from_raster_data(info: &ImageInfo, pixels: &[u8], row_bytes: usize) -> Option<Self> {
         if info.is_empty() {
             return None;
@@ -242,8 +267,7 @@ impl GpuImage {
 
         let texture_format = GpuTextureFormat::from_color_type(info.color_type).unwrap_or_default();
 
-        static ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let unique_id = ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let unique_id = next_gpu_image_id();
 
         Some(Self {
             inner: Arc::new(GpuImageInner {
@@ -260,6 +284,7 @@ impl GpuImage {
     }
 
     /// Create a GPU image from owned pixel data.
+    #[must_use]
     pub fn from_raster_data_owned(
         info: ImageInfo,
         pixels: Vec<u8>,
@@ -276,8 +301,7 @@ impl GpuImage {
 
         let texture_format = GpuTextureFormat::from_color_type(info.color_type).unwrap_or_default();
 
-        static ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let unique_id = ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let unique_id = next_gpu_image_id();
 
         Some(Self {
             inner: Arc::new(GpuImageInner {
@@ -295,7 +319,8 @@ impl GpuImage {
 
     /// Create a GPU image from an existing texture handle.
     ///
-    /// This creates a GpuImage that references an already-uploaded texture.
+    /// This creates a `GpuImage` that references an already-uploaded texture.
+    #[must_use]
     pub fn from_texture(
         info: ImageInfo,
         handle: GpuTextureHandle,
@@ -308,8 +333,7 @@ impl GpuImage {
         let texture_format = GpuTextureFormat::from_color_type(info.color_type).unwrap_or_default();
         let row_bytes = info.min_row_bytes();
 
-        static ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let unique_id = ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let unique_id = next_gpu_image_id();
 
         Some(Self {
             inner: Arc::new(GpuImageInner {
@@ -327,81 +351,100 @@ impl GpuImage {
 
     /// Get the image width.
     #[inline]
+    #[must_use]
     pub fn width(&self) -> i32 {
         self.inner.info.width
     }
 
     /// Get the image height.
     #[inline]
+    #[must_use]
     pub fn height(&self) -> i32 {
         self.inner.info.height
     }
 
     /// Get the image dimensions as (width, height).
     #[inline]
+    #[must_use]
     pub fn dimensions(&self) -> (i32, i32) {
         (self.width(), self.height())
     }
 
     /// Get the image bounds as a rectangle.
     #[inline]
+    #[must_use]
     pub fn bounds(&self) -> Rect {
-        Rect::from_xywh(0.0, 0.0, self.width() as Scalar, self.height() as Scalar)
+        Rect::from_xywh(
+            0.0,
+            0.0,
+            skia_rs_core::cast::scalar_from_i32(self.width()),
+            skia_rs_core::cast::scalar_from_i32(self.height()),
+        )
     }
 
     /// Get the image info.
     #[inline]
+    #[must_use]
     pub fn info(&self) -> &ImageInfo {
         &self.inner.info
     }
 
     /// Get the color type.
     #[inline]
+    #[must_use]
     pub fn color_type(&self) -> ColorType {
         self.inner.info.color_type
     }
 
     /// Get the alpha type.
     #[inline]
+    #[must_use]
     pub fn alpha_type(&self) -> AlphaType {
         self.inner.info.alpha_type
     }
 
     /// Get the texture format.
     #[inline]
+    #[must_use]
     pub fn texture_format(&self) -> GpuTextureFormat {
         self.inner.texture_format
     }
 
     /// Get the surface origin.
     #[inline]
+    #[must_use]
     pub fn origin(&self) -> GpuSurfaceOrigin {
         self.inner.origin
     }
 
     /// Get the unique ID.
     #[inline]
+    #[must_use]
     pub fn unique_id(&self) -> u64 {
         self.inner.unique_id
     }
 
     /// Returns true if the image is opaque.
     #[inline]
+    #[must_use]
     pub fn is_opaque(&self) -> bool {
         self.inner.info.is_opaque()
     }
 
     /// Check if this GPU image is still valid.
+    #[must_use]
     pub fn is_valid(&self) -> bool {
         !self.inner.info.is_empty()
     }
 
     /// Check if a GPU texture has been created.
+    #[must_use]
     pub fn has_texture(&self) -> bool {
         self.inner.texture_handle.read().is_some()
     }
 
     /// Get the texture handle, if available.
+    #[must_use]
     pub fn texture_handle(&self) -> Option<GpuTextureHandle> {
         self.inner.texture_handle.read().clone()
     }
@@ -416,23 +459,27 @@ impl GpuImage {
     pub fn clear_texture_handle(&self) {
         let handle = self.inner.texture_handle.write().take();
         if let Some(handle) = handle {
-            if let Some(backend) = self.inner.backend.read().clone() {
+            let backend = self.inner.backend.read().clone();
+            if let Some(backend) = backend {
                 backend.release(&handle);
             }
         }
     }
 
     /// Check if raster data is available.
+    #[must_use]
     pub fn has_raster_data(&self) -> bool {
         self.inner.raster_cache.read().is_some()
     }
 
     /// Get a reference to the raster data for upload.
+    #[must_use]
     pub fn peek_raster_pixels(&self) -> Option<Vec<u8>> {
         self.inner.raster_cache.read().clone()
     }
 
     /// Get the row bytes for the raster data.
+    #[must_use]
     pub fn row_bytes(&self) -> usize {
         self.inner.row_bytes
     }
@@ -445,6 +492,7 @@ impl GpuImage {
     }
 
     /// Get the installed backend, if any.
+    #[must_use]
     pub fn backend(&self) -> Option<GpuImageBackendRef> {
         self.inner.backend.read().clone()
     }
@@ -455,6 +503,11 @@ impl GpuImage {
     /// no backend is installed; fails with `UploadFailed` if the
     /// backend rejects the upload. On success the texture handle is
     /// stored and `has_texture()` returns true.
+    ///
+    /// # Errors
+    /// Returns [`GpuImageError::BackendUnavailable`] if no backend is
+    /// installed or there is no cached raster data to upload, and
+    /// propagates any backend-reported upload failure.
     pub fn upload(&self) -> Result<(), GpuImageError> {
         let backend = self
             .inner
@@ -474,6 +527,7 @@ impl GpuImage {
             cached,
             self.inner.row_bytes,
         )?;
+        drop(cache);
         *self.inner.texture_handle.write() = Some(handle);
         Ok(())
     }
@@ -483,6 +537,11 @@ impl GpuImage {
     /// Prefer this over `read_pixels` when the image is GPU-resident;
     /// `read_pixels` favors the raster cache which may be stale after
     /// a GPU-side modification.
+    ///
+    /// # Errors
+    /// Returns [`GpuImageError::BackendUnavailable`] if no backend or no
+    /// texture handle is set, and propagates any backend-reported
+    /// read-back failure.
     pub fn read_pixels_from_gpu(
         &self,
         dst: &mut [u8],
@@ -522,8 +581,8 @@ impl GpuImage {
         let cache = self.inner.raster_cache.read();
         if let Some(ref cached) = *cache {
             let bytes_per_pixel = self.color_type().bytes_per_pixel();
-            let width = self.width() as usize;
-            let height = self.height() as usize;
+            let width = usize::try_from(self.width()).unwrap_or(0);
+            let height = usize::try_from(self.height()).unwrap_or(0);
             let src_row_bytes = self.inner.row_bytes;
             let copy_len = width * bytes_per_pixel;
 
@@ -567,21 +626,21 @@ impl GpuImage {
     /// Convert to a raster image.
     ///
     /// Returns `None` if no raster data is available.
+    #[must_use]
     pub fn to_raster(&self) -> Option<crate::Image> {
         let cache = self.inner.raster_cache.read();
-        if let Some(ref cached) = *cache {
+        cache.as_ref().and_then(|cached| {
             crate::Image::from_raster_data(&self.inner.info, cached, self.inner.row_bytes)
-        } else {
-            None
-        }
+        })
     }
 
     /// Create a subset of this GPU image.
+    #[must_use]
     pub fn make_subset(&self, subset: &Rect) -> Option<Self> {
-        let x = subset.left as i32;
-        let y = subset.top as i32;
-        let w = subset.width() as i32;
-        let h = subset.height() as i32;
+        let x = skia_rs_core::cast::saturate_to_i32(subset.left);
+        let y = skia_rs_core::cast::saturate_to_i32(subset.top);
+        let w = skia_rs_core::cast::saturate_to_i32(subset.width());
+        let h = skia_rs_core::cast::saturate_to_i32(subset.height());
 
         if x < 0 || y < 0 || w <= 0 || h <= 0 {
             return None;
@@ -590,16 +649,25 @@ impl GpuImage {
             return None;
         }
 
+        let (Ok(x), Ok(y), Ok(w_usize), Ok(h_usize)) = (
+            usize::try_from(x),
+            usize::try_from(y),
+            usize::try_from(w),
+            usize::try_from(h),
+        ) else {
+            return None;
+        };
+
         let cache = self.inner.raster_cache.read();
-        if let Some(ref cached) = *cache {
+        cache.as_ref().and_then(|cached| {
             let new_info = ImageInfo::new(w, h, self.color_type(), self.alpha_type());
             let bytes_per_pixel = self.color_type().bytes_per_pixel();
             let src_row_bytes = self.inner.row_bytes;
-            let new_row_bytes = w as usize * bytes_per_pixel;
-            let mut new_pixels = vec![0u8; (h as usize) * new_row_bytes];
+            let new_row_bytes = w_usize * bytes_per_pixel;
+            let mut new_pixels = vec![0u8; h_usize * new_row_bytes];
 
-            for row in 0..h as usize {
-                let src_offset = (y as usize + row) * src_row_bytes + x as usize * bytes_per_pixel;
+            for row in 0..h_usize {
+                let src_offset = (y + row) * src_row_bytes + x * bytes_per_pixel;
                 let dst_offset = row * new_row_bytes;
 
                 new_pixels[dst_offset..dst_offset + new_row_bytes]
@@ -607,9 +675,7 @@ impl GpuImage {
             }
 
             Self::from_raster_data_owned(new_info, new_pixels, new_row_bytes)
-        } else {
-            None
-        }
+        })
     }
 }
 
@@ -715,7 +781,7 @@ mod tests {
 
     /// An in-memory mock backend that round-trips pixels through a
     /// virtual "GPU store" indexed by handle id. Used to verify that
-    /// GpuImage correctly delegates to the backend trait for upload,
+    /// `GpuImage` correctly delegates to the backend trait for upload,
     /// read-back, and release.
     #[derive(Debug)]
     struct MockBackend {
@@ -771,6 +837,7 @@ mod tests {
             })?;
             let len = src.len().min(dst.len());
             dst[..len].copy_from_slice(&src[..len]);
+            drop(store);
             Ok(())
         }
 
@@ -784,11 +851,13 @@ mod tests {
     #[test]
     fn test_backend_upload_and_readback_roundtrip() {
         let info = ImageInfo::new(2, 2, ColorType::Rgba8888, AlphaType::Premul);
-        let src_pixels = vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160];
+        let src_pixels = vec![
+            10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160,
+        ];
         let image = GpuImage::from_raster_data(&info, &src_pixels, 8).unwrap();
 
         let backend: Arc<MockBackend> = Arc::new(MockBackend::new());
-        image.set_backend(backend.clone() as Arc<dyn GpuImageBackend>);
+        image.set_backend(backend as Arc<dyn GpuImageBackend>);
 
         // No texture before upload.
         assert!(!image.has_texture());
@@ -857,7 +926,7 @@ mod tests {
         let pixels = vec![42, 43, 44, 45];
         let image = GpuImage::from_raster_data(&info, &pixels, 4).unwrap();
         let backend: Arc<MockBackend> = Arc::new(MockBackend::new());
-        image.set_backend(backend.clone() as Arc<dyn GpuImageBackend>);
+        image.set_backend(backend as Arc<dyn GpuImageBackend>);
         image.upload().unwrap();
         image.discard_raster_cache();
 

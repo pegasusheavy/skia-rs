@@ -4,7 +4,7 @@
 //! - Image type for immutable pixel data
 //! - GPU-backed images for efficient GPU rendering
 //! - Lazy/deferred images for memory efficiency
-//! - ImageGenerator trait for custom image generation
+//! - `ImageGenerator` trait for custom image generation
 //! - Codec trait for format-specific encoders/decoders
 //! - PNG encode/decode
 //! - JPEG encode/decode

@@ -38,7 +38,8 @@ pub enum VertexFormat {
 
 impl VertexFormat {
     /// Get the size in bytes.
-    pub fn size(&self) -> u32 {
+    #[must_use]
+    pub const fn size(&self) -> u32 {
         match self {
             Self::Float32 | Self::Sint32 | Self::Uint32 => 4,
             Self::Float32x2 | Self::Sint32x2 | Self::Uint32x2 => 8,
@@ -247,21 +248,12 @@ impl BlendComponent {
 }
 
 /// Blend state configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct BlendState {
     /// Color blend component.
     pub color: BlendComponent,
     /// Alpha blend component.
     pub alpha: BlendComponent,
-}
-
-impl Default for BlendState {
-    fn default() -> Self {
-        Self {
-            color: BlendComponent::default(),
-            alpha: BlendComponent::default(),
-        }
-    }
 }
 
 impl BlendState {
@@ -297,7 +289,8 @@ impl ColorWriteMask {
     pub const NONE: Self = Self(0);
 
     /// Check if a component is enabled.
-    pub fn contains(&self, other: Self) -> bool {
+    #[must_use]
+    pub const fn contains(&self, other: Self) -> bool {
         (self.0 & other.0) == other.0
     }
 }
@@ -329,7 +322,8 @@ pub struct ColorTargetState {
 
 impl ColorTargetState {
     /// Create with no blending.
-    pub fn new(format: TextureFormat) -> Self {
+    #[must_use]
+    pub const fn new(format: TextureFormat) -> Self {
         Self {
             format,
             blend: None,
@@ -338,7 +332,8 @@ impl ColorTargetState {
     }
 
     /// Set blend state.
-    pub fn with_blend(mut self, blend: BlendState) -> Self {
+    #[must_use]
+    pub const fn with_blend(mut self, blend: BlendState) -> Self {
         self.blend = Some(blend);
         self
     }
@@ -491,6 +486,7 @@ pub struct RenderPipelineDescriptor {
 
 impl RenderPipelineDescriptor {
     /// Create a simple pipeline with vertex and fragment shaders.
+    #[must_use]
     pub fn new(vertex_shader: &str, fragment_shader: &str) -> Self {
         Self {
             label: None,
@@ -507,37 +503,43 @@ impl RenderPipelineDescriptor {
     }
 
     /// Set label.
+    #[must_use]
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
     }
 
     /// Add a vertex buffer layout.
+    #[must_use]
     pub fn with_vertex_buffer(mut self, layout: VertexBufferLayout) -> Self {
         self.vertex_buffers.push(layout);
         self
     }
 
     /// Add a color target.
+    #[must_use]
     pub fn with_color_target(mut self, target: ColorTargetState) -> Self {
         self.color_targets.push(target);
         self
     }
 
     /// Set primitive state.
-    pub fn with_primitive(mut self, primitive: PrimitiveState) -> Self {
+    #[must_use]
+    pub const fn with_primitive(mut self, primitive: PrimitiveState) -> Self {
         self.primitive = primitive;
         self
     }
 
     /// Set depth/stencil state.
-    pub fn with_depth_stencil(mut self, state: DepthStencilState) -> Self {
+    #[must_use]
+    pub const fn with_depth_stencil(mut self, state: DepthStencilState) -> Self {
         self.depth_stencil = Some(state);
         self
     }
 
     /// Set multisample state.
-    pub fn with_multisample(mut self, state: MultisampleState) -> Self {
+    #[must_use]
+    pub const fn with_multisample(mut self, state: MultisampleState) -> Self {
         self.multisample = state;
         self
     }
@@ -556,6 +558,7 @@ pub struct ComputePipelineDescriptor {
 
 impl ComputePipelineDescriptor {
     /// Create a new compute pipeline descriptor.
+    #[must_use]
     pub fn new(shader: &str) -> Self {
         Self {
             label: None,
@@ -565,12 +568,14 @@ impl ComputePipelineDescriptor {
     }
 
     /// Set label.
+    #[must_use]
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
     }
 
     /// Set entry point.
+    #[must_use]
     pub fn with_entry_point(mut self, entry: impl Into<String>) -> Self {
         self.entry_point = entry.into();
         self
@@ -625,6 +630,7 @@ fn hash_str(s: &str) -> u64 {
 
 impl PipelineKey {
     /// Create a key from a render pipeline descriptor.
+    #[must_use]
     pub fn from_descriptor(desc: &RenderPipelineDescriptor) -> Self {
         use std::hash::{Hash, Hasher};
 
@@ -665,8 +671,8 @@ impl PipelineKey {
         if let Some(ds) = &desc.depth_stencil {
             ds.depth_write_enabled.hash(&mut ds_hasher);
             ds.depth_compare.hash(&mut ds_hasher);
-            hash_stencil_face(&ds.stencil_front, &mut ds_hasher);
-            hash_stencil_face(&ds.stencil_back, &mut ds_hasher);
+            hash_stencil_face(ds.stencil_front, &mut ds_hasher);
+            hash_stencil_face(ds.stencil_back, &mut ds_hasher);
             ds.stencil_read_mask.hash(&mut ds_hasher);
             ds.stencil_write_mask.hash(&mut ds_hasher);
             ds.depth_bias.hash(&mut ds_hasher);
@@ -678,7 +684,9 @@ impl PipelineKey {
         // Multisample fields beyond the count.
         let mut ms_hasher = std::collections::hash_map::DefaultHasher::new();
         desc.multisample.mask.hash(&mut ms_hasher);
-        desc.multisample.alpha_to_coverage_enabled.hash(&mut ms_hasher);
+        desc.multisample
+            .alpha_to_coverage_enabled
+            .hash(&mut ms_hasher);
         let multisample_hash = ms_hasher.finish();
 
         // Blend: both color *and* alpha components (factors + operation) plus
@@ -688,8 +696,8 @@ impl PipelineKey {
             match &target.blend {
                 Some(blend) => {
                     1u8.hash(&mut blend_hasher); // discriminant: blending on
-                    hash_blend_component(&blend.color, &mut blend_hasher);
-                    hash_blend_component(&blend.alpha, &mut blend_hasher);
+                    hash_blend_component(blend.color, &mut blend_hasher);
+                    hash_blend_component(blend.alpha, &mut blend_hasher);
                 }
                 None => 0u8.hash(&mut blend_hasher), // discriminant: no blend
             }
@@ -713,7 +721,7 @@ impl PipelineKey {
     }
 }
 
-fn hash_stencil_face<H: std::hash::Hasher>(face: &StencilFaceState, hasher: &mut H) {
+fn hash_stencil_face<H: std::hash::Hasher>(face: StencilFaceState, hasher: &mut H) {
     use std::hash::Hash;
     face.compare.hash(hasher);
     face.fail_op.hash(hasher);
@@ -721,7 +729,7 @@ fn hash_stencil_face<H: std::hash::Hasher>(face: &StencilFaceState, hasher: &mut
     face.pass_op.hash(hasher);
 }
 
-fn hash_blend_component<H: std::hash::Hasher>(comp: &BlendComponent, hasher: &mut H) {
+fn hash_blend_component<H: std::hash::Hasher>(comp: BlendComponent, hasher: &mut H) {
     use std::hash::Hash;
     comp.src_factor.hash(hasher);
     comp.dst_factor.hash(hasher);
@@ -782,18 +790,20 @@ mod tests {
         assert_ne!(key1, key3);
     }
 
-    /// Regression for the PipelineKey coverage finding: the key must change
+    /// Regression for the `PipelineKey` coverage finding: the key must change
     /// whenever a field that affects the *compiled* pipeline changes.
     #[test]
     fn test_pipeline_key_covers_every_state_field() {
         // A rich base descriptor exercising all state.
         let base = || {
-            let mut ds = DepthStencilState::default();
-            ds.stencil_front = StencilFaceState {
-                compare: CompareFunction::Equal,
-                fail_op: StencilOperation::Keep,
-                depth_fail_op: StencilOperation::Keep,
-                pass_op: StencilOperation::Zero,
+            let ds = DepthStencilState {
+                stencil_front: StencilFaceState {
+                    compare: CompareFunction::Equal,
+                    fail_op: StencilOperation::Keep,
+                    depth_fail_op: StencilOperation::Keep,
+                    pass_op: StencilOperation::Zero,
+                },
+                ..Default::default()
             };
             RenderPipelineDescriptor::new("vs", "fs")
                 .with_vertex_buffer(VertexBufferLayout {
@@ -817,7 +827,7 @@ mod tests {
         assert_eq!(base_key, PipelineKey::from_descriptor(&base()));
 
         // Helper: mutate the descriptor and assert the key changes.
-        let mut assert_changes = |mutate: &dyn Fn(&mut RenderPipelineDescriptor)| {
+        let assert_changes = |mutate: &dyn Fn(&mut RenderPipelineDescriptor)| {
             let mut d = base();
             mutate(&mut d);
             assert_ne!(
@@ -838,21 +848,23 @@ mod tests {
         assert_changes(&|d| d.primitive.cull_mode = CullMode::Back);
         // Stencil ops / compares / masks.
         assert_changes(&|d| {
-            d.depth_stencil.as_mut().unwrap().stencil_front.pass_op = StencilOperation::Replace
+            d.depth_stencil.as_mut().unwrap().stencil_front.pass_op = StencilOperation::Replace;
         });
         assert_changes(&|d| {
-            d.depth_stencil.as_mut().unwrap().stencil_back.compare = CompareFunction::NotEqual
+            d.depth_stencil.as_mut().unwrap().stencil_back.compare = CompareFunction::NotEqual;
         });
         assert_changes(&|d| d.depth_stencil.as_mut().unwrap().stencil_write_mask = 0x0F);
         assert_changes(&|d| d.depth_stencil.as_mut().unwrap().depth_write_enabled = false);
-        assert_changes(&|d| d.depth_stencil.as_mut().unwrap().depth_compare = CompareFunction::Always);
+        assert_changes(&|d| {
+            d.depth_stencil.as_mut().unwrap().depth_compare = CompareFunction::Always;
+        });
         // Blend operation and alpha component (not just color src/dst).
         assert_changes(&|d| {
             d.color_targets[0].blend.as_mut().unwrap().color.operation =
-                BlendOperation::ReverseSubtract
+                BlendOperation::ReverseSubtract;
         });
         assert_changes(&|d| {
-            d.color_targets[0].blend.as_mut().unwrap().alpha.dst_factor = BlendFactor::Zero
+            d.color_targets[0].blend.as_mut().unwrap().alpha.dst_factor = BlendFactor::Zero;
         });
         // Color write mask.
         assert_changes(&|d| d.color_targets[0].write_mask = ColorWriteMask::RED);

@@ -104,19 +104,21 @@ fn main() {
         skia_rs_core::AlphaType::Premul,
     );
 
-    if let Some(image) =
-        skia_rs_codec::Image::from_raster_data(&img_info, pixels, width as usize * 4)
-    {
+    if let Some(image) = skia_rs_codec::Image::from_raster_data(
+        &img_info,
+        pixels,
+        usize::try_from(width).unwrap() * 4,
+    ) {
         let encoder = PngEncoder::new();
         match encoder.encode_bytes(&image) {
             Ok(png_data) => {
                 if let Err(e) = std::fs::write(output_path, &png_data) {
-                    eprintln!("Failed to write file: {}", e);
+                    eprintln!("Failed to write file: {e}");
                 } else {
-                    println!("\nSaved output to: {}", output_path);
+                    println!("\nSaved output to: {output_path}");
                 }
             }
-            Err(e) => eprintln!("Failed to encode PNG: {}", e),
+            Err(e) => eprintln!("Failed to encode PNG: {e}"),
         }
     }
 

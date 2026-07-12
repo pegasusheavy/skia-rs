@@ -143,15 +143,18 @@ impl<'a> Canvas<'a> {
     /// This is equivalent to `Canvas::new_null(width, height)` and is kept as
     /// `new` for backwards compatibility. Draws are discarded; matrix and clip
     /// state is tracked.
+    #[must_use]
     pub fn new(width: i32, height: i32) -> Self {
         Self::new_null(width, height)
     }
 
     /// Create a raster canvas that draws into the given pixel buffer.
     pub fn new_raster(buffer: &'a mut PixelBuffer) -> Self {
+        use skia_rs_core::cast::scalar_from_i32;
+
         let width = buffer.width;
         let height = buffer.height;
-        let bounds = Rect::from_xywh(0.0, 0.0, width as Scalar, height as Scalar);
+        let bounds = Rect::from_xywh(0.0, 0.0, scalar_from_i32(width), scalar_from_i32(height));
         Self {
             backing: Backing::Raster(buffer),
             matrix_stack: vec![Matrix::IDENTITY],
@@ -168,7 +171,9 @@ impl<'a> Canvas<'a> {
     /// `width`/`height` are only used to seed the initial clip bounds and to
     /// answer [`width`](Self::width)/[`height`](Self::height) queries.
     pub fn new_recording(commands: &'a mut Vec<DrawCommand>, width: i32, height: i32) -> Self {
-        let bounds = Rect::from_xywh(0.0, 0.0, width as Scalar, height as Scalar);
+        use skia_rs_core::cast::scalar_from_i32;
+
+        let bounds = Rect::from_xywh(0.0, 0.0, scalar_from_i32(width), scalar_from_i32(height));
         Self {
             backing: Backing::Recording(commands),
             matrix_stack: vec![Matrix::IDENTITY],
@@ -181,8 +186,11 @@ impl<'a> Canvas<'a> {
     }
 
     /// Create a no-op canvas with the given dimensions.
+    #[must_use]
     pub fn new_null(width: i32, height: i32) -> Self {
-        let bounds = Rect::from_xywh(0.0, 0.0, width as Scalar, height as Scalar);
+        use skia_rs_core::cast::scalar_from_i32;
+
+        let bounds = Rect::from_xywh(0.0, 0.0, scalar_from_i32(width), scalar_from_i32(height));
         Self {
             backing: Backing::Null,
             matrix_stack: vec![Matrix::IDENTITY],
@@ -196,37 +204,48 @@ impl<'a> Canvas<'a> {
 
     /// Get the width.
     #[inline]
-    pub fn width(&self) -> i32 {
+    #[must_use]
+    pub const fn width(&self) -> i32 {
         self.width
     }
 
     /// Get the height.
     #[inline]
-    pub fn height(&self) -> i32 {
+    #[must_use]
+    pub const fn height(&self) -> i32 {
         self.height
     }
 
     /// Get the current save count.
     #[inline]
-    pub fn save_count(&self) -> usize {
+    #[must_use]
+    pub const fn save_count(&self) -> usize {
         self.save_count
     }
 
     /// Get the current transformation matrix.
+    ///
+    /// # Panics
+    ///
+    /// Never panics in practice: the matrix stack always has at least one
+    /// entry (the identity matrix pushed at construction).
     #[inline]
+    #[must_use]
     pub fn total_matrix(&self) -> &Matrix {
         self.matrix_stack.last().unwrap()
     }
 
     /// Get the current clip bounds.
     #[inline]
+    #[must_use]
     pub fn clip_bounds(&self) -> Rect {
         self.clip_stack.bounds()
     }
 
     /// Inspect the backing (primarily for diagnostics and tests).
     #[inline]
-    pub fn backing(&self) -> &Backing<'a> {
+    #[must_use]
+    pub const fn backing(&self) -> &Backing<'a> {
         &self.backing
     }
 
@@ -236,6 +255,11 @@ impl<'a> Canvas<'a> {
     /// `getSaveCount() - 1`; a fresh canvas has save count 1). Pass the
     /// returned value to [`restore_to_count`](Self::restore_to_count) to undo
     /// this save.
+    ///
+    /// # Panics
+    ///
+    /// Never panics in practice: the matrix stack always has at least one
+    /// entry.
     pub fn save(&mut self) -> usize {
         let matrix = *self.matrix_stack.last().unwrap();
         self.matrix_stack.push(matrix);
@@ -260,7 +284,14 @@ impl<'a> Canvas<'a> {
     /// Null backings behave like plain [`save`](Self::save) — no layer is
     /// allocated — but the save count is incremented so the matching
     /// restore still balances.
+    ///
+    /// # Panics
+    ///
+    /// Never panics in practice: the matrix stack always has at least one
+    /// entry.
     pub fn save_layer(&mut self, rec: &SaveLayerRec<'_>) -> usize {
+        use skia_rs_core::cast::scalar_from_i32;
+
         let bounds = rec.bounds.copied();
         let paint = rec.paint.cloned();
 
@@ -286,22 +317,21 @@ impl<'a> Canvas<'a> {
             // intersect with the current clip and the device bounds, round,
             // and size the layer buffer from that. No bounds -> the clip.
             let ctm = *self.matrix_stack.last().unwrap();
-            let device_full =
-                Rect::from_xywh(0.0, 0.0, self.width as Scalar, self.height as Scalar);
+            let device_full = Rect::from_xywh(
+                0.0,
+                0.0,
+                scalar_from_i32(self.width),
+                scalar_from_i32(self.height),
+            );
             let clip_bounds = self.clip_stack.bounds();
-            let hinted = match bounds {
-                Some(b) => ctm.map_rect(&b).intersect(&clip_bounds),
-                None => Some(clip_bounds),
-            };
+            let hinted = bounds.map_or(Some(clip_bounds), |b| {
+                ctm.map_rect(&b).intersect(&clip_bounds)
+            });
             let device_rect = hinted
                 .and_then(|r| r.intersect(&device_full))
-                .map(|r| r.round())
-                .unwrap_or(IRect::new(0, 0, 0, 0));
+                .map_or_else(|| IRect::new(0, 0, 0, 0), |r| r.round());
 
-            let (w, h) = (
-                device_rect.width().max(0),
-                device_rect.height().max(0),
-            );
+            let (w, h) = (device_rect.width().max(0), device_rect.height().max(0));
             let buffer = PixelBuffer::new(w, h);
             // INIT_WITH_PREVIOUS is left unimplemented here — the buffer is
             // left fully transparent. Pre-seeding from the parent is left
@@ -326,6 +356,11 @@ impl<'a> Canvas<'a> {
     /// count, the layer is popped and composited onto its parent target
     /// (the next layer below, or the base backing) before the matrix/clip
     /// stacks are popped.
+    ///
+    /// # Panics
+    ///
+    /// Never panics in practice: `should_pop_layer` is only true when
+    /// `layer_stack` is non-empty.
     pub fn restore(&mut self) {
         if self.save_count <= 1 {
             return;
@@ -392,7 +427,8 @@ impl<'a> Canvas<'a> {
             let dy = offset_y + y;
             for x in 0..src_w {
                 let dx = offset_x + x;
-                let src_offset = (y as usize) * src_buf.stride + (x as usize) * 4;
+                let src_offset = usize::try_from(y).unwrap_or(0) * src_buf.stride
+                    + usize::try_from(x).unwrap_or(0) * 4;
                 let sr = src_buf.pixels[src_offset];
                 let sg = src_buf.pixels[src_offset + 1];
                 let sb = src_buf.pixels[src_offset + 2];
@@ -433,14 +469,10 @@ impl<'a> Canvas<'a> {
 
                 // Scale all four premultiplied channels by paint alpha and
                 // the clip coverage.
-                let scale = layer_alpha * (clip_cov as f32 / 255.0);
-                let s = |v: u8| (v as f32 * scale).round().clamp(0.0, 255.0) as u8;
-                let src = Color::from_argb(
-                    s(src.alpha()),
-                    s(src.red()),
-                    s(src.green()),
-                    s(src.blue()),
-                );
+                let scale = layer_alpha * (f32::from(clip_cov) / 255.0);
+                let s = |v: u8| skia_rs_core::cast::f32_to_u8_sat(f32::from(v) * scale);
+                let src =
+                    Color::from_argb(s(src.alpha()), s(src.red()), s(src.green()), s(src.blue()));
                 target.blend_pixel(dx - tox, dy - toy, src, blend_mode);
             }
         }
@@ -478,7 +510,7 @@ impl<'a> Canvas<'a> {
 
     /// Rotate the canvas (angle in degrees).
     pub fn rotate(&mut self, degrees: Scalar) {
-        let radians = degrees * std::f32::consts::PI / 180.0;
+        let radians = degrees.to_radians();
         let matrix = Matrix::rotate(radians);
         self.concat_internal(&matrix);
         if let Backing::Recording(commands) = &mut self.backing {
@@ -592,6 +624,8 @@ impl<'a> Canvas<'a> {
     /// propagated.
     #[inline]
     fn with_rasterizer<R>(&mut self, f: impl FnOnce(&mut Rasterizer<'_>) -> R) -> Option<R> {
+        use skia_rs_core::cast::scalar_from_i32;
+
         let matrix = *self.matrix_stack.last().unwrap();
         let clip_stack = self.clip_stack.clone();
 
@@ -605,7 +639,7 @@ impl<'a> Canvas<'a> {
             let adjusted = if (ox, oy) == (0, 0) {
                 matrix
             } else {
-                Matrix::translate(-(ox as Scalar), -(oy as Scalar)).concat(&matrix)
+                Matrix::translate(-scalar_from_i32(ox), -scalar_from_i32(oy)).concat(&matrix)
             };
             let mut raster = Rasterizer::new(&mut layer.buffer);
             raster.set_matrix(&adjusted);
@@ -657,7 +691,13 @@ impl<'a> Canvas<'a> {
 
         // Fast path: full-device rect clip and no layer — bulk clear.
         if self.layer_stack.is_empty() {
-            let full = Rect::from_xywh(0.0, 0.0, self.width as Scalar, self.height as Scalar);
+            use skia_rs_core::cast::scalar_from_i32;
+            let full = Rect::from_xywh(
+                0.0,
+                0.0,
+                scalar_from_i32(self.width),
+                scalar_from_i32(self.height),
+            );
             if let crate::clip::ClipState::Rect(r) = self.clip_stack.current() {
                 if r.left <= full.left
                     && r.top <= full.top
@@ -710,14 +750,14 @@ impl<'a> Canvas<'a> {
     }
 
     /// Draw a point.
-    pub fn draw_point(&mut self, point: Point, paint: &Paint) {
+    pub fn draw_point(&mut self, pt: Point, paint: &Paint) {
         match &mut self.backing {
             Backing::Raster(_) => {
-                self.with_rasterizer(|raster| raster.draw_point(point, paint));
+                self.with_rasterizer(|raster| raster.draw_point(pt, paint));
             }
             Backing::Recording(commands) => {
                 commands.push(DrawCommand::DrawPoint {
-                    point,
+                    point: pt,
                     paint: paint.clone(),
                 });
             }
@@ -958,6 +998,7 @@ impl<'a> Canvas<'a> {
     ///
     /// Returns true if drawing to this rect would have no visible effect.
     #[inline]
+    #[must_use]
     pub fn quick_reject(&self, rect: &Rect) -> bool {
         let transformed = self.total_matrix().map_rect(rect);
         self.clip_stack.quick_reject(&transformed)
@@ -985,6 +1026,10 @@ impl<'a> Canvas<'a> {
     /// sub-region of a bound texture atlas, `lattice` will define the
     /// stretch/fixed cells, and the result will be drawn into `dst`.
     #[cfg(feature = "codec")]
+    #[allow(
+        clippy::similar_names,
+        reason = "src_x_edges/src_y_edges and dst_x_edges/dst_y_edges are paired coordinate arrays; the x/y naming is the clearest option"
+    )]
     pub fn draw_image_lattice(
         &mut self,
         image: &skia_rs_codec::Image,
@@ -993,8 +1038,10 @@ impl<'a> Canvas<'a> {
         _filter_mode: FilterMode,
         paint: Option<&Paint>,
     ) {
-        let src_w = image.width() as Scalar;
-        let src_h = image.height() as Scalar;
+        use skia_rs_core::cast::{floor_to_i32, scalar_from_i32};
+
+        let src_w = scalar_from_i32(image.width());
+        let src_h = scalar_from_i32(image.height());
         if src_w <= 0.0 || src_h <= 0.0 {
             return;
         }
@@ -1005,7 +1052,7 @@ impl<'a> Canvas<'a> {
             lattice
                 .x_divs
                 .iter()
-                .map(|&x| (x as Scalar).clamp(0.0, src_w)),
+                .map(|&x| scalar_from_i32(x).clamp(0.0, src_w)),
         );
         src_x_edges.push(src_w);
 
@@ -1014,7 +1061,7 @@ impl<'a> Canvas<'a> {
             lattice
                 .y_divs
                 .iter()
-                .map(|&y| (y as Scalar).clamp(0.0, src_h)),
+                .map(|&y| scalar_from_i32(y).clamp(0.0, src_h)),
         );
         src_y_edges.push(src_h);
 
@@ -1026,11 +1073,11 @@ impl<'a> Canvas<'a> {
         let dst_scale_y = dst.height() / src_h;
         let dst_x_edges: Vec<Scalar> = src_x_edges
             .iter()
-            .map(|&x| dst.left + x * dst_scale_x)
+            .map(|&x| x.mul_add(dst_scale_x, dst.left))
             .collect();
         let dst_y_edges: Vec<Scalar> = src_y_edges
             .iter()
-            .map(|&y| dst.top + y * dst_scale_y)
+            .map(|&y| y.mul_add(dst_scale_y, dst.top))
             .collect();
 
         // Iterate cells and call draw_image_rect for each non-empty cell
@@ -1039,16 +1086,16 @@ impl<'a> Canvas<'a> {
                 // Check if this cell should be skipped (Transparent)
                 if let Some(ref rect_types) = lattice.rect_types {
                     let cell_idx = j * (src_x_edges.len() - 1) + i;
-                    if let Some(&LatticeRectType::Transparent) = rect_types.get(cell_idx) {
+                    if rect_types.get(cell_idx) == Some(&LatticeRectType::Transparent) {
                         continue;
                     }
                 }
 
                 let src_cell = skia_rs_core::IRect::new(
-                    src_x_edges[i] as i32,
-                    src_y_edges[j] as i32,
-                    src_x_edges[i + 1] as i32,
-                    src_y_edges[j + 1] as i32,
+                    floor_to_i32(src_x_edges[i]),
+                    floor_to_i32(src_y_edges[j]),
+                    floor_to_i32(src_x_edges[i + 1]),
+                    floor_to_i32(src_y_edges[j + 1]),
                 );
                 let dst_cell = Rect::new(
                     dst_x_edges[i],
@@ -1073,11 +1120,15 @@ impl<'a> Canvas<'a> {
     /// source rectangle in `sprites` and transformed by the corresponding
     /// `RSXform` in `xforms`. Optional per-sprite tint colors can be provided.
     ///
-    /// Each sprite is drawn using save/concat/draw_image_rect/restore to
+    /// Each sprite is drawn using `save`/`concat`/`draw_image_rect`/`restore` to
     /// handle rotation, scale, and translation. Tint colors are accepted but
     /// not applied in this baseline implementation (requires color-filter-on-draw
     /// hookup tracked separately).
     #[cfg(feature = "codec")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors SkCanvas::drawAtlas's parameter shape (atlas, xforms, tex rects, colors, blend mode, sampling, paint); bundling would break parity with the upstream API"
+    )]
     pub fn draw_atlas(
         &mut self,
         atlas: &skia_rs_codec::Image,
@@ -1088,6 +1139,12 @@ impl<'a> Canvas<'a> {
         _sampling: FilterMode,
         paint: Option<&Paint>,
     ) {
+        use skia_rs_core::cast::saturate_to_i32;
+        // Truncate-toward-zero-then-saturate, matching the previous `as i32`
+        // cast exactly for all finite inputs (only differs from `as i32` on
+        // NaN, which cannot arise from finite sprite-rect coordinates here).
+        let trunc_to_i32 = |x: Scalar| saturate_to_i32(x.trunc());
+
         let count = xforms.len().min(sprites.len());
         for i in 0..count {
             let xform = &xforms[i];
@@ -1101,10 +1158,10 @@ impl<'a> Canvas<'a> {
             self.concat(&matrix);
             let dst_local = Rect::from_xywh(0.0, 0.0, tex.width(), tex.height());
             let src_rect = skia_rs_core::IRect::new(
-                tex.left as i32,
-                tex.top as i32,
-                tex.right as i32,
-                tex.bottom as i32,
+                trunc_to_i32(tex.left),
+                trunc_to_i32(tex.top),
+                trunc_to_i32(tex.right),
+                trunc_to_i32(tex.bottom),
             );
             self.draw_image_rect(atlas, Some(&src_rect), &dst_local, paint);
             self.restore();
@@ -1124,6 +1181,20 @@ impl<'a> Canvas<'a> {
     /// - Points 3-6: right edge (top to bottom)
     /// - Points 9-6: bottom edge (left to right, reversed)
     /// - Points 0, 11, 10, 9: left edge (top to bottom)
+    ///
+    /// # Panics
+    ///
+    /// Never panics in practice: the internal vertex-grid indices are always
+    /// in bounds by construction (built from the same fixed `N`).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Coons-patch subdivision, per-vertex color interpolation, and triangle emission form one cohesive algorithm mirroring SkCanvas::drawPatch; splitting would fragment the math"
+    )]
+    #[allow(
+        clippy::similar_names,
+        clippy::many_single_char_names,
+        reason = "u/v (patch parameters) and r/g/b/a (color channels) plus idx_tl/idx_tr/idx_bl/idx_br (quad corner indices) are the standard names for Coons-patch and per-pixel color math"
+    )]
     pub fn draw_patch(
         &mut self,
         cubic_points: &[Point; 12],
@@ -1143,8 +1214,14 @@ impl<'a> Canvas<'a> {
             let mt3 = mt2 * mt;
             let t3 = t2 * t;
             Point::new(
-                p0.x * mt3 + 3.0 * p1.x * mt2 * t + 3.0 * p2.x * mt * t2 + p3.x * t3,
-                p0.y * mt3 + 3.0 * p1.y * mt2 * t + 3.0 * p2.y * mt * t2 + p3.y * t3,
+                p3.x.mul_add(
+                    t3,
+                    (3.0 * p2.x * mt).mul_add(t2, p0.x.mul_add(mt3, 3.0 * p1.x * mt2 * t)),
+                ),
+                p3.y.mul_add(
+                    t3,
+                    (3.0 * p2.y * mt).mul_add(t2, p0.y.mul_add(mt3, 3.0 * p1.y * mt2 * t)),
+                ),
             )
         }
 
@@ -1162,30 +1239,39 @@ impl<'a> Canvas<'a> {
 
             // Coons patch formula: bilinear blend of opposite edges, minus
             // the bilinear interpolation of corners (to avoid double-counting).
-            let lc_x = (1.0 - v) * top.x + v * bottom.x;
-            let lc_y = (1.0 - v) * top.y + v * bottom.y;
+            let lc_x = v.mul_add(bottom.x, (1.0 - v) * top.x);
+            let lc_y = v.mul_add(bottom.y, (1.0 - v) * top.y);
 
-            let lr_x = (1.0 - u) * left.x + u * right.x;
-            let lr_y = (1.0 - u) * left.y + u * right.y;
+            let lr_x = u.mul_add(right.x, (1.0 - u) * left.x);
+            let lr_y = u.mul_add(right.y, (1.0 - u) * left.y);
 
-            let bl_x = (1.0 - u) * (1.0 - v) * c[0].x
-                + u * (1.0 - v) * c[3].x
-                + (1.0 - u) * v * c[9].x
-                + u * v * c[6].x;
-            let bl_y = (1.0 - u) * (1.0 - v) * c[0].y
-                + u * (1.0 - v) * c[3].y
-                + (1.0 - u) * v * c[9].y
-                + u * v * c[6].y;
+            let bl_x = (u * v).mul_add(
+                c[6].x,
+                ((1.0 - u) * v).mul_add(
+                    c[9].x,
+                    (u * (1.0 - v)).mul_add(c[3].x, (1.0 - u) * (1.0 - v) * c[0].x),
+                ),
+            );
+            let bl_y = (u * v).mul_add(
+                c[6].y,
+                ((1.0 - u) * v).mul_add(
+                    c[9].y,
+                    (u * (1.0 - v)).mul_add(c[3].y, (1.0 - u) * (1.0 - v) * c[0].y),
+                ),
+            );
 
             Point::new(lc_x + lr_x - bl_x, lc_y + lr_y - bl_y)
         }
 
+        use skia_rs_core::cast::{f32_to_u8_sat, scalar_from_i32};
+
         // Build a grid of vertices
+        let n_scalar = scalar_from_i32(i32::try_from(N).unwrap_or(i32::MAX));
         let mut vertices = Vec::with_capacity((N + 1) * (N + 1));
         for j in 0..=N {
             for i in 0..=N {
-                let u = i as Scalar / N as Scalar;
-                let v = j as Scalar / N as Scalar;
+                let u = scalar_from_i32(i32::try_from(i).unwrap_or(i32::MAX)) / n_scalar;
+                let v = scalar_from_i32(i32::try_from(j).unwrap_or(i32::MAX)) / n_scalar;
                 vertices.push(eval_patch(cubic_points, u, v));
             }
         }
@@ -1193,33 +1279,57 @@ impl<'a> Canvas<'a> {
         // Bilinearly interpolate corner colors at grid point (i, j)
         let get_color = |i: usize, j: usize| -> Option<Color> {
             let colors = colors?;
-            let u = i as Scalar / N as Scalar;
-            let v = j as Scalar / N as Scalar;
+            let u = scalar_from_i32(i32::try_from(i).unwrap_or(i32::MAX)) / n_scalar;
+            let v = scalar_from_i32(i32::try_from(j).unwrap_or(i32::MAX)) / n_scalar;
 
             // Corner colors: [top-left, top-right, bottom-right, bottom-left]
             let c = colors;
-            let r = (1.0 - u) * (1.0 - v) * c[0].red() as Scalar
-                + u * (1.0 - v) * c[1].red() as Scalar
-                + u * v * c[2].red() as Scalar
-                + (1.0 - u) * v * c[3].red() as Scalar;
-            let g = (1.0 - u) * (1.0 - v) * c[0].green() as Scalar
-                + u * (1.0 - v) * c[1].green() as Scalar
-                + u * v * c[2].green() as Scalar
-                + (1.0 - u) * v * c[3].green() as Scalar;
-            let b = (1.0 - u) * (1.0 - v) * c[0].blue() as Scalar
-                + u * (1.0 - v) * c[1].blue() as Scalar
-                + u * v * c[2].blue() as Scalar
-                + (1.0 - u) * v * c[3].blue() as Scalar;
-            let a = (1.0 - u) * (1.0 - v) * c[0].alpha() as Scalar
-                + u * (1.0 - v) * c[1].alpha() as Scalar
-                + u * v * c[2].alpha() as Scalar
-                + (1.0 - u) * v * c[3].alpha() as Scalar;
+            let r = (u * v).mul_add(
+                Scalar::from(c[2].red()),
+                (u * (1.0 - v)).mul_add(
+                    Scalar::from(c[1].red()),
+                    ((1.0 - u) * v).mul_add(
+                        Scalar::from(c[3].red()),
+                        (1.0 - u) * (1.0 - v) * Scalar::from(c[0].red()),
+                    ),
+                ),
+            );
+            let g = (u * v).mul_add(
+                Scalar::from(c[2].green()),
+                (u * (1.0 - v)).mul_add(
+                    Scalar::from(c[1].green()),
+                    ((1.0 - u) * v).mul_add(
+                        Scalar::from(c[3].green()),
+                        (1.0 - u) * (1.0 - v) * Scalar::from(c[0].green()),
+                    ),
+                ),
+            );
+            let b = (u * v).mul_add(
+                Scalar::from(c[2].blue()),
+                (u * (1.0 - v)).mul_add(
+                    Scalar::from(c[1].blue()),
+                    ((1.0 - u) * v).mul_add(
+                        Scalar::from(c[3].blue()),
+                        (1.0 - u) * (1.0 - v) * Scalar::from(c[0].blue()),
+                    ),
+                ),
+            );
+            let a = (u * v).mul_add(
+                Scalar::from(c[2].alpha()),
+                (u * (1.0 - v)).mul_add(
+                    Scalar::from(c[1].alpha()),
+                    ((1.0 - u) * v).mul_add(
+                        Scalar::from(c[3].alpha()),
+                        (1.0 - u) * (1.0 - v) * Scalar::from(c[0].alpha()),
+                    ),
+                ),
+            );
 
             Some(Color::from_argb(
-                a.clamp(0.0, 255.0) as u8,
-                r.clamp(0.0, 255.0) as u8,
-                g.clamp(0.0, 255.0) as u8,
-                b.clamp(0.0, 255.0) as u8,
+                f32_to_u8_sat(a),
+                f32_to_u8_sat(r),
+                f32_to_u8_sat(g),
+                f32_to_u8_sat(b),
             ))
         };
 
@@ -1272,7 +1382,7 @@ impl<'a> Canvas<'a> {
     /// no visual effect on raster or null backings. Recording backings would
     /// capture the annotation for downstream consumers, but this is not yet
     /// implemented — the annotation is currently dropped in all cases.
-    pub fn draw_annotation(&mut self, _rect: &Rect, _key: &str, _value: &[u8]) {
+    pub const fn draw_annotation(&mut self, _rect: &Rect, _key: &str, _value: &[u8]) {
         // Annotations are metadata-only. Raster and null backings simply drop
         // them. Recording backings would emit DrawCommand::Annotation for
         // PDF/SVG export, but that variant doesn't exist yet (tracked by P5-9).
@@ -1398,11 +1508,12 @@ impl<'a> Canvas<'a> {
 
     /// Draw a color glyph if the font carries color data for it.
     ///
-    /// Supports COLR v0 (solid-fill layers), COLR v1 (gradients + transforms
-    /// + clips + composites via `skia_rs_text::GlyphPaint`), and
-    /// SVG-in-OpenType when the `svg` feature is enabled. Returns `true`
-    /// when color-glyph rendering happened, `false` when the glyph is a
-    /// plain outline (caller should fall back to `draw_path`).
+    /// Supports COLR v0 (solid-fill layers), COLR v1 (gradients, transforms,
+    /// clips, and composites via `skia_rs_text::GlyphPaint`), and
+    /// SVG-in-OpenType when the `svg` feature is enabled.
+    ///
+    /// Returns `true` when color-glyph rendering happened, `false` when the
+    /// glyph is a plain outline (caller should fall back to `draw_path`).
     ///
     /// The base `paint` supplies alpha scaling, blend mode, anti-aliasing,
     /// and filters. The glyph's own paint data (colors, gradient stops,
@@ -1463,9 +1574,7 @@ impl<'a> Canvas<'a> {
         // Clip the outline by clip_glyph's outline if set.
         if let Some(clip_id) = layer.clip_glyph {
             if let Some(clip_path) = font.glyph_path(clip_id) {
-                let clip = clip_path
-                    .transformed(&layer.transform)
-                    .transformed(&place);
+                let clip = clip_path.transformed(&layer.transform).transformed(&place);
                 self.save();
                 self.clip_path(&clip, ClipOp::Intersect, base_paint.is_anti_alias());
                 self.fill_colr_layer(&outline, &layer.paint, layer.composite_mode, base_paint);
@@ -1489,7 +1598,7 @@ impl<'a> Canvas<'a> {
         use skia_rs_text::GlyphPaint;
         use std::sync::Arc;
 
-        let blend = colr_composite_to_blend(composite).unwrap_or(base.blend_mode());
+        let blend = colr_composite_to_blend(composite);
 
         let mut p = base.clone();
         p.set_blend_mode(blend);
@@ -1500,7 +1609,11 @@ impl<'a> Canvas<'a> {
                 p.set_shader(None);
             }
             GlyphPaint::LinearGradient {
-                p0, p1, stops, extend, ..
+                p0,
+                p1,
+                stops,
+                extend,
+                ..
             } => {
                 let (colors, positions) = stops_to_color4f(stops);
                 let tile = extend_to_tile(*extend);
@@ -1508,7 +1621,12 @@ impl<'a> Canvas<'a> {
                 p.set_shader(Some(Arc::new(g) as _));
             }
             GlyphPaint::RadialGradient {
-                c0, r0, c1, r1, stops, extend,
+                c0,
+                r0,
+                c1,
+                r1,
+                stops,
+                extend,
             } => {
                 let (colors, positions) = stops_to_color4f(stops);
                 let tile = extend_to_tile(*extend);
@@ -1523,7 +1641,11 @@ impl<'a> Canvas<'a> {
                 p.set_shader(Some(Arc::new(g) as _));
             }
             GlyphPaint::SweepGradient {
-                center, start_angle, end_angle, stops, extend,
+                center,
+                start_angle,
+                end_angle,
+                stops,
+                extend,
             } => {
                 let (colors, positions) = stops_to_color4f(stops);
                 let tile = extend_to_tile(*extend);
@@ -1547,14 +1669,14 @@ impl<'a> Canvas<'a> {
     /// Flush any pending drawing operations.
     ///
     /// For raster canvases, drawing is synchronous — every draw method
-    /// mutates the backing pixel buffer immediately — so flush() is a
-    /// no-op. For recording canvases, flush() does not force playback
+    /// mutates the backing pixel buffer immediately — so `flush()` is a
+    /// no-op. For recording canvases, `flush()` does not force playback
     /// (that's handled separately by Picture consumers). For null
-    /// canvases, flush() is trivially a no-op.
+    /// canvases, `flush()` is trivially a no-op.
     ///
     /// When GPU and deferred backings land, this method will route to
     /// the backing's flush primitive.
-    pub fn flush(&mut self) {
+    pub const fn flush(&mut self) {
         // Currently a no-op for all supported backings. GPU/deferred
         // routing will be added when those backings are introduced.
     }
@@ -1568,7 +1690,7 @@ impl<'a> Canvas<'a> {
 // Null backings; adding recording variants is tracked by P5-9 / P5-6.
 // =============================================================================
 
-impl<'a> Canvas<'a> {
+impl Canvas<'_> {
     /// Draw an image at the specified position.
     #[cfg(feature = "codec")]
     pub fn draw_image(
@@ -1578,14 +1700,28 @@ impl<'a> Canvas<'a> {
         top: Scalar,
         paint: Option<&Paint>,
     ) {
+        use skia_rs_core::cast::scalar_from_i32;
+
         let src_rect = skia_rs_core::IRect::new(0, 0, image.width(), image.height());
-        let dst_rect =
-            Rect::from_xywh(left, top, image.width() as Scalar, image.height() as Scalar);
+        let dst_rect = Rect::from_xywh(
+            left,
+            top,
+            scalar_from_i32(image.width()),
+            scalar_from_i32(image.height()),
+        );
         self.draw_image_rect(image, Some(&src_rect), &dst_rect, paint);
     }
 
     /// Draw an image with source and destination rectangles.
     #[cfg(feature = "codec")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "per-pixel image-rect blit loop mirrors SkDraw's image-rect drawing; splitting the hot loop would obscure the pixel pipeline"
+    )]
+    #[allow(
+        clippy::similar_names,
+        reason = "dst_x_start/dst_y_start/dst_x_end/dst_y_end and src_x/src_y are the natural names for a 2D pixel-rect blit loop"
+    )]
     pub fn draw_image_rect(
         &mut self,
         image: &skia_rs_codec::Image,
@@ -1593,8 +1729,10 @@ impl<'a> Canvas<'a> {
         dst: &Rect,
         paint: Option<&Paint>,
     ) {
+        use skia_rs_core::cast::{ceil_to_i32, floor_to_i32, saturate_to_i32, scalar_from_i32};
+
         let src_rect = src
-            .cloned()
+            .copied()
             .unwrap_or_else(|| skia_rs_core::IRect::new(0, 0, image.width(), image.height()));
         if dst.is_empty() || src_rect.width() <= 0 || src_rect.height() <= 0 {
             return;
@@ -1609,26 +1747,23 @@ impl<'a> Canvas<'a> {
         // and test membership by mapping each pixel center back to local
         // space, so rotation and complex clips both work.
         let transformed_dst = matrix.map_rect(dst);
-        let visible_dst = match transformed_dst.intersect(&clip) {
-            Some(r) => r,
-            None => return,
+        let Some(visible_dst) = transformed_dst.intersect(&clip) else {
+            return;
         };
 
-        let scale_x = (src_rect.width() as Scalar) / dst.width();
-        let scale_y = (src_rect.height() as Scalar) / dst.height();
+        let scale_x = scalar_from_i32(src_rect.width()) / dst.width();
+        let scale_y = scalar_from_i32(src_rect.height()) / dst.height();
 
-        let blend_mode = paint
-            .map(|p| p.blend_mode())
-            .unwrap_or(skia_rs_paint::BlendMode::SrcOver);
+        let blend_mode = paint.map_or(skia_rs_paint::BlendMode::SrcOver, Paint::blend_mode);
         // Paint alpha is applied exactly ONCE (to all four premultiplied
         // channels).
-        let alpha = paint.map(|p| p.alpha().clamp(0.0, 1.0)).unwrap_or(1.0);
+        let alpha = paint.map_or(1.0, |p| p.alpha().clamp(0.0, 1.0));
         let image_is_premul = image.alpha_type() == skia_rs_core::AlphaType::Premul;
 
-        let dst_x_start = visible_dst.left.floor() as i32;
-        let dst_x_end = visible_dst.right.ceil() as i32;
-        let dst_y_start = visible_dst.top.floor() as i32;
-        let dst_y_end = visible_dst.bottom.ceil() as i32;
+        let dst_x_start = floor_to_i32(visible_dst.left);
+        let dst_x_end = ceil_to_i32(visible_dst.right);
+        let dst_y_start = floor_to_i32(visible_dst.top);
+        let dst_y_end = ceil_to_i32(visible_dst.bottom);
 
         // The clip stack lives in a disjoint field; query it while holding
         // the mutable buffer borrow below.
@@ -1658,8 +1793,10 @@ impl<'a> Canvas<'a> {
 
                 // Map the device pixel center back to local space and check
                 // quad membership there (exact under rotation).
-                let local =
-                    inverse.map_point(Point::new(dst_x as Scalar + 0.5, dst_y as Scalar + 0.5));
+                let local = inverse.map_point(Point::new(
+                    scalar_from_i32(dst_x) + 0.5,
+                    scalar_from_i32(dst_y) + 0.5,
+                ));
                 if local.x < dst.left
                     || local.x >= dst.right
                     || local.y < dst.top
@@ -1668,8 +1805,18 @@ impl<'a> Canvas<'a> {
                     continue;
                 }
 
-                let src_x = (src_rect.left as Scalar + (local.x - dst.left) * scale_x) as i32;
-                let src_y = (src_rect.top as Scalar + (local.y - dst.top) * scale_y) as i32;
+                // Truncate-toward-zero-then-saturate, matching the previous
+                // `as i32` cast exactly for all finite inputs.
+                let src_x = saturate_to_i32(
+                    (local.x - dst.left)
+                        .mul_add(scale_x, scalar_from_i32(src_rect.left))
+                        .trunc(),
+                );
+                let src_y = saturate_to_i32(
+                    (local.y - dst.top)
+                        .mul_add(scale_y, scalar_from_i32(src_rect.top))
+                        .trunc(),
+                );
                 if src_x < 0 || src_x >= image.width() || src_y < 0 || src_y >= image.height() {
                     continue;
                 }
@@ -1683,9 +1830,8 @@ impl<'a> Canvas<'a> {
                     };
                     // Apply paint alpha once and the clip coverage, both on
                     // the premultiplied color.
-                    let scale = alpha * (clip_cov as f32 / 255.0);
-                    let to_byte =
-                        |v: f32| (v * scale * 255.0).round().clamp(0.0, 255.0) as u8;
+                    let scale = alpha * (f32::from(clip_cov) / 255.0);
+                    let to_byte = |v: f32| skia_rs_core::cast::f32_to_u8_sat(v * scale * 255.0);
                     let color = Color::from_argb(
                         to_byte(premul4.a),
                         to_byte(premul4.r),
@@ -1706,6 +1852,10 @@ impl<'a> Canvas<'a> {
 
     /// Draw an image with nine-patch stretching.
     #[cfg(feature = "codec")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "nine-patch stretching is nine sequential draw_image_rect calls (corners/edges/center); splitting would fragment one cohesive layout"
+    )]
     pub fn draw_image_nine(
         &mut self,
         image: &skia_rs_codec::Image,
@@ -1713,13 +1863,15 @@ impl<'a> Canvas<'a> {
         dst: &Rect,
         paint: Option<&Paint>,
     ) {
+        use skia_rs_core::cast::scalar_from_i32;
+
         let img_w = image.width();
         let img_h = image.height();
 
-        let left_w = center.left as Scalar;
-        let right_w = (img_w - center.right) as Scalar;
-        let top_h = center.top as Scalar;
-        let bottom_h = (img_h - center.bottom) as Scalar;
+        let left_w = scalar_from_i32(center.left);
+        let right_w = scalar_from_i32(img_w - center.right);
+        let top_h = scalar_from_i32(center.top);
+        let bottom_h = scalar_from_i32(img_h - center.bottom);
 
         let center_w = dst.width() - left_w - right_w;
         let center_h = dst.height() - top_h - bottom_h;
@@ -1743,7 +1895,12 @@ impl<'a> Canvas<'a> {
         );
         self.draw_image_rect(
             image,
-            Some(&skia_rs_core::IRect::new(center.right, 0, img_w, center.top)),
+            Some(&skia_rs_core::IRect::new(
+                center.right,
+                0,
+                img_w,
+                center.top,
+            )),
             &Rect::from_xywh(dst.right - right_w, dst.top, right_w, top_h),
             paint,
         );
@@ -1897,7 +2054,7 @@ impl<'a> Canvas<'a> {
             VertexMode::TriangleFan => {
                 let center = positions[0];
                 for i in 1..positions.len().saturating_sub(1) {
-                    let c0 = colors.and_then(|c| c.get(0).copied());
+                    let c0 = colors.and_then(|c| c.first().copied());
                     let c1 = colors.and_then(|c| c.get(i).copied());
                     let c2 = colors.and_then(|c| c.get(i + 1).copied());
                     self.draw_triangle(
@@ -1920,6 +2077,10 @@ impl<'a> Canvas<'a> {
     /// (pixel-center barycentric test), the clip is applied per pixel, paint
     /// alpha modulates the vertex colors, and the blended color is
     /// premultiplied for the premul pixel pipeline.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one vertex-color pair per triangle corner (p0/c0, p1/c1, p2/c2) plus paint mirrors the SkDraw triangle-rasterizer parameter shape; bundling would obscure the correspondence"
+    )]
     fn draw_triangle(
         &mut self,
         p0: Point,
@@ -1930,6 +2091,9 @@ impl<'a> Canvas<'a> {
         c2: Option<Color>,
         paint: &Paint,
     ) {
+        use skia_rs_core::cast::{ceil_to_i32, floor_to_i32, scalar_from_i32};
+        use skia_rs_core::mul_div_255_round;
+
         // The clip stack lives in a disjoint field; query it while holding
         // the mutable buffer borrow below.
         let clip_stack = &self.clip_stack;
@@ -1950,34 +2114,33 @@ impl<'a> Canvas<'a> {
 
         // Vertex colors (or the paint color), modulated by paint alpha.
         let default_color = paint.color32().to_color4f();
-        let modulate = |c: skia_rs_core::Color4f| {
-            skia_rs_core::Color4f::new(c.r, c.g, c.b, c.a * paint_alpha)
-        };
-        let col0 = modulate(c0.map(|c| c.to_color4f()).unwrap_or(default_color));
-        let col1 = modulate(c1.map(|c| c.to_color4f()).unwrap_or(default_color));
-        let col2 = modulate(c2.map(|c| c.to_color4f()).unwrap_or(default_color));
+        let modulate =
+            |c: skia_rs_core::Color4f| skia_rs_core::Color4f::new(c.r, c.g, c.b, c.a * paint_alpha);
+        let col0 = modulate(c0.map_or(default_color, |c| c.to_color4f()));
+        let col1 = modulate(c1.map_or(default_color, |c| c.to_color4f()));
+        let col2 = modulate(c2.map_or(default_color, |c| c.to_color4f()));
         let uniform = c0 == c1 && c1 == c2;
         let uniform_color = skia_rs_core::premultiply_color(col0.to_color());
 
         // Bounding box.
-        let min_x = p0.x.min(p1.x).min(p2.x).floor() as i32;
-        let max_x = p0.x.max(p1.x).max(p2.x).ceil() as i32;
-        let min_y = p0.y.min(p1.y).min(p2.y).floor() as i32;
-        let max_y = p0.y.max(p1.y).max(p2.y).ceil() as i32;
+        let min_x = floor_to_i32(p0.x.min(p1.x).min(p2.x));
+        let max_x = ceil_to_i32(p0.x.max(p1.x).max(p2.x));
+        let min_y = floor_to_i32(p0.y.min(p1.y).min(p2.y));
+        let max_y = ceil_to_i32(p0.y.max(p1.y).max(p2.y));
 
-        let denom = (p1.y - p2.y) * (p0.x - p2.x) + (p2.x - p1.x) * (p0.y - p2.y);
+        let denom = (p1.y - p2.y).mul_add(p0.x - p2.x, (p2.x - p1.x) * (p0.y - p2.y));
         if denom.abs() < 1e-7 {
             return; // degenerate triangle
         }
 
         for y in min_y..max_y {
             for x in min_x..max_x {
-                let px = x as Scalar + 0.5;
-                let py = y as Scalar + 0.5;
+                let px = scalar_from_i32(x) + 0.5;
+                let py = scalar_from_i32(y) + 0.5;
 
                 // Barycentric coordinates at the pixel center.
-                let w0 = ((p1.y - p2.y) * (px - p2.x) + (p2.x - p1.x) * (py - p2.y)) / denom;
-                let w1 = ((p2.y - p0.y) * (px - p2.x) + (p0.x - p2.x) * (py - p2.y)) / denom;
+                let w0 = (p1.y - p2.y).mul_add(px - p2.x, (p2.x - p1.x) * (py - p2.y)) / denom;
+                let w1 = (p2.y - p0.y).mul_add(px - p2.x, (p0.x - p2.x) * (py - p2.y)) / denom;
                 let w2 = 1.0 - w0 - w1;
                 if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
                     continue;
@@ -1992,10 +2155,10 @@ impl<'a> Canvas<'a> {
                 let mut color = if uniform {
                     uniform_color
                 } else {
-                    let r = col0.r * w0 + col1.r * w1 + col2.r * w2;
-                    let g = col0.g * w0 + col1.g * w1 + col2.g * w2;
-                    let b = col0.b * w0 + col1.b * w1 + col2.b * w2;
-                    let a = col0.a * w0 + col1.a * w1 + col2.a * w2;
+                    let r = col0.r.mul_add(w0, col1.r.mul_add(w1, col2.r * w2));
+                    let g = col0.g.mul_add(w0, col1.g.mul_add(w1, col2.g * w2));
+                    let b = col0.b.mul_add(w0, col1.b.mul_add(w1, col2.b * w2));
+                    let a = col0.a.mul_add(w0, col1.a.mul_add(w1, col2.a * w2));
                     skia_rs_core::premultiply_color(
                         skia_rs_core::Color4f::new(
                             r.clamp(0.0, 1.0),
@@ -2008,9 +2171,7 @@ impl<'a> Canvas<'a> {
                 };
 
                 if clip_cov < 255 {
-                    let s = |v: u8| {
-                        ((v as u32 * clip_cov as u32 + 128) * 257 >> 16) as u8
-                    };
+                    let s = |v: u8| mul_div_255_round(u32::from(v), u32::from(clip_cov));
                     color = Color::from_argb(
                         s(color.alpha()),
                         s(color.red()),
@@ -2043,6 +2204,13 @@ impl<'a> Canvas<'a> {
         for run in blob.runs() {
             let font = &run.font;
             for (i, &glyph) in run.glyphs.iter().enumerate() {
+                // `i` is a glyph index; the precision loss of the usize->f32
+                // cast is irrelevant for this fallback position estimate (only
+                // matters beyond 2^24 glyphs in a single run).
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "glyph index for a fallback position estimate"
+                )]
                 let pos = run
                     .positions
                     .get(i)
@@ -2081,6 +2249,10 @@ pub enum VertexMode {
 fn build_round_rect_path(rect: &Rect, rx: Scalar, ry: Scalar) -> Path {
     use skia_rs_path::PathBuilder;
 
+    // Quarter-circle conics of weight sqrt(2)/2 — the exact circular-arc
+    // geometry Skia uses for round rect corners.
+    const W: Scalar = std::f32::consts::FRAC_1_SQRT_2;
+
     let mut builder = PathBuilder::new();
     if rx <= 0.0 || ry <= 0.0 || rect.is_empty() {
         builder.add_rect(rect);
@@ -2095,10 +2267,6 @@ fn build_round_rect_path(rect: &Rect, rx: Scalar, ry: Scalar) -> Path {
     let rx = rx * scale;
     let ry = ry * scale;
 
-    // Quarter-circle conics of weight sqrt(2)/2 — the exact circular-arc
-    // geometry Skia uses for round rect corners.
-    const W: Scalar = std::f32::consts::FRAC_1_SQRT_2;
-
     builder.move_to(rect.left + rx, rect.top);
     builder.line_to(rect.right - rx, rect.top);
     builder.conic_to(rect.right, rect.top, rect.right, rect.top + ry, W);
@@ -2112,12 +2280,7 @@ fn build_round_rect_path(rect: &Rect, rx: Scalar, ry: Scalar) -> Path {
     builder.build()
 }
 
-fn build_arc_path(
-    oval: &Rect,
-    start_angle: Scalar,
-    sweep_angle: Scalar,
-    use_center: bool,
-) -> Path {
+fn build_arc_path(oval: &Rect, start_angle: Scalar, sweep_angle: Scalar, use_center: bool) -> Path {
     use skia_rs_path::{PathBuilder, PathElement};
 
     let mut builder = PathBuilder::new();
@@ -2145,12 +2308,9 @@ fn build_arc_path(
     // Wedge: center -> arc start -> arc -> close.
     let center = oval.center();
     builder.move_to(center.x, center.y);
-    for element in arc_path.iter() {
+    for element in &arc_path {
         match element {
-            PathElement::Move(p) => {
-                builder.line_to(p.x, p.y);
-            }
-            PathElement::Line(p) => {
+            PathElement::Move(p) | PathElement::Line(p) => {
                 builder.line_to(p.x, p.y);
             }
             PathElement::Quad(c, p) => {
@@ -2201,7 +2361,8 @@ pub struct ImageLattice {
 
 impl ImageLattice {
     /// Create a new image lattice.
-    pub fn new(x_divs: Vec<i32>, y_divs: Vec<i32>) -> Self {
+    #[must_use]
+    pub const fn new(x_divs: Vec<i32>, y_divs: Vec<i32>) -> Self {
         Self {
             x_divs,
             y_divs,
@@ -2240,6 +2401,7 @@ pub struct RSXform {
 
 impl RSXform {
     /// Create from rotation and scale.
+    #[must_use]
     pub fn from_radians(
         scale: Scalar,
         radians: Scalar,
@@ -2252,13 +2414,14 @@ impl RSXform {
         Self {
             scos: scale * cos,
             ssin: scale * sin,
-            tx: tx + -scale * (ax * cos - ay * sin),
-            ty: ty + -scale * (ax * sin + ay * cos),
+            tx: (-scale).mul_add(ax.mul_add(cos, -(ay * sin)), tx),
+            ty: (-scale).mul_add(ax.mul_add(sin, ay * cos), ty),
         }
     }
 
     /// Create a simple translation + scale.
-    pub fn from_scale_translate(scale: Scalar, tx: Scalar, ty: Scalar) -> Self {
+    #[must_use]
+    pub const fn from_scale_translate(scale: Scalar, tx: Scalar, ty: Scalar) -> Self {
         Self {
             scos: scale,
             ssin: 0.0,
@@ -2277,6 +2440,7 @@ impl RSXform {
     /// [ ssin   scos  ty ]
     /// [    0      0   1 ]
     /// ```
+    #[must_use]
     pub fn to_matrix(&self) -> Matrix {
         Matrix {
             values: [
@@ -2321,7 +2485,7 @@ pub enum PointMode {
 fn stops_to_color4f(
     stops: &[skia_rs_text::GradientStop],
 ) -> (Vec<skia_rs_core::Color4f>, Vec<Scalar>) {
-    let mut sorted: Vec<_> = stops.iter().copied().collect();
+    let mut sorted: Vec<_> = stops.to_vec();
     sorted.sort_by(|a, b| {
         a.offset_f32()
             .partial_cmp(&b.offset_f32())
@@ -2342,7 +2506,7 @@ fn stops_to_color4f(
 }
 
 #[cfg(feature = "text")]
-fn extend_to_tile(extend: skia_rs_text::GradientExtend) -> skia_rs_paint::TileMode {
+const fn extend_to_tile(extend: skia_rs_text::GradientExtend) -> skia_rs_paint::TileMode {
     use skia_rs_paint::TileMode;
     match extend {
         skia_rs_text::GradientExtend::Pad => TileMode::Clamp,
@@ -2352,14 +2516,13 @@ fn extend_to_tile(extend: skia_rs_text::GradientExtend) -> skia_rs_paint::TileMo
 }
 
 #[cfg(feature = "text")]
-fn colr_composite_to_blend(
+const fn colr_composite_to_blend(
     mode: skia_rs_text::CompositeMode,
-) -> Option<skia_rs_paint::blend::BlendMode> {
+) -> skia_rs_paint::blend::BlendMode {
     use skia_rs_paint::blend::BlendMode;
     use skia_rs_text::CompositeMode as Cm;
-    // Only map the composite modes that BlendMode actually implements.
-    // SrcOver (the default) is the common case.
-    Some(match mode {
+    // Every COLR composite mode maps to a BlendMode; SrcOver is the common case.
+    match mode {
         Cm::Clear => BlendMode::Clear,
         Cm::Source => BlendMode::Src,
         Cm::Destination => BlendMode::Dst,
@@ -2388,7 +2551,7 @@ fn colr_composite_to_blend(
         Cm::Saturation => BlendMode::Saturation,
         Cm::Color => BlendMode::Color,
         Cm::Luminosity => BlendMode::Luminosity,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -2494,13 +2657,19 @@ mod tests {
         // Pixel at (50, 50) should be unchanged (black/transparent, initial state)
         // because it's in the difference-clipped hole
         let center_pixel = buffer.get_pixel(50, 50).unwrap_or(Color::TRANSPARENT);
-        assert_ne!(center_pixel, Color::WHITE,
-            "Center pixel should not be white due to difference clip");
+        assert_ne!(
+            center_pixel,
+            Color::WHITE,
+            "Center pixel should not be white due to difference clip"
+        );
 
         // Pixel at (10, 10) should be white (outside the hole)
         let corner_pixel = buffer.get_pixel(10, 10).unwrap_or(Color::TRANSPARENT);
-        assert_eq!(corner_pixel, Color::WHITE,
-            "Corner pixel should be white (outside difference clip)");
+        assert_eq!(
+            corner_pixel,
+            Color::WHITE,
+            "Corner pixel should be white (outside difference clip)"
+        );
     }
 
     #[test]
@@ -2552,7 +2721,11 @@ mod tests {
         let initial_bounds = c.clip_bounds();
 
         c.save();
-        c.clip_rect(&Rect::from_xywh(10.0, 10.0, 50.0, 50.0), ClipOp::Intersect, false);
+        c.clip_rect(
+            &Rect::from_xywh(10.0, 10.0, 50.0, 50.0),
+            ClipOp::Intersect,
+            false,
+        );
         let clipped_bounds = c.clip_bounds();
         assert!(clipped_bounds.width() < initial_bounds.width());
 
@@ -2568,16 +2741,29 @@ mod tests {
         let mut paint = Paint::new();
         paint.set_color32(Color::WHITE);
         paint.set_stroke_width(3.0);
-        canvas.draw_points(PointMode::Points, &[
-            Point::new(10.0, 10.0),
-            Point::new(50.0, 50.0),
-            Point::new(90.0, 90.0),
-        ], &paint);
+        canvas.draw_points(
+            PointMode::Points,
+            &[
+                Point::new(10.0, 10.0),
+                Point::new(50.0, 50.0),
+                Point::new(90.0, 90.0),
+            ],
+            &paint,
+        );
         // Three distinct bright pixels should exist
         drop(canvas);
-        assert_ne!(buffer.get_pixel(10, 10).unwrap_or(Color::TRANSPARENT), Color::TRANSPARENT);
-        assert_ne!(buffer.get_pixel(50, 50).unwrap_or(Color::TRANSPARENT), Color::TRANSPARENT);
-        assert_ne!(buffer.get_pixel(90, 90).unwrap_or(Color::TRANSPARENT), Color::TRANSPARENT);
+        assert_ne!(
+            buffer.get_pixel(10, 10).unwrap_or(Color::TRANSPARENT),
+            Color::TRANSPARENT
+        );
+        assert_ne!(
+            buffer.get_pixel(50, 50).unwrap_or(Color::TRANSPARENT),
+            Color::TRANSPARENT
+        );
+        assert_ne!(
+            buffer.get_pixel(90, 90).unwrap_or(Color::TRANSPARENT),
+            Color::TRANSPARENT
+        );
     }
 
     #[test]
@@ -2587,15 +2773,22 @@ mod tests {
         let mut paint = Paint::new();
         paint.set_color32(Color::WHITE);
         // Two pairs: horizontal and vertical line
-        canvas.draw_points(PointMode::Lines, &[
-            Point::new(0.0, 50.0),
-            Point::new(100.0, 50.0),   // pair 1: horizontal line
-            Point::new(50.0, 0.0),
-            Point::new(50.0, 100.0),   // pair 2: vertical line
-        ], &paint);
+        canvas.draw_points(
+            PointMode::Lines,
+            &[
+                Point::new(0.0, 50.0),
+                Point::new(100.0, 50.0), // pair 1: horizontal line
+                Point::new(50.0, 0.0),
+                Point::new(50.0, 100.0), // pair 2: vertical line
+            ],
+            &paint,
+        );
         // Verify by sampling midpoints of both lines
         drop(canvas);
-        assert_ne!(buffer.get_pixel(50, 50).unwrap_or(Color::TRANSPARENT), Color::TRANSPARENT);
+        assert_ne!(
+            buffer.get_pixel(50, 50).unwrap_or(Color::TRANSPARENT),
+            Color::TRANSPARENT
+        );
     }
 
     #[test]
@@ -2605,15 +2798,22 @@ mod tests {
         let mut paint = Paint::new();
         paint.set_color32(Color::WHITE);
         // Triangle perimeter: three lines should be drawn
-        canvas.draw_points(PointMode::Polygon, &[
-            Point::new(50.0, 10.0),
-            Point::new(90.0, 90.0),
-            Point::new(10.0, 90.0),
-        ], &paint);
+        canvas.draw_points(
+            PointMode::Polygon,
+            &[
+                Point::new(50.0, 10.0),
+                Point::new(90.0, 90.0),
+                Point::new(10.0, 90.0),
+            ],
+            &paint,
+        );
         drop(canvas);
         // Lines connect 50,10->90,90 and 90,90->10,90
         // Sample a point on the second line
-        assert_ne!(buffer.get_pixel(50, 90).unwrap_or(Color::TRANSPARENT), Color::TRANSPARENT);
+        assert_ne!(
+            buffer.get_pixel(50, 90).unwrap_or(Color::TRANSPARENT),
+            Color::TRANSPARENT
+        );
     }
 
     #[test]
@@ -2621,10 +2821,13 @@ mod tests {
         let mut buffer = PixelBuffer::new(10, 10);
         let mut canvas = Canvas::new_raster(&mut buffer);
         let paint = Paint::new();
-        canvas.draw_points(PointMode::Points, &[], &paint);  // should not panic
+        canvas.draw_points(PointMode::Points, &[], &paint); // should not panic
         // Verify no pixels were drawn (buffer should be all transparent)
         drop(canvas);
-        assert_eq!(buffer.get_pixel(5, 5).unwrap_or(Color::TRANSPARENT), Color::TRANSPARENT);
+        assert_eq!(
+            buffer.get_pixel(5, 5).unwrap_or(Color::TRANSPARENT),
+            Color::TRANSPARENT
+        );
     }
 
     #[test]
@@ -2634,14 +2837,21 @@ mod tests {
         let mut canvas = Canvas::new_raster(&mut buffer);
         let mut paint = Paint::new();
         paint.set_color32(Color::WHITE);
-        canvas.draw_points(PointMode::Lines, &[
-            Point::new(0.0, 50.0),
-            Point::new(100.0, 50.0),
-            Point::new(50.0, 50.0),  // orphan, should be ignored
-        ], &paint);
+        canvas.draw_points(
+            PointMode::Lines,
+            &[
+                Point::new(0.0, 50.0),
+                Point::new(100.0, 50.0),
+                Point::new(50.0, 50.0), // orphan, should be ignored
+            ],
+            &paint,
+        );
         // Should not panic; one line should be drawn
         drop(canvas);
-        assert_ne!(buffer.get_pixel(50, 50).unwrap_or(Color::TRANSPARENT), Color::TRANSPARENT);
+        assert_ne!(
+            buffer.get_pixel(50, 50).unwrap_or(Color::TRANSPARENT),
+            Color::TRANSPARENT
+        );
     }
 
     #[test]
@@ -2651,40 +2861,64 @@ mod tests {
         {
             let mut c = Canvas::new_recording(&mut cmds, 100, 100);
             let paint = Paint::new();
-            c.draw_points(PointMode::Points, &[
-                Point::new(10.0, 10.0),
-                Point::new(20.0, 20.0),
-            ], &paint);
+            c.draw_points(
+                PointMode::Points,
+                &[Point::new(10.0, 10.0), Point::new(20.0, 20.0)],
+                &paint,
+            );
         }
         // Two DrawPoint commands should be recorded
-        assert_eq!(cmds.iter().filter(|cmd| matches!(cmd, DrawCommand::DrawPoint { .. })).count(), 2);
+        assert_eq!(
+            cmds.iter()
+                .filter(|cmd| matches!(cmd, DrawCommand::DrawPoint { .. }))
+                .count(),
+            2
+        );
 
         let mut cmds = Vec::new();
         {
             let mut c = Canvas::new_recording(&mut cmds, 100, 100);
             let paint = Paint::new();
-            c.draw_points(PointMode::Lines, &[
-                Point::new(0.0, 0.0),
-                Point::new(10.0, 10.0),
-                Point::new(20.0, 20.0),
-                Point::new(30.0, 30.0),
-            ], &paint);
+            c.draw_points(
+                PointMode::Lines,
+                &[
+                    Point::new(0.0, 0.0),
+                    Point::new(10.0, 10.0),
+                    Point::new(20.0, 20.0),
+                    Point::new(30.0, 30.0),
+                ],
+                &paint,
+            );
         }
         // Two DrawLine commands should be recorded (one per pair)
-        assert_eq!(cmds.iter().filter(|cmd| matches!(cmd, DrawCommand::DrawLine { .. })).count(), 2);
+        assert_eq!(
+            cmds.iter()
+                .filter(|cmd| matches!(cmd, DrawCommand::DrawLine { .. }))
+                .count(),
+            2
+        );
 
         let mut cmds = Vec::new();
         {
             let mut c = Canvas::new_recording(&mut cmds, 100, 100);
             let paint = Paint::new();
-            c.draw_points(PointMode::Polygon, &[
-                Point::new(0.0, 0.0),
-                Point::new(10.0, 10.0),
-                Point::new(20.0, 0.0),
-            ], &paint);
+            c.draw_points(
+                PointMode::Polygon,
+                &[
+                    Point::new(0.0, 0.0),
+                    Point::new(10.0, 10.0),
+                    Point::new(20.0, 0.0),
+                ],
+                &paint,
+            );
         }
         // Two DrawLine commands should be recorded (n-1 for polygon)
-        assert_eq!(cmds.iter().filter(|cmd| matches!(cmd, DrawCommand::DrawLine { .. })).count(), 2);
+        assert_eq!(
+            cmds.iter()
+                .filter(|cmd| matches!(cmd, DrawCommand::DrawLine { .. }))
+                .count(),
+            2
+        );
     }
 
     // =========================================================================
@@ -2952,9 +3186,9 @@ mod tests {
                 Point::new(10.0, 90.0),
             ],
             Some(&[
-                Color::from_rgb(255, 0, 0),    // red at top
-                Color::from_rgb(0, 255, 0),    // green at bottom-right
-                Color::from_rgb(0, 0, 255),    // blue at bottom-left
+                Color::from_rgb(255, 0, 0), // red at top
+                Color::from_rgb(0, 255, 0), // green at bottom-right
+                Color::from_rgb(0, 0, 255), // blue at bottom-left
             ]),
             &paint,
         );
@@ -3008,17 +3242,17 @@ mod tests {
 
         let c = buffer.get_pixel(50, 50).unwrap();
         assert!(
-            (c.red() as i32 - 255).abs() < 10,
+            (i32::from(c.red()) - 255).abs() < 10,
             "Expected ~255 red, got {}",
             c.red()
         );
         assert!(
-            (c.green() as i32 - 128).abs() < 10,
+            (i32::from(c.green()) - 128).abs() < 10,
             "Expected ~128 green, got {}",
             c.green()
         );
         assert!(
-            (c.blue() as i32 - 64).abs() < 10,
+            (i32::from(c.blue()) - 64).abs() < 10,
             "Expected ~64 blue, got {}",
             c.blue()
         );
@@ -3053,7 +3287,10 @@ mod tests {
 
         // First triangle (0,1,2): red, green, blue
         let c0 = buffer.get_pixel(15, 15).unwrap();
-        assert!(c0.red() > 100, "Expected red contribution in first triangle");
+        assert!(
+            c0.red() > 100,
+            "Expected red contribution in first triangle"
+        );
 
         // Second triangle (1,2,3): green, blue, yellow
         let c1 = buffer.get_pixel(45, 45).unwrap();
@@ -3126,12 +3363,18 @@ mod tests {
         let mut paint = Paint::new();
         paint.set_color32(Color::from_rgb(255, 0, 0));
 
-        canvas.draw_patch(&cubics, None, None, skia_rs_paint::BlendMode::SrcOver, &paint);
+        canvas.draw_patch(
+            &cubics,
+            None,
+            None,
+            skia_rs_paint::BlendMode::SrcOver,
+            &paint,
+        );
         drop(canvas);
 
         // Center of the patch should be red
         let center = buffer.get_pixel(55, 55).unwrap();
-        assert!(center.red() > 200, "Center should be red, got {:?}", center);
+        assert!(center.red() > 200, "Center should be red, got {center:?}");
     }
 
     #[test]
@@ -3164,7 +3407,7 @@ mod tests {
             Color::from_rgb(255, 255, 0), // bottom-left: yellow
         ];
 
-        let mut paint = Paint::new();
+        let paint = Paint::new();
         canvas.draw_patch(
             &cubics,
             Some(&colors),
@@ -3178,8 +3421,7 @@ mod tests {
         let center = buffer.get_pixel(55, 55).unwrap();
         assert!(
             center.red() > 50 && center.green() > 50,
-            "Center should blend all colors, got {:?}",
-            center
+            "Center should blend all colors, got {center:?}"
         );
     }
 
@@ -3252,7 +3494,15 @@ mod tests {
         let mut canvas = Canvas::new_raster(&mut buffer);
 
         let image = skia_rs_codec::Image::from_color(100, 100, 0xFF_0000FF).unwrap();
-        canvas.draw_atlas(&image, &[], &[], None, skia_rs_paint::BlendMode::SrcOver, FilterMode::Nearest, None);
+        canvas.draw_atlas(
+            &image,
+            &[],
+            &[],
+            None,
+            skia_rs_paint::BlendMode::SrcOver,
+            FilterMode::Nearest,
+            None,
+        );
 
         // Should not panic
     }
@@ -3268,7 +3518,15 @@ mod tests {
         let xforms = [RSXform::from_scale_translate(1.0, 10.0, 10.0)];
         let sprites = [Rect::from_xywh(0.0, 0.0, 10.0, 10.0)];
 
-        canvas.draw_atlas(&image, &xforms, &sprites, None, skia_rs_paint::BlendMode::SrcOver, FilterMode::Nearest, None);
+        canvas.draw_atlas(
+            &image,
+            &xforms,
+            &sprites,
+            None,
+            skia_rs_paint::BlendMode::SrcOver,
+            FilterMode::Nearest,
+            None,
+        );
 
         // Should draw sprite at (10, 10) without panicking
     }
@@ -3382,9 +3640,7 @@ mod tests {
             assert_eq!(
                 buffer.get_pixel(x, y).unwrap().green(),
                 255,
-                "({}, {}) must be filled regardless of the CTM",
-                x,
-                y
+                "({x}, {y}) must be filled regardless of the CTM"
             );
         }
     }
@@ -3582,8 +3838,7 @@ mod tests {
         assert_eq!(
             (c.red(), c.green(), c.blue()),
             (0, 0, 0),
-            "invert color filter must run at composite: {:?}",
-            c
+            "invert color filter must run at composite: {c:?}"
         );
         assert_eq!(c.alpha(), 255);
     }
@@ -3614,8 +3869,7 @@ mod tests {
         let inside = buffer.get_pixel(3, 3).unwrap();
         assert!(
             inside.alpha() > 120 && inside.alpha() < 136,
-            "paint alpha must modulate vertex colors, got {:?}",
-            inside
+            "paint alpha must modulate vertex colors, got {inside:?}"
         );
         assert_eq!(inside.red(), inside.alpha(), "premultiplied white");
         // Inside triangle but outside the clip: untouched.
@@ -3661,8 +3915,7 @@ mod tests {
         let c = buffer.get_pixel(5, 5).unwrap();
         assert!(
             c.alpha() > 120 && c.alpha() < 136,
-            "paint alpha must be applied exactly once, got {:?}",
-            c
+            "paint alpha must be applied exactly once, got {c:?}"
         );
         // Outside the clip: untouched.
         assert_eq!(buffer.get_pixel(12, 5).unwrap().alpha(), 0);
@@ -3713,6 +3966,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact test: identity-matrix mapping of (0,0) after undoing a translate is exactly 0.0"
+    )]
     fn test_save_returns_previous_save_count() {
         // SkCanvas::save returns getSaveCount() - 1, i.e. the count BEFORE
         // the save. Fresh canvas: getSaveCount() == 1, save() returns 1 and
@@ -3751,7 +4008,10 @@ mod tests {
         canvas.translate(10.0, 10.0);
         canvas.restore();
         let p = canvas.total_matrix().map_point(Point::new(0.0, 0.0));
-        assert!(p.x.abs() < 1e-4 && p.y.abs() < 1e-4, "restore should undo translate");
+        assert!(
+            p.x.abs() < 1e-4 && p.y.abs() < 1e-4,
+            "restore should undo translate"
+        );
     }
 
     #[test]
@@ -3857,6 +4117,10 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact test: from_scale_translate(1.0, 0.0, 0.0) produces exact field values"
+    )]
     fn test_rsxform_identity() {
         let xform = RSXform::from_scale_translate(1.0, 0.0, 0.0);
         assert_eq!(xform.scos, 1.0);

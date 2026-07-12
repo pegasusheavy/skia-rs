@@ -36,12 +36,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      # Allow warnings but deny errors - pedantic lints are advisory
-      - run: cargo clippy --workspace --all-targets -- -A clippy::pedantic -A clippy::nursery -A warnings
+      # Enforce clippy pedantic + nursery (configured as warnings in the
+      # workspace `[lints]` table) as hard errors. Justified false positives
+      # for the Skia port carry narrow `#[allow(..., reason = "...")]`.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
 
   # ==========================================================================
   # Build & Test Matrix
@@ -61,6 +69,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -87,6 +103,12 @@ jobs:
     continue-on-error: true  # MSRV check is advisory
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: dtolnay/rust-toolchain@1.85
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace
@@ -100,6 +122,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build docs
@@ -147,6 +175,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
@@ -219,6 +253,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - uses: dtolnay/rust-toolchain@stable
 

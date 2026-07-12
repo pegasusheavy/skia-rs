@@ -23,7 +23,6 @@
 //! runner.run();
 //! ```
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -60,6 +59,10 @@ pub trait Sink: Send + Sync {
     fn name(&self) -> &str;
 
     /// Process a test result
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SinkError`] if the sink fails to process the result (e.g. I/O failure).
     fn process(&self, result: &TestResult) -> Result<(), SinkError>;
 }
 
@@ -145,13 +148,14 @@ impl Default for RasterRenderer {
 
 impl RasterRenderer {
     /// Create a new raster renderer
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self
     }
 }
 
 impl Renderer for RasterRenderer {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "raster"
     }
 
@@ -193,6 +197,7 @@ impl Gm {
     }
 
     /// Add a tag
+    #[must_use]
     pub fn with_tag(mut self, tag: &str) -> Self {
         self.tags.push(tag.to_string());
         self
@@ -213,7 +218,7 @@ impl Source for Gm {
     }
 
     fn tags(&self) -> Vec<&str> {
-        self.tags.iter().map(|s| s.as_str()).collect()
+        self.tags.iter().map(std::string::String::as_str).collect()
     }
 }
 
@@ -222,6 +227,7 @@ pub struct StandardGms;
 
 impl StandardGms {
     /// Get all standard GMs
+    #[must_use]
     pub fn all() -> Vec<Arc<dyn Source>> {
         vec![
             Arc::new(Self::simple_rect()),
@@ -238,6 +244,7 @@ impl StandardGms {
     }
 
     /// Simple rectangle GM
+    #[must_use]
     pub fn simple_rect() -> Gm {
         Gm::new("simple_rect", 200, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -251,6 +258,11 @@ impl StandardGms {
     }
 
     /// Circles GM
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "loop index is bounded by a 3-element array; precision loss cannot occur in practice"
+    )]
     pub fn circles() -> Gm {
         Gm::new("circles", 300, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -262,7 +274,7 @@ impl StandardGms {
                 paint.set_color32(*color);
                 paint.set_anti_alias(true);
 
-                let cx = 50.0 + i as f32 * 100.0;
+                let cx = (i as f32).mul_add(100.0, 50.0);
                 canvas.draw_circle(Point::new(cx, 100.0), 40.0, &paint);
             }
         })
@@ -270,6 +282,11 @@ impl StandardGms {
     }
 
     /// Paths GM
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "loop index is bounded by a fixed 5-point star; precision loss cannot occur in practice"
+    )]
     pub fn paths() -> Gm {
         Gm::new("paths", 200, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -287,7 +304,8 @@ impl StandardGms {
             let inner = 30.0;
 
             for i in 0..5 {
-                let angle_outer = std::f32::consts::PI * 2.0 * i as f32 / 5.0 - std::f32::consts::PI / 2.0;
+                let angle_outer =
+                    std::f32::consts::PI * 2.0 * i as f32 / 5.0 - std::f32::consts::PI / 2.0;
                 let angle_inner = angle_outer + std::f32::consts::PI / 5.0;
 
                 let px = cx + outer * angle_outer.cos();
@@ -310,6 +328,11 @@ impl StandardGms {
     }
 
     /// Gradients GM
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "loop index is bounded by small fixed ranges (100, 40); precision loss cannot occur in practice"
+    )]
     pub fn gradients() -> Gm {
         Gm::new("gradients", 300, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -321,16 +344,19 @@ impl StandardGms {
             // "Linear gradient" approximation
             for i in 0..100 {
                 let t = i as f32 / 100.0;
-                let r = (255.0 * (1.0 - t)) as u8;
-                let b = (255.0 * t) as u8;
+                let r = skia_rs_core::cast::f32_to_u8_sat(255.0 * (1.0 - t));
+                let b = skia_rs_core::cast::f32_to_u8_sat(255.0 * t);
                 paint.set_color32(Color::from_argb(255, r, 0, b));
-                canvas.draw_rect(&Rect::from_xywh(10.0 + i as f32 * 1.3, 20.0, 2.0, 60.0), &paint);
+                canvas.draw_rect(
+                    &Rect::from_xywh((i as f32).mul_add(1.3, 10.0), 20.0, 2.0, 60.0),
+                    &paint,
+                );
             }
 
             // "Radial gradient" approximation
             for i in (0..40).rev() {
                 let t = i as f32 / 40.0;
-                let g = (255.0 * t) as u8;
+                let g = skia_rs_core::cast::f32_to_u8_sat(255.0 * t);
                 paint.set_color32(Color::from_argb(255, 255, g, 0));
                 canvas.draw_circle(Point::new(200.0, 140.0), i as f32, &paint);
             }
@@ -339,6 +365,7 @@ impl StandardGms {
     }
 
     /// Transforms GM
+    #[must_use]
     pub fn transforms() -> Gm {
         Gm::new("transforms", 300, 300, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -359,6 +386,7 @@ impl StandardGms {
     }
 
     /// Clipping GM
+    #[must_use]
     pub fn clipping() -> Gm {
         Gm::new("clipping", 200, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -377,6 +405,7 @@ impl StandardGms {
     }
 
     /// Blend modes GM
+    #[must_use]
     pub fn blend_modes() -> Gm {
         Gm::new("blend_modes", 300, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -401,6 +430,11 @@ impl StandardGms {
     }
 
     /// Stroke styles GM
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "loop index is bounded by a 4-element array; precision loss cannot occur in practice"
+    )]
     pub fn stroke_styles() -> Gm {
         Gm::new("stroke_styles", 300, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -413,7 +447,7 @@ impl StandardGms {
             // Different stroke widths
             for (i, width) in [1.0, 2.0, 4.0, 8.0].iter().enumerate() {
                 paint.set_stroke_width(*width);
-                let y = 30.0 + i as f32 * 40.0;
+                let y = (i as f32).mul_add(40.0, 30.0);
                 canvas.draw_rect(&Rect::from_xywh(20.0, y, 260.0, 0.0), &paint);
             }
         })
@@ -421,6 +455,7 @@ impl StandardGms {
     }
 
     /// Antialiasing GM
+    #[must_use]
     pub fn antialiasing() -> Gm {
         Gm::new("antialiasing", 200, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -452,6 +487,11 @@ impl StandardGms {
     }
 
     /// Alpha blending GM
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "loop index is bounded by a 5-element array; precision loss cannot occur in practice"
+    )]
     pub fn alpha_blending() -> Gm {
         Gm::new("alpha_blending", 200, 200, |surface| {
             let mut canvas = surface.raster_canvas();
@@ -464,7 +504,10 @@ impl StandardGms {
             for (i, alpha) in alphas.iter().enumerate() {
                 paint.set_color32(Color::from_argb(*alpha, 100, 100, 200));
                 let offset = i as f32 * 25.0;
-                canvas.draw_rect(&Rect::from_xywh(20.0 + offset, 20.0 + offset, 100.0, 100.0), &paint);
+                canvas.draw_rect(
+                    &Rect::from_xywh(20.0 + offset, 20.0 + offset, 100.0, 100.0),
+                    &paint,
+                );
             }
         })
         .with_tag("alpha")
@@ -490,7 +533,7 @@ impl PngSink {
 }
 
 impl Sink for PngSink {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "png"
     }
 
@@ -505,7 +548,7 @@ impl Sink for PngSink {
 
         // Create output directory
         std::fs::create_dir_all(&self.output_dir).map_err(|e| SinkError {
-            message: format!("Failed to create output directory: {}", e),
+            message: format!("Failed to create output directory: {e}"),
         })?;
 
         let filename = format!("{}_{}.png", result.source, result.renderer);
@@ -513,7 +556,7 @@ impl Sink for PngSink {
 
         // Write PNG (simplified - would use actual PNG encoder)
         std::fs::write(&path, pixels).map_err(|e| SinkError {
-            message: format!("Failed to write PNG: {}", e),
+            message: format!("Failed to write PNG: {e}"),
         })?;
 
         Ok(())
@@ -551,16 +594,28 @@ impl ComparisonSink {
     }
 
     /// Get comparison results
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal results mutex is poisoned (i.e. a prior lock holder panicked).
+    #[must_use]
     pub fn results(&self) -> Vec<ComparisonResult> {
         self.results.lock().unwrap().clone()
     }
 }
 
 impl Sink for ComparisonSink {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "comparison"
     }
 
+    /// # Errors
+    ///
+    /// This sink never returns an error; the signature matches [`Sink::process`].
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "pixel diff counts are bounded by benchmark image sizes; precision loss is immaterial for a reported ratio"
+    )]
     fn process(&self, result: &TestResult) -> Result<(), SinkError> {
         if result.outcome != TestOutcome::Pass {
             return Ok(());
@@ -576,35 +631,38 @@ impl Sink for ComparisonSink {
         // Load reference image
         let reference = std::fs::read(&ref_path).ok();
 
-        let comparison = if let Some(ref_pixels) = reference {
-            // Compare pixels
-            let mut diff_count = 0u32;
-            let total = pixels.len().min(ref_pixels.len());
+        let threshold = u32::from(skia_rs_core::cast::f32_to_u8_sat(self.tolerance * 255.0));
 
-            for i in 0..total {
-                let diff = (pixels[i] as i32 - ref_pixels[i] as i32).unsigned_abs();
-                if diff > (self.tolerance * 255.0) as u32 {
-                    diff_count += 1;
-                }
-            }
-
-            let diff_ratio = diff_count as f32 / total as f32;
-
-            ComparisonResult {
-                name: format!("{}_{}", result.source, result.renderer),
-                matches: diff_ratio <= self.tolerance,
-                difference: diff_ratio,
-                diff_pixels: diff_count,
-            }
-        } else {
-            // No reference - consider it a new test
-            ComparisonResult {
+        let comparison = reference.map_or_else(
+            || ComparisonResult {
+                // No reference - consider it a new test
                 name: format!("{}_{}", result.source, result.renderer),
                 matches: true, // New tests pass by default
                 difference: 0.0,
                 diff_pixels: 0,
-            }
-        };
+            },
+            |ref_pixels| {
+                // Compare pixels
+                let mut diff_count = 0u32;
+                let total = pixels.len().min(ref_pixels.len());
+
+                for i in 0..total {
+                    let diff = (i32::from(pixels[i]) - i32::from(ref_pixels[i])).unsigned_abs();
+                    if diff > threshold {
+                        diff_count += 1;
+                    }
+                }
+
+                let diff_ratio = diff_count as f32 / total as f32;
+
+                ComparisonResult {
+                    name: format!("{}_{}", result.source, result.renderer),
+                    matches: diff_ratio <= self.tolerance,
+                    difference: diff_ratio,
+                    diff_pixels: diff_count,
+                }
+            },
+        );
 
         self.results.lock().unwrap().push(comparison);
         Ok(())
@@ -632,6 +690,7 @@ impl Default for DmRunner {
 
 impl DmRunner {
     /// Create a new DM runner
+    #[must_use]
     pub fn new() -> Self {
         Self {
             sources: Vec::new(),
@@ -668,11 +727,12 @@ impl DmRunner {
     }
 
     /// Enable parallel execution
-    pub fn set_parallel(&mut self, parallel: bool) {
+    pub const fn set_parallel(&mut self, parallel: bool) {
         self.parallel = parallel;
     }
 
     /// Run all tests
+    #[must_use]
     pub fn run(&self) -> DmReport {
         let mut report = DmReport::new();
         let start = Instant::now();
@@ -686,7 +746,7 @@ impl DmRunner {
             }
 
             for renderer in &self.renderers {
-                let result = self.run_single(source.as_ref(), renderer.as_ref());
+                let result = Self::run_single(source.as_ref(), renderer.as_ref());
 
                 // Process through sinks
                 for sink in &self.sinks {
@@ -703,15 +763,22 @@ impl DmRunner {
         report
     }
 
-    fn run_single(&self, source: &dyn Source, renderer: &dyn Renderer) -> TestResult {
+    fn run_single(source: &dyn Source, renderer: &dyn Renderer) -> TestResult {
         let (width, height) = source.size();
         let start = Instant::now();
 
         // Create surface
         let surface = renderer.create_surface(width, height);
 
-        let (outcome, pixels, error) = match surface {
-            Some(mut surface) => {
+        let (outcome, pixels, error) = surface.map_or_else(
+            || {
+                (
+                    TestOutcome::Skip,
+                    None,
+                    Some("Could not create surface".to_string()),
+                )
+            },
+            |mut surface| {
                 // Catch panics
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     source.draw(&mut surface);
@@ -722,15 +789,14 @@ impl DmRunner {
                         let pixels = surface.pixels().to_vec();
                         (TestOutcome::Pass, Some(pixels), None)
                     }
-                    Err(_) => (TestOutcome::Crash, None, Some("Panic during draw".to_string())),
+                    Err(_) => (
+                        TestOutcome::Crash,
+                        None,
+                        Some("Panic during draw".to_string()),
+                    ),
                 }
-            }
-            None => (
-                TestOutcome::Skip,
-                None,
-                Some("Could not create surface".to_string()),
-            ),
-        };
+            },
+        );
 
         TestResult {
             source: source.name().to_string(),
@@ -792,6 +858,7 @@ impl DmReport {
     }
 
     /// Generate a summary string
+    #[must_use]
     pub fn summary(&self) -> String {
         format!(
             "DM Report: {} total, {} passed, {} failed, {} skipped, {} crashed in {:?}",
@@ -805,7 +872,8 @@ impl DmReport {
     }
 
     /// Check if all tests passed
-    pub fn all_passed(&self) -> bool {
+    #[must_use]
+    pub const fn all_passed(&self) -> bool {
         self.stats.failed == 0 && self.stats.crashed == 0
     }
 }

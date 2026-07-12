@@ -86,25 +86,25 @@ impl<'a> RenderContext<'a> {
             current_transform: Matrix::IDENTITY,
             current_opacity: 1.0,
             frame_rate: 30.0,
-            bounds: Rect::from_xywh(0.0, 0.0, 100000.0, 100000.0),
+            bounds: Rect::from_xywh(0.0, 0.0, 100_000.0, 100_000.0),
             precomp_depth: 0,
         }
     }
 
     /// Set the frame rate (fps) used for precomp `tm` remapping.
-    pub fn set_frame_rate(&mut self, fps: Scalar) {
+    pub const fn set_frame_rate(&mut self, fps: Scalar) {
         self.frame_rate = fps;
     }
 
     /// Set the bounds of the current composition (used to resolve inverted
     /// masks to a finite region).
-    pub fn set_bounds(&mut self, bounds: Rect) {
+    pub const fn set_bounds(&mut self, bounds: Rect) {
         self.bounds = bounds;
     }
 
     /// Save the current state.
     pub fn save(&mut self) {
-        self.transform_stack.push(self.current_transform.clone());
+        self.transform_stack.push(self.current_transform);
         self.opacity_stack.push(self.current_opacity);
         self.canvas.save();
     }
@@ -147,7 +147,8 @@ impl<'a> RenderContext<'a> {
     }
 
     /// Get current opacity.
-    pub fn current_opacity(&self) -> Scalar {
+    #[must_use]
+    pub const fn current_opacity(&self) -> Scalar {
         self.current_opacity
     }
 
@@ -334,6 +335,10 @@ impl<'a> RenderContext<'a> {
     }
 
     /// Render shapes.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "mirrors upstream skottie shape-group rendering (fills/strokes/gradients/trim collected per group before compositing); splitting would obscure the single-pass structure"
+    )]
     fn render_shapes(&mut self, shapes: &[Shape], frame: Scalar) {
         // Collect geometry and style
         let mut paths: Vec<Path> = Vec::new();
@@ -440,11 +445,20 @@ impl<'a> RenderContext<'a> {
 
             if let Some(shader) = build_gradient_shader(
                 gf.gradient_type,
-                gf.start_point.value_at(frame).as_vec2().unwrap_or([0.0, 0.0]),
+                gf.start_point
+                    .value_at(frame)
+                    .as_vec2()
+                    .unwrap_or([0.0, 0.0]),
                 gf.end_point.value_at(frame).as_vec2().unwrap_or([0.0, 0.0]),
                 &gf.stops_at(frame),
-                gf.highlight_length.value_at(frame).as_scalar().unwrap_or(0.0),
-                gf.highlight_angle.value_at(frame).as_scalar().unwrap_or(0.0),
+                gf.highlight_length
+                    .value_at(frame)
+                    .as_scalar()
+                    .unwrap_or(0.0),
+                gf.highlight_angle
+                    .value_at(frame)
+                    .as_scalar()
+                    .unwrap_or(0.0),
             ) {
                 paint.set_shader(Some(shader));
             }
@@ -489,11 +503,20 @@ impl<'a> RenderContext<'a> {
 
             if let Some(shader) = build_gradient_shader(
                 gs.gradient_type,
-                gs.start_point.value_at(frame).as_vec2().unwrap_or([0.0, 0.0]),
+                gs.start_point
+                    .value_at(frame)
+                    .as_vec2()
+                    .unwrap_or([0.0, 0.0]),
                 gs.end_point.value_at(frame).as_vec2().unwrap_or([0.0, 0.0]),
                 &gs.stops_at(frame),
-                gs.highlight_length.value_at(frame).as_scalar().unwrap_or(0.0),
-                gs.highlight_angle.value_at(frame).as_scalar().unwrap_or(0.0),
+                gs.highlight_length
+                    .value_at(frame)
+                    .as_scalar()
+                    .unwrap_or(0.0),
+                gs.highlight_angle
+                    .value_at(frame)
+                    .as_scalar()
+                    .unwrap_or(0.0),
             ) {
                 paint.set_shader(Some(shader));
             }
@@ -570,7 +593,7 @@ fn resolve_matte_source<'s>(layer: &Layer, siblings: &'s [Layer]) -> Option<&'s 
 /// BT.709 luma weights, zeroing RGB. Applied at layer-composite time (see
 /// [`RenderContext::render_matte_composite`]) so the accumulated mask
 /// layer's RGB becomes mask *coverage* stored in alpha.
-fn luma_color_filter() -> skia_rs_paint::ColorMatrixFilter {
+const fn luma_color_filter() -> skia_rs_paint::ColorMatrixFilter {
     #[rustfmt::skip]
     let m: [Scalar; 20] = [
         0.0,    0.0,    0.0,    0.0, 0.0,
@@ -592,11 +615,7 @@ fn luma_color_filter() -> skia_rs_paint::ColorMatrixFilter {
 ///   across the combined length (`SkTrimPE` parameterizes by total length
 ///   across contours, which [`PathMeasure::get_segment`] matches, so the
 ///   trim span crosses path boundaries).
-fn apply_trim(
-    paths: Vec<Path>,
-    trim: &TrimPathShape,
-    frame: Scalar,
-) -> Vec<Path> {
+fn apply_trim(paths: Vec<Path>, trim: &TrimPathShape, frame: Scalar) -> Vec<Path> {
     let (start_t, stop_t, inverted) = trim.resolved_at(frame);
 
     if trim.mode == 2 && paths.len() > 1 {
@@ -658,13 +677,13 @@ fn apply_dash(path: &Path, stroke: &StrokeShape, frame: Scalar) -> Path {
         return path.clone();
     };
     let phase = stroke.dash_offset_at(frame);
-    match skia_rs_path::DashEffect::new(intervals, phase) {
-        Some(dash) => {
+    skia_rs_path::DashEffect::new(intervals, phase).map_or_else(
+        || path.clone(),
+        |dash| {
             use skia_rs_path::PathEffect;
             dash.apply(path).unwrap_or_else(|| path.clone())
-        }
-        None => path.clone(),
-    }
+        },
+    )
 }
 
 /// Build a gradient shader from resolved Lottie gradient parameters.
@@ -698,15 +717,18 @@ fn build_gradient_shader(
         // Rotate `e` around `s` by `highlight_angle` degrees.
         let ex = e.x - s.x;
         let ey = e.y - s.y;
-        let rotated_e = Point::new(s.x + ex * cos - ey * sin, s.y + ex * sin + ey * cos);
+        let rotated_e = Point::new(
+            ey.mul_add(-sin, ex.mul_add(cos, s.x)),
+            ey.mul_add(cos, ex.mul_add(sin, s.y)),
+        );
 
         let eps = 1e-4;
         let h_len = (highlight_length * 0.01).clamp(-1.0 + eps, 1.0 - eps);
         let focal = Point::new(
-            s.x + (rotated_e.x - s.x) * h_len,
-            s.y + (rotated_e.y - s.y) * h_len,
+            (rotated_e.x - s.x).mul_add(h_len, s.x),
+            (rotated_e.y - s.y).mul_add(h_len, s.y),
         );
-        let end_radius = ((rotated_e.x - s.x).powi(2) + (rotated_e.y - s.y).powi(2)).sqrt();
+        let end_radius = (rotated_e.x - s.x).hypot(rotated_e.y - s.y);
 
         Some(Arc::new(TwoPointConicalGradient::new(
             focal,
@@ -735,12 +757,12 @@ pub struct SkiaCanvas<'c, 'a> {
 
 impl<'c, 'a> SkiaCanvas<'c, 'a> {
     /// Create a new Skia canvas wrapper.
-    pub fn new(canvas: &'c mut skia_rs_canvas::Canvas<'a>) -> Self {
+    pub const fn new(canvas: &'c mut skia_rs_canvas::Canvas<'a>) -> Self {
         Self { inner: canvas }
     }
 }
 
-impl<'c, 'a> Canvas for SkiaCanvas<'c, 'a> {
+impl Canvas for SkiaCanvas<'_, '_> {
     fn save(&mut self) {
         self.inner.save();
     }
@@ -790,6 +812,10 @@ impl<'c, 'a> Canvas for SkiaCanvas<'c, 'a> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "tests assert exact keyframe/interpolation output values, not tolerances"
+)]
 mod tests {
     use super::*;
 
@@ -973,9 +999,8 @@ mod tests {
         use crate::model::LayerModel;
 
         let mk = |ind: i32, extra: &str| -> Layer {
-            let json = format!(
-                r#"{{"ty":4,"nm":"l","ind":{ind},"ip":0,"op":100,"shapes":[]{extra}}}"#
-            );
+            let json =
+                format!(r#"{{"ty":4,"nm":"l","ind":{ind},"ip":0,"op":100,"shapes":[]{extra}}}"#);
             let model: LayerModel = serde_json::from_str(&json).unwrap();
             Layer::from_lottie(&model)
         };
@@ -983,10 +1008,13 @@ mod tests {
         let a = mk(1, "");
         let b = mk(2, "");
         let consumer = mk(3, r#","tt":1,"tp":1"#);
-        let siblings = vec![a.clone(), b, consumer.clone()];
+        let siblings = vec![a, b, consumer.clone()];
 
         let source = resolve_matte_source(&consumer, &siblings).unwrap();
-        assert_eq!(source.index, 1, "explicit tp should win over array position");
+        assert_eq!(
+            source.index, 1,
+            "explicit tp should win over array position"
+        );
     }
 
     #[test]
@@ -994,16 +1022,15 @@ mod tests {
         use crate::model::LayerModel;
 
         let mk = |ind: i32, extra: &str| -> Layer {
-            let json = format!(
-                r#"{{"ty":4,"nm":"l","ind":{ind},"ip":0,"op":100,"shapes":[]{extra}}}"#
-            );
+            let json =
+                format!(r#"{{"ty":4,"nm":"l","ind":{ind},"ip":0,"op":100,"shapes":[]{extra}}}"#);
             let model: LayerModel = serde_json::from_str(&json).unwrap();
             Layer::from_lottie(&model)
         };
 
         let source = mk(1, r#","td":true"#);
         let consumer = mk(2, r#","tt":1"#);
-        let siblings = vec![source.clone(), consumer.clone()];
+        let siblings = vec![source, consumer.clone()];
 
         let resolved = resolve_matte_source(&consumer, &siblings).unwrap();
         assert_eq!(resolved.index, 1);
@@ -1046,8 +1073,14 @@ mod tests {
 
         // Under the matte (left half): red, fully opaque.
         let inside = buffer.get_pixel(10, 50).unwrap();
-        assert!(inside.alpha() > 200, "expected opaque pixel under the matte, got {inside:?}");
-        assert!(inside.red() > 200, "expected red under the matte, got {inside:?}");
+        assert!(
+            inside.alpha() > 200,
+            "expected opaque pixel under the matte, got {inside:?}"
+        );
+        assert!(
+            inside.red() > 200,
+            "expected red under the matte, got {inside:?}"
+        );
 
         // Outside the matte (right half): fully masked out (transparent).
         let outside = buffer.get_pixel(75, 50).unwrap();
@@ -1127,7 +1160,7 @@ mod tests {
     }
 
     /// A matte source that is not visible at the frame contributes ZERO
-    /// coverage (per sksg::MaskEffect: content composited SrcIn against
+    /// coverage (per `sksg::MaskEffect`: content composited `SrcIn` against
     /// nothing) — the consumer must render nothing, not render unmasked.
     #[test]
     fn test_alpha_matte_with_invisible_source_masks_everything_out() {
@@ -1244,7 +1277,7 @@ mod tests {
         // ~50% coverage -> alpha roughly in [96, 160] (127 +/- slop for
         // sRGB-vs-linear luma weighting/AA differences).
         assert!(
-            (96..=160).contains(&(pixel.alpha() as i32)),
+            (96..=160).contains(&i32::from(pixel.alpha())),
             "expected ~50% alpha from luma matte, got {pixel:?}"
         );
     }

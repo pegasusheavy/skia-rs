@@ -1,6 +1,6 @@
 //! Canvas and surface benchmarks.
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use skia_rs_bench::{
     canvas_sizes, create_rng, generate_complex_path, generate_simple_path, random_rects,
 };
@@ -19,7 +19,7 @@ fn bench_canvas_creation(c: &mut Criterion) {
         ("uhd", canvas_sizes::UHD),
     ] {
         group.bench_with_input(BenchmarkId::new("new", name), &(w, h), |b, &(w, h)| {
-            b.iter(|| Canvas::new(black_box(w), black_box(h)))
+            b.iter(|| Canvas::new(black_box(w), black_box(h)));
         });
     }
 
@@ -38,11 +38,11 @@ fn bench_canvas_queries(c: &mut Criterion) {
     group.bench_function("save_count", |b| b.iter(|| black_box(&canvas).save_count()));
 
     group.bench_function("total_matrix", |b| {
-        b.iter(|| black_box(&canvas).total_matrix())
+        b.iter(|| black_box(&canvas).total_matrix());
     });
 
     group.bench_function("clip_bounds", |b| {
-        b.iter(|| black_box(&canvas).clip_bounds())
+        b.iter(|| black_box(&canvas).clip_bounds());
     });
 
     group.finish();
@@ -59,7 +59,7 @@ fn bench_canvas_save_restore(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("restore", |b| {
@@ -74,7 +74,7 @@ fn bench_canvas_save_restore(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("save_layer", |b| {
@@ -86,7 +86,7 @@ fn bench_canvas_save_restore(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     // Deep save stack
@@ -101,7 +101,7 @@ fn bench_canvas_save_restore(c: &mut Criterion) {
                     canvas
                 },
                 criterion::BatchSize::SmallInput,
-            )
+            );
         });
 
         group.bench_with_input(
@@ -123,7 +123,7 @@ fn bench_canvas_save_restore(c: &mut Criterion) {
                         canvas
                     },
                     criterion::BatchSize::SmallInput,
-                )
+                );
             },
         );
 
@@ -144,7 +144,7 @@ fn bench_canvas_save_restore(c: &mut Criterion) {
                         canvas
                     },
                     criterion::BatchSize::SmallInput,
-                )
+                );
             },
         );
     }
@@ -163,7 +163,7 @@ fn bench_canvas_transforms(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("scale", |b| {
@@ -174,7 +174,7 @@ fn bench_canvas_transforms(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("rotate", |b| {
@@ -185,7 +185,7 @@ fn bench_canvas_transforms(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("skew", |b| {
@@ -196,7 +196,7 @@ fn bench_canvas_transforms(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("concat", |b| {
@@ -208,7 +208,7 @@ fn bench_canvas_transforms(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("set_matrix", |b| {
@@ -220,7 +220,7 @@ fn bench_canvas_transforms(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("reset_matrix", |b| {
@@ -235,7 +235,7 @@ fn bench_canvas_transforms(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     // Chain transforms
@@ -250,7 +250,7 @@ fn bench_canvas_transforms(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.finish();
@@ -270,7 +270,7 @@ fn bench_canvas_clip(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("clip_rect/intersect_aa", |b| {
@@ -281,7 +281,7 @@ fn bench_canvas_clip(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("clip_rect/difference", |b| {
@@ -292,7 +292,7 @@ fn bench_canvas_clip(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("clip_path/intersect", |b| {
@@ -303,7 +303,7 @@ fn bench_canvas_clip(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     // Multiple clip operations
@@ -325,7 +325,7 @@ fn bench_canvas_clip(c: &mut Criterion) {
                         canvas
                     },
                     criterion::BatchSize::SmallInput,
-                )
+                );
             },
         );
     }
@@ -349,7 +349,7 @@ fn bench_canvas_drawing(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("draw_rect", |b| {
@@ -360,7 +360,7 @@ fn bench_canvas_drawing(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("draw_oval", |b| {
@@ -371,7 +371,7 @@ fn bench_canvas_drawing(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("draw_circle", |b| {
@@ -386,7 +386,7 @@ fn bench_canvas_drawing(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("draw_round_rect", |b| {
@@ -402,7 +402,7 @@ fn bench_canvas_drawing(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("draw_line", |b| {
@@ -417,7 +417,7 @@ fn bench_canvas_drawing(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("draw_path/simple", |b| {
@@ -428,7 +428,7 @@ fn bench_canvas_drawing(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("draw_path/complex", |b| {
@@ -439,7 +439,7 @@ fn bench_canvas_drawing(c: &mut Criterion) {
                 canvas
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.finish();
@@ -456,7 +456,7 @@ fn bench_surface(c: &mut Criterion) {
         let info = ImageInfo::new_n32_premul(w, h).unwrap();
 
         group.bench_with_input(BenchmarkId::new("new_raster", name), &info, |b, info| {
-            b.iter(|| Surface::new_raster(black_box(info), None))
+            b.iter(|| Surface::new_raster(black_box(info), None));
         });
     }
 
@@ -482,7 +482,7 @@ fn bench_surface(c: &mut Criterion) {
                 let _ = surface.canvas();
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.finish();
@@ -491,7 +491,7 @@ fn bench_surface(c: &mut Criterion) {
 fn bench_picture(c: &mut Criterion) {
     let mut group = c.benchmark_group("Picture");
 
-    group.bench_function("recorder_new", |b| b.iter(|| PictureRecorder::new()));
+    group.bench_function("recorder_new", |b| b.iter(PictureRecorder::new));
 
     let bounds = Rect::from_xywh(0.0, 0.0, 1920.0, 1080.0);
 
@@ -502,7 +502,7 @@ fn bench_picture(c: &mut Criterion) {
                 let _ = recorder.begin_recording(black_box(bounds));
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("finish_recording", |b| {
@@ -514,7 +514,7 @@ fn bench_picture(c: &mut Criterion) {
             },
             |mut recorder| recorder.finish_recording(),
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.finish();

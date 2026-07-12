@@ -50,11 +50,13 @@ pub struct LottieModel {
 
 impl LottieModel {
     /// Get the total number of frames.
+    #[must_use]
     pub fn total_frames(&self) -> Scalar {
         self.out_point - self.in_point
     }
 
     /// Get the duration in seconds.
+    #[must_use]
     pub fn duration(&self) -> Scalar {
         self.total_frames() / self.frame_rate
     }
@@ -208,7 +210,7 @@ pub enum AnimatedValue {
 
 impl Default for AnimatedValue {
     fn default() -> Self {
-        AnimatedValue::Direct(serde_json::Value::Array(vec![serde_json::Value::Number(
+        Self::Direct(serde_json::Value::Array(vec![serde_json::Value::Number(
             0.into(),
         )]))
     }
@@ -269,10 +271,11 @@ pub enum TangentValue {
 
 impl TangentValue {
     /// Get the first value.
+    #[must_use]
     pub fn first(&self) -> Scalar {
         match self {
-            TangentValue::Single(v) => *v,
-            TangentValue::Array(arr) => arr.first().copied().unwrap_or(0.0),
+            Self::Single(v) => *v,
+            Self::Array(arr) => arr.first().copied().unwrap_or(0.0),
         }
     }
 }
@@ -294,7 +297,7 @@ pub struct ShapeModel {
     pub match_name: Option<String>,
     /// Items (for groups).
     #[serde(rename = "it", default)]
-    pub items: Vec<ShapeModel>,
+    pub items: Vec<Self>,
     /// Path data (for paths).
     #[serde(rename = "ks", default)]
     pub path: Option<AnimatedValue>,
@@ -388,18 +391,20 @@ pub enum DirectionOrDash {
 
 impl DirectionOrDash {
     /// Get as a direction value, if this is a direction.
-    pub fn as_direction(&self) -> Option<i32> {
+    #[must_use]
+    pub const fn as_direction(&self) -> Option<i32> {
         match self {
-            DirectionOrDash::Direction(d) => Some(*d),
-            _ => None,
+            Self::Direction(d) => Some(*d),
+            Self::Dashes(_) => None,
         }
     }
 
     /// Get as a dash array, if this is a dash array.
+    #[must_use]
     pub fn as_dashes(&self) -> Option<&[DashElementModel]> {
         match self {
-            DirectionOrDash::Dashes(d) => Some(d),
-            _ => None,
+            Self::Dashes(d) => Some(d),
+            Self::Direction(_) => None,
         }
     }
 }
@@ -630,6 +635,10 @@ pub struct EffectValueModel {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "tests assert exact keyframe/interpolation output values, not tolerances"
+)]
 mod tests {
     use super::*;
 

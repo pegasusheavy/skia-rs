@@ -9,7 +9,7 @@
 //! Corresponds to Skia's lazy image generation via `SkImageGenerator`.
 
 use crate::{GeneratorError, GeneratorResult, Image, ImageGenerator, ImageInfo};
-use skia_rs_core::{AlphaType, ColorSpace, ColorType, Rect, Scalar};
+use skia_rs_core::{AlphaType, ColorSpace, ColorType, Rect};
 use std::sync::Arc;
 
 /// The state of a lazy image's pixel data.
@@ -109,6 +109,7 @@ impl std::fmt::Debug for LazyImage {
 
 impl LazyImage {
     /// Create a lazy image from an image generator.
+    #[must_use]
     pub fn from_generator(generator: Box<dyn ImageGenerator>) -> Self {
         Self {
             inner: Arc::new(LazyImageInner {
@@ -123,12 +124,14 @@ impl LazyImage {
     }
 
     /// Create a lazy image from encoded data.
+    #[must_use]
     pub fn from_encoded(data: Vec<u8>) -> Option<Self> {
         let generator = crate::EncodedImageGenerator::new(data)?;
         Some(Self::from_generator(Box::new(generator)))
     }
 
     /// Create a lazy image from shared encoded data.
+    #[must_use]
     pub fn from_encoded_shared(data: Arc<[u8]>) -> Option<Self> {
         let generator = crate::EncodedImageGenerator::from_shared(data)?;
         Some(Self::from_generator(Box::new(generator)))
@@ -136,82 +139,101 @@ impl LazyImage {
 
     /// Get the image width.
     #[inline]
+    #[must_use]
     pub fn width(&self) -> i32 {
         self.inner.generator.width()
     }
 
     /// Get the image height.
     #[inline]
+    #[must_use]
     pub fn height(&self) -> i32 {
         self.inner.generator.height()
     }
 
     /// Get the image dimensions as (width, height).
     #[inline]
+    #[must_use]
     pub fn dimensions(&self) -> (i32, i32) {
         (self.width(), self.height())
     }
 
     /// Get the image bounds as a rectangle.
     #[inline]
+    #[must_use]
     pub fn bounds(&self) -> Rect {
-        Rect::from_xywh(0.0, 0.0, self.width() as Scalar, self.height() as Scalar)
+        Rect::from_xywh(
+            0.0,
+            0.0,
+            skia_rs_core::cast::scalar_from_i32(self.width()),
+            skia_rs_core::cast::scalar_from_i32(self.height()),
+        )
     }
 
     /// Get the image info.
     #[inline]
+    #[must_use]
     pub fn info(&self) -> &ImageInfo {
         self.inner.generator.info()
     }
 
     /// Get the color type.
     #[inline]
+    #[must_use]
     pub fn color_type(&self) -> ColorType {
         self.info().color_type
     }
 
     /// Get the alpha type.
     #[inline]
+    #[must_use]
     pub fn alpha_type(&self) -> AlphaType {
         self.info().alpha_type
     }
 
     /// Get the color space.
     #[inline]
+    #[must_use]
     pub fn color_space(&self) -> Option<&ColorSpace> {
         self.info().color_space()
     }
 
     /// Returns true if the image is opaque.
     #[inline]
+    #[must_use]
     pub fn is_opaque(&self) -> bool {
         self.info().is_opaque()
     }
 
     /// Get the unique ID.
     #[inline]
+    #[must_use]
     pub fn unique_id(&self) -> u32 {
         self.inner.generator.unique_id()
     }
 
     /// Get the current state of pixel generation.
+    #[must_use]
     pub fn state(&self) -> LazyImageState {
         self.inner.gen_state.lock().state
     }
 
     /// Check if pixels have been generated.
     #[inline]
+    #[must_use]
     pub fn is_generated(&self) -> bool {
         self.state() == LazyImageState::Generated
     }
 
     /// Check if generation has failed.
     #[inline]
+    #[must_use]
     pub fn is_failed(&self) -> bool {
         self.state() == LazyImageState::Failed
     }
 
     /// Get a reference to the original encoded data, if available.
+    #[must_use]
     pub fn ref_encoded_data(&self) -> Option<Arc<[u8]>> {
         self.inner.generator.ref_encoded_data()
     }
@@ -224,6 +246,10 @@ impl LazyImage {
     /// concurrent callers never see a spurious "generation in progress"
     /// error. If generation fails, the failure is cached and returned on
     /// subsequent calls.
+    ///
+    /// # Errors
+    /// Returns the generator's error if pixel generation fails (including
+    /// the cached failure from a previous call).
     pub fn ensure_pixels_generated(&self) -> GeneratorResult<()> {
         let mut guard = self.inner.gen_state.lock();
         loop {
@@ -255,22 +281,21 @@ impl LazyImage {
                     // `Generating` — parking_lot mutexes do not poison, so
                     // condvar waiters would block forever. Catch the unwind,
                     // publish `Failed` + notify, then resume the panic.
-                    let result = match std::panic::catch_unwind(
-                        std::panic::AssertUnwindSafe(|| {
+                    let result =
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             self.inner
                                 .generator
                                 .get_pixels(info, &mut pixels, row_bytes)
-                        }),
-                    ) {
-                        Ok(result) => result,
-                        Err(payload) => {
-                            let mut guard = self.inner.gen_state.lock();
-                            guard.state = LazyImageState::Failed;
-                            drop(guard);
-                            self.inner.cv.notify_all();
-                            std::panic::resume_unwind(payload);
-                        }
-                    };
+                        })) {
+                            Ok(result) => result,
+                            Err(payload) => {
+                                let mut guard = self.inner.gen_state.lock();
+                                guard.state = LazyImageState::Failed;
+                                drop(guard);
+                                self.inner.cv.notify_all();
+                                std::panic::resume_unwind(payload);
+                            }
+                        };
 
                     let mut guard = self.inner.gen_state.lock();
                     let ret = match result {
@@ -284,6 +309,7 @@ impl LazyImage {
                             Err(e)
                         }
                     };
+                    drop(guard);
                     // Wake every waiter so they observe Generated/Failed.
                     self.inner.cv.notify_all();
                     return ret;
@@ -326,6 +352,7 @@ impl LazyImage {
     /// that would self-deadlock. Copy what you need and drop the guard.
     ///
     /// [`discard_pixels`]: LazyImage::discard_pixels
+    #[must_use]
     pub fn peek_pixels(&self) -> Option<PeekedPixels<'_>> {
         let guard = self.inner.gen_state.lock();
         if guard.state != LazyImageState::Generated || guard.cached.is_none() {
@@ -350,8 +377,8 @@ impl LazyImage {
         };
         let info = self.info();
         let bytes_per_pixel = info.bytes_per_pixel();
-        let width = info.width as usize;
-        let height = info.height as usize;
+        let width = usize::try_from(info.width).unwrap_or(0);
+        let height = usize::try_from(info.height).unwrap_or(0);
         let copy_len = width * bytes_per_pixel;
 
         // Validate that the whole image fits in both buffers before copying
@@ -385,27 +412,30 @@ impl LazyImage {
             dst[dst_offset..dst_offset + copy_len]
                 .copy_from_slice(&cached.pixels[src_offset..src_offset + copy_len]);
         }
+        drop(guard);
         true
     }
 
     /// Convert to an immutable `Image`.
     ///
     /// This generates pixels if needed and creates a copy.
+    #[must_use]
     pub fn to_image(&self) -> Option<Image> {
         // Ensure pixels are generated
         self.ensure_pixels_generated().ok()?;
 
         let guard = self.inner.gen_state.lock();
-        if let Some(ref cached) = guard.cached {
+        let image = guard.cached.as_ref().and_then(|cached| {
             Image::from_raster_data(self.info(), &cached.pixels, cached.row_bytes)
-        } else {
-            None
-        }
+        });
+        drop(guard);
+        image
     }
 
     /// Make a subset of this lazy image.
     ///
     /// Returns a new lazy image that will generate only the subset.
+    #[must_use]
     pub fn make_subset(&self, subset: &Rect) -> Option<Self> {
         // Generate full image first, then take subset
         let image = self.to_image()?;
@@ -418,6 +448,7 @@ impl LazyImage {
     /// Create a lazy image from an already-decoded image.
     ///
     /// This is useful for wrapping existing images in the lazy interface.
+    #[must_use]
     pub fn from_image(image: Image) -> Self {
         let generator = RasterImageGenerator::new(image);
         Self::from_generator(Box::new(generator))
@@ -438,9 +469,13 @@ pub struct PeekedPixels<'a> {
 
 impl PeekedPixels<'_> {
     /// The row stride, in bytes, of the pixel buffer.
+    ///
+    /// # Panics
+    /// Never in practice: [`LazyImage::peek_pixels`] only constructs this
+    /// guard when `cached` is `Some`, and the lock stays held for the
+    /// guard's lifetime, so `cached` cannot become `None` first.
+    #[must_use]
     pub fn row_bytes(&self) -> usize {
-        // Invariant: peek_pixels only constructs this guard when `cached`
-        // is Some, and the lock is held, so it cannot become None.
         self.guard.cached.as_ref().expect("cached pixels").row_bytes
     }
 }
@@ -459,7 +494,7 @@ struct RasterImageGenerator {
 }
 
 impl RasterImageGenerator {
-    fn new(image: Image) -> Self {
+    const fn new(image: Image) -> Self {
         Self { image }
     }
 }
@@ -470,32 +505,31 @@ impl ImageGenerator for RasterImageGenerator {
     }
 
     fn unique_id(&self) -> u32 {
-        self.image.unique_id() as u32
+        u32::try_from(self.image.unique_id()).unwrap_or(u32::MAX)
     }
 
     fn on_get_pixels(&self, pixels: &mut [u8], row_bytes: usize) -> GeneratorResult<()> {
         let info = self.info();
         let bytes_per_pixel = info.bytes_per_pixel();
-        let width = info.width as usize;
-        let height = info.height as usize;
+        let width = usize::try_from(info.width).unwrap_or(0);
+        let height = usize::try_from(info.height).unwrap_or(0);
 
-        if let Some(src_pixels) = self.image.peek_pixels() {
-            let src_row_bytes = self.image.row_bytes();
-
-            for y in 0..height {
-                let src_offset = y * src_row_bytes;
-                let dst_offset = y * row_bytes;
-                let copy_len = width * bytes_per_pixel;
-
-                pixels[dst_offset..dst_offset + copy_len]
-                    .copy_from_slice(&src_pixels[src_offset..src_offset + copy_len]);
-            }
-            Ok(())
-        } else {
-            Err(GeneratorError::GenerateFailed(
+        let Some(src_pixels) = self.image.peek_pixels() else {
+            return Err(GeneratorError::GenerateFailed(
                 "Failed to access image pixels".into(),
-            ))
+            ));
+        };
+        let src_row_bytes = self.image.row_bytes();
+
+        for y in 0..height {
+            let src_offset = y * src_row_bytes;
+            let dst_offset = y * row_bytes;
+            let copy_len = width * bytes_per_pixel;
+
+            pixels[dst_offset..dst_offset + copy_len]
+                .copy_from_slice(&src_pixels[src_offset..src_offset + copy_len]);
         }
+        Ok(())
     }
 }
 
@@ -618,8 +652,7 @@ mod tests {
             &self.info
         }
         fn on_get_pixels(&self, pixels: &mut [u8], _row_bytes: usize) -> GeneratorResult<()> {
-            self.calls
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             std::thread::sleep(std::time::Duration::from_millis(50));
             for b in pixels.iter_mut() {
                 *b = 77;
@@ -647,7 +680,8 @@ mod tests {
                 let lazy = Arc::clone(&lazy);
                 thread::spawn(move || {
                     // Every caller must observe success, never an error.
-                    lazy.ensure_pixels_generated().expect("waiters must not error");
+                    lazy.ensure_pixels_generated()
+                        .expect("waiters must not error");
                     assert!(lazy.is_generated());
                 })
             })
@@ -675,8 +709,11 @@ mod tests {
         assert_eq!(lazy.state(), LazyImageState::NotGenerated);
 
         lazy.ensure_pixels_generated().unwrap();
-        let px = lazy.peek_pixels().expect("pixels available after generation");
+        let px = lazy
+            .peek_pixels()
+            .expect("pixels available after generation");
         assert_eq!(&px[0..4], &[9, 8, 7, 255]);
+        drop(px);
     }
 
     /// The `PeekedPixels` guard holds the internal lock, so a concurrent
@@ -723,7 +760,7 @@ mod tests {
 
     /// If the generator panics mid-decode, the state must flip to `Failed`
     /// and condvar waiters must be woken — never left blocking forever on a
-    /// state stuck at `Generating` (parking_lot does not poison).
+    /// state stuck at `Generating` (`parking_lot` does not poison).
     #[test]
     fn test_generator_panic_fails_waiters_instead_of_hanging() {
         use std::thread;

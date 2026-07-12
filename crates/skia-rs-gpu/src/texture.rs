@@ -1,6 +1,6 @@
 //! GPU texture abstraction.
 
-use skia_rs_core::{AlphaType, ColorType};
+use skia_rs_core::ColorType;
 
 /// Texture format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -29,24 +29,29 @@ pub enum TextureFormat {
 
 impl TextureFormat {
     /// Get bytes per pixel.
-    pub fn bytes_per_pixel(&self) -> u32 {
+    #[must_use]
+    pub const fn bytes_per_pixel(&self) -> u32 {
         match self {
             Self::R8Unorm => 1,
             Self::Rg8Unorm => 2,
-            Self::Rgba8Unorm | Self::Rgba8UnormSrgb | Self::Bgra8Unorm | Self::Bgra8UnormSrgb => 4,
+            Self::Rgba8Unorm
+            | Self::Rgba8UnormSrgb
+            | Self::Bgra8Unorm
+            | Self::Bgra8UnormSrgb
+            | Self::Depth24Stencil8
+            | Self::Depth32Float => 4,
             Self::Rgba16Float => 8,
             Self::Rgba32Float => 16,
-            Self::Depth24Stencil8 | Self::Depth32Float => 4,
         }
     }
 
-    /// Convert from ColorType.
-    pub fn from_color_type(color_type: ColorType) -> Option<Self> {
+    /// Convert from `ColorType`.
+    #[must_use]
+    pub const fn from_color_type(color_type: ColorType) -> Option<Self> {
         match color_type {
             ColorType::Rgba8888 => Some(Self::Rgba8Unorm),
             ColorType::Bgra8888 => Some(Self::Bgra8Unorm),
-            ColorType::Alpha8 => Some(Self::R8Unorm),
-            ColorType::Gray8 => Some(Self::R8Unorm),
+            ColorType::Alpha8 | ColorType::Gray8 => Some(Self::R8Unorm),
             ColorType::RgbaF16 => Some(Self::Rgba16Float),
             ColorType::RgbaF32 => Some(Self::Rgba32Float),
             _ => None,
@@ -54,12 +59,14 @@ impl TextureFormat {
     }
 
     /// Check if this is a depth format.
-    pub fn is_depth(&self) -> bool {
+    #[must_use]
+    pub const fn is_depth(&self) -> bool {
         matches!(self, Self::Depth24Stencil8 | Self::Depth32Float)
     }
 
     /// Check if this is an sRGB format.
-    pub fn is_srgb(&self) -> bool {
+    #[must_use]
+    pub const fn is_srgb(&self) -> bool {
         matches!(self, Self::Rgba8UnormSrgb | Self::Bgra8UnormSrgb)
     }
 }
@@ -83,12 +90,14 @@ impl TextureUsage {
     pub const RENDER_TARGET: Self = Self(1 << 4);
 
     /// Check if this usage includes another.
-    pub fn contains(&self, other: Self) -> bool {
+    #[must_use]
+    pub const fn contains(&self, other: Self) -> bool {
         (self.0 & other.0) == other.0
     }
 
     /// Combine usages.
-    pub fn union(self, other: Self) -> Self {
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 }
@@ -124,7 +133,13 @@ pub struct TextureDescriptor {
 
 impl TextureDescriptor {
     /// Create a simple 2D texture descriptor.
-    pub fn new_2d(width: u32, height: u32, format: TextureFormat, usage: TextureUsage) -> Self {
+    #[must_use]
+    pub const fn new_2d(
+        width: u32,
+        height: u32,
+        format: TextureFormat,
+        usage: TextureUsage,
+    ) -> Self {
         Self {
             width,
             height,
@@ -138,13 +153,15 @@ impl TextureDescriptor {
     }
 
     /// Set the label.
+    #[must_use]
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
     }
 
     /// Set mip level count.
-    pub fn with_mip_levels(mut self, count: u32) -> Self {
+    #[must_use]
+    pub const fn with_mip_levels(mut self, count: u32) -> Self {
         self.mip_level_count = count;
         self
     }

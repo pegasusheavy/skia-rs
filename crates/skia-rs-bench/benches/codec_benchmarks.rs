@@ -1,4 +1,10 @@
 //! Image codec benchmarks.
+#![allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "benchmark image dimensions/pixel indices are always small positive literals defined alongside each cast; this is deliberate benchmark workload sizing, not general-purpose numeric code"
+)]
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use skia_rs_codec::{
@@ -47,7 +53,7 @@ fn bench_image_creation(c: &mut Criterion) {
                         black_box(pixels.clone()),
                         black_box(w as usize * 4),
                     )
-                })
+                });
             },
         );
 
@@ -59,9 +65,9 @@ fn bench_image_creation(c: &mut Criterion) {
                     Image::from_color(
                         black_box(w),
                         black_box(h),
-                        black_box(0xFF804020u32), // ARGB color as u32
+                        black_box(0xFF80_4020u32), // ARGB color as u32
                     )
-                })
+                });
             },
         );
     }
@@ -75,25 +81,25 @@ fn bench_format_detection(c: &mut Criterion) {
     // PNG magic bytes
     let png_data = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
     group.bench_function("png", |b| {
-        b.iter(|| ImageFormat::from_magic(black_box(&png_data)))
+        b.iter(|| ImageFormat::from_magic(black_box(&png_data)));
     });
 
     // JPEG magic bytes
     let jpeg_data = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46];
     group.bench_function("jpeg", |b| {
-        b.iter(|| ImageFormat::from_magic(black_box(&jpeg_data)))
+        b.iter(|| ImageFormat::from_magic(black_box(&jpeg_data)));
     });
 
     // GIF magic bytes
     let gif_data = b"GIF89a\x00\x00";
     group.bench_function("gif", |b| {
-        b.iter(|| ImageFormat::from_magic(black_box(gif_data)))
+        b.iter(|| ImageFormat::from_magic(black_box(gif_data)));
     });
 
     // WebP magic bytes
     let webp_data = b"RIFF\x00\x00\x00\x00WEBP";
     group.bench_function("webp", |b| {
-        b.iter(|| ImageFormat::from_magic(black_box(webp_data)))
+        b.iter(|| ImageFormat::from_magic(black_box(webp_data)));
     });
 
     group.finish();
@@ -116,7 +122,7 @@ fn bench_png_encode(c: &mut Criterion) {
                 let mut output = Vec::new();
                 encoder.encode(black_box(image), &mut output).unwrap();
                 output
-            })
+            });
         });
     }
 
@@ -134,15 +140,19 @@ fn bench_png_decode(c: &mut Criterion) {
         // Create and encode an image first
         let image = create_test_image(w, h);
         let encoder = PngEncoder::new();
-        let mut encoded = Vec::new();
-        encoder.encode(&image, &mut encoded).unwrap();
+        let mut encoded_bytes = Vec::new();
+        encoder.encode(&image, &mut encoded_bytes).unwrap();
 
         let decoder = PngDecoder::new();
 
-        group.throughput(Throughput::Bytes(encoded.len() as u64));
-        group.bench_with_input(BenchmarkId::new("decode", name), &encoded, |b, encoded| {
-            b.iter(|| decoder.decode_bytes(black_box(encoded)).unwrap())
-        });
+        group.throughput(Throughput::Bytes(encoded_bytes.len() as u64));
+        group.bench_with_input(
+            BenchmarkId::new("decode", name),
+            &encoded_bytes,
+            |b, encoded| {
+                b.iter(|| decoder.decode_bytes(black_box(encoded)).unwrap());
+            },
+        );
     }
 
     group.finish();
@@ -164,14 +174,14 @@ fn bench_jpeg_encode(c: &mut Criterion) {
 
             group.throughput(Throughput::Bytes((w * h * 4) as u64));
             group.bench_with_input(
-                BenchmarkId::new(format!("q{}", quality), name),
+                BenchmarkId::new(format!("q{quality}"), name),
                 &image,
                 |b, image| {
                     b.iter(|| {
                         let mut output = Vec::new();
                         encoder.encode(black_box(image), &mut output).unwrap();
                         output
-                    })
+                    });
                 },
             );
         }
@@ -191,15 +201,19 @@ fn bench_jpeg_decode(c: &mut Criterion) {
         // Create and encode an image first
         let image = create_test_image(w, h);
         let encoder = JpegEncoder::with_quality(EncoderQuality::new(90));
-        let mut encoded = Vec::new();
-        encoder.encode(&image, &mut encoded).unwrap();
+        let mut encoded_bytes = Vec::new();
+        encoder.encode(&image, &mut encoded_bytes).unwrap();
 
         let decoder = JpegDecoder::new();
 
-        group.throughput(Throughput::Bytes(encoded.len() as u64));
-        group.bench_with_input(BenchmarkId::new("decode", name), &encoded, |b, encoded| {
-            b.iter(|| decoder.decode_bytes(black_box(encoded)).unwrap())
-        });
+        group.throughput(Throughput::Bytes(encoded_bytes.len() as u64));
+        group.bench_with_input(
+            BenchmarkId::new("decode", name),
+            &encoded_bytes,
+            |b, encoded| {
+                b.iter(|| decoder.decode_bytes(black_box(encoded)).unwrap());
+            },
+        );
     }
 
     group.finish();
@@ -225,7 +239,7 @@ fn bench_image_operations(c: &mut Criterion) {
         let new_w = (1024.0 * scale) as i32;
         let new_h = (1024.0 * scale) as i32;
         group.bench_with_input(
-            BenchmarkId::new("scale", format!("{}x", scale)),
+            BenchmarkId::new("scale", format!("{scale}x")),
             &(new_w, new_h),
             |b, &(w, h)| b.iter(|| image.make_scaled(black_box(w), black_box(h))),
         );

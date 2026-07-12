@@ -22,7 +22,7 @@ pub struct Picture {
 
 impl Picture {
     /// Create a new picture from recorded commands.
-    pub(crate) fn new(commands: Vec<DrawCommand>, cull_rect: Rect) -> Self {
+    pub(crate) const fn new(commands: Vec<DrawCommand>, cull_rect: Rect) -> Self {
         Self {
             commands,
             cull_rect,
@@ -34,13 +34,15 @@ impl Picture {
     /// Used by callers (notably the FFI layer) that compose their own
     /// recording pipeline rather than going through [`PictureRecorder`].
     /// The returned picture can be [`Self::playback`]-ed like any other.
-    pub fn from_parts(commands: Vec<DrawCommand>, cull_rect: Rect) -> Self {
+    #[must_use]
+    pub const fn from_parts(commands: Vec<DrawCommand>, cull_rect: Rect) -> Self {
         Self::new(commands, cull_rect)
     }
 
     /// Get the cull rect (bounding box).
     #[inline]
-    pub fn cull_rect(&self) -> Rect {
+    #[must_use]
+    pub const fn cull_rect(&self) -> Rect {
         self.cull_rect
     }
 
@@ -57,11 +59,13 @@ impl Picture {
     }
 
     /// Get the approximate byte size of this picture.
+    #[must_use]
     pub fn approximate_bytes_used(&self) -> usize {
         std::mem::size_of::<Self>() + self.commands.len() * std::mem::size_of::<DrawCommand>()
     }
 
     /// Get the number of operations in this picture.
+    #[must_use]
     pub fn approximate_op_count(&self) -> usize {
         self.commands.len()
     }
@@ -248,15 +252,19 @@ impl DrawCommand {
     }
 
     /// Execute this command with `base` as the CTM captured at playback start.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single exhaustive dispatch match mirroring SkPicturePlayback::draw; splitting would obscure the 1:1 command mapping"
+    )]
     fn execute_with_base(&self, canvas: &mut Canvas, base: &Matrix) {
         match self {
-            DrawCommand::Save => {
+            Self::Save => {
                 canvas.save();
             }
-            DrawCommand::Restore => {
+            Self::Restore => {
                 canvas.restore();
             }
-            DrawCommand::SaveLayer { bounds, paint } => {
+            Self::SaveLayer { bounds, paint } => {
                 let rec = crate::SaveLayerRec {
                     bounds: bounds.as_ref(),
                     paint: paint.as_ref(),
@@ -264,69 +272,69 @@ impl DrawCommand {
                 };
                 canvas.save_layer(&rec);
             }
-            DrawCommand::Translate { dx, dy } => {
+            Self::Translate { dx, dy } => {
                 canvas.translate(*dx, *dy);
             }
-            DrawCommand::Scale { sx, sy } => {
+            Self::Scale { sx, sy } => {
                 canvas.scale(*sx, *sy);
             }
-            DrawCommand::Rotate { degrees } => {
+            Self::Rotate { degrees } => {
                 canvas.rotate(*degrees);
             }
-            DrawCommand::Skew { sx, sy } => {
+            Self::Skew { sx, sy } => {
                 canvas.skew(*sx, *sy);
             }
-            DrawCommand::Concat { matrix } => {
+            Self::Concat { matrix } => {
                 canvas.concat(matrix);
             }
-            DrawCommand::SetMatrix { matrix } => {
+            Self::SetMatrix { matrix } => {
                 // Compose with the CTM at playback start:
                 // setMatrix(initialCTM * recorded).
                 canvas.set_matrix(&base.concat(matrix));
             }
-            DrawCommand::ClipRect {
+            Self::ClipRect {
                 rect,
                 op,
                 anti_alias,
             } => {
                 canvas.clip_rect(rect, *op, *anti_alias);
             }
-            DrawCommand::ClipPath {
+            Self::ClipPath {
                 path,
                 op,
                 anti_alias,
             } => {
                 canvas.clip_path(path, *op, *anti_alias);
             }
-            DrawCommand::Clear { color } => {
+            Self::Clear { color } => {
                 canvas.clear(*color);
             }
-            DrawCommand::DrawColor { color, blend_mode } => {
+            Self::DrawColor { color, blend_mode } => {
                 canvas.draw_color(*color, *blend_mode);
             }
-            DrawCommand::DrawPaint { paint } => {
+            Self::DrawPaint { paint } => {
                 canvas.draw_paint(paint);
             }
-            DrawCommand::DrawPoint { point, paint } => {
+            Self::DrawPoint { point, paint } => {
                 canvas.draw_point(*point, paint);
             }
-            DrawCommand::DrawLine { p0, p1, paint } => {
+            Self::DrawLine { p0, p1, paint } => {
                 canvas.draw_line(*p0, *p1, paint);
             }
-            DrawCommand::DrawRect { rect, paint } => {
+            Self::DrawRect { rect, paint } => {
                 canvas.draw_rect(rect, paint);
             }
-            DrawCommand::DrawOval { rect, paint } => {
+            Self::DrawOval { rect, paint } => {
                 canvas.draw_oval(rect, paint);
             }
-            DrawCommand::DrawCircle {
+            Self::DrawCircle {
                 center,
                 radius,
                 paint,
             } => {
                 canvas.draw_circle(*center, *radius, paint);
             }
-            DrawCommand::DrawArc {
+            Self::DrawArc {
                 oval,
                 start_angle,
                 sweep_angle,
@@ -335,7 +343,7 @@ impl DrawCommand {
             } => {
                 canvas.draw_arc(oval, *start_angle, *sweep_angle, *use_center, paint);
             }
-            DrawCommand::DrawRoundRect {
+            Self::DrawRoundRect {
                 rect,
                 rx,
                 ry,
@@ -343,10 +351,10 @@ impl DrawCommand {
             } => {
                 canvas.draw_round_rect(rect, *rx, *ry, paint);
             }
-            DrawCommand::DrawPath { path, paint } => {
+            Self::DrawPath { path, paint } => {
                 canvas.draw_path(path, paint);
             }
-            DrawCommand::DrawPicture {
+            Self::DrawPicture {
                 picture,
                 matrix,
                 paint,
@@ -374,7 +382,8 @@ impl Default for PictureRecorder {
 
 impl PictureRecorder {
     /// Create a new picture recorder.
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             commands: Vec::new(),
             cull_rect: Rect::EMPTY,
@@ -388,10 +397,11 @@ impl PictureRecorder {
         self.cull_rect = cull_rect;
         self.is_recording = true;
         // Safety: we're returning a reference that allows recording
-        unsafe { &mut *(self as *mut Self as *mut RecordingCanvas) }
+        unsafe { &mut *std::ptr::from_mut(self).cast::<RecordingCanvas>() }
     }
 
     /// Finish recording and return the picture.
+    #[must_use]
     pub fn finish_recording(&mut self) -> Option<PictureRef> {
         if !self.is_recording {
             return None;
@@ -403,14 +413,15 @@ impl PictureRecorder {
 
     /// Check if currently recording.
     #[inline]
-    pub fn is_recording(&self) -> bool {
+    #[must_use]
+    pub const fn is_recording(&self) -> bool {
         self.is_recording
     }
 }
 
 /// A canvas that records drawing commands.
 ///
-/// This is actually a PictureRecorder with a canvas-like interface.
+/// This is actually a [`PictureRecorder`] with a canvas-like interface.
 #[repr(transparent)]
 pub struct RecordingCanvas {
     inner: PictureRecorder,
@@ -531,9 +542,9 @@ impl RecordingCanvas {
     }
 
     /// Record a draw point command.
-    pub fn draw_point(&mut self, point: Point, paint: &Paint) {
+    pub fn draw_point(&mut self, pt: Point, paint: &Paint) {
         self.inner.commands.push(DrawCommand::DrawPoint {
-            point,
+            point: pt,
             paint: paint.clone(),
         });
     }
@@ -766,8 +777,8 @@ mod tests {
         // pixels. This test pins the new end-to-end behavior: record a clear
         // + filled rect, replay to a raster surface, and verify the pixels.
         use crate::Surface;
-        use skia_rs_paint::Style;
         use skia_rs_core::Color;
+        use skia_rs_paint::Style;
 
         let mut recorder = PictureRecorder::new();
         let rc = recorder.begin_recording(Rect::from_xywh(0.0, 0.0, 20.0, 20.0));
@@ -887,7 +898,10 @@ mod tests {
 
         // Verify center pixel has green contribution
         let pixel = surface.pixel_buffer().get_pixel(50, 50).unwrap();
-        assert!(pixel.green() > 100, "center should have green from triangle");
+        assert!(
+            pixel.green() > 100,
+            "center should have green from triangle"
+        );
     }
 
     #[test]
@@ -915,11 +929,18 @@ mod tests {
 
         // Pixel at (30, 30) should be yellow (inside translated rect)
         let pixel = surface.pixel_buffer().get_pixel(30, 30).unwrap();
-        assert!(pixel.red() > 200 && pixel.green() > 200, "pixel should be yellow");
+        assert!(
+            pixel.red() > 200 && pixel.green() > 200,
+            "pixel should be yellow"
+        );
 
         // Pixel at (5, 5) should be background (not in translated rect)
         let bg = surface.pixel_buffer().get_pixel(5, 5).unwrap();
-        assert_eq!(bg, Color::TRANSPARENT, "pixel outside rect should be transparent");
+        assert_eq!(
+            bg,
+            Color::TRANSPARENT,
+            "pixel outside rect should be transparent"
+        );
     }
 
     #[test]
@@ -956,7 +977,13 @@ mod tests {
         let rc = recorder.begin_recording(Rect::from_xywh(0.0, 0.0, 100.0, 100.0));
         let mut paint = Paint::new();
         paint.set_color32(Color::from_rgb(128, 0, 128));
-        rc.draw_arc(&Rect::from_xywh(10.0, 10.0, 80.0, 80.0), 0.0, 90.0, true, &paint);
+        rc.draw_arc(
+            &Rect::from_xywh(10.0, 10.0, 80.0, 80.0),
+            0.0,
+            90.0,
+            true,
+            &paint,
+        );
         let picture = recorder.finish_recording().unwrap();
 
         let mut surface = Surface::new_raster_n32_premul(100, 100).unwrap();
@@ -992,7 +1019,10 @@ mod tests {
 
         // Center should be orange
         let pixel = surface.pixel_buffer().get_pixel(50, 50).unwrap();
-        assert!(pixel.red() > 200 && pixel.green() > 50, "round rect center should be orange");
+        assert!(
+            pixel.red() > 200 && pixel.green() > 50,
+            "round rect center should be orange"
+        );
     }
 
     #[test]
@@ -1046,7 +1076,11 @@ mod tests {
 
         // Pixel at (10, 10) outside clip should be transparent
         let outside = surface.pixel_buffer().get_pixel(10, 10).unwrap();
-        assert_eq!(outside, Color::TRANSPARENT, "outside clip should not be drawn");
+        assert_eq!(
+            outside,
+            Color::TRANSPARENT,
+            "outside clip should not be drawn"
+        );
     }
 
     #[test]
@@ -1071,6 +1105,9 @@ mod tests {
 
         // With scale(2, 2), rect at (10, 10) size 10x10 → (20, 20) size 20x20
         let pixel = surface.pixel_buffer().get_pixel(30, 30).unwrap();
-        assert!(pixel.blue() > 200, "scaled rect should draw at scaled position");
+        assert!(
+            pixel.blue() > 200,
+            "scaled rect should draw at scaled position"
+        );
     }
 }

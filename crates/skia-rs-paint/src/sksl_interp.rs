@@ -1,6 +1,6 @@
-//! Tree-walking interpreter for SkSL AST.
+//! Tree-walking interpreter for `SkSL` AST.
 //!
-//! Evaluates the subset of SkSL needed for runtime shader sampling and
+//! Evaluates the subset of `SkSL` needed for runtime shader sampling and
 //! runtime color filter application. This is the software fallback used
 //! when a GPU backend is not available (or not yet wired).
 //!
@@ -15,12 +15,13 @@
 //! Limitations (documented, not silent):
 //! - No custom structs or arrays of complex types
 //! - No matrix inverse beyond what's exposed as a builtin
-//! - Integer arithmetic collapses into float for most operations (SkSL is a
+//! - Integer arithmetic collapses into float for most operations (`SkSL` is a
 //!   high-level shader language; most meaningful uses involve floats)
-//! - Loops are capped at 10_000 iterations to prevent runaway evaluation
+//! - Loops are capped at `10_000` iterations to prevent runaway evaluation
 
 use crate::shader::Shader;
 use crate::sksl::{BinaryOp, Expr, FnDecl, SkslType, Stmt, UnaryOp};
+use skia_rs_core::cast::{saturate_to_i32, scalar_from_i32};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -28,9 +29,9 @@ use std::sync::Arc;
 /// contains an unbounded loop or a mistake in the update expression.
 const LOOP_LIMIT: usize = 10_000;
 
-/// Runtime value during SkSL evaluation.
+/// Runtime value during `SkSL` evaluation.
 #[derive(Debug, Clone)]
-pub(crate) enum Value {
+pub enum Value {
     /// Absence of a value (from void function returns or uninitialized vars).
     Void,
     /// Boolean scalar.
@@ -57,9 +58,9 @@ impl Value {
     /// Coerce to a float scalar. Vectors and matrices collapse to 0.
     pub fn as_f32(&self) -> f32 {
         match self {
-            Value::Float(f) => *f,
-            Value::Int(i) => *i as f32,
-            Value::Bool(b) => {
+            Self::Float(f) => *f,
+            Self::Int(i) => scalar_from_i32(*i),
+            Self::Bool(b) => {
                 if *b {
                     1.0
                 } else {
@@ -67,7 +68,10 @@ impl Value {
                 }
             }
             _ => {
-                debug_assert!(false, "cannot coerce {:?} to f32 — validator should have caught this", self);
+                debug_assert!(
+                    false,
+                    "cannot coerce {self:?} to f32 — validator should have caught this"
+                );
                 0.0
             }
         }
@@ -75,17 +79,14 @@ impl Value {
 
     pub fn as_i32(&self) -> i32 {
         match self {
-            Value::Int(i) => *i,
-            Value::Float(f) => *f as i32,
-            Value::Bool(b) => {
-                if *b {
-                    1
-                } else {
-                    0
-                }
-            }
+            Self::Int(i) => *i,
+            Self::Float(f) => saturate_to_i32(*f),
+            Self::Bool(b) => i32::from(*b),
             _ => {
-                debug_assert!(false, "cannot coerce {:?} to i32 — validator should have caught this", self);
+                debug_assert!(
+                    false,
+                    "cannot coerce {self:?} to i32 — validator should have caught this"
+                );
                 0
             }
         }
@@ -94,13 +95,16 @@ impl Value {
     #[allow(dead_code)]
     pub fn as_vec2(&self) -> [f32; 2] {
         match self {
-            Value::Vec2(v) => *v,
-            Value::Vec3(v) => [v[0], v[1]],
-            Value::Vec4(v) => [v[0], v[1]],
-            Value::Float(f) => [*f, *f],
-            Value::Int(i) => [*i as f32, *i as f32],
+            Self::Vec2(v) => *v,
+            Self::Vec3(v) => [v[0], v[1]],
+            Self::Vec4(v) => [v[0], v[1]],
+            Self::Float(f) => [*f, *f],
+            Self::Int(i) => [scalar_from_i32(*i), scalar_from_i32(*i)],
             _ => {
-                debug_assert!(false, "cannot coerce {:?} to vec2 — validator should have caught this", self);
+                debug_assert!(
+                    false,
+                    "cannot coerce {self:?} to vec2 — validator should have caught this"
+                );
                 [0.0, 0.0]
             }
         }
@@ -108,16 +112,19 @@ impl Value {
 
     pub fn as_vec3(&self) -> [f32; 3] {
         match self {
-            Value::Vec3(v) => *v,
-            Value::Vec4(v) => [v[0], v[1], v[2]],
-            Value::Vec2(v) => [v[0], v[1], 0.0],
-            Value::Float(f) => [*f, *f, *f],
-            Value::Int(i) => {
-                let x = *i as f32;
+            Self::Vec3(v) => *v,
+            Self::Vec4(v) => [v[0], v[1], v[2]],
+            Self::Vec2(v) => [v[0], v[1], 0.0],
+            Self::Float(f) => [*f, *f, *f],
+            Self::Int(i) => {
+                let x = scalar_from_i32(*i);
                 [x, x, x]
             }
             _ => {
-                debug_assert!(false, "cannot coerce {:?} to vec3 — validator should have caught this", self);
+                debug_assert!(
+                    false,
+                    "cannot coerce {self:?} to vec3 — validator should have caught this"
+                );
                 [0.0, 0.0, 0.0]
             }
         }
@@ -125,16 +132,19 @@ impl Value {
 
     pub fn as_vec4(&self) -> [f32; 4] {
         match self {
-            Value::Vec4(v) => *v,
-            Value::Vec3(v) => [v[0], v[1], v[2], 1.0],
-            Value::Vec2(v) => [v[0], v[1], 0.0, 1.0],
-            Value::Float(f) => [*f, *f, *f, *f],
-            Value::Int(i) => {
-                let x = *i as f32;
+            Self::Vec4(v) => *v,
+            Self::Vec3(v) => [v[0], v[1], v[2], 1.0],
+            Self::Vec2(v) => [v[0], v[1], 0.0, 1.0],
+            Self::Float(f) => [*f, *f, *f, *f],
+            Self::Int(i) => {
+                let x = scalar_from_i32(*i);
                 [x, x, x, x]
             }
             _ => {
-                debug_assert!(false, "cannot coerce {:?} to vec4 — validator should have caught this", self);
+                debug_assert!(
+                    false,
+                    "cannot coerce {self:?} to vec4 — validator should have caught this"
+                );
                 [0.0, 0.0, 0.0, 0.0]
             }
         }
@@ -142,77 +152,74 @@ impl Value {
 
     pub fn as_bool(&self) -> bool {
         match self {
-            Value::Bool(b) => *b,
-            Value::Int(i) => *i != 0,
-            Value::Float(f) => *f != 0.0,
+            Self::Bool(b) => *b,
+            Self::Int(i) => *i != 0,
+            Self::Float(f) => *f != 0.0,
             _ => {
-                debug_assert!(false, "cannot coerce {:?} to bool — validator should have caught this", self);
+                debug_assert!(
+                    false,
+                    "cannot coerce {self:?} to bool — validator should have caught this"
+                );
                 false
             }
         }
     }
 
     /// Number of scalar components this value contains. Scalars are 1.
-    pub fn component_count(&self) -> usize {
+    pub const fn component_count(&self) -> usize {
         match self {
-            Value::Float(_) | Value::Int(_) | Value::Bool(_) => 1,
-            Value::Vec2(_) => 2,
-            Value::Vec3(_) => 3,
-            Value::Vec4(_) => 4,
-            Value::Mat2(_) => 4,
-            Value::Mat3(_) => 9,
-            Value::Mat4(_) => 16,
-            Value::Void => 0,
+            Self::Float(_) | Self::Int(_) | Self::Bool(_) => 1,
+            Self::Vec2(_) => 2,
+            Self::Vec3(_) => 3,
+            Self::Vec4(_) | Self::Mat2(_) => 4,
+            Self::Mat3(_) => 9,
+            Self::Mat4(_) => 16,
+            Self::Void => 0,
         }
     }
 
     /// Get the nth scalar component.
     pub fn component(&self, i: usize) -> f32 {
         match self {
-            Value::Float(f) => {
+            Self::Float(f) => {
                 if i == 0 {
                     *f
                 } else {
                     0.0
                 }
             }
-            Value::Int(v) => {
+            Self::Int(v) => {
                 if i == 0 {
-                    *v as f32
+                    scalar_from_i32(*v)
                 } else {
                     0.0
                 }
             }
-            Value::Bool(b) => {
+            Self::Bool(b) => {
                 if i == 0 {
-                    if *b {
-                        1.0
-                    } else {
-                        0.0
-                    }
+                    if *b { 1.0 } else { 0.0 }
                 } else {
                     0.0
                 }
             }
-            Value::Vec2(v) => *v.get(i).unwrap_or(&0.0),
-            Value::Vec3(v) => *v.get(i).unwrap_or(&0.0),
-            Value::Vec4(v) => *v.get(i).unwrap_or(&0.0),
-            Value::Mat2(m) => *m.get(i).unwrap_or(&0.0),
-            Value::Mat3(m) => *m.get(i).unwrap_or(&0.0),
-            Value::Mat4(m) => *m.get(i).unwrap_or(&0.0),
-            Value::Void => 0.0,
+            Self::Vec2(v) => *v.get(i).unwrap_or(&0.0),
+            Self::Vec3(v) => *v.get(i).unwrap_or(&0.0),
+            Self::Vec4(v) => *v.get(i).unwrap_or(&0.0),
+            Self::Mat2(m) => *m.get(i).unwrap_or(&0.0),
+            Self::Mat3(m) => *m.get(i).unwrap_or(&0.0),
+            Self::Mat4(m) => *m.get(i).unwrap_or(&0.0),
+            Self::Void => 0.0,
         }
     }
 
     /// Build a vector from N scalar components.
-    pub fn from_components(components: &[f32]) -> Value {
+    pub fn from_components(components: &[f32]) -> Self {
         match components.len() {
-            0 => Value::Void,
-            1 => Value::Float(components[0]),
-            2 => Value::Vec2([components[0], components[1]]),
-            3 => Value::Vec3([components[0], components[1], components[2]]),
-            4 => Value::Vec4([components[0], components[1], components[2], components[3]]),
-            _ => Value::Float(components[0]),
+            0 => Self::Void,
+            2 => Self::Vec2([components[0], components[1]]),
+            3 => Self::Vec3([components[0], components[1], components[2]]),
+            4 => Self::Vec4([components[0], components[1], components[2], components[3]]),
+            _ => Self::Float(components[0]),
         }
     }
 }
@@ -233,7 +240,7 @@ enum ControlFlow {
 }
 
 /// Interpreter environment: variable scopes, uniforms, functions, children.
-pub(crate) struct Interp<'a> {
+pub struct Interp<'a> {
     /// User-defined functions available for invocation by name.
     pub functions: HashMap<String, &'a FnDecl>,
     /// Uniforms, keyed by name.
@@ -246,7 +253,7 @@ pub(crate) struct Interp<'a> {
     scopes: Vec<HashMap<String, Value>>,
 }
 
-impl<'a> Interp<'a> {
+impl Interp<'_> {
     pub fn new() -> Self {
         Self {
             functions: HashMap::new(),
@@ -311,6 +318,10 @@ impl<'a> Interp<'a> {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match arm per Stmt variant; splitting would obscure the 1:1 correspondence with the AST"
+    )]
     fn run_stmt(&mut self, stmt: &Stmt) -> ControlFlow {
         match stmt {
             Stmt::Block(stmts) => {
@@ -330,18 +341,12 @@ impl<'a> Interp<'a> {
                 ControlFlow::Normal
             }
             Stmt::VarDecl { name, init, .. } => {
-                let v = init
-                    .as_ref()
-                    .map(|e| self.compute_expr(e))
-                    .unwrap_or(Value::Void);
+                let v = init.as_ref().map_or(Value::Void, |e| self.compute_expr(e));
                 self.declare(name, v);
                 ControlFlow::Normal
             }
             Stmt::Return(expr) => {
-                let v = expr
-                    .as_ref()
-                    .map(|e| self.compute_expr(e))
-                    .unwrap_or(Value::Void);
+                let v = expr.as_ref().map_or(Value::Void, |e| self.compute_expr(e));
                 ControlFlow::Return(v)
             }
             Stmt::Break => ControlFlow::Break,
@@ -376,10 +381,7 @@ impl<'a> Interp<'a> {
                 }
                 let mut result = ControlFlow::Normal;
                 for _ in 0..LOOP_LIMIT {
-                    let cond_true = match cond {
-                        Some(c) => self.compute_expr(c).as_bool(),
-                        None => true,
-                    };
+                    let cond_true = cond.as_ref().is_none_or(|c| self.compute_expr(c).as_bool());
                     if !cond_true {
                         break;
                     }
@@ -435,6 +437,10 @@ impl<'a> Interp<'a> {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match arm per Expr variant; splitting would obscure the 1:1 correspondence with the AST"
+    )]
     fn compute_expr(&mut self, expr: &Expr) -> Value {
         match expr {
             Expr::IntLit(n) => Value::Int(*n),
@@ -466,8 +472,7 @@ impl<'a> Interp<'a> {
                 apply_unary(*op, &v)
             }
             Expr::Call { name, args } => {
-                let arg_vals: Vec<Value> =
-                    args.iter().map(|a| self.compute_expr(a)).collect();
+                let arg_vals: Vec<Value> = args.iter().map(|a| self.compute_expr(a)).collect();
                 // Built-ins first (matches SkSL semantics).
                 if let Some(v) = call_builtin(name, &arg_vals) {
                     return v;
@@ -489,8 +494,7 @@ impl<'a> Interp<'a> {
                         if let Some(&idx) = self.children_by_name.get(name.as_str()) {
                             let coord = args
                                 .first()
-                                .map(|a| self.compute_expr(a))
-                                .unwrap_or(Value::Vec2([0.0, 0.0]));
+                                .map_or(Value::Vec2([0.0, 0.0]), |a| self.compute_expr(a));
                             let xy = coord.as_vec2();
                             if let Some(child) = self.children.get(idx) {
                                 let c = child.sample(xy[0], xy[1]);
@@ -595,7 +599,8 @@ impl<'a> Interp<'a> {
                 self.assign_to(expr, new);
             }
             Expr::Index { expr, index } => {
-                let idx = self.compute_expr(index).as_i32() as usize;
+                let idx_i32 = self.compute_expr(index).as_i32();
+                let idx = usize::try_from(idx_i32).unwrap_or(usize::MAX);
                 let base = self.compute_expr(expr);
                 let mut comps: Vec<f32> = (0..base.component_count())
                     .map(|i| base.component(i))
@@ -651,7 +656,7 @@ fn apply_unary(op: UnaryOp, v: &Value) -> Value {
     }
 }
 
-/// Apply a binary op with SkSL's broadcast rules.
+/// Apply a binary op with `SkSL`'s broadcast rules.
 fn apply_binary(op: BinaryOp, l: &Value, r: &Value) -> Value {
     if matches!(
         op,
@@ -688,7 +693,15 @@ fn apply_binary(op: BinaryOp, l: &Value, r: &Value) -> Value {
             BinaryOp::BitAnd => Value::Int(a & b),
             BinaryOp::BitOr => Value::Int(a | b),
             BinaryOp::BitXor => Value::Int(a ^ b),
+            #[allow(
+                clippy::cast_sign_loss,
+                reason = "GLSL/SkSL shift-amount is taken mod the bit width of the operand; reinterpreting the i32 shift count as u32 bits and letting wrapping_shl/shr mask it matches that semantics"
+            )]
             BinaryOp::Shl => Value::Int(a.wrapping_shl(*b as u32)),
+            #[allow(
+                clippy::cast_sign_loss,
+                reason = "GLSL/SkSL shift-amount is taken mod the bit width of the operand; reinterpreting the i32 shift count as u32 bits and letting wrapping_shl/shr mask it matches that semantics"
+            )]
             BinaryOp::Shr => Value::Int(a.wrapping_shr(*b as u32)),
             _ => Value::Int(0),
         };
@@ -732,7 +745,7 @@ fn apply_binary(op: BinaryOp, l: &Value, r: &Value) -> Value {
     }
 }
 
-fn vec_width(v: &Value) -> usize {
+const fn vec_width(v: &Value) -> usize {
     match v {
         Value::Vec2(_) => 2,
         Value::Vec3(_) => 3,
@@ -772,7 +785,7 @@ fn scalar_op(op: BinaryOp, a: f32, b: f32) -> Value {
         BinaryOp::Sub => Value::Float(a - b),
         BinaryOp::Mul => Value::Float(a * b),
         BinaryOp::Div => Value::Float(a / b),
-        BinaryOp::Mod => Value::Float(a - (a / b).floor() * b),
+        BinaryOp::Mod => Value::Float((a / b).floor().mul_add(-b, a)),
         _ => Value::Float(0.0),
     }
 }
@@ -794,6 +807,10 @@ fn apply_cmp(op: BinaryOp, l: &Value, r: &Value) -> Value {
     Value::Bool(res)
 }
 
+#[allow(
+    clippy::float_cmp,
+    reason = "implements SkSL's `==` operator, which is exact equality on GLSL vector/scalar types, not a tolerance comparison"
+)]
 fn values_equal(l: &Value, r: &Value) -> bool {
     match (l, r) {
         (Value::Bool(a), Value::Bool(b)) => a == b,
@@ -840,6 +857,10 @@ fn mat_from_elems(dim: usize, elems: &[f32]) -> Value {
 /// GLSL), plus mat op scalar and scalar op mat for + - * /.
 /// Linear-algebra multiplication (mat·mat, mat·vec, vec·mat) lives in
 /// `mat_mul`.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "faithful linear-algebra code; l/r/a/b/n/m/s follow standard matrix-math notation"
+)]
 fn matrix_elementwise_op(op: BinaryOp, l: &Value, r: &Value) -> Option<Value> {
     if !matches!(
         op,
@@ -850,7 +871,7 @@ fn matrix_elementwise_op(op: BinaryOp, l: &Value, r: &Value) -> Option<Value> {
     let scalar_of = |v: &Value| -> Option<f32> {
         match v {
             Value::Float(f) => Some(*f),
-            Value::Int(i) => Some(*i as f32),
+            Value::Int(i) => Some(scalar_from_i32(*i)),
             _ => None,
         }
     };
@@ -887,47 +908,51 @@ fn matrix_elementwise_op(op: BinaryOp, l: &Value, r: &Value) -> Option<Value> {
 }
 
 /// Matrix multiplication: mat * mat, mat * vec, vec * mat.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "faithful linear-algebra code; l/r/v/m/a/b/x/y/z/w/s/j/k follow standard matrix-math notation"
+)]
 fn mat_mul(l: &Value, r: &Value) -> Option<Value> {
     match (l, r) {
         (Value::Vec2(v), Value::Mat2(m)) => {
             // Row-vector times matrix: out[j] = dot(v, column_j).
-            let x = v[0] * m[0] + v[1] * m[1];
-            let y = v[0] * m[2] + v[1] * m[3];
+            let x = v[0].mul_add(m[0], v[1] * m[1]);
+            let y = v[0].mul_add(m[2], v[1] * m[3]);
             Some(Value::Vec2([x, y]))
         }
         (Value::Vec3(v), Value::Mat3(m)) => {
             let mut out = [0.0f32; 3];
             for (j, slot) in out.iter_mut().enumerate() {
-                *slot = v[0] * m[j * 3] + v[1] * m[j * 3 + 1] + v[2] * m[j * 3 + 2];
+                *slot = v[2].mul_add(m[j * 3 + 2], v[0].mul_add(m[j * 3], v[1] * m[j * 3 + 1]));
             }
             Some(Value::Vec3(out))
         }
         (Value::Vec4(v), Value::Mat4(m)) => {
             let mut out = [0.0f32; 4];
             for (j, slot) in out.iter_mut().enumerate() {
-                *slot = v[0] * m[j * 4]
-                    + v[1] * m[j * 4 + 1]
-                    + v[2] * m[j * 4 + 2]
-                    + v[3] * m[j * 4 + 3];
+                *slot = v[3].mul_add(
+                    m[j * 4 + 3],
+                    v[2].mul_add(m[j * 4 + 2], v[0].mul_add(m[j * 4], v[1] * m[j * 4 + 1])),
+                );
             }
             Some(Value::Vec4(out))
         }
         (Value::Mat2(m), Value::Vec2(v)) => {
-            let x = m[0] * v[0] + m[2] * v[1];
-            let y = m[1] * v[0] + m[3] * v[1];
+            let x = m[0].mul_add(v[0], m[2] * v[1]);
+            let y = m[1].mul_add(v[0], m[3] * v[1]);
             Some(Value::Vec2([x, y]))
         }
         (Value::Mat3(m), Value::Vec3(v)) => {
-            let x = m[0] * v[0] + m[3] * v[1] + m[6] * v[2];
-            let y = m[1] * v[0] + m[4] * v[1] + m[7] * v[2];
-            let z = m[2] * v[0] + m[5] * v[1] + m[8] * v[2];
+            let x = m[6].mul_add(v[2], m[0].mul_add(v[0], m[3] * v[1]));
+            let y = m[7].mul_add(v[2], m[1].mul_add(v[0], m[4] * v[1]));
+            let z = m[8].mul_add(v[2], m[2].mul_add(v[0], m[5] * v[1]));
             Some(Value::Vec3([x, y, z]))
         }
         (Value::Mat4(m), Value::Vec4(v)) => {
-            let x = m[0] * v[0] + m[4] * v[1] + m[8] * v[2] + m[12] * v[3];
-            let y = m[1] * v[0] + m[5] * v[1] + m[9] * v[2] + m[13] * v[3];
-            let z = m[2] * v[0] + m[6] * v[1] + m[10] * v[2] + m[14] * v[3];
-            let w = m[3] * v[0] + m[7] * v[1] + m[11] * v[2] + m[15] * v[3];
+            let x = m[12].mul_add(v[3], m[8].mul_add(v[2], m[0].mul_add(v[0], m[4] * v[1])));
+            let y = m[13].mul_add(v[3], m[9].mul_add(v[2], m[1].mul_add(v[0], m[5] * v[1])));
+            let z = m[14].mul_add(v[3], m[10].mul_add(v[2], m[2].mul_add(v[0], m[6] * v[1])));
+            let w = m[15].mul_add(v[3], m[11].mul_add(v[2], m[3].mul_add(v[0], m[7] * v[1])));
             Some(Value::Vec4([x, y, z, w]))
         }
         (Value::Mat2(a), Value::Mat2(b)) => {
@@ -974,7 +999,7 @@ fn mat_mul(l: &Value, r: &Value) -> Option<Value> {
 }
 
 fn index_value(v: &Value, i: i32) -> Value {
-    let idx = i as usize;
+    let idx = usize::try_from(i).unwrap_or(usize::MAX);
     match v {
         Value::Vec2(a) => Value::Float(*a.get(idx).unwrap_or(&0.0)),
         Value::Vec3(a) => Value::Float(*a.get(idx).unwrap_or(&0.0)),
@@ -995,12 +1020,7 @@ fn index_value(v: &Value, i: i32) -> Value {
         }
         Value::Mat4(m) => {
             if idx < 4 {
-                Value::Vec4([
-                    m[idx * 4],
-                    m[idx * 4 + 1],
-                    m[idx * 4 + 2],
-                    m[idx * 4 + 3],
-                ])
+                Value::Vec4([m[idx * 4], m[idx * 4 + 1], m[idx * 4 + 2], m[idx * 4 + 3]])
             } else {
                 Value::Vec4([0.0, 0.0, 0.0, 0.0])
             }
@@ -1009,7 +1029,7 @@ fn index_value(v: &Value, i: i32) -> Value {
     }
 }
 
-fn swizzle_index(c: char) -> Option<usize> {
+const fn swizzle_index(c: char) -> Option<usize> {
     match c {
         'x' | 'r' | 's' => Some(0),
         'y' | 'g' | 't' => Some(1),
@@ -1045,14 +1065,11 @@ fn flatten_components(vals: &[Value]) -> Vec<f32> {
 fn construct(ty: &SkslType, args: &[Value]) -> Value {
     let want = match ty {
         SkslType::Float | SkslType::Half => 1,
-        SkslType::Int => return Value::Int(args.first().map(|v| v.as_i32()).unwrap_or(0)),
-        SkslType::Bool => {
-            return Value::Bool(args.first().map(|v| v.as_bool()).unwrap_or(false))
-        }
+        SkslType::Int => return Value::Int(args.first().map_or(0, Value::as_i32)),
+        SkslType::Bool => return Value::Bool(args.first().is_some_and(Value::as_bool)),
         SkslType::Vec2 | SkslType::Half2 => 2,
         SkslType::Vec3 | SkslType::Half3 => 3,
-        SkslType::Vec4 | SkslType::Half4 => 4,
-        SkslType::Mat2 => 4,
+        SkslType::Vec4 | SkslType::Half4 | SkslType::Mat2 => 4,
         SkslType::Mat3 => 9,
         SkslType::Mat4 => 16,
         _ => return args.first().cloned().unwrap_or(Value::Void),
@@ -1087,9 +1104,7 @@ fn construct(ty: &SkslType, args: &[Value]) -> Value {
         SkslType::Float | SkslType::Half => Value::Float(comps[0]),
         SkslType::Vec2 | SkslType::Half2 => Value::Vec2([comps[0], comps[1]]),
         SkslType::Vec3 | SkslType::Half3 => Value::Vec3([comps[0], comps[1], comps[2]]),
-        SkslType::Vec4 | SkslType::Half4 => {
-            Value::Vec4([comps[0], comps[1], comps[2], comps[3]])
-        }
+        SkslType::Vec4 | SkslType::Half4 => Value::Vec4([comps[0], comps[1], comps[2], comps[3]]),
         SkslType::Mat2 => {
             let mut out = [0.0f32; 4];
             out.copy_from_slice(&comps[..4]);
@@ -1113,7 +1128,7 @@ fn construct(ty: &SkslType, args: &[Value]) -> Value {
 fn map1(v: &Value, f: impl Fn(f32) -> f32) -> Value {
     match v {
         Value::Float(x) => Value::Float(f(*x)),
-        Value::Int(i) => Value::Float(f(*i as f32)),
+        Value::Int(i) => Value::Float(f(scalar_from_i32(*i))),
         Value::Vec2(a) => Value::Vec2([f(a[0]), f(a[1])]),
         Value::Vec3(a) => Value::Vec3([f(a[0]), f(a[1]), f(a[2])]),
         Value::Vec4(a) => Value::Vec4([f(a[0]), f(a[1]), f(a[2]), f(a[3])]),
@@ -1142,12 +1157,7 @@ fn map2(a: &Value, b: &Value, f: impl Fn(f32, f32) -> f32) -> Value {
 }
 
 /// Apply a ternary function per component with scalar broadcast.
-fn map3(
-    a: &Value,
-    b: &Value,
-    c: &Value,
-    f: impl Fn(f32, f32, f32) -> f32,
-) -> Value {
+fn map3(a: &Value, b: &Value, c: &Value, f: impl Fn(f32, f32, f32) -> f32) -> Value {
     let width = vec_width(a).max(vec_width(b)).max(vec_width(c));
     if width == 0 {
         return Value::Float(f(a.as_f32(), b.as_f32(), c.as_f32()));
@@ -1169,6 +1179,11 @@ fn map3(
 
 /// Dispatch to a built-in function. Returns None if the name isn't a known
 /// builtin, allowing the caller to fall through to user-defined functions.
+#[allow(
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    reason = "one match arm per SkSL builtin function name; splitting would obscure the exhaustive builtin dispatch table. Bindings i/n/d/k/etc. follow GLSL's own builtin parameter names (e.g. reflect(I, N), refract(I, N, eta))"
+)]
 fn call_builtin(name: &str, args: &[Value]) -> Option<Value> {
     match name {
         "abs" => args.first().map(|v| map1(v, f32::abs)),
@@ -1224,7 +1239,7 @@ fn call_builtin(name: &str, args: &[Value]) -> Option<Value> {
                     if b == 0.0 {
                         0.0
                     } else {
-                        a - (a / b).floor() * b
+                        (a / b).floor().mul_add(-b, a)
                     }
                 }))
             } else {
@@ -1257,7 +1272,7 @@ fn call_builtin(name: &str, args: &[Value]) -> Option<Value> {
         "mix" => {
             if args.len() == 3 {
                 Some(map3(&args[0], &args[1], &args[2], |a, b, t| {
-                    a + t * (b - a)
+                    t.mul_add(b - a, a)
                 }))
             } else {
                 None
@@ -1265,13 +1280,13 @@ fn call_builtin(name: &str, args: &[Value]) -> Option<Value> {
         }
         "step" => {
             if args.len() == 2 {
-                Some(map2(&args[0], &args[1], |edge, x| {
-                    if x < edge {
-                        0.0
-                    } else {
-                        1.0
-                    }
-                }))
+                Some(map2(
+                    &args[0],
+                    &args[1],
+                    |edge, x| {
+                        if x < edge { 0.0 } else { 1.0 }
+                    },
+                ))
             } else {
                 None
             }
@@ -1280,7 +1295,7 @@ fn call_builtin(name: &str, args: &[Value]) -> Option<Value> {
             if args.len() == 3 {
                 Some(map3(&args[0], &args[1], &args[2], |e0, e1, x| {
                     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
-                    t * t * (3.0 - 2.0 * t)
+                    t * t * 2.0f32.mul_add(-t, 3.0)
                 }))
             } else {
                 None
@@ -1327,9 +1342,9 @@ fn call_builtin(name: &str, args: &[Value]) -> Option<Value> {
                 let a = args[0].as_vec3();
                 let b = args[1].as_vec3();
                 Some(Value::Vec3([
-                    a[1] * b[2] - a[2] * b[1],
-                    a[2] * b[0] - a[0] * b[2],
-                    a[0] * b[1] - a[1] * b[0],
+                    a[1].mul_add(b[2], -(a[2] * b[1])),
+                    a[2].mul_add(b[0], -(a[0] * b[2])),
+                    a[0].mul_add(b[1], -(a[1] * b[0])),
                 ]))
             } else {
                 None
@@ -1382,7 +1397,7 @@ fn call_builtin(name: &str, args: &[Value]) -> Option<Value> {
                 let n = &args[1];
                 let eta = args[2].as_f32();
                 let d = call_builtin("dot", &[n.clone(), i.clone()])?.as_f32();
-                let k = 1.0 - eta * eta * (1.0 - d * d);
+                let k = (eta * eta).mul_add(-d.mul_add(-d, 1.0), 1.0);
                 if k < 0.0 {
                     let w = vec_width(i);
                     return Some(match w {
@@ -1393,7 +1408,7 @@ fn call_builtin(name: &str, args: &[Value]) -> Option<Value> {
                     });
                 }
                 let eta_i = apply_binary(BinaryOp::Mul, &Value::Float(eta), i);
-                let scale = Value::Float(eta * d + k.sqrt());
+                let scale = Value::Float(eta.mul_add(d, k.sqrt()));
                 let scaled_n = apply_binary(BinaryOp::Mul, &scale, n);
                 Some(apply_binary(BinaryOp::Sub, &eta_i, &scaled_n))
             } else {
@@ -1413,6 +1428,10 @@ fn call_builtin(name: &str, args: &[Value]) -> Option<Value> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "tests assert exact expected interpreter output values, not tolerance comparisons"
+)]
 mod tests {
     use super::*;
     use crate::sksl::Parser;
@@ -1433,13 +1452,13 @@ mod tests {
     fn multi_component_swizzle_assignment() {
         // `c.rgb *= 0.5` must work for any swizzle lvalue.
         let v = run_main(
-            r#"
+            r"
             vec4 main(vec2 coord) {
                 vec4 c = vec4(1.0, 0.8, 0.6, 1.0);
                 c.rgb *= 0.5;
                 return c;
             }
-            "#,
+            ",
             Value::Vec2([0.0, 0.0]),
         );
         let out = v.as_vec4();
@@ -1453,13 +1472,13 @@ mod tests {
     fn multi_component_swizzle_assignment_shuffled() {
         // Swizzle writes must land in the right slots even out of order.
         let v = run_main(
-            r#"
+            r"
             vec4 main(vec2 coord) {
                 vec4 c = vec4(0.0);
                 c.ba = vec2(0.25, 0.75);
                 return c;
             }
-            "#,
+            ",
             Value::Vec2([0.0, 0.0]),
         );
         let out = v.as_vec4();
@@ -1472,14 +1491,14 @@ mod tests {
     #[test]
     fn matrix_plus_matrix() {
         let v = run_main(
-            r#"
+            r"
             vec4 main(vec2 coord) {
                 mat2 a = mat2(1.0, 2.0, 3.0, 4.0);
                 mat2 b = mat2(0.5, 0.5, 0.5, 0.5);
                 mat2 c = a + b;
                 return vec4(c[0].x, c[0].y, c[1].x, c[1].y);
             }
-            "#,
+            ",
             Value::Vec2([0.0, 0.0]),
         );
         assert_eq!(v.as_vec4(), [1.5, 2.5, 3.5, 4.5]);
@@ -1488,13 +1507,13 @@ mod tests {
     #[test]
     fn matrix_minus_matrix() {
         let v = run_main(
-            r#"
+            r"
             vec4 main(vec2 coord) {
                 mat2 a = mat2(1.0, 2.0, 3.0, 4.0);
                 mat2 c = a - mat2(1.0, 1.0, 1.0, 1.0);
                 return vec4(c[0].x, c[0].y, c[1].x, c[1].y);
             }
-            "#,
+            ",
             Value::Vec2([0.0, 0.0]),
         );
         assert_eq!(v.as_vec4(), [0.0, 1.0, 2.0, 3.0]);
@@ -1503,14 +1522,14 @@ mod tests {
     #[test]
     fn matrix_times_scalar_both_orders() {
         let v = run_main(
-            r#"
+            r"
             vec4 main(vec2 coord) {
                 mat2 a = mat2(1.0, 2.0, 3.0, 4.0);
                 mat2 b = a * 2.0;
                 mat2 c = 0.5 * a;
                 return vec4(b[0].x, b[1].y, c[0].x, c[1].y);
             }
-            "#,
+            ",
             Value::Vec2([0.0, 0.0]),
         );
         assert_eq!(v.as_vec4(), [2.0, 8.0, 0.5, 2.0]);
@@ -1520,13 +1539,13 @@ mod tests {
     fn vector_times_matrix() {
         // Row-vector times matrix: (v * M)[i] = dot(v, M[i]) (column i).
         let v = run_main(
-            r#"
+            r"
             vec4 main(vec2 coord) {
                 mat2 m = mat2(1.0, 2.0, 3.0, 4.0);
                 vec2 v = vec2(1.0, 1.0) * m;
                 return vec4(v.x, v.y, 0.0, 1.0);
             }
-            "#,
+            ",
             Value::Vec2([0.0, 0.0]),
         );
         let out = v.as_vec4();
@@ -1538,13 +1557,13 @@ mod tests {
     #[test]
     fn matrix_times_vector() {
         let v = run_main(
-            r#"
+            r"
             vec4 main(vec2 coord) {
                 mat2 m = mat2(1.0, 2.0, 3.0, 4.0);
                 vec2 v = m * vec2(1.0, 1.0);
                 return vec4(v.x, v.y, 0.0, 1.0);
             }
-            "#,
+            ",
             Value::Vec2([0.0, 0.0]),
         );
         let out = v.as_vec4();
@@ -1556,19 +1575,27 @@ mod tests {
     #[test]
     fn float_division_by_zero_is_ieee() {
         let v = run_main(
-            r#"
+            r"
             vec4 main(vec2 coord) {
                 float pos = 1.0 / 0.0;
                 float neg = -1.0 / 0.0;
                 float nan = 0.0 / 0.0;
                 return vec4(pos, neg, nan, 1.0);
             }
-            "#,
+            ",
             Value::Vec2([0.0, 0.0]),
         );
         let out = v.as_vec4();
-        assert!(out[0].is_infinite() && out[0] > 0.0, "1/0 = +inf, got {}", out[0]);
-        assert!(out[1].is_infinite() && out[1] < 0.0, "-1/0 = -inf, got {}", out[1]);
+        assert!(
+            out[0].is_infinite() && out[0] > 0.0,
+            "1/0 = +inf, got {}",
+            out[0]
+        );
+        assert!(
+            out[1].is_infinite() && out[1] < 0.0,
+            "-1/0 = -inf, got {}",
+            out[1]
+        );
         assert!(out[2].is_nan(), "0/0 = NaN, got {}", out[2]);
     }
 
@@ -1585,7 +1612,7 @@ mod tests {
     #[test]
     fn bitwise_ops_parse_with_glsl_precedence() {
         let v = run_main(
-            r#"
+            r"
             vec4 main(vec2 coord) {
                 int a = 6 & 3;        // 2
                 int b = 6 ^ 3;        // 5
@@ -1593,7 +1620,7 @@ mod tests {
                 int d = 4 >> 1 + 1;   // shifts below additive: 4 >> 2 = 1
                 return vec4(float(a), float(b), float(c), float(d));
             }
-            "#,
+            ",
             Value::Vec2([0.0, 0.0]),
         );
         assert_eq!(v.as_vec4(), [2.0, 5.0, 5.0, 1.0]);
@@ -1650,7 +1677,7 @@ mod tests {
     #[test]
     fn for_loop_sum() {
         let v = run_main(
-            r#"
+            r"
             vec4 main(vec2 c) {
                 float sum = 0.0;
                 for (int i = 0; i < 4; i = i + 1) {
@@ -1658,7 +1685,7 @@ mod tests {
                 }
                 return vec4(sum, 0.0, 0.0, 1.0);
             }
-            "#,
+            ",
             Value::Vec2([0.0, 0.0]),
         );
         let out = v.as_vec4();
@@ -1701,7 +1728,7 @@ mod tests {
     #[test]
     fn compound_assign_and_swizzle_write() {
         let v = run_main(
-            r#"
+            r"
             vec4 main(vec2 c) {
                 vec4 col = vec4(0.0, 0.0, 0.0, 1.0);
                 col.x = 0.5;
@@ -1709,7 +1736,7 @@ mod tests {
                 col.z = col.x * 2.0;
                 return col;
             }
-            "#,
+            ",
             Value::Vec2([0.0, 0.0]),
         );
         let out = v.as_vec4();
@@ -1722,13 +1749,13 @@ mod tests {
     #[test]
     fn ternary_and_clamp() {
         let v = run_main(
-            r#"
+            r"
             vec4 main(vec2 c) {
                 float x = c.x > 0.5 ? 1.0 : 0.0;
                 float y = clamp(c.y, 0.2, 0.8);
                 return vec4(x, y, 0.0, 1.0);
             }
-            "#,
+            ",
             Value::Vec2([0.7, 0.1]),
         );
         let out = v.as_vec4();
@@ -1739,13 +1766,13 @@ mod tests {
     #[test]
     fn mat2_times_vec2() {
         let v = run_main(
-            r#"
+            r"
             vec4 main(vec2 c) {
                 mat2 m = mat2(1.0, 0.0, 0.0, 1.0);
                 vec2 r = m * vec2(2.0, 3.0);
                 return vec4(r.x, r.y, 0.0, 1.0);
             }
-            "#,
+            ",
             Value::Vec2([0.0, 0.0]),
         );
         let out = v.as_vec4();
@@ -1756,13 +1783,13 @@ mod tests {
     #[test]
     fn user_function_call() {
         let v = run_main(
-            r#"
+            r"
             float square(float x) { return x * x; }
             vec4 main(vec2 c) {
                 float s = square(c.x);
                 return vec4(s, 0.0, 0.0, 1.0);
             }
-            "#,
+            ",
             Value::Vec2([0.5, 0.0]),
         );
         assert!((v.as_vec4()[0] - 0.25).abs() < 1e-5);

@@ -3,6 +3,8 @@
 //! This module provides utilities for tiling images across surfaces,
 //! handling different tile modes and transformations.
 
+use crate::cast_util::scalar_from_u32;
+use skia_rs_core::cast::{saturate_to_i32, scalar_from_i32};
 use skia_rs_core::{Matrix, Point, Rect};
 
 /// Tile mode for image edges.
@@ -60,6 +62,7 @@ pub struct TileInstance {
 }
 
 /// Generate tile instances for a given area.
+#[must_use]
 pub fn generate_tiles(
     image_width: u32,
     image_height: u32,
@@ -71,8 +74,8 @@ pub fn generate_tiles(
         return tiles;
     }
 
-    let src_width = config.source_rect.width() * image_width as f32;
-    let src_height = config.source_rect.height() * image_height as f32;
+    let src_width = config.source_rect.width() * scalar_from_u32(image_width);
+    let src_height = config.source_rect.height() * scalar_from_u32(image_height);
 
     if src_width <= 0.0 || src_height <= 0.0 {
         return tiles;
@@ -103,8 +106,16 @@ pub fn generate_tiles(
     for ys in &y_slots {
         for xs in &x_slots {
             // Mirror flips swap the UV endpoints on the affected axis.
-            let (u0, u1) = if xs.flip { (xs.uv1, xs.uv0) } else { (xs.uv0, xs.uv1) };
-            let (v0, v1) = if ys.flip { (ys.uv1, ys.uv0) } else { (ys.uv0, ys.uv1) };
+            let (u0, u1) = if xs.flip {
+                (xs.uv1, xs.uv0)
+            } else {
+                (xs.uv0, xs.uv1)
+            };
+            let (v0, v1) = if ys.flip {
+                (ys.uv1, ys.uv0)
+            } else {
+                (ys.uv0, ys.uv1)
+            };
 
             tiles.push(TileInstance {
                 position: Point::new(xs.pos, ys.pos),
@@ -154,13 +165,13 @@ fn axis_slots(
             flip: false,
         }],
         TileMode::Repeat | TileMode::Mirror => {
-            let count = (dest_extent / src_extent).ceil() as i32 + 2;
-            let mut slots = Vec::with_capacity((count + 1) as usize);
+            let count = saturate_to_i32((dest_extent / src_extent).ceil()) + 2;
+            let mut slots = Vec::with_capacity(usize::try_from(count + 1).unwrap_or(0));
             for i in -1..count {
                 let flip = mode == TileMode::Mirror && i.rem_euclid(2) != 0;
                 slots.push(AxisSlot {
                     index: i,
-                    pos: dest_start + i as f32 * src_extent,
+                    pos: scalar_from_i32(i).mul_add(src_extent, dest_start),
                     size: src_extent,
                     uv0: uv_min,
                     uv1: uv_min + uv_size,
@@ -173,9 +184,12 @@ fn axis_slots(
 }
 
 /// Calculate UV transform matrix for tiled rendering.
+#[must_use]
 pub fn calculate_uv_transform(image_width: u32, image_height: u32, config: &TileConfig) -> Matrix {
-    let scale_x = config.dest_rect.width() / (config.source_rect.width() * image_width as f32);
-    let scale_y = config.dest_rect.height() / (config.source_rect.height() * image_height as f32);
+    let scale_x =
+        config.dest_rect.width() / (config.source_rect.width() * scalar_from_u32(image_width));
+    let scale_y =
+        config.dest_rect.height() / (config.source_rect.height() * scalar_from_u32(image_height));
 
     let offset_x = config.source_rect.left;
     let offset_y = config.source_rect.top;
@@ -198,7 +212,8 @@ pub struct NinePatch {
 
 impl NinePatch {
     /// Create a new nine-patch configuration.
-    pub fn new(left: f32, top: f32, right: f32, bottom: f32) -> Self {
+    #[must_use]
+    pub const fn new(left: f32, top: f32, right: f32, bottom: f32) -> Self {
         Self {
             left,
             top,
@@ -208,12 +223,18 @@ impl NinePatch {
     }
 
     /// Create a uniform nine-patch (same inset on all sides).
-    pub fn uniform(inset: f32) -> Self {
+    #[must_use]
+    pub const fn uniform(inset: f32) -> Self {
         Self::new(inset, inset, inset, inset)
     }
 }
 
 /// Generate nine-patch tile instances.
+#[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the nine-patch layout is a single cohesive table of 9 regions; splitting it up would obscure the geometry"
+)]
 pub fn generate_nine_patch(
     image_width: u32,
     image_height: u32,
@@ -222,8 +243,8 @@ pub fn generate_nine_patch(
 ) -> Vec<TileInstance> {
     let mut tiles = Vec::with_capacity(9);
 
-    let img_w = image_width as f32;
-    let img_h = image_height as f32;
+    let img_w = scalar_from_u32(image_width);
+    let img_h = scalar_from_u32(image_height);
 
     // Source regions (in pixels)
     let src_left = patch.left;
@@ -379,6 +400,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact literal values, no accumulated error"
+    )]
     fn test_mixed_tile_modes_repeat_x_clamp_y() {
         // Regression: a Clamp axis must NOT tile. With Repeat in X and Clamp
         // in Y, all tiles share one row: same y position and full dest height.
@@ -392,12 +417,17 @@ mod tests {
         let tiles = generate_tiles(64, 64, &config);
         assert!(tiles.len() > 1, "X should tile");
         // Exactly one distinct y position, spanning the full dest height.
-        let ys: std::collections::BTreeSet<i64> =
-            tiles.iter().map(|t| t.position.y.to_bits() as i64).collect();
+        let ys: std::collections::BTreeSet<i64> = tiles
+            .iter()
+            .map(|t| i64::from(t.position.y.to_bits()))
+            .collect();
         assert_eq!(ys.len(), 1, "Clamp Y must not tile (single row)");
         for t in &tiles {
             assert_eq!(t.position.y, 0.0);
-            assert!((t.size[1] - 100.0).abs() < 1e-3, "clamp Y spans full dest height");
+            assert!(
+                (t.size[1] - 100.0).abs() < 1e-3,
+                "clamp Y spans full dest height"
+            );
         }
     }
 
@@ -412,11 +442,16 @@ mod tests {
         };
         let tiles = generate_tiles(64, 64, &config);
         // One column: single distinct x position, full dest width.
-        let xs: std::collections::BTreeSet<i64> =
-            tiles.iter().map(|t| t.position.x.to_bits() as i64).collect();
+        let xs: std::collections::BTreeSet<i64> = tiles
+            .iter()
+            .map(|t| i64::from(t.position.x.to_bits()))
+            .collect();
         assert_eq!(xs.len(), 1, "Clamp X must not tile (single column)");
         for t in &tiles {
-            assert!((t.size[0] - 100.0).abs() < 1e-3, "clamp X spans full dest width");
+            assert!(
+                (t.size[0] - 100.0).abs() < 1e-3,
+                "clamp X spans full dest width"
+            );
         }
     }
 
@@ -430,6 +465,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact literal values, no accumulated error"
+    )]
     fn test_tile_instance() {
         let tile = TileInstance {
             position: Point::new(10.0, 20.0),

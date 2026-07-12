@@ -7,7 +7,7 @@
 //! For path filling, this module implements an optimized Active Edge Table (AET)
 //! scanline algorithm with the following characteristics:
 //!
-//! - **Global Edge Table (GET)**: Edges sorted by y_min for efficient activation
+//! - **Global Edge Table (GET)**: Edges sorted by `y_min` for efficient activation
 //! - **Active Edge Table (AET)**: Only edges intersecting the current scanline
 //! - **Winding Number Calculation**: Supports both non-zero and even-odd fill rules
 //! - **X-Intersection Sorting**: Uses insertion sort optimized for nearly-sorted data
@@ -31,7 +31,7 @@ use skia_rs_path::PathBuilder;
 use crate::simd::mul_div_255_round;
 use skia_rs_path::{FillType, Path, PathElement};
 
-use crate::clip::{ClipMask, ClipStack, ClipState};
+use crate::clip::ClipStack;
 
 /// A pixel buffer for rasterization.
 #[derive(Debug, Clone)]
@@ -48,9 +48,10 @@ pub struct PixelBuffer {
 
 impl PixelBuffer {
     /// Create a new pixel buffer.
+    #[must_use]
     pub fn new(width: i32, height: i32) -> Self {
-        let stride = (width as usize) * 4;
-        let pixels = vec![0u8; (height as usize) * stride];
+        let stride = usize::try_from(width).unwrap_or(0) * 4;
+        let pixels = vec![0u8; usize::try_from(height).unwrap_or(0) * stride];
         Self {
             width,
             height,
@@ -86,11 +87,13 @@ impl PixelBuffer {
 
     /// Get a pixel at (x, y).
     #[inline]
+    #[must_use]
     pub fn get_pixel(&self, x: i32, y: i32) -> Option<Color> {
         if x < 0 || x >= self.width || y < 0 || y >= self.height {
             return None;
         }
-        let offset = (y as usize) * self.stride + (x as usize) * 4;
+        let offset =
+            usize::try_from(y).unwrap_or(0) * self.stride + usize::try_from(x).unwrap_or(0) * 4;
         Some(Color::from_argb(
             self.pixels[offset + 3],
             self.pixels[offset],
@@ -105,7 +108,8 @@ impl PixelBuffer {
         if x < 0 || x >= self.width || y < 0 || y >= self.height {
             return;
         }
-        let offset = (y as usize) * self.stride + (x as usize) * 4;
+        let offset =
+            usize::try_from(y).unwrap_or(0) * self.stride + usize::try_from(x).unwrap_or(0) * 4;
         self.pixels[offset] = color.red();
         self.pixels[offset + 1] = color.green();
         self.pixels[offset + 2] = color.blue();
@@ -161,7 +165,7 @@ impl PixelBuffer {
         }
 
         // `src` is premultiplied: coverage attenuates all four channels.
-        let cov = (coverage.min(1.0) * 255.0).round() as u8;
+        let cov = skia_rs_core::cast::f32_to_u8_sat(coverage.min(1.0) * 255.0);
         let src_with_coverage = apply_coverage(src, cov);
 
         let dst = self.get_pixel(x, y).unwrap_or(Color::from_argb(0, 0, 0, 0));
@@ -212,12 +216,12 @@ fn apply_coverage(color: Color, coverage: u8) -> Color {
     if coverage == 255 {
         return color;
     }
-    let c = coverage as u32;
+    let c = u32::from(coverage);
     Color::from_argb(
-        mul_div_255_round(color.alpha() as u32, c),
-        mul_div_255_round(color.red() as u32, c),
-        mul_div_255_round(color.green() as u32, c),
-        mul_div_255_round(color.blue() as u32, c),
+        mul_div_255_round(u32::from(color.alpha()), c),
+        mul_div_255_round(u32::from(color.red()), c),
+        mul_div_255_round(u32::from(color.green()), c),
+        mul_div_255_round(u32::from(color.blue()), c),
     )
 }
 
@@ -245,7 +249,10 @@ fn source_color_at(source: &PixelSource<'_>, x: i32, y: i32) -> Color {
     match source {
         PixelSource::Solid(c) => *c,
         PixelSource::Shader { shader, inv, alpha } => {
-            let local = inv.map_point(Point::new(x as Scalar + 0.5, y as Scalar + 0.5));
+            let local = inv.map_point(Point::new(
+                skia_rs_core::cast::scalar_from_i32(x) + 0.5,
+                skia_rs_core::cast::scalar_from_i32(y) + 0.5,
+            ));
             let c = shader.sample(local.x, local.y).to_color();
             apply_coverage(c, *alpha)
         }
@@ -315,8 +322,15 @@ pub struct Rasterizer<'a> {
 
 impl<'a> Rasterizer<'a> {
     /// Create a new rasterizer.
-    pub fn new(buffer: &'a mut PixelBuffer) -> Self {
-        let clip = Rect::from_xywh(0.0, 0.0, buffer.width as Scalar, buffer.height as Scalar);
+    #[must_use]
+    pub const fn new(buffer: &'a mut PixelBuffer) -> Self {
+        use skia_rs_core::cast::scalar_from_i32;
+        let clip = Rect::from_xywh(
+            0.0,
+            0.0,
+            scalar_from_i32(buffer.width),
+            scalar_from_i32(buffer.height),
+        );
         let clip_stack = ClipStack::new(&clip);
         Self {
             buffer,
@@ -330,22 +344,23 @@ impl<'a> Rasterizer<'a> {
 
     /// Set the buffer's device origin (see the `origin` field). The clip
     /// stack stays in device coordinates; all clip queries add this offset.
-    pub fn set_origin(&mut self, x: i32, y: i32) {
+    pub const fn set_origin(&mut self, x: i32, y: i32) {
         self.origin = (x, y);
     }
 
     /// The buffer's device origin.
-    pub fn origin(&self) -> (i32, i32) {
+    #[must_use]
+    pub const fn origin(&self) -> (i32, i32) {
         self.origin
     }
 
     /// Set the current transformation matrix.
-    pub fn set_matrix(&mut self, matrix: &Matrix) {
+    pub const fn set_matrix(&mut self, matrix: &Matrix) {
         self.matrix = *matrix;
     }
 
     /// Set the clip rectangle (simple mode).
-    pub fn set_clip(&mut self, clip: Rect) {
+    pub const fn set_clip(&mut self, clip: Rect) {
         self.clip = clip;
         self.use_advanced_clip = false;
     }
@@ -357,8 +372,8 @@ impl<'a> Rasterizer<'a> {
         self.use_advanced_clip = true;
     }
 
-    /// Get the device bounds as an IRect.
-    fn device_bounds(&self) -> IRect {
+    /// Get the device bounds as an `IRect`.
+    const fn device_bounds(&self) -> IRect {
         IRect::new(0, 0, self.buffer.width, self.buffer.height)
     }
 
@@ -403,25 +418,18 @@ impl<'a> Rasterizer<'a> {
         }
     }
 
-    /// Check if a point (buffer coordinates) passes the current clip.
-    #[inline]
-    fn clip_contains(&self, x: i32, y: i32) -> bool {
-        let (dx, dy) = (x + self.origin.0, y + self.origin.1);
-        if self.use_advanced_clip {
-            self.clip_stack.contains(dx, dy)
-        } else {
-            self.clip.contains(Point::new(dx as Scalar, dy as Scalar))
-        }
-    }
-
     /// Get the clip coverage at a point in buffer coordinates (0-255).
     /// Returns 255 for simple clips if the point is inside.
     #[inline]
     fn get_clip_coverage(&self, x: i32, y: i32) -> u8 {
+        use skia_rs_core::cast::scalar_from_i32;
         let (dx, dy) = (x + self.origin.0, y + self.origin.1);
         if self.use_advanced_clip {
             self.clip_stack.get_coverage(dx, dy)
-        } else if self.clip.contains(Point::new(dx as Scalar, dy as Scalar)) {
+        } else if self
+            .clip
+            .contains(Point::new(scalar_from_i32(dx), scalar_from_i32(dy)))
+        {
             255
         } else {
             0
@@ -429,7 +437,9 @@ impl<'a> Rasterizer<'a> {
     }
 
     /// Get the current clip bounds in buffer coordinates.
+    #[must_use]
     pub fn clip_bounds(&self) -> Rect {
+        use skia_rs_core::cast::scalar_from_i32;
         let b = if self.use_advanced_clip {
             self.clip_stack.bounds()
         } else {
@@ -439,16 +449,17 @@ impl<'a> Rasterizer<'a> {
             b
         } else {
             Rect::new(
-                b.left - self.origin.0 as Scalar,
-                b.top - self.origin.1 as Scalar,
-                b.right - self.origin.0 as Scalar,
-                b.bottom - self.origin.1 as Scalar,
+                b.left - scalar_from_i32(self.origin.0),
+                b.top - scalar_from_i32(self.origin.1),
+                b.right - scalar_from_i32(self.origin.0),
+                b.bottom - scalar_from_i32(self.origin.1),
             )
         }
     }
 
     /// Check if the current clip is anti-aliased.
-    pub fn is_clip_anti_aliased(&self) -> bool {
+    #[must_use]
+    pub const fn is_clip_anti_aliased(&self) -> bool {
         self.use_advanced_clip && self.clip_stack.is_anti_aliased()
     }
 
@@ -457,32 +468,34 @@ impl<'a> Rasterizer<'a> {
     /// for local-space sampling (`Shader::sample` expects coordinates in the
     /// shader's own space; the caller applies the local matrix).
     fn make_source<'p>(&self, paint: &'p Paint) -> PixelSource<'p> {
-        if let Some(shader) = paint.shader() {
-            let total = match shader.local_matrix() {
-                Some(local) => self.matrix.concat(local),
-                None => self.matrix,
-            };
-            let inv = total.invert().unwrap_or(Matrix::IDENTITY);
-            let alpha = (paint.alpha().clamp(0.0, 1.0) * 255.0).round() as u8;
-            PixelSource::Shader {
-                shader: shader.as_ref(),
-                inv,
-                alpha,
-            }
-        } else {
-            PixelSource::Solid(premultiply_color(paint.color32()))
-        }
+        paint.shader().map_or_else(
+            || PixelSource::Solid(premultiply_color(paint.color32())),
+            |shader| {
+                let total = shader
+                    .local_matrix()
+                    .map_or(self.matrix, |local| self.matrix.concat(local));
+                let inv = total.invert().unwrap_or(Matrix::IDENTITY);
+                let alpha =
+                    skia_rs_core::cast::f32_to_u8_sat(paint.alpha().clamp(0.0, 1.0) * 255.0);
+                PixelSource::Shader {
+                    shader: shader.as_ref(),
+                    inv,
+                    alpha,
+                }
+            },
+        )
     }
 
     /// Integer pixel bounds of the current clip, clamped to the buffer:
     /// `(x0, y0, x1, y1)` half-open.
     fn clip_pixel_bounds(&self) -> (i32, i32, i32, i32) {
+        use skia_rs_core::cast::{ceil_to_i32, floor_to_i32};
         let clip = self.clip_bounds();
         (
-            (clip.left.floor() as i32).max(0),
-            (clip.top.floor() as i32).max(0),
-            (clip.right.ceil() as i32).min(self.buffer.width),
-            (clip.bottom.ceil() as i32).min(self.buffer.height),
+            floor_to_i32(clip.left).max(0),
+            floor_to_i32(clip.top).max(0),
+            ceil_to_i32(clip.right).min(self.buffer.width),
+            ceil_to_i32(clip.bottom).min(self.buffer.height),
         )
     }
 
@@ -506,7 +519,7 @@ impl<'a> Rasterizer<'a> {
         let combined = if clip_cov == 255 {
             coverage
         } else {
-            mul_div_255_round(coverage as u32, clip_cov as u32)
+            mul_div_255_round(u32::from(coverage), u32::from(clip_cov))
         };
         let c = apply_coverage(source_color_at(source, x, y), combined);
         self.buffer.blend_pixel(x, y, c, blend_mode);
@@ -542,11 +555,12 @@ impl<'a> Rasterizer<'a> {
 
     /// Reset the clip to device bounds.
     pub fn reset_clip(&mut self) {
+        use skia_rs_core::cast::scalar_from_i32;
         let bounds = Rect::from_xywh(
             0.0,
             0.0,
-            self.buffer.width as Scalar,
-            self.buffer.height as Scalar,
+            scalar_from_i32(self.buffer.width),
+            scalar_from_i32(self.buffer.height),
         );
         self.clip = bounds;
         self.clip_stack.reset(&bounds);
@@ -554,10 +568,15 @@ impl<'a> Rasterizer<'a> {
     }
 
     /// Draw a point.
+    #[allow(
+        clippy::similar_names,
+        reason = "point/paint mirrors SkCanvas::drawPoint's (SkPoint, SkPaint) parameter names"
+    )]
     pub fn draw_point(&mut self, point: Point, paint: &Paint) {
+        use skia_rs_core::cast::round_to_i32;
         let transformed = self.matrix.map_point(point);
-        let x = transformed.x.round() as i32;
-        let y = transformed.y.round() as i32;
+        let x = round_to_i32(transformed.x);
+        let y = round_to_i32(transformed.y);
 
         let coverage = self.get_clip_coverage(x, y);
         if coverage > 0 {
@@ -584,13 +603,14 @@ impl<'a> Rasterizer<'a> {
 
     /// Draw line without anti-aliasing (Bresenham).
     fn draw_line_aliased(&mut self, p0: Point, p1: Point, paint: &Paint) {
+        use skia_rs_core::cast::round_to_i32;
         let t0 = self.matrix.map_point(p0);
         let t1 = self.matrix.map_point(p1);
 
-        let mut x0 = t0.x.round() as i32;
-        let mut y0 = t0.y.round() as i32;
-        let x1 = t1.x.round() as i32;
-        let y1 = t1.y.round() as i32;
+        let mut x0 = round_to_i32(t0.x);
+        let mut y0 = round_to_i32(t0.y);
+        let x1 = round_to_i32(t1.x);
+        let y1 = round_to_i32(t1.y);
 
         let dx = (x1 - x0).abs();
         let dy = -(y1 - y0).abs();
@@ -630,6 +650,7 @@ impl<'a> Rasterizer<'a> {
 
     /// Draw line with anti-aliasing using Wu's algorithm.
     fn draw_line_aa(&mut self, p0: Point, p1: Point, paint: &Paint) {
+        use skia_rs_core::cast::floor_to_i32;
         let t0 = self.matrix.map_point(p0);
         let t1 = self.matrix.map_point(p1);
 
@@ -661,8 +682,8 @@ impl<'a> Rasterizer<'a> {
         let xend = x0.round();
         let yend = y0 + gradient * (xend - x0);
         let xgap = 1.0 - (x0 + 0.5).fract();
-        let xpxl1 = xend as i32;
-        let ypxl1 = yend.floor() as i32;
+        let xpxl1 = floor_to_i32(xend);
+        let ypxl1 = floor_to_i32(yend);
 
         if steep {
             self.plot_aa(ypxl1, xpxl1, (1.0 - yend.fract()) * xgap, color, blend_mode);
@@ -678,8 +699,8 @@ impl<'a> Rasterizer<'a> {
         let xend = x1.round();
         let yend = y1 + gradient * (xend - x1);
         let xgap = (x1 + 0.5).fract();
-        let xpxl2 = xend as i32;
-        let ypxl2 = yend.floor() as i32;
+        let xpxl2 = floor_to_i32(xend);
+        let ypxl2 = floor_to_i32(yend);
 
         if steep {
             self.plot_aa(ypxl2, xpxl2, (1.0 - yend.fract()) * xgap, color, blend_mode);
@@ -692,14 +713,14 @@ impl<'a> Rasterizer<'a> {
         // Main loop
         if steep {
             for x in (xpxl1 + 1)..xpxl2 {
-                let y = intery.floor() as i32;
+                let y = floor_to_i32(intery);
                 self.plot_aa(y, x, 1.0 - intery.fract(), color, blend_mode);
                 self.plot_aa(y + 1, x, intery.fract(), color, blend_mode);
                 intery += gradient;
             }
         } else {
             for x in (xpxl1 + 1)..xpxl2 {
-                let y = intery.floor() as i32;
+                let y = floor_to_i32(intery);
                 self.plot_aa(x, y, 1.0 - intery.fract(), color, blend_mode);
                 self.plot_aa(x, y + 1, intery.fract(), color, blend_mode);
                 intery += gradient;
@@ -713,7 +734,7 @@ impl<'a> Rasterizer<'a> {
         let clip_coverage = self.get_clip_coverage(x, y);
         if clip_coverage > 0 {
             // Combine line AA coverage with clip coverage
-            let combined_coverage = coverage * (clip_coverage as f32 / 255.0);
+            let combined_coverage = coverage * (f32::from(clip_coverage) / 255.0);
             self.buffer
                 .blend_pixel_aa(x, y, color, combined_coverage, blend_mode);
         }
@@ -722,16 +743,19 @@ impl<'a> Rasterizer<'a> {
     /// Draw a horizontal line (fast path with SIMD optimization).
     ///
     /// Uses SIMD-accelerated blitting when available for:
-    /// - SSE4.2 on x86/x86_64 (4 pixels at a time)
-    /// - AVX2 on x86/x86_64 (8 pixels at a time)
+    /// - SSE4.2 on `x86/x86_64` (4 pixels at a time)
+    /// - AVX2 on `x86/x86_64` (8 pixels at a time)
     /// - NEON on ARM/AArch64 (4 pixels at a time)
     fn draw_hline(&mut self, x0: i32, x1: i32, y: i32, color: Color, blend_mode: BlendMode) {
+        use skia_rs_core::cast::saturate_to_i32;
         let clip_bounds = self.clip_bounds();
         let (start, end) = if x0 < x1 { (x0, x1) } else { (x1, x0) };
-        let start = start.max(clip_bounds.left as i32);
-        let end = end.min(clip_bounds.right as i32 - 1);
+        let start = start.max(saturate_to_i32(clip_bounds.left.trunc()));
+        let end = end.min(saturate_to_i32(clip_bounds.right.trunc()) - 1);
 
-        if y < clip_bounds.top as i32 || y >= clip_bounds.bottom as i32 {
+        if y < saturate_to_i32(clip_bounds.top.trunc())
+            || y >= saturate_to_i32(clip_bounds.bottom.trunc())
+        {
             return;
         }
 
@@ -764,9 +788,9 @@ impl<'a> Rasterizer<'a> {
             return;
         }
 
-        let row_offset = (y as usize) * self.buffer.stride;
-        let start_offset = row_offset + (start as usize) * 4;
-        let end_offset = row_offset + ((end + 1) as usize) * 4;
+        let row_offset = usize::try_from(y).unwrap_or(0) * self.buffer.stride;
+        let start_offset = row_offset + usize::try_from(start).unwrap_or(0) * 4;
+        let end_offset = row_offset + usize::try_from(end + 1).unwrap_or(0) * 4;
 
         // SIMD-optimized path for SrcOver blend mode (most common case)
         if blend_mode == BlendMode::SrcOver {
@@ -792,6 +816,7 @@ impl<'a> Rasterizer<'a> {
     /// scan-converted as the mapped quad; only the axis-aligned case may use
     /// `map_rect` (which would otherwise fill the quad's bounding box).
     pub fn fill_rect(&mut self, rect: &Rect, paint: &Paint) {
+        use skia_rs_core::cast::round_to_i32;
         if !self.matrix_is_axis_aligned() || paint.is_anti_alias() {
             let mut b = PathBuilder::new();
             b.add_rect(rect);
@@ -801,10 +826,10 @@ impl<'a> Rasterizer<'a> {
 
         let transformed = self.matrix.map_rect(rect);
 
-        let x0 = transformed.left.round() as i32;
-        let y0 = transformed.top.round() as i32;
-        let x1 = transformed.right.round() as i32;
-        let y1 = transformed.bottom.round() as i32;
+        let x0 = round_to_i32(transformed.left);
+        let y0 = round_to_i32(transformed.top);
+        let x1 = round_to_i32(transformed.right);
+        let y1 = round_to_i32(transformed.bottom);
 
         let blend_mode = paint.blend_mode();
         let source = self.make_source(paint);
@@ -818,10 +843,11 @@ impl<'a> Rasterizer<'a> {
     /// space). Used by `clear`/`drawColor`/`drawPaint`, which fill the device
     /// clip regardless of the matrix (`SkDraw::drawPaint`).
     pub fn fill_device_rect(&mut self, rect: &Rect, paint: &Paint) {
-        let x0 = (rect.left.round() as i32) - self.origin.0;
-        let y0 = (rect.top.round() as i32) - self.origin.1;
-        let x1 = (rect.right.round() as i32) - self.origin.0;
-        let y1 = (rect.bottom.round() as i32) - self.origin.1;
+        use skia_rs_core::cast::round_to_i32;
+        let x0 = round_to_i32(rect.left) - self.origin.0;
+        let y0 = round_to_i32(rect.top) - self.origin.1;
+        let x1 = round_to_i32(rect.right) - self.origin.0;
+        let y1 = round_to_i32(rect.bottom) - self.origin.1;
 
         let blend_mode = paint.blend_mode();
         let source = self.make_source(paint);
@@ -875,6 +901,7 @@ impl<'a> Rasterizer<'a> {
     /// Assumes a translate + uniform-scale CTM; [`draw_circle`] routes any
     /// other matrix through the path pipeline.
     pub fn fill_circle(&mut self, center: Point, radius: Scalar, paint: &Paint) {
+        use skia_rs_core::cast::{ceil_to_i32, floor_to_i32, round_to_i32, scalar_from_i32};
         let tc = self.matrix.map_point(center);
         let r = radius * self.matrix.scale_x().abs();
         if r <= 0.0 {
@@ -884,26 +911,27 @@ impl<'a> Rasterizer<'a> {
         let source = self.make_source(paint);
         let blend_mode = paint.blend_mode();
 
-        let y0 = (tc.y - r).floor() as i32;
-        let y1 = (tc.y + r).ceil() as i32;
+        let y0 = floor_to_i32(tc.y - r);
+        let y1 = ceil_to_i32(tc.y + r);
         for y in y0..y1 {
-            let dy = y as f32 + 0.5 - tc.y;
+            let dy = scalar_from_i32(y) + 0.5 - tc.y;
             if dy.abs() > r {
                 continue;
             }
-            let half = (r * r - dy * dy).sqrt();
-            let x0 = (tc.x - half).round() as i32;
-            let x1 = (tc.x + half).round() as i32;
+            let half = r.mul_add(r, -(dy * dy)).sqrt();
+            let x0 = round_to_i32(tc.x - half);
+            let x1 = round_to_i32(tc.x + half);
             self.blit_span(x0, x1, y, &source, blend_mode);
         }
     }
 
     /// Draw a stroked circle.
     pub fn stroke_circle(&mut self, center: Point, radius: Scalar, paint: &Paint) {
+        use skia_rs_core::cast::round_to_i32;
         let tc = self.matrix.map_point(center);
-        let cx = tc.x.round() as i32;
-        let cy = tc.y.round() as i32;
-        let r = (radius * self.matrix.scale_x().abs()).round() as i32;
+        let cx = round_to_i32(tc.x);
+        let cy = round_to_i32(tc.y);
+        let r = round_to_i32(radius * self.matrix.scale_x().abs());
 
         let color = premultiply_color(paint.color32());
         let blend_mode = paint.blend_mode();
@@ -969,6 +997,7 @@ impl<'a> Rasterizer<'a> {
 
     /// Draw an anti-aliased circle.
     fn draw_circle_aa(&mut self, center: Point, radius: Scalar, paint: &Paint) {
+        use skia_rs_core::cast::{ceil_to_i32, floor_to_i32, scalar_from_i32};
         let tc = self.matrix.map_point(center);
         let cx = tc.x;
         let cy = tc.y;
@@ -978,10 +1007,10 @@ impl<'a> Rasterizer<'a> {
         let blend_mode = paint.blend_mode();
 
         // Calculate bounding box
-        let min_x = (cx - r - 1.0).floor() as i32;
-        let max_x = (cx + r + 1.0).ceil() as i32;
-        let min_y = (cy - r - 1.0).floor() as i32;
-        let max_y = (cy + r + 1.0).ceil() as i32;
+        let min_x = floor_to_i32(cx - r - 1.0);
+        let max_x = ceil_to_i32(cx + r + 1.0);
+        let min_y = floor_to_i32(cy - r - 1.0);
+        let max_y = ceil_to_i32(cy + r + 1.0);
 
         match paint.style() {
             Style::Fill => {
@@ -989,9 +1018,9 @@ impl<'a> Rasterizer<'a> {
                 for py in min_y..=max_y {
                     for px in min_x..=max_x {
                         // Calculate distance from pixel center to circle center
-                        let dx = px as f32 + 0.5 - cx;
-                        let dy = py as f32 + 0.5 - cy;
-                        let dist_sq = dx * dx + dy * dy;
+                        let dx = scalar_from_i32(px) + 0.5 - cx;
+                        let dy = scalar_from_i32(py) + 0.5 - cy;
+                        let dist_sq = dx.mul_add(dx, dy * dy);
 
                         // Calculate coverage using smoothstep
                         let dist = dist_sq.sqrt();
@@ -1017,9 +1046,9 @@ impl<'a> Rasterizer<'a> {
 
                 for py in min_y..=max_y {
                     for px in min_x..=max_x {
-                        let dx = px as f32 + 0.5 - cx;
-                        let dy = py as f32 + 0.5 - cy;
-                        let dist = (dx * dx + dy * dy).sqrt();
+                        let dx = scalar_from_i32(px) + 0.5 - cx;
+                        let dy = scalar_from_i32(py) + 0.5 - cy;
+                        let dist = dx.mul_add(dx, dy * dy).sqrt();
 
                         let outer_coverage = if dist <= outer_r - 0.5 {
                             1.0
@@ -1063,8 +1092,8 @@ impl<'a> Rasterizer<'a> {
     /// Draw an oval (conic-based geometry via the path crate).
     pub fn draw_oval(&mut self, rect: &Rect, paint: &Paint) {
         let center = Point::new(
-            (rect.left + rect.right) / 2.0,
-            (rect.top + rect.bottom) / 2.0,
+            f32::midpoint(rect.left, rect.right),
+            f32::midpoint(rect.top, rect.bottom),
         );
         let rx = rect.width() / 2.0;
         let ry = rect.height() / 2.0;
@@ -1105,7 +1134,7 @@ impl<'a> Rasterizer<'a> {
         self.stroke_path_hairline(path, paint);
     }
 
-    /// StrokeAndFill: fill the union of the fill geometry and the stroke
+    /// `StrokeAndFill`: fill the union of the fill geometry and the stroke
     /// outline exactly once, so translucent paints don't double-blend the
     /// overlap (`SkStrokeRec::kStrokeAndFill_Style`).
     fn stroke_and_fill_path(&mut self, path: &Path, paint: &Paint) {
@@ -1116,23 +1145,28 @@ impl<'a> Rasterizer<'a> {
         }
         let combined = stroke_outline(path, paint)
             .and_then(|outline| skia_rs_path::op(path, &outline, skia_rs_path::PathOp::Union));
-        match combined {
-            Some(c) => self.fill_path(&c, paint),
+        if let Some(c) = combined {
+            self.fill_path(&c, paint);
+        } else {
             // Union unavailable (open/degenerate contours): fill then stroke.
-            None => {
-                self.fill_path(path, paint);
-                self.stroke_path(path, paint);
-            }
+            self.fill_path(path, paint);
+            self.stroke_path(path, paint);
         }
     }
 
     /// Stroke a path as a hairline (width 0) by walking its flattened
     /// segments with the line rasterizer.
+    #[allow(
+        clippy::similar_names,
+        reason = "t/mt (parameter and its complement) and per-segment prev_t/prev_mt are the standard Bezier-flattening parameter names"
+    )]
     fn stroke_path_hairline(&mut self, path: &Path, paint: &Paint) {
+        use skia_rs_core::cast::scalar_from_i32;
+
         let mut current = Point::zero();
         let mut contour_start = Point::zero();
 
-        for element in path.iter() {
+        for element in path {
             match element {
                 PathElement::Move(p) => {
                     current = p;
@@ -1146,26 +1180,16 @@ impl<'a> Rasterizer<'a> {
                     // Approximate with lines
                     let steps = 16;
                     for i in 1..=steps {
-                        let t = i as f32 / steps as f32;
+                        let t = scalar_from_i32(i) / scalar_from_i32(steps);
                         let mt = 1.0 - t;
-                        let p = Point::new(
-                            mt * mt * current.x + 2.0 * mt * t * ctrl.x + t * t * end.x,
-                            mt * mt * current.y + 2.0 * mt * t * ctrl.y + t * t * end.y,
-                        );
+                        let p = quad_point(t, mt, current, ctrl, end);
                         self.draw_line(
                             if i == 1 {
                                 current
                             } else {
-                                let pt = (i - 1) as f32 / steps as f32;
+                                let pt = scalar_from_i32(i - 1) / scalar_from_i32(steps);
                                 let pmt = 1.0 - pt;
-                                Point::new(
-                                    pmt * pmt * current.x
-                                        + 2.0 * pmt * pt * ctrl.x
-                                        + pt * pt * end.x,
-                                    pmt * pmt * current.y
-                                        + 2.0 * pmt * pt * ctrl.y
-                                        + pt * pt * end.y,
-                                )
+                                quad_point(pt, pmt, current, ctrl, end)
                             },
                             p,
                             paint,
@@ -1177,22 +1201,12 @@ impl<'a> Rasterizer<'a> {
                     // Approximate as quad for simplicity
                     let steps = 16;
                     for i in 1..=steps {
-                        let t = i as f32 / steps as f32;
+                        let t = scalar_from_i32(i) / scalar_from_i32(steps);
                         let mt = 1.0 - t;
-                        let p = Point::new(
-                            mt * mt * current.x + 2.0 * mt * t * ctrl.x + t * t * end.x,
-                            mt * mt * current.y + 2.0 * mt * t * ctrl.y + t * t * end.y,
-                        );
-                        let prev_t = (i - 1) as f32 / steps as f32;
+                        let p = quad_point(t, mt, current, ctrl, end);
+                        let prev_t = scalar_from_i32(i - 1) / scalar_from_i32(steps);
                         let prev_mt = 1.0 - prev_t;
-                        let prev = Point::new(
-                            prev_mt * prev_mt * current.x
-                                + 2.0 * prev_mt * prev_t * ctrl.x
-                                + prev_t * prev_t * end.x,
-                            prev_mt * prev_mt * current.y
-                                + 2.0 * prev_mt * prev_t * ctrl.y
-                                + prev_t * prev_t * end.y,
-                        );
+                        let prev = quad_point(prev_t, prev_mt, current, ctrl, end);
                         self.draw_line(prev, p, paint);
                     }
                     current = end;
@@ -1202,20 +1216,9 @@ impl<'a> Rasterizer<'a> {
                     let steps = 24;
                     let mut prev = current;
                     for i in 1..=steps {
-                        let t = i as f32 / steps as f32;
+                        let t = scalar_from_i32(i) / scalar_from_i32(steps);
                         let mt = 1.0 - t;
-                        let mt2 = mt * mt;
-                        let t2 = t * t;
-                        let p = Point::new(
-                            mt2 * mt * current.x
-                                + 3.0 * mt2 * t * c1.x
-                                + 3.0 * mt * t2 * c2.x
-                                + t2 * t * end.x,
-                            mt2 * mt * current.y
-                                + 3.0 * mt2 * t * c1.y
-                                + 3.0 * mt * t2 * c2.y
-                                + t2 * t * end.y,
-                        );
+                        let p = cubic_point(t, mt, current, c1, c2, end);
                         self.draw_line(prev, p, paint);
                         prev = p;
                     }
@@ -1246,7 +1249,12 @@ impl<'a> Rasterizer<'a> {
     /// Scanline algorithm sampling pixel centers; supports all four fill
     /// types (the inverse types fill the complement of the path within the
     /// clip), shaders (sampled in local space), and the full clip stack.
+    #[allow(
+        clippy::similar_names,
+        reason = "clip_x0/clip_y0/clip_x1/clip_y1 are the natural names for a 2D clip-rect bound tuple"
+    )]
     fn fill_path_bw(&mut self, path: &Path, paint: &Paint) {
+        use skia_rs_core::cast::{ceil_to_i32, floor_to_i32, round_to_i32, scalar_from_i32};
         let fill_type = path.fill_type();
         let inverse = matches!(
             fill_type,
@@ -1273,17 +1281,17 @@ impl<'a> Rasterizer<'a> {
                 .map(|e| e.y_max)
                 .fold(f32::NEG_INFINITY, f32::max);
             (
-                (ymin.floor() as i32).max(clip_y0),
-                (ymax.ceil() as i32).min(clip_y1),
+                floor_to_i32(ymin).max(clip_y0),
+                ceil_to_i32(ymax).min(clip_y1),
             )
         };
 
         for y in y_min..y_max {
-            let scanline = y as f32 + 0.5;
+            let scanline = scalar_from_i32(y) + 0.5;
             let spans = spans_at_scanline(&edges, scanline, fill_type);
             let mut int_spans: Vec<(i32, i32)> = spans
                 .iter()
-                .map(|&(a, b)| (a.round() as i32, b.round() as i32))
+                .map(|&(a, b)| (round_to_i32(a), round_to_i32(b)))
                 .filter(|&(a, b)| a < b)
                 .collect();
 
@@ -1318,7 +1326,14 @@ impl<'a> Rasterizer<'a> {
     /// sample scanline), the clip is applied per pixel, shaders sample in
     /// local space, and inverse fill types fill the complement within the
     /// clip.
+    #[allow(
+        clippy::similar_names,
+        reason = "clip_x0/clip_y0/clip_x1/clip_y1 are the natural names for a 2D clip-rect bound tuple"
+    )]
     pub fn fill_path_aa(&mut self, path: &Path, paint: &Paint) {
+        use skia_rs_core::cast::{ceil_to_i32, f32_to_u8_sat, floor_to_i32, scalar_from_i32};
+        const SAMPLE_OFFSETS: [f32; 4] = [0.125, 0.375, 0.625, 0.875];
+
         let fill_type = path.fill_type();
         let inverse = matches!(
             fill_type,
@@ -1346,32 +1361,32 @@ impl<'a> Rasterizer<'a> {
                 .map(|e| e.y_max)
                 .fold(f32::NEG_INFINITY, f32::max);
             (
-                (ymin.floor() as i32).max(clip_y0),
-                (ymax.ceil() as i32).min(clip_y1),
+                floor_to_i32(ymin).max(clip_y0),
+                ceil_to_i32(ymax).min(clip_y1),
             )
         };
 
-        const SAMPLE_OFFSETS: [f32; 4] = [0.125, 0.375, 0.625, 0.875];
-        let row_width = (clip_x1 - clip_x0) as usize;
+        let row_width = usize::try_from(clip_x1 - clip_x0).unwrap_or(0);
         let mut coverage = vec![0.0f32; row_width];
 
         for y in y_min..y_max {
             coverage.fill(0.0);
 
             for &offset in &SAMPLE_OFFSETS {
-                let scanline = y as f32 + offset;
+                let scanline = scalar_from_i32(y) + offset;
                 for (x0, x1) in spans_at_scanline(&edges, scanline, fill_type) {
-                    let x0 = x0.max(clip_x0 as f32);
-                    let x1 = x1.min(clip_x1 as f32);
+                    let x0 = x0.max(scalar_from_i32(clip_x0));
+                    let x1 = x1.min(scalar_from_i32(clip_x1));
                     if x0 >= x1 {
                         continue;
                     }
-                    let px_start = (x0.floor() as i32).max(clip_x0);
-                    let px_end = (x1.ceil() as i32).min(clip_x1);
+                    let px_start = floor_to_i32(x0).max(clip_x0);
+                    let px_end = ceil_to_i32(x1).min(clip_x1);
                     for x in px_start..px_end {
-                        let l = (x as f32).max(x0);
-                        let r = ((x + 1) as f32).min(x1);
-                        coverage[(x - clip_x0) as usize] += (r - l).max(0.0) * 0.25;
+                        let l = scalar_from_i32(x).max(x0);
+                        let r = scalar_from_i32(x + 1).min(x1);
+                        coverage[usize::try_from(x - clip_x0).unwrap_or(0)] +=
+                            (r - l).max(0.0) * 0.25;
                     }
                 }
             }
@@ -1382,8 +1397,8 @@ impl<'a> Rasterizer<'a> {
                     cov = 1.0 - cov;
                 }
                 if cov > 0.0 {
-                    let x = clip_x0 + i as i32;
-                    let cov8 = (cov * 255.0).round().clamp(0.0, 255.0) as u8;
+                    let x = clip_x0 + i32::try_from(i).unwrap_or(i32::MAX);
+                    let cov8 = f32_to_u8_sat(cov * 255.0);
                     self.blit_pixel_cov(x, y, cov8, &source, blend_mode);
                 }
             }
@@ -1423,6 +1438,7 @@ fn stroke_outline(path: &Path, paint: &Paint) -> Option<Path> {
 /// non-AA path clips scan-convert the actual path rather than its bounds.
 pub(crate) fn path_to_region(path: &Path, clip_bounds: &IRect) -> Region {
     use skia_rs_core::RegionOp;
+    use skia_rs_core::cast::{ceil_to_i32, floor_to_i32, round_to_i32, scalar_from_i32};
 
     let fill_type = path.fill_type();
     let inverse = matches!(
@@ -1436,20 +1452,20 @@ pub(crate) fn path_to_region(path: &Path, clip_bounds: &IRect) -> Region {
         let mut get = GlobalEdgeTable::new(edges);
         if let Some(y_start) = get.y_min() {
             let y_end = get.y_max();
-            let y_min = y_start.floor() as i32;
-            let y_max = y_end.ceil() as i32;
+            let y_min = floor_to_i32(y_start);
+            let y_max = ceil_to_i32(y_end);
 
             let mut aet = ActiveEdgeTable::new();
             for y in y_min..y_max {
-                let scanline = y as f32 + 0.5;
+                let scanline = scalar_from_i32(y) + 0.5;
                 aet.add_edges(get.get_new_edges_at(scanline), scanline);
                 aet.remove_inactive(scanline);
 
                 if !aet.is_empty() && y >= clip_bounds.top && y < clip_bounds.bottom {
                     aet.sort_by_x();
                     for (x0, x1) in aet.get_spans(fill_type) {
-                        let xs = (x0.round() as i32).max(clip_bounds.left);
-                        let xe = (x1.round() as i32).min(clip_bounds.right);
+                        let xs = round_to_i32(x0).max(clip_bounds.left);
+                        let xe = round_to_i32(x1).min(clip_bounds.right);
                         if xs < xe {
                             region.op_rect(IRect::new(xs, y, xe, y + 1), RegionOp::Union);
                         }
@@ -1471,7 +1487,7 @@ pub(crate) fn path_to_region(path: &Path, clip_bounds: &IRect) -> Region {
 
 /// An edge for scanline rasterization with winding direction.
 ///
-/// Edges are oriented from y_min to y_max, and the winding direction
+/// Edges are oriented from `y_min` to `y_max`, and the winding direction
 /// is used for non-zero fill rule calculation.
 #[derive(Debug, Clone)]
 struct Edge {
@@ -1479,7 +1495,7 @@ struct Edge {
     y_min: f32,
     /// Maximum y coordinate (bottom of edge).
     y_max: f32,
-    /// X coordinate at y_min.
+    /// X coordinate at `y_min`.
     x_at_y_min: f32,
     /// Inverse slope (dx/dy) for efficient x calculation.
     inv_slope: f32,
@@ -1519,7 +1535,7 @@ impl Edge {
     /// Calculate x intersection at a given scanline y.
     #[inline]
     fn x_at(&self, y: f32) -> f32 {
-        self.x_at_y_min + (y - self.y_min) * self.inv_slope
+        (y - self.y_min).mul_add(self.inv_slope, self.x_at_y_min)
     }
 
     /// Check if this edge is active at the given scanline.
@@ -1572,9 +1588,9 @@ impl ActiveEdge {
     }
 }
 
-/// Global Edge Table - edges sorted by y_min for efficient scanline processing.
+/// Global Edge Table - edges sorted by `y_min` for efficient scanline processing.
 struct GlobalEdgeTable {
-    /// Edges sorted by y_min.
+    /// Edges sorted by `y_min`.
     edges: Vec<Edge>,
     /// Current index into the edge list.
     current_index: usize,
@@ -1632,7 +1648,7 @@ struct ActiveEdgeTable {
 
 impl ActiveEdgeTable {
     /// Create a new empty AET.
-    fn new() -> Self {
+    const fn new() -> Self {
         Self { edges: Vec::new() }
     }
 
@@ -1721,13 +1737,45 @@ impl ActiveEdgeTable {
     }
 }
 
+/// Quadratic Bezier point at parameter `t` (`mt` = 1 - t), as separable
+/// `mul_add` chains: `p0*mt^2 + 2*p1*mt*t + p2*t^2`.
+fn quad_point(t: Scalar, mt: Scalar, p0: Point, p1: Point, p2: Point) -> Point {
+    Point::new(
+        (t * t).mul_add(p2.x, (2.0 * mt * t).mul_add(p1.x, mt * mt * p0.x)),
+        (t * t).mul_add(p2.y, (2.0 * mt * t).mul_add(p1.y, mt * mt * p0.y)),
+    )
+}
+
+/// Cubic Bezier point at parameter `t` (`mt` = 1 - t), as separable `mul_add`
+/// chains: `p0*mt^3 + 3*p1*mt^2*t + 3*p2*mt*t^2 + p3*t^3`.
+fn cubic_point(t: Scalar, mt: Scalar, p0: Point, p1: Point, p2: Point, p3: Point) -> Point {
+    let mt2 = mt * mt;
+    let t2 = t * t;
+    Point::new(
+        (t2 * t).mul_add(
+            p3.x,
+            (3.0 * mt * t2).mul_add(p2.x, (mt2 * mt).mul_add(p0.x, 3.0 * mt2 * t * p1.x)),
+        ),
+        (t2 * t).mul_add(
+            p3.y,
+            (3.0 * mt * t2).mul_add(p2.y, (mt2 * mt).mul_add(p0.y, 3.0 * mt2 * t * p1.y)),
+        ),
+    )
+}
+
 /// Collect edges from a path.
+#[allow(
+    clippy::similar_names,
+    reason = "t/mt (Bezier parameter and its complement) is the standard flattening naming"
+)]
 fn collect_edges(path: &Path, matrix: &Matrix) -> Vec<Edge> {
+    use skia_rs_core::cast::scalar_from_i32;
+
     let mut edges = Vec::new();
     let mut current = Point::zero();
     let mut contour_start = Point::zero();
 
-    for element in path.iter() {
+    for element in path {
         match element {
             PathElement::Move(p) => {
                 current = matrix.map_point(p);
@@ -1747,12 +1795,9 @@ fn collect_edges(path: &Path, matrix: &Matrix) -> Vec<Edge> {
                 let steps = 8;
                 let start = current;
                 for i in 1..=steps {
-                    let t = i as f32 / steps as f32;
+                    let t = scalar_from_i32(i) / scalar_from_i32(steps);
                     let mt = 1.0 - t;
-                    let p = Point::new(
-                        mt * mt * start.x + 2.0 * mt * t * ctrl.x + t * t * end.x,
-                        mt * mt * start.y + 2.0 * mt * t * ctrl.y + t * t * end.y,
-                    );
+                    let p = quad_point(t, mt, start, ctrl, end);
                     if let Some(edge) = Edge::new(current, p) {
                         edges.push(edge);
                     }
@@ -1765,12 +1810,9 @@ fn collect_edges(path: &Path, matrix: &Matrix) -> Vec<Edge> {
                 let steps = 8;
                 let start = current;
                 for i in 1..=steps {
-                    let t = i as f32 / steps as f32;
+                    let t = scalar_from_i32(i) / scalar_from_i32(steps);
                     let mt = 1.0 - t;
-                    let p = Point::new(
-                        mt * mt * start.x + 2.0 * mt * t * ctrl.x + t * t * end.x,
-                        mt * mt * start.y + 2.0 * mt * t * ctrl.y + t * t * end.y,
-                    );
+                    let p = quad_point(t, mt, start, ctrl, end);
                     if let Some(edge) = Edge::new(current, p) {
                         edges.push(edge);
                     }
@@ -1784,20 +1826,9 @@ fn collect_edges(path: &Path, matrix: &Matrix) -> Vec<Edge> {
                 let steps = 12;
                 let start = current;
                 for i in 1..=steps {
-                    let t = i as f32 / steps as f32;
+                    let t = scalar_from_i32(i) / scalar_from_i32(steps);
                     let mt = 1.0 - t;
-                    let mt2 = mt * mt;
-                    let t2 = t * t;
-                    let p = Point::new(
-                        mt2 * mt * start.x
-                            + 3.0 * mt2 * t * c1.x
-                            + 3.0 * mt * t2 * c2.x
-                            + t2 * t * end.x,
-                        mt2 * mt * start.y
-                            + 3.0 * mt2 * t * c1.y
-                            + 3.0 * mt * t2 * c2.y
-                            + t2 * t * end.y,
-                    );
+                    let p = cubic_point(t, mt, start, c1, c2, end);
                     if let Some(edge) = Edge::new(current, p) {
                         edges.push(edge);
                     }
@@ -1895,7 +1926,7 @@ mod tests {
         paint.set_style(Style::Fill);
         rasterizer.fill_rect(&Rect::from_xywh(0.0, 0.0, 4.0, 4.0), &paint);
 
-        let offset = (1 * buffer.stride) + 1 * 4;
+        let offset = buffer.stride + 4;
         let r = buffer.pixels[offset];
         let a = buffer.pixels[offset + 3];
         assert_eq!(a, 128, "alpha stored");
@@ -1923,7 +1954,7 @@ mod tests {
             let d = skia_rs_core::Color4f::from_color(dst);
             let expected = mode.apply(s, d).to_color();
             let got = blend_colors(src, dst, mode);
-            assert_eq!(got, expected, "mode {:?} must match paint apply", mode);
+            assert_eq!(got, expected, "mode {mode:?} must match paint apply");
         }
     }
 
@@ -1940,6 +1971,10 @@ mod tests {
     // ============ Active Edge Table Tests ============
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact test: edge endpoints are exact literals copied straight through Edge::new"
+    )]
     fn test_edge_creation() {
         // Horizontal edge should return None
         let p0 = Point::new(0.0, 10.0);
@@ -1989,6 +2024,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact test: y_min values are exact literals copied straight through Edge::new"
+    )]
     fn test_global_edge_table_ordering() {
         let edges = vec![
             Edge::new(Point::new(0.0, 50.0), Point::new(10.0, 100.0)).unwrap(),
@@ -2201,13 +2240,15 @@ mod tests {
 
         // Local x=0.5 at device x=50 -> near-black.
         let dark = buffer.get_pixel(50, 2).unwrap();
-        assert!(dark.red() < 40, "local-space start should be dark: {:?}", dark);
+        assert!(
+            dark.red() < 40,
+            "local-space start should be dark: {dark:?}"
+        );
         // Local x=9.5 at device x=59 -> near-white.
         let bright = buffer.get_pixel(59, 2).unwrap();
         assert!(
             bright.red() > 215,
-            "local-space end should be bright: {:?}",
-            bright
+            "local-space end should be bright: {bright:?}"
         );
         // The clip must be respected by the shader fill.
         assert_eq!(
@@ -2233,7 +2274,10 @@ mod tests {
         paint.set_anti_alias(true);
         // Triangle with a diagonal edge.
         let mut b = PathBuilder::new();
-        b.move_to(10.0, 10.0).line_to(50.0, 10.0).line_to(10.0, 50.0).close();
+        b.move_to(10.0, 10.0)
+            .line_to(50.0, 10.0)
+            .line_to(10.0, 50.0)
+            .close();
         let path = b.build();
         r.draw_path(&path, &paint);
 
@@ -2251,8 +2295,7 @@ mod tests {
             assert_eq!(
                 buffer.get_pixel(11, y).unwrap().alpha(),
                 0,
-                "AA fill must respect the clip at y={}",
-                y
+                "AA fill must respect the clip at y={y}"
             );
         }
         // Beyond the path bottom (y >= 50): nothing (no stale edges).
@@ -2301,16 +2344,14 @@ mod tests {
         // Sample many interior pixels: all identical (no double-blended rows).
         for y in 15..45 {
             for x in 15..45 {
-                let dx = x as f32 - 30.0;
-                let dy = y as f32 - 30.0;
-                if (dx * dx + dy * dy).sqrt() < 18.0 {
+                let dx = skia_rs_core::cast::scalar_from_i32(x) - 30.0;
+                let dy = skia_rs_core::cast::scalar_from_i32(y) - 30.0;
+                if dx.hypot(dy) < 18.0 {
                     let p = buffer.get_pixel(x, y).unwrap();
                     assert_eq!(
                         (p.red(), p.alpha()),
                         (128, 128),
-                        "double-blended pixel at ({}, {})",
-                        x,
-                        y
+                        "double-blended pixel at ({x}, {y})"
                     );
                 }
             }
@@ -2360,10 +2401,7 @@ mod tests {
             assert_eq!(
                 (p.blue(), p.alpha()),
                 (128, 128),
-                "double blend at ({}, {}): {:?}",
-                x,
-                y,
-                p
+                "double blend at ({x}, {y}): {p:?}"
             );
         }
         // Outside the outset band: untouched.

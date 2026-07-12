@@ -1,4 +1,8 @@
 //! Rasterization benchmarks.
+#![allow(
+    clippy::cast_sign_loss,
+    reason = "benchmark canvas dimensions are always small positive literals; this is deliberate benchmark workload sizing, not general-purpose numeric code"
+)]
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use skia_rs_bench::{
@@ -24,7 +28,7 @@ fn bench_raster_clear(c: &mut Criterion) {
             b.iter(|| {
                 let mut canvas = surface.raster_canvas();
                 canvas.clear(black_box(Color::from_argb(255, 128, 64, 32)));
-            })
+            });
         });
     }
 
@@ -46,7 +50,7 @@ fn bench_raster_lines(c: &mut Criterion) {
                 Point::new(black_box(1000.0), black_box(500.0)),
                 black_box(&paint),
             );
-        })
+        });
     });
 
     // Anti-aliased line
@@ -60,7 +64,7 @@ fn bench_raster_lines(c: &mut Criterion) {
                 Point::new(black_box(1000.0), black_box(500.0)),
                 black_box(&aa_paint),
             );
-        })
+        });
     });
 
     // Batch lines
@@ -78,7 +82,7 @@ fn bench_raster_lines(c: &mut Criterion) {
                         canvas.draw_line(pair[0], pair[1], &paint);
                     }
                 }
-            })
+            });
         });
     }
 
@@ -105,14 +109,14 @@ fn bench_raster_rects(c: &mut Criterion) {
         b.iter(|| {
             let mut canvas = surface.raster_canvas();
             canvas.draw_rect(black_box(&rect), black_box(&fill_paint));
-        })
+        });
     });
 
     group.bench_function("stroke/single", |b| {
         b.iter(|| {
             let mut canvas = surface.raster_canvas();
             canvas.draw_rect(black_box(&rect), black_box(&stroke_paint));
-        })
+        });
     });
 
     // Batch rects
@@ -128,7 +132,7 @@ fn bench_raster_rects(c: &mut Criterion) {
                 for rect in rects {
                     canvas.draw_rect(rect, &fill_paint);
                 }
-            })
+            });
         });
     }
 
@@ -156,26 +160,26 @@ fn bench_raster_circles(c: &mut Criterion) {
         b.iter(|| {
             let mut canvas = surface.raster_canvas();
             canvas.draw_circle(black_box(center), black_box(radius), black_box(&fill_paint));
-        })
+        });
     });
 
     group.bench_function("fill/antialiased", |b| {
         b.iter(|| {
             let mut canvas = surface.raster_canvas();
             canvas.draw_circle(black_box(center), black_box(radius), black_box(&aa_paint));
-        })
+        });
     });
 
     // Varying radius
     for radius in [10.0, 50.0, 100.0, 500.0] {
         group.bench_with_input(
-            BenchmarkId::new("fill/radius", radius as i32),
+            BenchmarkId::new("fill/radius", skia_rs_core::cast::round_to_i32(radius)),
             &radius,
             |b, &radius| {
                 b.iter(|| {
                     let mut canvas = surface.raster_canvas();
                     canvas.draw_circle(center, black_box(radius), &fill_paint);
-                })
+                });
             },
         );
     }
@@ -201,7 +205,7 @@ fn bench_raster_paths(c: &mut Criterion) {
         b.iter(|| {
             let mut canvas = surface.raster_canvas();
             canvas.draw_path(black_box(&simple_path), black_box(&stroke_paint));
-        })
+        });
     });
 
     // Complex path with curves
@@ -210,14 +214,14 @@ fn bench_raster_paths(c: &mut Criterion) {
         b.iter(|| {
             let mut canvas = surface.raster_canvas();
             canvas.draw_path(black_box(&complex_path), black_box(&stroke_paint));
-        })
+        });
     });
 
     group.bench_function("complex/fill", |b| {
         b.iter(|| {
             let mut canvas = surface.raster_canvas();
             canvas.draw_path(black_box(&complex_path), black_box(&fill_paint));
-        })
+        });
     });
 
     // Star path
@@ -227,7 +231,7 @@ fn bench_raster_paths(c: &mut Criterion) {
             b.iter(|| {
                 let mut canvas = surface.raster_canvas();
                 canvas.draw_path(black_box(star), black_box(&stroke_paint));
-            })
+            });
         });
     }
 
@@ -238,7 +242,7 @@ fn bench_raster_paths(c: &mut Criterion) {
             b.iter(|| {
                 let mut canvas = surface.raster_canvas();
                 canvas.draw_path(black_box(path), black_box(&stroke_paint));
-            })
+            });
         });
     }
 
@@ -273,7 +277,7 @@ fn bench_raster_blending(c: &mut Criterion) {
             b.iter(|| {
                 let mut canvas = surface.raster_canvas();
                 canvas.draw_rect(black_box(&rect), black_box(paint));
-            })
+            });
         });
     }
 
@@ -292,7 +296,7 @@ fn bench_raster_transforms(c: &mut Criterion) {
         b.iter(|| {
             let mut canvas = surface.raster_canvas();
             canvas.draw_rect(&rect, &paint);
-        })
+        });
     });
 
     // Drawing with translation
@@ -301,7 +305,7 @@ fn bench_raster_transforms(c: &mut Criterion) {
             let mut canvas = surface.raster_canvas();
             canvas.translate(500.0, 300.0);
             canvas.draw_rect(&rect, &paint);
-        })
+        });
     });
 
     // Drawing with scale
@@ -310,7 +314,7 @@ fn bench_raster_transforms(c: &mut Criterion) {
             let mut canvas = surface.raster_canvas();
             canvas.scale(2.0, 2.0);
             canvas.draw_rect(&rect, &paint);
-        })
+        });
     });
 
     // Drawing with rotation
@@ -320,7 +324,7 @@ fn bench_raster_transforms(c: &mut Criterion) {
             canvas.translate(500.0, 300.0);
             canvas.rotate(45.0);
             canvas.draw_rect(&rect, &paint);
-        })
+        });
     });
 
     // Complex transform chain
@@ -331,7 +335,7 @@ fn bench_raster_transforms(c: &mut Criterion) {
             canvas.scale(2.0, 1.5);
             canvas.rotate(30.0);
             canvas.draw_rect(&rect, &paint);
-        })
+        });
     });
 
     group.finish();

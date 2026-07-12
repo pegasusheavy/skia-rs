@@ -2,7 +2,6 @@
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use skia_rs_core::Point;
-use skia_rs_text::shaper::TextDirection;
 use skia_rs_text::{Font, FontStyle, Shaper, TextBlobBuilder, Typeface};
 use std::hint::black_box;
 use std::sync::Arc;
@@ -10,12 +9,12 @@ use std::sync::Arc;
 fn bench_typeface(c: &mut Criterion) {
     let mut group = c.benchmark_group("Text/typeface");
 
-    group.bench_function("default", |b| b.iter(|| Typeface::default_typeface()));
+    group.bench_function("default", |b| b.iter(Typeface::default_typeface));
 
     let typeface = Typeface::default_typeface();
 
     group.bench_function("family_name", |b| {
-        b.iter(|| black_box(&typeface).family_name())
+        b.iter(|| black_box(&typeface).family_name());
     });
 
     group.bench_function("style", |b| b.iter(|| black_box(&typeface).style()));
@@ -23,7 +22,7 @@ fn bench_typeface(c: &mut Criterion) {
     group.bench_function("unique_id", |b| b.iter(|| black_box(&typeface).unique_id()));
 
     group.bench_function("units_per_em", |b| {
-        b.iter(|| black_box(&typeface).units_per_em())
+        b.iter(|| black_box(&typeface).units_per_em());
     });
 
     group.bench_function("is_bold", |b| b.iter(|| black_box(&typeface).is_bold()));
@@ -32,11 +31,11 @@ fn bench_typeface(c: &mut Criterion) {
 
     // Glyph lookup
     group.bench_function("char_to_glyph/ascii", |b| {
-        b.iter(|| black_box(&typeface).char_to_glyph(black_box('A')))
+        b.iter(|| black_box(&typeface).char_to_glyph(black_box('A')));
     });
 
     group.bench_function("char_to_glyph/unicode", |b| {
-        b.iter(|| black_box(&typeface).char_to_glyph(black_box('你')))
+        b.iter(|| black_box(&typeface).char_to_glyph(black_box('你')));
     });
 
     // Batch glyph lookup
@@ -63,9 +62,13 @@ fn bench_font(c: &mut Criterion) {
 
     // Font creation
     for size in [12.0, 16.0, 24.0, 48.0, 72.0] {
-        group.bench_with_input(BenchmarkId::new("new", size as i32), &size, |b, &size| {
-            b.iter(|| Font::new(black_box(typeface.clone()), black_box(size)))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("new", skia_rs_core::cast::round_to_i32(size)),
+            &size,
+            |b, &size| {
+                b.iter(|| Font::new(black_box(typeface.clone()), black_box(size)));
+            },
+        );
     }
 
     let font = Font::new(typeface.clone(), 16.0);
@@ -114,6 +117,10 @@ fn bench_font_style(c: &mut Criterion) {
     group.finish();
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "loop index is bounded by a fixed small run_count [2, 5, 10]; precision loss cannot occur in practice"
+)]
 fn bench_text_blob(c: &mut Criterion) {
     let mut group = c.benchmark_group("Text/text_blob");
 
@@ -121,7 +128,7 @@ fn bench_text_blob(c: &mut Criterion) {
     let font = Font::new(typeface, 16.0);
 
     // Builder creation
-    group.bench_function("builder_new", |b| b.iter(|| TextBlobBuilder::new()));
+    group.bench_function("builder_new", |b| b.iter(TextBlobBuilder::new));
 
     // Build simple blob
     group.bench_function("build_simple", |b| {
@@ -129,7 +136,7 @@ fn bench_text_blob(c: &mut Criterion) {
             let mut builder = TextBlobBuilder::new();
             builder.add_text("Hello", &font, Point::new(0.0, 0.0));
             builder.build()
-        })
+        });
     });
 
     // Build with varying text lengths
@@ -145,7 +152,7 @@ fn bench_text_blob(c: &mut Criterion) {
                 let mut builder = TextBlobBuilder::new();
                 builder.add_text(black_box(text), black_box(&font), Point::new(0.0, 0.0));
                 builder.build()
-            })
+            });
         });
     }
 
@@ -161,7 +168,7 @@ fn bench_text_blob(c: &mut Criterion) {
                         builder.add_text("Hello", &font, Point::new(i as f32 * 50.0, 0.0));
                     }
                     builder.build()
-                })
+                });
             },
         );
     }
@@ -173,10 +180,10 @@ fn bench_shaper(c: &mut Criterion) {
     let mut group = c.benchmark_group("Text/shaper");
 
     let typeface = Arc::new(Typeface::default_typeface());
-    let font = Font::new(typeface, 16.0);
-    let shaper = Shaper::new();
+    let _font = Font::new(typeface, 16.0);
+    let _shaper = Shaper::new();
 
-    group.bench_function("new", |b| b.iter(|| Shaper::new()));
+    group.bench_function("new", |b| b.iter(Shaper::new));
 
     // Note: Actual shaping requires font data, so we test the API but not full shaping
     // These benchmarks will fail gracefully if no font data is available
@@ -197,7 +204,7 @@ fn bench_shaper(c: &mut Criterion) {
                     for ch in black_box(text).chars() {
                         let _ = ch.is_ascii_alphabetic();
                     }
-                })
+                });
             },
         );
     }

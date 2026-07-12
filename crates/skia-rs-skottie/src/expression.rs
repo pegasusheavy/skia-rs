@@ -10,7 +10,7 @@ use skia_rs_core::Scalar;
 use std::collections::HashMap;
 
 /// Expression value types.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum Value {
     /// Numeric value.
     Number(Scalar),
@@ -21,42 +21,40 @@ pub enum Value {
     /// Array/vector value.
     Array(Vec<Scalar>),
     /// Null/undefined.
+    #[default]
     Null,
 }
 
 impl Value {
     /// Get as number.
-    pub fn as_number(&self) -> Option<Scalar> {
+    #[must_use]
+    pub const fn as_number(&self) -> Option<Scalar> {
         match self {
-            Value::Number(n) => Some(*n),
-            Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+            Self::Number(n) => Some(*n),
+            Self::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
             _ => None,
         }
     }
 
     /// Get as bool.
+    #[must_use]
     pub fn as_bool(&self) -> bool {
         match self {
-            Value::Bool(b) => *b,
-            Value::Number(n) => *n != 0.0,
-            Value::String(s) => !s.is_empty(),
-            Value::Array(a) => !a.is_empty(),
-            Value::Null => false,
+            Self::Bool(b) => *b,
+            Self::Number(n) => *n != 0.0,
+            Self::String(s) => !s.is_empty(),
+            Self::Array(a) => !a.is_empty(),
+            Self::Null => false,
         }
     }
 
     /// Get as array.
+    #[must_use]
     pub fn as_array(&self) -> Option<&[Scalar]> {
         match self {
-            Value::Array(a) => Some(a),
+            Self::Array(a) => Some(a),
             _ => None,
         }
-    }
-}
-
-impl Default for Value {
-    fn default() -> Self {
-        Value::Null
     }
 }
 
@@ -81,6 +79,7 @@ pub struct ExpressionContext {
 
 impl ExpressionContext {
     /// Create a new expression context.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -93,7 +92,7 @@ impl ExpressionContext {
     }
 
     /// Set the composition size.
-    pub fn set_size(&mut self, width: Scalar, height: Scalar) {
+    pub const fn set_size(&mut self, width: Scalar, height: Scalar) {
         self.width = width;
         self.height = height;
     }
@@ -104,6 +103,7 @@ impl ExpressionContext {
     }
 
     /// Get a variable.
+    #[must_use]
     pub fn get_variable(&self, name: &str) -> Option<&Value> {
         self.variables.get(name)
     }
@@ -114,6 +114,7 @@ impl ExpressionContext {
     }
 
     /// Get a cached property.
+    #[must_use]
     pub fn get_cached_property(&self, path: &str) -> Option<&Value> {
         self.property_cache.get(path)
     }
@@ -128,6 +129,7 @@ pub struct ExpressionEvaluator {
 
 impl ExpressionEvaluator {
     /// Create a new evaluator.
+    #[must_use]
     pub fn new(source: &str) -> Self {
         Self {
             source: source.to_string(),
@@ -135,6 +137,7 @@ impl ExpressionEvaluator {
     }
 
     /// Evaluate the expression.
+    #[must_use]
     pub fn evaluate(&self, ctx: &ExpressionContext) -> Value {
         // Simple expression parser
         let source = self.source.trim();
@@ -148,12 +151,12 @@ impl ExpressionEvaluator {
         }
 
         // Check for math operations
-        if let Some(result) = self.evaluate_math(source, ctx) {
+        if let Some(result) = Self::evaluate_math(source, ctx) {
             return result;
         }
 
         // Check for function calls
-        if let Some(result) = self.evaluate_function(source, ctx) {
+        if let Some(result) = Self::evaluate_function(source, ctx) {
             return result;
         }
 
@@ -181,7 +184,7 @@ impl ExpressionEvaluator {
     }
 
     /// Evaluate math operations.
-    fn evaluate_math(&self, source: &str, ctx: &ExpressionContext) -> Option<Value> {
+    fn evaluate_math(source: &str, ctx: &ExpressionContext) -> Option<Value> {
         // Very simple math parsing
         // Format: "a + b", "a - b", "a * b", "a / b"
 
@@ -190,8 +193,8 @@ impl ExpressionEvaluator {
                 let left = source[..pos].trim();
                 let right = source[pos + op.len()..].trim();
 
-                let left_val = ExpressionEvaluator::new(left).evaluate(ctx);
-                let right_val = ExpressionEvaluator::new(right).evaluate(ctx);
+                let left_val = Self::new(left).evaluate(ctx);
+                let right_val = Self::new(right).evaluate(ctx);
 
                 if let (Some(a), Some(b)) = (left_val.as_number(), right_val.as_number()) {
                     let result = match *op {
@@ -199,17 +202,17 @@ impl ExpressionEvaluator {
                         " - " => a - b,
                         " * " => a * b,
                         " / " => {
-                            if b != 0.0 {
-                                a / b
-                            } else {
+                            if b == 0.0 {
                                 0.0
+                            } else {
+                                a / b
                             }
                         }
                         " % " => {
-                            if b != 0.0 {
-                                a % b
-                            } else {
+                            if b == 0.0 {
                                 0.0
+                            } else {
+                                a % b
                             }
                         }
                         _ => return None,
@@ -223,15 +226,15 @@ impl ExpressionEvaluator {
     }
 
     /// Evaluate function calls.
-    fn evaluate_function(&self, source: &str, ctx: &ExpressionContext) -> Option<Value> {
+    fn evaluate_function(source: &str, ctx: &ExpressionContext) -> Option<Value> {
         // Parse function call: name(args)
         if let Some(paren_pos) = source.find('(') {
             if source.ends_with(')') {
                 let name = &source[..paren_pos];
                 let args_str = &source[paren_pos + 1..source.len() - 1];
-                let args: Vec<&str> = args_str.split(',').map(|s| s.trim()).collect();
+                let args: Vec<&str> = args_str.split(',').map(str::trim).collect();
 
-                return self.call_function(name, &args, ctx);
+                return Self::call_function(name, &args, ctx);
             }
         }
 
@@ -239,45 +242,49 @@ impl ExpressionEvaluator {
     }
 
     /// Call a built-in function.
-    fn call_function(&self, name: &str, args: &[&str], ctx: &ExpressionContext) -> Option<Value> {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single dispatch table over AE expression built-in functions; splitting would fragment a single logical match mirroring upstream skottie expression evaluation"
+    )]
+    fn call_function(name: &str, args: &[&str], ctx: &ExpressionContext) -> Option<Value> {
         match name {
             // Math functions
             "Math.sin" | "sin" => {
-                let arg = ExpressionEvaluator::new(args.first()?).evaluate(ctx);
+                let arg = Self::new(args.first()?).evaluate(ctx);
                 Some(Value::Number(arg.as_number()?.sin()))
             }
             "Math.cos" | "cos" => {
-                let arg = ExpressionEvaluator::new(args.first()?).evaluate(ctx);
+                let arg = Self::new(args.first()?).evaluate(ctx);
                 Some(Value::Number(arg.as_number()?.cos()))
             }
             "Math.tan" | "tan" => {
-                let arg = ExpressionEvaluator::new(args.first()?).evaluate(ctx);
+                let arg = Self::new(args.first()?).evaluate(ctx);
                 Some(Value::Number(arg.as_number()?.tan()))
             }
             "Math.abs" | "abs" => {
-                let arg = ExpressionEvaluator::new(args.first()?).evaluate(ctx);
+                let arg = Self::new(args.first()?).evaluate(ctx);
                 Some(Value::Number(arg.as_number()?.abs()))
             }
             "Math.floor" | "floor" => {
-                let arg = ExpressionEvaluator::new(args.first()?).evaluate(ctx);
+                let arg = Self::new(args.first()?).evaluate(ctx);
                 Some(Value::Number(arg.as_number()?.floor()))
             }
             "Math.ceil" | "ceil" => {
-                let arg = ExpressionEvaluator::new(args.first()?).evaluate(ctx);
+                let arg = Self::new(args.first()?).evaluate(ctx);
                 Some(Value::Number(arg.as_number()?.ceil()))
             }
             "Math.round" | "round" => {
-                let arg = ExpressionEvaluator::new(args.first()?).evaluate(ctx);
+                let arg = Self::new(args.first()?).evaluate(ctx);
                 Some(Value::Number(arg.as_number()?.round()))
             }
             "Math.sqrt" | "sqrt" => {
-                let arg = ExpressionEvaluator::new(args.first()?).evaluate(ctx);
+                let arg = Self::new(args.first()?).evaluate(ctx);
                 Some(Value::Number(arg.as_number()?.sqrt()))
             }
             "Math.pow" | "pow" => {
                 if args.len() >= 2 {
-                    let base = ExpressionEvaluator::new(args[0]).evaluate(ctx);
-                    let exp = ExpressionEvaluator::new(args[1]).evaluate(ctx);
+                    let base = Self::new(args[0]).evaluate(ctx);
+                    let exp = Self::new(args[1]).evaluate(ctx);
                     Some(Value::Number(base.as_number()?.powf(exp.as_number()?)))
                 } else {
                     None
@@ -285,8 +292,8 @@ impl ExpressionEvaluator {
             }
             "Math.min" | "min" => {
                 if args.len() >= 2 {
-                    let a = ExpressionEvaluator::new(args[0]).evaluate(ctx);
-                    let b = ExpressionEvaluator::new(args[1]).evaluate(ctx);
+                    let a = Self::new(args[0]).evaluate(ctx);
+                    let b = Self::new(args[1]).evaluate(ctx);
                     Some(Value::Number(a.as_number()?.min(b.as_number()?)))
                 } else {
                     None
@@ -294,8 +301,8 @@ impl ExpressionEvaluator {
             }
             "Math.max" | "max" => {
                 if args.len() >= 2 {
-                    let a = ExpressionEvaluator::new(args[0]).evaluate(ctx);
-                    let b = ExpressionEvaluator::new(args[1]).evaluate(ctx);
+                    let a = Self::new(args[0]).evaluate(ctx);
+                    let b = Self::new(args[1]).evaluate(ctx);
                     Some(Value::Number(a.as_number()?.max(b.as_number()?)))
                 } else {
                     None
@@ -305,21 +312,11 @@ impl ExpressionEvaluator {
             // Lottie-specific functions
             "linear" => {
                 if args.len() >= 5 {
-                    let t = ExpressionEvaluator::new(args[0])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let t_min = ExpressionEvaluator::new(args[1])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let t_max = ExpressionEvaluator::new(args[2])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let v_min = ExpressionEvaluator::new(args[3])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let v_max = ExpressionEvaluator::new(args[4])
-                        .evaluate(ctx)
-                        .as_number()?;
+                    let t = Self::new(args[0]).evaluate(ctx).as_number()?;
+                    let t_min = Self::new(args[1]).evaluate(ctx).as_number()?;
+                    let t_max = Self::new(args[2]).evaluate(ctx).as_number()?;
+                    let v_min = Self::new(args[3]).evaluate(ctx).as_number()?;
+                    let v_max = Self::new(args[4]).evaluate(ctx).as_number()?;
 
                     let normalized = (t - t_min) / (t_max - t_min);
                     let clamped = normalized.clamp(0.0, 1.0);
@@ -330,31 +327,21 @@ impl ExpressionEvaluator {
             }
             "ease" | "easeIn" | "easeOut" | "easeInOut" => {
                 if args.len() >= 5 {
-                    let t = ExpressionEvaluator::new(args[0])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let t_min = ExpressionEvaluator::new(args[1])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let t_max = ExpressionEvaluator::new(args[2])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let v_min = ExpressionEvaluator::new(args[3])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let v_max = ExpressionEvaluator::new(args[4])
-                        .evaluate(ctx)
-                        .as_number()?;
+                    let t = Self::new(args[0]).evaluate(ctx).as_number()?;
+                    let t_min = Self::new(args[1]).evaluate(ctx).as_number()?;
+                    let t_max = Self::new(args[2]).evaluate(ctx).as_number()?;
+                    let v_min = Self::new(args[3]).evaluate(ctx).as_number()?;
+                    let v_max = Self::new(args[4]).evaluate(ctx).as_number()?;
 
                     let normalized = ((t - t_min) / (t_max - t_min)).clamp(0.0, 1.0);
                     let eased = match name {
                         "easeIn" => normalized * normalized,
-                        "easeOut" => 1.0 - (1.0 - normalized) * (1.0 - normalized),
+                        "easeOut" => (1.0 - normalized).mul_add(-(1.0 - normalized), 1.0),
                         "easeInOut" => {
                             if normalized < 0.5 {
                                 2.0 * normalized * normalized
                             } else {
-                                1.0 - (-2.0 * normalized + 2.0).powi(2) / 2.0
+                                1.0 - (-2.0f32).mul_add(normalized, 2.0).powi(2) / 2.0
                             }
                         }
                         _ => normalized, // Default to linear
@@ -366,15 +353,9 @@ impl ExpressionEvaluator {
             }
             "clamp" => {
                 if args.len() >= 3 {
-                    let value = ExpressionEvaluator::new(args[0])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let min = ExpressionEvaluator::new(args[1])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let max = ExpressionEvaluator::new(args[2])
-                        .evaluate(ctx)
-                        .as_number()?;
+                    let value = Self::new(args[0]).evaluate(ctx).as_number()?;
+                    let min = Self::new(args[1]).evaluate(ctx).as_number()?;
+                    let max = Self::new(args[2]).evaluate(ctx).as_number()?;
                     Some(Value::Number(value.clamp(min, max)))
                 } else {
                     None
@@ -382,28 +363,23 @@ impl ExpressionEvaluator {
             }
             "random" => {
                 // Simple pseudo-random based on time
-                let seed = if !args.is_empty() {
-                    ExpressionEvaluator::new(args[0])
-                        .evaluate(ctx)
-                        .as_number()
-                        .unwrap_or(0.0)
-                } else {
+                let seed = if args.is_empty() {
                     ctx.time
+                } else {
+                    Self::new(args[0]).evaluate(ctx).as_number().unwrap_or(0.0)
                 };
                 Some(Value::Number(pseudo_random(seed)))
             }
             "wiggle" => {
                 if args.len() >= 2 {
-                    let freq = ExpressionEvaluator::new(args[0])
-                        .evaluate(ctx)
-                        .as_number()?;
-                    let amp = ExpressionEvaluator::new(args[1])
-                        .evaluate(ctx)
-                        .as_number()?;
+                    let freq = Self::new(args[0]).evaluate(ctx).as_number()?;
+                    let amp = Self::new(args[1]).evaluate(ctx).as_number()?;
 
                     // Simple wiggle approximation
                     let t = ctx.time * freq;
-                    let noise = (t.sin() * 0.5 + (t * 2.3).cos() * 0.3 + (t * 5.7).sin() * 0.2);
+                    let noise = (t * 5.7)
+                        .sin()
+                        .mul_add(0.2, t.sin().mul_add(0.5, (t * 2.3).cos() * 0.3));
                     Some(Value::Number(noise * amp))
                 } else {
                     None
@@ -416,27 +392,26 @@ impl ExpressionEvaluator {
 
             // Vector functions
             "length" => {
-                let arg = ExpressionEvaluator::new(args.first()?).evaluate(ctx);
-                if let Some(arr) = arg.as_array() {
-                    let sum: Scalar = arr.iter().map(|x| x * x).sum();
-                    Some(Value::Number(sum.sqrt()))
-                } else {
-                    arg.as_number().map(|n| Value::Number(n.abs()))
-                }
+                let arg = Self::new(args.first()?).evaluate(ctx);
+                arg.as_array().map_or_else(
+                    || arg.as_number().map(|n| Value::Number(n.abs())),
+                    |arr| {
+                        let sum: Scalar = arr.iter().map(|x| x * x).sum();
+                        Some(Value::Number(sum.sqrt()))
+                    },
+                )
             }
             "normalize" => {
-                let arg = ExpressionEvaluator::new(args.first()?).evaluate(ctx);
-                if let Some(arr) = arg.as_array() {
+                let arg = Self::new(args.first()?).evaluate(ctx);
+                arg.as_array().map_or(Some(Value::Number(1.0)), |arr| {
                     let len: Scalar = arr.iter().map(|x| x * x).sum::<Scalar>().sqrt();
                     if len > 0.0 {
                         let normalized: Vec<Scalar> = arr.iter().map(|x| x / len).collect();
                         Some(Value::Array(normalized))
                     } else {
-                        Some(arg)
+                        Some(arg.clone())
                     }
-                } else {
-                    Some(Value::Number(1.0))
-                }
+                })
             }
 
             _ => None,
@@ -446,7 +421,7 @@ impl ExpressionEvaluator {
 
 /// Simple pseudo-random function.
 fn pseudo_random(seed: Scalar) -> Scalar {
-    let x = (seed * 12.9898 + 78.233).sin() * 43758.5453;
+    let x = seed.mul_add(12.9898, 78.233).sin() * 43_758.547;
     x - x.floor()
 }
 
@@ -459,17 +434,16 @@ pub struct ExpressionCompiler {
 
 impl ExpressionCompiler {
     /// Create a new compiler.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Compile an expression.
     pub fn compile(&mut self, source: &str) -> &CompiledExpression {
-        if !self.cache.contains_key(source) {
-            let compiled = CompiledExpression::new(source);
-            self.cache.insert(source.to_string(), compiled);
-        }
-        self.cache.get(source).unwrap()
+        self.cache
+            .entry(source.to_string())
+            .or_insert_with(|| CompiledExpression::new(source))
     }
 
     /// Evaluate a cached expression.
@@ -487,6 +461,7 @@ pub struct CompiledExpression {
 
 impl CompiledExpression {
     /// Create a new compiled expression.
+    #[must_use]
     pub fn new(source: &str) -> Self {
         Self {
             evaluator: ExpressionEvaluator::new(source),
@@ -494,6 +469,7 @@ impl CompiledExpression {
     }
 
     /// Evaluate the expression.
+    #[must_use]
     pub fn evaluate(&self, ctx: &ExpressionContext) -> Value {
         self.evaluator.evaluate(ctx)
     }

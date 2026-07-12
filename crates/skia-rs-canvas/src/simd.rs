@@ -1,8 +1,8 @@
 //! SIMD-optimized blitting operations.
 //!
 //! This module provides hardware-accelerated pixel operations using:
-//! - **SSE4.2** on x86/x86_64 (128-bit, 4 pixels at a time)
-//! - **AVX2** on x86/x86_64 (256-bit, 8 pixels at a time)
+//! - **SSE4.2** on `x86/x86_64` (128-bit, 4 pixels at a time)
+//! - **AVX2** on `x86/x86_64` (256-bit, 8 pixels at a time)
 //! - **NEON** on ARM/AArch64 (128-bit, 4 pixels at a time)
 //!
 //! The module automatically selects the best available instruction set at runtime.
@@ -17,7 +17,7 @@
 use skia_rs_core::Color;
 pub(crate) use skia_rs_core::mul_div_255_round;
 
-/// Premultiplied SrcOver on straight byte channels that are already
+/// Premultiplied `SrcOver` on straight byte channels that are already
 /// premultiplied: `out = src + SkMulDiv255Round(dst, 255 - srcA)`, per
 /// `SkPMSrcOver` in `skia/src/core/SkBlitRow_D32.cpp`. `src` and `dst`
 /// are both premultiplied. The scalar, SSE, AVX2 and NEON span blitters
@@ -25,21 +25,21 @@ pub(crate) use skia_rs_core::mul_div_255_round;
 /// bit-for-bit.
 #[inline]
 pub(crate) fn src_over_premul(src: Color, dst: Color) -> Color {
-    let inv = 255 - src.alpha() as u32;
+    let inv = 255 - u32::from(src.alpha());
     Color::from_argb(
-        src.alpha() + mul_div_255_round(dst.alpha() as u32, inv),
-        src.red() + mul_div_255_round(dst.red() as u32, inv),
-        src.green() + mul_div_255_round(dst.green() as u32, inv),
-        src.blue() + mul_div_255_round(dst.blue() as u32, inv),
+        src.alpha() + mul_div_255_round(u32::from(dst.alpha()), inv),
+        src.red() + mul_div_255_round(u32::from(dst.red()), inv),
+        src.green() + mul_div_255_round(u32::from(dst.green()), inv),
+        src.blue() + mul_div_255_round(u32::from(dst.blue()), inv),
     )
 }
 
 /// SIMD capabilities detected at runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SimdCapabilities {
-    /// SSE4.2 support (x86/x86_64)
+    /// SSE4.2 support (`x86/x86_64`)
     pub sse42: bool,
-    /// AVX2 support (x86/x86_64)
+    /// AVX2 support (`x86/x86_64`)
     pub avx2: bool,
     /// NEON support (ARM/AArch64)
     pub neon: bool,
@@ -48,6 +48,7 @@ pub struct SimdCapabilities {
 impl SimdCapabilities {
     /// Detect SIMD capabilities at runtime.
     #[inline]
+    #[must_use]
     pub fn detect() -> Self {
         Self {
             sse42: Self::has_sse42(),
@@ -109,12 +110,14 @@ impl SimdCapabilities {
     }
 
     #[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]
-    fn has_neon() -> bool {
+    const fn has_neon() -> bool {
         false
     }
 
     /// Returns the best available SIMD width in pixels.
-    pub fn best_width(&self) -> usize {
+    #[inline]
+    #[must_use]
+    pub const fn best_width(&self) -> usize {
         if self.avx2 {
             8 // AVX2: 256 bits = 8 x 32-bit pixels
         } else if self.sse42 || self.neon {
@@ -170,13 +173,11 @@ pub fn fill_span_solid(dst: &mut [u8], color: Color) {
             unsafe { fill_span_blend_avx2(dst, color) };
             return;
         }
-        // SSE4.1 path disabled due to correctness issues - it applies alpha
-        // uniformly rather than per-channel, producing incorrect color values
-        // for semi-transparent blends. Fall back to scalar until fixed.
-        // if caps.sse42 && len >= 4 {
-        //     unsafe { fill_span_blend_sse41(dst, color) };
-        //     return;
-        // }
+        // No dedicated SSE4.2 blend path: the AVX2 path above (or the scalar
+        // fallback below) covers x86/x86_64. A prior SSE4.1 implementation
+        // was removed because it applied alpha uniformly rather than
+        // per-channel, producing incorrect color values for semi-transparent
+        // blends.
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -201,112 +202,22 @@ fn fill_span_opaque(dst: &mut [u8], color: Color) {
     }
 }
 
-/// Scalar fallback for premultiplied SrcOver span fill.
+/// Scalar fallback for premultiplied `SrcOver` span fill.
 ///
 /// `src` is a premultiplied color. Result: `out = src + SkMulDiv255Round(dst,
 /// 255 - srcA)` per channel — the canonical `SkPMSrcOver`.
 fn fill_span_blend_scalar(dst: &mut [u8], src: Color) {
-    let sa = src.alpha() as u32;
-    let sr = src.red() as u32;
-    let sg = src.green() as u32;
-    let sb = src.blue() as u32;
+    let sa = u32::from(src.alpha());
+    let sr = u32::from(src.red());
+    let sg = u32::from(src.green());
+    let sb = u32::from(src.blue());
     let inv_sa = 255 - sa;
 
     for chunk in dst.chunks_exact_mut(4) {
-        chunk[0] = (sr + mul_div_255_round(chunk[0] as u32, inv_sa) as u32) as u8;
-        chunk[1] = (sg + mul_div_255_round(chunk[1] as u32, inv_sa) as u32) as u8;
-        chunk[2] = (sb + mul_div_255_round(chunk[2] as u32, inv_sa) as u32) as u8;
-        chunk[3] = (sa + mul_div_255_round(chunk[3] as u32, inv_sa) as u32) as u8;
-    }
-}
-
-// ============================================================================
-// x86/x86_64 SSE4.1 Implementation
-// ============================================================================
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[target_feature(enable = "sse4.1")]
-unsafe fn fill_span_blend_sse41(dst: &mut [u8], src: Color) {
-    #[cfg(target_arch = "x86")]
-    use std::arch::x86::*;
-    #[cfg(target_arch = "x86_64")]
-    use std::arch::x86_64::*;
-
-    let len = dst.len() / 4;
-    let chunks = len / 4;
-    let remainder_start = chunks * 16;
-
-    let sa = src.alpha() as i16;
-    let inv_sa = (255 - src.alpha()) as i16;
-
-    // Broadcast source color components to 16-bit vectors
-    let src_r = unsafe { _mm_set1_epi16(src.red() as i16) };
-    let src_g = unsafe { _mm_set1_epi16(src.green() as i16) };
-    let src_b = unsafe { _mm_set1_epi16(src.blue() as i16) };
-    let src_a = unsafe { _mm_set1_epi16(sa) };
-    let inv_alpha = unsafe { _mm_set1_epi16(inv_sa) };
-    let zero = unsafe { _mm_setzero_si128() };
-
-    let ptr = dst.as_mut_ptr();
-
-    for i in 0..chunks {
-        let offset = i * 16;
-        let dst_ptr = unsafe { ptr.add(offset) };
-
-        // Load 4 pixels (16 bytes)
-        let dst_pixels = unsafe { _mm_loadu_si128(dst_ptr as *const __m128i) };
-
-        // Unpack bytes to 16-bit for arithmetic
-        let dst_lo = unsafe { _mm_unpacklo_epi8(dst_pixels, zero) }; // First 2 pixels
-        let dst_hi = unsafe { _mm_unpackhi_epi8(dst_pixels, zero) }; // Last 2 pixels
-
-        // Process first 2 pixels (dst_lo contains RGBA RGBA in 16-bit)
-        // Extract channels - they're interleaved as R0 G0 B0 A0 R1 G1 B1 A1
-        let blend_16 = |dst_chan: __m128i, src_chan: __m128i| -> __m128i {
-            // result = (src * 255 + dst * inv_alpha) >> 8
-            let s_scaled = unsafe { _mm_mullo_epi16(src_chan, _mm_set1_epi16(255)) };
-            let d_scaled = unsafe { _mm_mullo_epi16(dst_chan, inv_alpha) };
-            let sum = unsafe { _mm_add_epi16(s_scaled, d_scaled) };
-            unsafe { _mm_srli_epi16(sum, 8) }
-        };
-
-        // For simplicity, blend all channels identically
-        // (The interleaved layout makes per-channel extraction complex)
-        let blended_lo = blend_16(dst_lo, unsafe {
-            _mm_set_epi16(
-                sa,
-                src.blue() as i16,
-                src.green() as i16,
-                src.red() as i16,
-                sa,
-                src.blue() as i16,
-                src.green() as i16,
-                src.red() as i16,
-            )
-        });
-        let blended_hi = blend_16(dst_hi, unsafe {
-            _mm_set_epi16(
-                sa,
-                src.blue() as i16,
-                src.green() as i16,
-                src.red() as i16,
-                sa,
-                src.blue() as i16,
-                src.green() as i16,
-                src.red() as i16,
-            )
-        });
-
-        // Pack back to bytes
-        let result = unsafe { _mm_packus_epi16(blended_lo, blended_hi) };
-
-        // Store
-        unsafe { _mm_storeu_si128(dst_ptr as *mut __m128i, result) };
-    }
-
-    // Handle remainder with scalar code
-    if remainder_start < dst.len() {
-        fill_span_blend_scalar(&mut dst[remainder_start..], src);
+        chunk[0] = (sr + u32::from(mul_div_255_round(u32::from(chunk[0]), inv_sa))).min(255) as u8;
+        chunk[1] = (sg + u32::from(mul_div_255_round(u32::from(chunk[1]), inv_sa))).min(255) as u8;
+        chunk[2] = (sb + u32::from(mul_div_255_round(u32::from(chunk[2]), inv_sa))).min(255) as u8;
+        chunk[3] = (sa + u32::from(mul_div_255_round(u32::from(chunk[3]), inv_sa))).min(255) as u8;
     }
 }
 
@@ -318,53 +229,69 @@ unsafe fn fill_span_blend_sse41(dst: &mut [u8], src: Color) {
 #[target_feature(enable = "avx2")]
 unsafe fn fill_span_blend_avx2(dst: &mut [u8], src: Color) {
     #[cfg(target_arch = "x86")]
-    use std::arch::x86::*;
+    use std::arch::x86::{
+        __m256i, _mm256_add_epi32, _mm256_and_si256, _mm256_loadu_si256, _mm256_mullo_epi32,
+        _mm256_or_si256, _mm256_set1_epi32, _mm256_slli_epi32, _mm256_srli_epi32,
+        _mm256_storeu_si256,
+    };
     #[cfg(target_arch = "x86_64")]
-    use std::arch::x86_64::*;
+    use std::arch::x86_64::{
+        __m256i, _mm256_add_epi32, _mm256_and_si256, _mm256_loadu_si256, _mm256_mullo_epi32,
+        _mm256_or_si256, _mm256_set1_epi32, _mm256_slli_epi32, _mm256_srli_epi32,
+        _mm256_storeu_si256,
+    };
 
     let len = dst.len() / 4;
     let chunks = len / 8;
     let remainder_start = chunks * 32;
 
-    let inv_alpha = (255 - src.alpha()) as i32;
+    let inv_alpha = i32::from(255 - src.alpha());
 
     let ptr = dst.as_mut_ptr();
 
     for i in 0..chunks {
         let offset = i * 32;
+        // SAFETY: `offset` stays within `dst` because `chunks = len / 8` and
+        // each iteration advances by 32 B (8 pixels x 4 B), matching `len`.
         let dst_ptr = unsafe { ptr.add(offset) };
 
-        // Load 8 pixels (32 bytes)
-        let dst_pixels = unsafe { _mm256_loadu_si256(dst_ptr as *const __m256i) };
+        // Load 8 pixels (32 bytes).
+        // SAFETY: `dst_ptr` points to at least 32 valid, initialized bytes
+        // within `dst` (see offset bound above); alignment is not required
+        // for `_mm256_loadu_si256`.
+        #[allow(
+            clippy::cast_ptr_alignment,
+            reason = "_mm256_loadu_si256 is the unaligned-load intrinsic by design; the __m256i-typed pointer is never dereferenced except by this intrinsic"
+        )]
+        let dst_pixels = unsafe { _mm256_loadu_si256(dst_ptr.cast::<__m256i>()) };
 
         // Extract channels using masks
-        let mask_r = unsafe { _mm256_set1_epi32(0x000000FF_u32 as i32) };
-        let mask_g = unsafe { _mm256_set1_epi32(0x0000FF00_u32 as i32) };
-        let mask_b = unsafe { _mm256_set1_epi32(0x00FF0000_u32 as i32) };
-        let mask_a = unsafe { _mm256_set1_epi32(0xFF000000_u32 as i32) };
+        let mask_r = _mm256_set1_epi32(i32::from_ne_bytes(0x0000_00FF_u32.to_ne_bytes()));
+        let mask_g = _mm256_set1_epi32(i32::from_ne_bytes(0x0000_FF00_u32.to_ne_bytes()));
+        let mask_b = _mm256_set1_epi32(i32::from_ne_bytes(0x00FF_0000_u32.to_ne_bytes()));
+        let mask_a = _mm256_set1_epi32(i32::from_ne_bytes(0xFF00_0000_u32.to_ne_bytes()));
 
-        let dst_r = unsafe { _mm256_and_si256(dst_pixels, mask_r) };
-        let dst_g = unsafe { _mm256_srli_epi32(_mm256_and_si256(dst_pixels, mask_g), 8) };
-        let dst_b = unsafe { _mm256_srli_epi32(_mm256_and_si256(dst_pixels, mask_b), 16) };
-        let dst_a = unsafe { _mm256_srli_epi32(_mm256_and_si256(dst_pixels, mask_a), 24) };
+        let dst_r = _mm256_and_si256(dst_pixels, mask_r);
+        let dst_g = _mm256_srli_epi32(_mm256_and_si256(dst_pixels, mask_g), 8);
+        let dst_b = _mm256_srli_epi32(_mm256_and_si256(dst_pixels, mask_b), 16);
+        let dst_a = _mm256_srli_epi32(_mm256_and_si256(dst_pixels, mask_a), 24);
 
-        let src_r = unsafe { _mm256_set1_epi32(src.red() as i32) };
-        let src_g = unsafe { _mm256_set1_epi32(src.green() as i32) };
-        let src_b = unsafe { _mm256_set1_epi32(src.blue() as i32) };
-        let src_a = unsafe { _mm256_set1_epi32(src.alpha() as i32) };
+        let src_r = _mm256_set1_epi32(i32::from(src.red()));
+        let src_g = _mm256_set1_epi32(i32::from(src.green()));
+        let src_b = _mm256_set1_epi32(i32::from(src.blue()));
+        let src_a = _mm256_set1_epi32(i32::from(src.alpha()));
 
         // Premultiplied SrcOver with SkMulDiv255Round on the dst term, matching
         // the scalar/NEON paths bit-for-bit:
         //   prod = dst * inv_alpha + 128
         //   res  = (prod + (prod >> 8)) >> 8
         //   out  = src + res              (src is premultiplied)
-        let inv_vec = unsafe { _mm256_set1_epi32(inv_alpha) };
-        let c128 = unsafe { _mm256_set1_epi32(128) };
+        let inv_vec = _mm256_set1_epi32(inv_alpha);
+        let c128 = _mm256_set1_epi32(128);
         let blend = |s: __m256i, d: __m256i| -> __m256i {
-            let prod = unsafe { _mm256_add_epi32(_mm256_mullo_epi32(d, inv_vec), c128) };
-            let res =
-                unsafe { _mm256_srli_epi32(_mm256_add_epi32(prod, _mm256_srli_epi32(prod, 8)), 8) };
-            unsafe { _mm256_add_epi32(s, res) }
+            let prod = _mm256_add_epi32(_mm256_mullo_epi32(d, inv_vec), c128);
+            let res = _mm256_srli_epi32(_mm256_add_epi32(prod, _mm256_srli_epi32(prod, 8)), 8);
+            _mm256_add_epi32(s, res)
         };
 
         let result_r = blend(src_r, dst_r);
@@ -373,17 +300,23 @@ unsafe fn fill_span_blend_avx2(dst: &mut [u8], src: Color) {
         let result_a = blend(src_a, dst_a);
 
         // Recombine channels
-        let rg = unsafe { _mm256_or_si256(result_r, _mm256_slli_epi32(result_g, 8)) };
-        let ba = unsafe {
-            _mm256_or_si256(
-                _mm256_slli_epi32(result_b, 16),
-                _mm256_slli_epi32(result_a, 24),
-            )
-        };
-        let result = unsafe { _mm256_or_si256(rg, ba) };
+        let rg = _mm256_or_si256(result_r, _mm256_slli_epi32(result_g, 8));
+        let ba = _mm256_or_si256(
+            _mm256_slli_epi32(result_b, 16),
+            _mm256_slli_epi32(result_a, 24),
+        );
+        let result = _mm256_or_si256(rg, ba);
 
-        // Store result
-        unsafe { _mm256_storeu_si256(dst_ptr as *mut __m256i, result) };
+        // Store result.
+        // SAFETY: same 32-byte bound as the load above; alignment is not
+        // required for `_mm256_storeu_si256`.
+        #[allow(
+            clippy::cast_ptr_alignment,
+            reason = "_mm256_storeu_si256 is the unaligned-store intrinsic by design; the __m256i-typed pointer is never dereferenced except by this intrinsic"
+        )]
+        unsafe {
+            _mm256_storeu_si256(dst_ptr.cast::<__m256i>(), result);
+        }
     }
 
     // Handle remainder
@@ -480,7 +413,7 @@ pub fn blend_pixels_src_over(dst: &mut [u8], src: &[u8]) {
 /// Scalar fallback for pixel blending.
 fn blend_pixels_src_over_scalar(dst: &mut [u8], src: &[u8]) {
     for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
-        let sa = s[3] as u32;
+        let sa = u32::from(s[3]);
         if sa == 0 {
             continue; // Fully transparent source
         }
@@ -490,10 +423,10 @@ fn blend_pixels_src_over_scalar(dst: &mut [u8], src: &[u8]) {
         }
 
         let inv_sa = 255 - sa;
-        d[0] = ((s[0] as u32 * 255 + d[0] as u32 * inv_sa) / 255).min(255) as u8;
-        d[1] = ((s[1] as u32 * 255 + d[1] as u32 * inv_sa) / 255).min(255) as u8;
-        d[2] = ((s[2] as u32 * 255 + d[2] as u32 * inv_sa) / 255).min(255) as u8;
-        d[3] = ((sa * 255 + d[3] as u32 * inv_sa) / 255).min(255) as u8;
+        d[0] = ((u32::from(s[0]) * 255 + u32::from(d[0]) * inv_sa) / 255).min(255) as u8;
+        d[1] = ((u32::from(s[1]) * 255 + u32::from(d[1]) * inv_sa) / 255).min(255) as u8;
+        d[2] = ((u32::from(s[2]) * 255 + u32::from(d[2]) * inv_sa) / 255).min(255) as u8;
+        d[3] = ((sa * 255 + u32::from(d[3]) * inv_sa) / 255).min(255) as u8;
     }
 }
 
@@ -505,7 +438,7 @@ fn blend_pixels_src_over_scalar(dst: &mut [u8], src: &[u8]) {
 #[inline]
 pub fn premultiply_span(pixels: &mut [u8]) {
     for chunk in pixels.chunks_exact_mut(4) {
-        let a = chunk[3] as u32;
+        let a = u32::from(chunk[3]);
         if a == 255 {
             continue; // Already effectively premultiplied
         }
@@ -515,9 +448,9 @@ pub fn premultiply_span(pixels: &mut [u8]) {
             chunk[2] = 0;
             continue;
         }
-        chunk[0] = mul_div_255_round(chunk[0] as u32, a);
-        chunk[1] = mul_div_255_round(chunk[1] as u32, a);
-        chunk[2] = mul_div_255_round(chunk[2] as u32, a);
+        chunk[0] = mul_div_255_round(u32::from(chunk[0]), a);
+        chunk[1] = mul_div_255_round(u32::from(chunk[1]), a);
+        chunk[2] = mul_div_255_round(u32::from(chunk[2]), a);
     }
 }
 
@@ -525,14 +458,14 @@ pub fn premultiply_span(pixels: &mut [u8]) {
 #[inline]
 pub fn unpremultiply_span(pixels: &mut [u8]) {
     for chunk in pixels.chunks_exact_mut(4) {
-        let a = chunk[3] as u32;
+        let a = u32::from(chunk[3]);
         if a == 0 || a == 255 {
             continue;
         }
         // Rounded unpremultiply: (c * 255 + a/2) / a.
-        chunk[0] = ((chunk[0] as u32 * 255 + a / 2) / a).min(255) as u8;
-        chunk[1] = ((chunk[1] as u32 * 255 + a / 2) / a).min(255) as u8;
-        chunk[2] = ((chunk[2] as u32 * 255 + a / 2) / a).min(255) as u8;
+        chunk[0] = ((u32::from(chunk[0]) * 255 + a / 2) / a).min(255) as u8;
+        chunk[1] = ((u32::from(chunk[1]) * 255 + a / 2) / a).min(255) as u8;
+        chunk[2] = ((u32::from(chunk[2]) * 255 + a / 2) / a).min(255) as u8;
     }
 }
 
@@ -543,7 +476,7 @@ mod tests {
     #[test]
     fn test_simd_capabilities_detection() {
         let caps = simd_capabilities();
-        println!("SIMD Capabilities: {:?}", caps);
+        println!("SIMD Capabilities: {caps:?}");
         println!("Best width: {} pixels", caps.best_width());
 
         // Should detect at least scalar (width 1)
@@ -642,9 +575,9 @@ mod tests {
         unpremultiply_span(&mut pixels);
 
         // Should recover original values (approximately)
-        assert!((pixels[0] as i32 - 200).abs() <= 2);
-        assert!((pixels[1] as i32 - 100).abs() <= 2);
-        assert!((pixels[2] as i32 - 50).abs() <= 2);
+        assert!((i32::from(pixels[0]) - 200).abs() <= 2);
+        assert!((i32::from(pixels[1]) - 100).abs() <= 2);
+        assert!((i32::from(pixels[2]) - 50).abs() <= 2);
         assert_eq!(pixels[3], 128);
     }
 
@@ -691,7 +624,7 @@ mod tests {
 
     /// Differential test: the SIMD `fill_span_solid`, the scalar
     /// `fill_span_blend_scalar`, and `raster::blend_colors(SrcOver)` must all
-    /// produce identical bytes for premultiplied SrcOver over arbitrary
+    /// produce identical bytes for premultiplied `SrcOver` over arbitrary
     /// destinations and span lengths.
     #[test]
     fn test_simd_scalar_blend_colors_agree_bit_exact() {
@@ -700,7 +633,7 @@ mod tests {
         // Deterministic pseudo-random destinations.
         let mut seed: u32 = 0x1234_5678;
         let mut rng = || {
-            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             (seed >> 24) as u8
         };
 
@@ -722,7 +655,7 @@ mod tests {
                 let mut scalar = base.clone();
                 fill_span_blend_scalar(&mut scalar, src);
 
-                assert_eq!(simd, scalar, "SIMD vs scalar, src {:?}, len {}", src, len);
+                assert_eq!(simd, scalar, "SIMD vs scalar, src {src:?}, len {len}");
 
                 // And against blend_colors used by the per-pixel path.
                 for (i, chunk) in base.chunks_exact(4).enumerate() {
@@ -732,8 +665,7 @@ mod tests {
                     assert_eq!(
                         [simd[off], simd[off + 1], simd[off + 2], simd[off + 3]],
                         [expect.red(), expect.green(), expect.blue(), expect.alpha()],
-                        "blend_colors vs SIMD at pixel {}",
-                        i
+                        "blend_colors vs SIMD at pixel {i}"
                     );
                 }
             }

@@ -11,24 +11,24 @@ fn bench_matrix_creation(c: &mut Criterion) {
     group.bench_function("identity", |b| b.iter(|| Matrix::IDENTITY));
 
     group.bench_function("translate", |b| {
-        b.iter(|| Matrix::translate(black_box(100.0), black_box(200.0)))
+        b.iter(|| Matrix::translate(black_box(100.0), black_box(200.0)));
     });
 
     group.bench_function("scale", |b| {
-        b.iter(|| Matrix::scale(black_box(2.0), black_box(3.0)))
+        b.iter(|| Matrix::scale(black_box(2.0), black_box(3.0)));
     });
 
     group.bench_function("rotate", |b| {
-        b.iter(|| Matrix::rotate(black_box(0.785))) // ~45 degrees
+        b.iter(|| Matrix::rotate(black_box(0.785))); // ~45 degrees
     });
 
     group.bench_function("rotate_around", |b| {
         let pivot = Point::new(100.0, 100.0);
-        b.iter(|| Matrix::rotate_around(black_box(0.785), black_box(pivot)))
+        b.iter(|| Matrix::rotate_around(black_box(0.785), black_box(pivot)));
     });
 
     group.bench_function("skew", |b| {
-        b.iter(|| Matrix::skew(black_box(0.5), black_box(0.25)))
+        b.iter(|| Matrix::skew(black_box(0.5), black_box(0.25)));
     });
 
     group.finish();
@@ -44,19 +44,19 @@ fn bench_matrix_queries(c: &mut Criterion) {
         .concat(&Matrix::rotate(0.5));
 
     group.bench_function("is_identity/true", |b| {
-        b.iter(|| black_box(identity).is_identity())
+        b.iter(|| black_box(identity).is_identity());
     });
 
     group.bench_function("is_identity/false", |b| {
-        b.iter(|| black_box(translate).is_identity())
+        b.iter(|| black_box(translate).is_identity());
     });
 
     group.bench_function("is_translate/true", |b| {
-        b.iter(|| black_box(translate).is_translate())
+        b.iter(|| black_box(translate).is_translate());
     });
 
     group.bench_function("is_translate/false", |b| {
-        b.iter(|| black_box(complex).is_translate())
+        b.iter(|| black_box(complex).is_translate());
     });
 
     group.finish();
@@ -70,11 +70,11 @@ fn bench_matrix_concat(c: &mut Criterion) {
     let m3 = Matrix::rotate(0.785);
 
     group.bench_function("two_matrices", |b| {
-        b.iter(|| black_box(m1).concat(black_box(&m2)))
+        b.iter(|| black_box(m1).concat(black_box(&m2)));
     });
 
     group.bench_function("three_matrices", |b| {
-        b.iter(|| black_box(m1).concat(black_box(&m2)).concat(black_box(&m3)))
+        b.iter(|| black_box(m1).concat(black_box(&m2)).concat(black_box(&m3)));
     });
 
     // Chain many matrices
@@ -90,7 +90,7 @@ fn bench_matrix_concat(c: &mut Criterion) {
                     matrices
                         .iter()
                         .fold(Matrix::IDENTITY, |acc, m| acc.concat(m))
-                })
+                });
             },
         );
     }
@@ -121,7 +121,12 @@ fn bench_matrix_invert(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(size as u64));
         group.bench_with_input(BenchmarkId::new("batch", size), &matrices, |b, matrices| {
-            b.iter(|| matrices.iter().filter_map(|m| m.invert()).count())
+            b.iter(|| {
+                matrices
+                    .iter()
+                    .filter_map(skia_rs_core::Matrix::invert)
+                    .count()
+            });
         });
     }
 
@@ -140,23 +145,23 @@ fn bench_matrix_map_point(c: &mut Criterion) {
     let point = Point::new(50.0, 75.0);
 
     group.bench_function("identity", |b| {
-        b.iter(|| black_box(identity).map_point(black_box(point)))
+        b.iter(|| black_box(identity).map_point(black_box(point)));
     });
 
     group.bench_function("translate", |b| {
-        b.iter(|| black_box(translate).map_point(black_box(point)))
+        b.iter(|| black_box(translate).map_point(black_box(point)));
     });
 
     group.bench_function("scale", |b| {
-        b.iter(|| black_box(scale).map_point(black_box(point)))
+        b.iter(|| black_box(scale).map_point(black_box(point)));
     });
 
     group.bench_function("rotate", |b| {
-        b.iter(|| black_box(rotate).map_point(black_box(point)))
+        b.iter(|| black_box(rotate).map_point(black_box(point)));
     });
 
     group.bench_function("complex", |b| {
-        b.iter(|| black_box(complex).map_point(black_box(point)))
+        b.iter(|| black_box(complex).map_point(black_box(point)));
     });
 
     // Batch point transforms
@@ -175,7 +180,7 @@ fn bench_matrix_map_point(c: &mut Criterion) {
                         .iter()
                         .map(|p| complex.map_point(*p))
                         .collect::<Vec<_>>()
-                })
+                });
             },
         );
     }
@@ -194,19 +199,19 @@ fn bench_matrix_map_rect(c: &mut Criterion) {
     let rect = Rect::from_xywh(10.0, 20.0, 100.0, 50.0);
 
     group.bench_function("translate", |b| {
-        b.iter(|| black_box(translate).map_rect(black_box(&rect)))
+        b.iter(|| black_box(translate).map_rect(black_box(&rect)));
     });
 
     group.bench_function("scale", |b| {
-        b.iter(|| black_box(scale).map_rect(black_box(&rect)))
+        b.iter(|| black_box(scale).map_rect(black_box(&rect)));
     });
 
     group.bench_function("rotate", |b| {
-        b.iter(|| black_box(rotate).map_rect(black_box(&rect)))
+        b.iter(|| black_box(rotate).map_rect(black_box(&rect)));
     });
 
     group.bench_function("complex", |b| {
-        b.iter(|| black_box(complex).map_rect(black_box(&rect)))
+        b.iter(|| black_box(complex).map_rect(black_box(&rect)));
     });
 
     // Batch rect transforms
@@ -225,7 +230,7 @@ fn bench_matrix_map_rect(c: &mut Criterion) {
                         .iter()
                         .map(|r| complex.map_rect(r))
                         .collect::<Vec<_>>()
-                })
+                });
             },
         );
     }

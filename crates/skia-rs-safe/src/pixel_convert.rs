@@ -15,6 +15,13 @@
 /// bytes 0 and 2 under the mistaken assumption the surface was BGRA, which
 /// silently swapped the red and blue channels of every pixel handed to the
 /// browser.
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(
+        dead_code,
+        reason = "only consumed by the wasm32-gated bindings in wasm.rs"
+    )
+)]
 pub fn premul_rgba_to_image_data(pixels: &[u8]) -> Vec<u8> {
     let mut out = pixels.to_vec();
     skia_rs_canvas::simd::unpremultiply_span(&mut out);

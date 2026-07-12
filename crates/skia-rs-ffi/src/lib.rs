@@ -77,19 +77,16 @@ pub extern "C" fn sk_last_call_panicked() -> bool {
 }
 
 /// Catch panics and return a default value if one occurs.
-#[inline(always)]
+#[inline]
 fn catch_panic<T: Default, F: FnOnce() -> T>(f: F) -> T {
-    match panic::catch_unwind(AssertUnwindSafe(f)) {
-        Ok(result) => result,
-        Err(_) => {
-            LAST_PANIC.store(true, Ordering::SeqCst);
-            T::default()
-        }
-    }
+    panic::catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| {
+        LAST_PANIC.store(true, Ordering::SeqCst);
+        T::default()
+    })
 }
 
 /// Catch panics in void-returning functions.
-#[inline(always)]
+#[inline]
 fn catch_panic_void<F: FnOnce()>(f: F) {
     if panic::catch_unwind(AssertUnwindSafe(f)).is_err() {
         LAST_PANIC.store(true, Ordering::SeqCst);
@@ -124,7 +121,7 @@ const REFCOUNT_TAG: u32 = 0x534B_5231; // "SKR1"
 /// | 8      | ..    | `value`     |
 ///
 /// The refcount lives at offset 4 (not 0) so that callers who rely on the
-/// "all refcounted types start with AtomicU32" idiom get a hard type-check
+/// "all refcounted types start with `AtomicU32`" idiom get a hard type-check
 /// via the tag instead of a silent misread.
 ///
 /// cbindgen:no-export
@@ -186,11 +183,8 @@ impl<T> RefCounted<T> {
     /// # Safety
     /// Pointer must be valid and non-null.
     pub unsafe fn get_count(ptr: *const Self) -> u32 {
-        if let Some(rc) = ptr.as_ref() {
-            rc.refcnt.load(Ordering::Relaxed)
-        } else {
-            0
-        }
+        ptr.as_ref()
+            .map_or(0, |rc| rc.refcnt.load(Ordering::Relaxed))
     }
 
     /// Check if this is the only reference.
@@ -249,7 +243,7 @@ pub unsafe extern "C" fn sk_refcnt_get_count(ptr: *const sk_refcnt_t) -> u32 {
         if ptr.is_null() {
             return 0;
         }
-        let header = &*(ptr as *const RefCountedHeader);
+        let header = &*ptr.cast::<RefCountedHeader>();
         if header.tag != REFCOUNT_TAG {
             return 0;
         }
@@ -274,7 +268,9 @@ use skia_rs_paint::{
     LinearGradient, MaskFilterRef, Paint, RadialGradient, ShaderRef, Style, SweepGradient,
     TileMode,
 };
-use skia_rs_path::{DashEffect, FillType, Path, PathBuilder, PathEffectRef, TrimEffect, TrimMode, Verb};
+use skia_rs_path::{
+    DashEffect, FillType, Path, PathBuilder, PathEffectRef, TrimEffect, TrimMode, Verb,
+};
 use skia_rs_text::{Font, TextBlob, Typeface, TypefaceRef};
 
 // =============================================================================
@@ -298,14 +294,16 @@ pub enum SkClipOp {
     Intersect = 1,
 }
 
-/// C ABI type for [`SkClipOp`]. Functions taking a clip op accept this raw
-/// `uint32_t` and decode it via [`decode_clip_op`], rejecting out-of-range
-/// values instead of constructing an invalid Rust enum from C.
+/// C ABI type for [`SkClipOp`].
+///
+/// Functions taking a clip op accept this raw `uint32_t` and decode it via
+/// [`decode_clip_op`], rejecting out-of-range values instead of constructing
+/// an invalid Rust enum from C.
 pub type sk_clip_op_t = u32;
 
 /// Decode a raw `sk_clip_op_t` into [`ClipOp`]. Returns `None` for any value
 /// other than the two defined by upstream `SkClipOp`.
-fn decode_clip_op(v: sk_clip_op_t) -> Option<ClipOp> {
+const fn decode_clip_op(v: sk_clip_op_t) -> Option<ClipOp> {
     match v {
         0 => Some(ClipOp::Difference),
         1 => Some(ClipOp::Intersect),
@@ -340,7 +338,7 @@ pub type sk_region_op_t = u32;
 
 /// Decode a raw `sk_region_op_t` into [`RegionOp`]. Returns `None` for any
 /// out-of-range value.
-fn decode_region_op(v: sk_region_op_t) -> Option<RegionOp> {
+const fn decode_region_op(v: sk_region_op_t) -> Option<RegionOp> {
     match v {
         0 => Some(RegionOp::Difference),
         1 => Some(RegionOp::Intersect),
@@ -372,7 +370,7 @@ pub type sk_trim_mode_t = u32;
 
 /// Decode a raw `sk_trim_mode_t` into [`TrimMode`]. Returns `None` for any
 /// out-of-range value.
-fn decode_trim_mode(v: sk_trim_mode_t) -> Option<TrimMode> {
+const fn decode_trim_mode(v: sk_trim_mode_t) -> Option<TrimMode> {
     match v {
         0 => Some(TrimMode::Normal),
         1 => Some(TrimMode::Inverted),
@@ -507,7 +505,7 @@ impl From<Point> for sk_point_t {
 
 impl From<sk_point_t> for Point {
     fn from(p: sk_point_t) -> Self {
-        Point::new(p.x, p.y)
+        Self::new(p.x, p.y)
     }
 }
 
@@ -524,7 +522,7 @@ impl From<Rect> for sk_rect_t {
 
 impl From<sk_rect_t> for Rect {
     fn from(r: sk_rect_t) -> Self {
-        Rect::new(r.left, r.top, r.right, r.bottom)
+        Self::new(r.left, r.top, r.right, r.bottom)
     }
 }
 
@@ -536,7 +534,7 @@ impl From<Matrix> for sk_matrix_t {
 
 impl From<sk_matrix_t> for Matrix {
     fn from(m: sk_matrix_t) -> Self {
-        Matrix { values: m.values }
+        Self { values: m.values }
     }
 }
 
@@ -553,7 +551,7 @@ impl From<Color4f> for sk_color4f_t {
 
 impl From<sk_color4f_t> for Color4f {
     fn from(c: sk_color4f_t) -> Self {
-        Color4f::new(c.r, c.g, c.b, c.a)
+        Self::new(c.r, c.g, c.b, c.a)
     }
 }
 
@@ -567,7 +565,7 @@ impl From<sk_color4f_t> for Color4f {
 /// upstream defines but this crate's [`ColorType`] has no representation
 /// for (and any wholly unknown value) returns `None` — never a silent
 /// fallback to RGBA.
-fn decode_color_type(v: u32) -> Option<ColorType> {
+const fn decode_color_type(v: u32) -> Option<ColorType> {
     match v {
         0 => Some(ColorType::Unknown),
         1 => Some(ColorType::Alpha8),
@@ -595,7 +593,7 @@ fn decode_color_type(v: u32) -> Option<ColorType> {
 
 /// Decode a raw alpha type value into [`AlphaType`]. Returns `None` for any
 /// out-of-range value instead of silently coercing it.
-fn decode_alpha_type(v: u32) -> Option<AlphaType> {
+const fn decode_alpha_type(v: u32) -> Option<AlphaType> {
     match v {
         0 => Some(AlphaType::Unknown),
         1 => Some(AlphaType::Opaque),
@@ -607,7 +605,7 @@ fn decode_alpha_type(v: u32) -> Option<AlphaType> {
 
 /// Decode a raw tile mode value into [`TileMode`]. Returns `None` for any
 /// out-of-range value instead of silently coercing it.
-fn decode_tile_mode(v: u32) -> Option<TileMode> {
+const fn decode_tile_mode(v: u32) -> Option<TileMode> {
     match v {
         0 => Some(TileMode::Clamp),
         1 => Some(TileMode::Repeat),
@@ -659,9 +657,8 @@ pub type sk_surface_t = RefCounted<Surface>;
 /// Returns a surface with refcount of 1, or null on failure.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_surface_new_raster(width: i32, height: i32) -> *mut sk_surface_t {
-    catch_panic(|| match Surface::new_raster_n32_premul(width, height) {
-        Some(surface) => RefCounted::new(surface),
-        None => ptr::null_mut(),
+    catch_panic(|| {
+        Surface::new_raster_n32_premul(width, height).map_or(ptr::null_mut(), RefCounted::new)
     })
 }
 
@@ -684,15 +681,11 @@ pub unsafe extern "C" fn sk_surface_new_raster_with_info(
         let Some(alpha_type) = decode_alpha_type(info.alpha_type) else {
             return ptr::null_mut();
         };
-        let img_info = match ImageInfo::new(info.width, info.height, color_type, alpha_type) {
-            Ok(i) => i,
-            Err(_) => return ptr::null_mut(),
+        let Ok(img_info) = ImageInfo::new(info.width, info.height, color_type, alpha_type) else {
+            return ptr::null_mut();
         };
 
-        match Surface::new_raster(&img_info, None) {
-            Some(surface) => RefCounted::new(surface),
-            None => ptr::null_mut(),
-        }
+        Surface::new_raster(&img_info, None).map_or(ptr::null_mut(), RefCounted::new)
     })
 }
 
@@ -705,13 +698,21 @@ pub unsafe extern "C" fn sk_surface_ref(surface: *mut sk_surface_t) {
 /// Decrement the reference count of a surface.
 ///
 /// Frees the surface when the count reaches 0.
+///
+/// # Panics
+/// Panics (caught by `catch_panic_void`, see the crate-level docs) if the
+/// internal locked-surfaces mutex is poisoned by another thread panicking
+/// while holding it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_surface_unref(surface: *mut sk_surface_t) {
     catch_panic_void(|| {
         if RefCounted::unref_ptr(surface) {
             // The surface was freed — drop any stale lock entry so its
             // address can be safely reused by a future allocation.
-            locked_surfaces().lock().unwrap().remove(&(surface as usize));
+            locked_surfaces()
+                .lock()
+                .unwrap()
+                .remove(&(surface as usize));
         }
     });
 }
@@ -731,13 +732,13 @@ pub unsafe extern "C" fn sk_surface_is_unique(surface: *const sk_surface_t) -> b
 /// Get the width of a surface.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_surface_get_width(surface: *const sk_surface_t) -> i32 {
-    catch_panic(|| RefCounted::get_ref(surface).map_or(0, |s| s.width()))
+    catch_panic(|| RefCounted::get_ref(surface).map_or(0, skia_rs_canvas::Surface::width))
 }
 
 /// Get the height of a surface.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_surface_get_height(surface: *const sk_surface_t) -> i32 {
-    catch_panic(|| RefCounted::get_ref(surface).map_or(0, |s| s.height()))
+    catch_panic(|| RefCounted::get_ref(surface).map_or(0, skia_rs_canvas::Surface::height))
 }
 
 /// Get the pixel data from a surface (unsynchronized borrow).
@@ -835,7 +836,9 @@ pub unsafe extern "C" fn sk_paint_new() -> *mut sk_paint_t {
 /// Clone a paint.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_paint_clone(paint: *const sk_paint_t) -> *mut sk_paint_t {
-    catch_panic(|| RefCounted::get_ref(paint).map_or(ptr::null_mut(), |p| RefCounted::new(p.clone())))
+    catch_panic(|| {
+        RefCounted::get_ref(paint).map_or(ptr::null_mut(), |p| RefCounted::new(p.clone()))
+    })
 }
 
 /// Increment the reference count of a paint.
@@ -896,7 +899,7 @@ pub unsafe extern "C" fn sk_paint_set_color4f(paint: *mut sk_paint_t, color: sk_
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_paint_get_color4f(paint: *const sk_paint_t) -> sk_color4f_t {
     catch_panic(|| {
-        RefCounted::get_ref(paint).map_or(sk_color4f_t::default(), |p| p.color().into())
+        RefCounted::get_ref(paint).map_or_else(sk_color4f_t::default, |p| p.color().into())
     })
 }
 
@@ -906,7 +909,6 @@ pub unsafe extern "C" fn sk_paint_set_style(paint: *mut sk_paint_t, style: u32) 
     catch_panic_void(|| {
         if let Some(p) = RefCounted::get_mut(paint) {
             let style = match style {
-                0 => Style::Fill,
                 1 => Style::Stroke,
                 2 => Style::StrokeAndFill,
                 _ => Style::Fill,
@@ -929,7 +931,7 @@ pub unsafe extern "C" fn sk_paint_set_stroke_width(paint: *mut sk_paint_t, width
 /// Get the stroke width.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_paint_get_stroke_width(paint: *const sk_paint_t) -> f32 {
-    catch_panic(|| RefCounted::get_ref(paint).map_or(0.0, |p| p.stroke_width()))
+    catch_panic(|| RefCounted::get_ref(paint).map_or(0.0, skia_rs_paint::Paint::stroke_width))
 }
 
 /// Set anti-alias.
@@ -945,7 +947,7 @@ pub unsafe extern "C" fn sk_paint_set_antialias(paint: *mut sk_paint_t, aa: bool
 /// Check if anti-alias is enabled.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_paint_is_antialias(paint: *const sk_paint_t) -> bool {
-    catch_panic(|| RefCounted::get_ref(paint).is_some_and(|p| p.is_anti_alias()))
+    catch_panic(|| RefCounted::get_ref(paint).is_some_and(skia_rs_paint::Paint::is_anti_alias))
 }
 
 /// C ABI type for the paint's blend mode. Values follow upstream
@@ -953,9 +955,11 @@ pub unsafe extern "C" fn sk_paint_is_antialias(paint: *const sk_paint_t) -> bool
 /// (`kClear = 0` .. `kLuminosity = 28`); see [`BlendMode::from_u8`].
 pub type sk_blend_mode_t = u32;
 
-/// Set the paint's blend mode. `mode` follows upstream `SkBlendMode`
-/// (0-28); see [`BlendMode::from_u8`]. Returns false (leaving the paint's
-/// blend mode unchanged) if `paint` is null or `mode` is out of range.
+/// Set the paint's blend mode.
+///
+/// `mode` follows upstream `SkBlendMode` (0-28); see [`BlendMode::from_u8`].
+/// Returns false (leaving the paint's blend mode unchanged) if `paint` is
+/// null or `mode` is out of range.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_paint_set_blend_mode(
     paint: *mut sk_paint_t,
@@ -979,9 +983,7 @@ pub unsafe extern "C" fn sk_paint_set_blend_mode(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_paint_get_blend_mode(paint: *const sk_paint_t) -> sk_blend_mode_t {
     catch_panic(|| {
-        RefCounted::get_ref(paint)
-            .map(|p| p.blend_mode() as u32)
-            .unwrap_or(BlendMode::SrcOver as u32)
+        RefCounted::get_ref(paint).map_or(BlendMode::SrcOver as u32, |p| p.blend_mode() as u32)
     })
 }
 
@@ -1069,7 +1071,9 @@ pub unsafe extern "C" fn sk_path_new() -> *mut sk_path_t {
 /// Clone a path.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_path_clone(path: *const sk_path_t) -> *mut sk_path_t {
-    catch_panic(|| RefCounted::get_ref(path).map_or(ptr::null_mut(), |p| RefCounted::new(p.clone())))
+    catch_panic(|| {
+        RefCounted::get_ref(path).map_or(ptr::null_mut(), |p| RefCounted::new(p.clone()))
+    })
 }
 
 /// Increment the reference count of a path.
@@ -1114,7 +1118,7 @@ pub unsafe extern "C" fn sk_path_get_bounds(path: *const sk_path_t, bounds: *mut
 /// Check if path is empty.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_path_is_empty(path: *const sk_path_t) -> bool {
-    catch_panic(|| RefCounted::get_ref(path).is_none_or(|p| p.is_empty()))
+    catch_panic(|| RefCounted::get_ref(path).is_none_or(skia_rs_path::Path::is_empty))
 }
 
 /// Get the fill type.
@@ -1136,7 +1140,6 @@ pub unsafe extern "C" fn sk_path_set_filltype(path: *mut sk_path_t, fill_type: u
     catch_panic_void(|| {
         if let Some(p) = RefCounted::get_mut(path) {
             let ft = match fill_type {
-                0 => FillType::Winding,
                 1 => FillType::EvenOdd,
                 2 => FillType::InverseWinding,
                 3 => FillType::InverseEvenOdd,
@@ -1228,10 +1231,11 @@ pub unsafe extern "C" fn sk_path_iter_delete(iter: *mut sk_path_iter_t) {
     });
 }
 
-/// Advance the iterator. Fills up to four points in `out_points` (caller
-/// provides at least 4 slots) and the conic weight (if applicable) in
-/// `out_weight`. Returns the verb code; `SK_PATH_VERB_DONE` indicates
-/// exhaustion.
+/// Advance the iterator.
+///
+/// Fills up to four points in `out_points` (caller provides at least 4
+/// slots) and the conic weight (if applicable) in `out_weight`. Returns the
+/// verb code; `SK_PATH_VERB_DONE` indicates exhaustion.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_path_iter_next(
     iter: *mut sk_path_iter_t,
@@ -1278,11 +1282,7 @@ pub unsafe extern "C" fn sk_path_iter_next(
             Verb::Conic => {
                 write(0, it.points[it.point_index]);
                 write(1, it.points[it.point_index + 1]);
-                let w = it
-                    .weights
-                    .get(it.weight_index)
-                    .copied()
-                    .unwrap_or(1.0);
+                let w = it.weights.get(it.weight_index).copied().unwrap_or(1.0);
                 if !out_weight.is_null() {
                     *out_weight = w;
                 }
@@ -1446,12 +1446,10 @@ pub unsafe extern "C" fn sk_pathbuilder_add_circle(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_pathbuilder_detach(builder: *mut sk_pathbuilder_t) -> *mut sk_path_t {
     catch_panic(|| {
-        if let Some(b) = RefCounted::get_mut(builder) {
+        RefCounted::get_mut(builder).map_or(ptr::null_mut(), |b| {
             let path = std::mem::replace(b, PathBuilder::new()).build();
             RefCounted::new(path)
-        } else {
-            ptr::null_mut()
-        }
+        })
     })
 }
 
@@ -1504,7 +1502,7 @@ pub unsafe extern "C" fn sk_matrix_set_scale(matrix: *mut sk_matrix_t, sx: f32, 
 pub unsafe extern "C" fn sk_matrix_set_rotate(matrix: *mut sk_matrix_t, degrees: f32) {
     catch_panic_void(|| {
         if let Some(m) = matrix.as_mut() {
-            let radians = degrees * std::f32::consts::PI / 180.0;
+            let radians = degrees.to_radians();
             *m = Matrix::rotate(radians).into();
         }
     });
@@ -1574,14 +1572,11 @@ pub unsafe extern "C" fn sk_matrix_invert(
             return false;
         }
         let mat: Matrix = ptr::read(matrix).into();
-        match mat.invert() {
-            Some(inv) => {
-                let out: sk_matrix_t = inv.into();
-                ptr::write(result, out);
-                true
-            }
-            None => false,
-        }
+        mat.invert().is_some_and(|inv| {
+            let out: sk_matrix_t = inv.into();
+            ptr::write(result, out);
+            true
+        })
     })
 }
 
@@ -1620,12 +1615,12 @@ pub unsafe extern "C" fn sk_matrix_determinant(matrix: *const sk_matrix_t) -> f3
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_version() -> *const c_char {
     static VERSION: &str = concat!("skia-rs ", env!("CARGO_PKG_VERSION"), "\0");
-    VERSION.as_ptr() as *const c_char
+    VERSION.as_ptr().cast::<c_char>()
 }
 
 /// Check if the library is available.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_is_available() -> bool {
+pub const unsafe extern "C" fn sk_is_available() -> bool {
     true
 }
 
@@ -1647,7 +1642,11 @@ fn locked_surfaces() -> &'static std::sync::Mutex<std::collections::HashSet<usiz
 /// Returns true if `surface` currently has an outstanding lock from
 /// [`sk_surface_lock_canvas`].
 unsafe fn is_surface_locked(surface: *const sk_surface_t) -> bool {
-    !surface.is_null() && locked_surfaces().lock().unwrap().contains(&(surface as usize))
+    !surface.is_null()
+        && locked_surfaces()
+            .lock()
+            .unwrap()
+            .contains(&(surface as usize))
 }
 
 /// Clear a surface with a color. No-op while the surface is locked (see
@@ -1788,7 +1787,7 @@ enum ClipEntry {
         anti_alias: bool,
     },
     Path {
-        path: Path,
+        path: Box<Path>,
         op: ClipOp,
         anti_alias: bool,
     },
@@ -1846,7 +1845,7 @@ impl sk_canvas_t {
                     path,
                     op,
                     anti_alias,
-                } => c.clip_path(path, *op, *anti_alias),
+                } => c.clip_path(path.as_ref(), *op, *anti_alias),
             }
         }
         c
@@ -1862,10 +1861,13 @@ impl sk_canvas_t {
 /// (which bypass the locked canvas and draw directly on the surface) are
 /// rejected (no-op) to avoid two independent mutable views of the same
 /// pixel buffer.
+///
+/// # Panics
+/// Panics (caught by `catch_panic`, see the crate-level docs) if the
+/// internal locked-surfaces mutex is poisoned by another thread panicking
+/// while holding it.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_surface_lock_canvas(
-    surface: *mut sk_surface_t,
-) -> *mut sk_canvas_t {
+pub unsafe extern "C" fn sk_surface_lock_canvas(surface: *mut sk_surface_t) -> *mut sk_canvas_t {
     catch_panic(|| {
         if surface.is_null() {
             return ptr::null_mut();
@@ -1898,6 +1900,11 @@ pub unsafe extern "C" fn sk_surface_lock_canvas(
 }
 
 /// Release a canvas acquired via [`sk_surface_lock_canvas`].
+///
+/// # Panics
+/// Panics (caught by `catch_panic_void`, see the crate-level docs) if the
+/// internal locked-surfaces mutex is poisoned by another thread panicking
+/// while holding it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_canvas_release(canvas: *mut sk_canvas_t) {
     catch_panic_void(|| {
@@ -1935,7 +1942,7 @@ pub unsafe extern "C" fn sk_canvas_save(canvas: *mut sk_canvas_t) -> i32 {
         };
         c.state.stack.push(frame);
         c.state.save_count += 1;
-        c.state.save_count as i32
+        i32::try_from(c.state.save_count).unwrap_or(i32::MAX)
     })
 }
 
@@ -1948,7 +1955,7 @@ pub unsafe extern "C" fn sk_canvas_save(canvas: *mut sk_canvas_t) -> i32 {
 /// or 0 on failure (null canvas).
 ///
 /// **Pragmatic note:** because the FFI canvas reconstructs its underlying
-/// [`Canvas`] between calls, the layer_paint / layer_bounds are tracked but
+/// [`Canvas`] between calls, the `layer_paint` / `layer_bounds` are tracked but
 /// composition is delegated to the transient canvas at the next draw — the
 /// effective behavior matches the recording-only semantics in
 /// [`skia_rs_canvas::Canvas::save_layer`].
@@ -1971,7 +1978,7 @@ pub unsafe extern "C" fn sk_canvas_save_layer(
         };
         c.state.stack.push(frame);
         c.state.save_count += 1;
-        c.state.save_count as u32
+        u32::try_from(c.state.save_count).unwrap_or(u32::MAX)
     })
 }
 
@@ -2026,7 +2033,7 @@ pub unsafe extern "C" fn sk_canvas_scale(canvas: *mut sk_canvas_t, sx: f32, sy: 
 pub unsafe extern "C" fn sk_canvas_rotate(canvas: *mut sk_canvas_t, degrees: f32) {
     catch_panic_void(|| {
         if let Some(c) = canvas.as_mut() {
-            let r = degrees * std::f32::consts::PI / 180.0;
+            let r = degrees.to_radians();
             c.state.matrix = c.state.matrix.concat(&Matrix::rotate(r));
         }
     });
@@ -2076,14 +2083,14 @@ pub unsafe extern "C" fn sk_canvas_draw_path(
 ) {
     catch_panic_void(|| {
         let Some(c) = canvas.as_mut() else { return };
-        let Some(pth) = RefCounted::get_ref(path).cloned() else {
+        let Some(owned_path) = RefCounted::get_ref(path).cloned() else {
             return;
         };
         let Some(p) = RefCounted::get_ref(paint).cloned() else {
             return;
         };
         let mut inner = c.canvas_with_state();
-        inner.draw_path(&pth, &p);
+        inner.draw_path(&owned_path, &p);
     });
 }
 
@@ -2140,7 +2147,7 @@ pub unsafe extern "C" fn sk_canvas_clip_path(
             return false;
         };
         c.state.clips.push(ClipEntry::Path {
-            path: p.clone(),
+            path: Box::new(p.clone()),
             op: clip_op,
             anti_alias,
         });
@@ -2164,13 +2171,13 @@ pub unsafe extern "C" fn sk_canvas_get_clip_ibounds(
         let Some(dst) = out.as_mut() else {
             return false;
         };
-        let mut inner = c.canvas_with_state();
+        let inner = c.canvas_with_state();
         let bounds = inner.clip_bounds();
         *dst = sk_irect_t {
-            left: bounds.left.floor() as i32,
-            top: bounds.top.floor() as i32,
-            right: bounds.right.ceil() as i32,
-            bottom: bounds.bottom.ceil() as i32,
+            left: skia_rs_core::cast::floor_to_i32(bounds.left),
+            top: skia_rs_core::cast::floor_to_i32(bounds.top),
+            right: skia_rs_core::cast::ceil_to_i32(bounds.right),
+            bottom: skia_rs_core::cast::ceil_to_i32(bounds.bottom),
         };
         true
     })
@@ -2185,19 +2192,13 @@ pub type sk_image_t = RefCounted<skia_rs_codec::Image>;
 
 /// Decode an encoded image (PNG/JPEG/…) from a byte buffer.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_image_from_encoded(
-    data: *const u8,
-    len: usize,
-) -> *mut sk_image_t {
+pub unsafe extern "C" fn sk_image_from_encoded(data: *const u8, len: usize) -> *mut sk_image_t {
     catch_panic(|| {
         if data.is_null() || len == 0 {
             return ptr::null_mut();
         }
         let bytes = slice::from_raw_parts(data, len);
-        match skia_rs_codec::decode_image(bytes) {
-            Ok(img) => RefCounted::new(img),
-            Err(_) => ptr::null_mut(),
-        }
+        skia_rs_codec::decode_image(bytes).map_or(ptr::null_mut(), RefCounted::new)
     })
 }
 
@@ -2208,9 +2209,9 @@ pub unsafe extern "C" fn sk_image_from_color(
     height: i32,
     color: sk_color_t,
 ) -> *mut sk_image_t {
-    catch_panic(|| match skia_rs_codec::Image::from_color(width, height, color) {
-        Some(img) => RefCounted::new(img),
-        None => ptr::null_mut(),
+    catch_panic(|| {
+        skia_rs_codec::Image::from_color(width, height, color)
+            .map_or(ptr::null_mut(), RefCounted::new)
     })
 }
 
@@ -2237,13 +2238,13 @@ pub unsafe extern "C" fn sk_image_get_refcnt(image: *const sk_image_t) -> u32 {
 /// Get the image width.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_image_get_width(image: *const sk_image_t) -> i32 {
-    catch_panic(|| RefCounted::get_ref(image).map_or(0, |i| i.width()))
+    catch_panic(|| RefCounted::get_ref(image).map_or(0, skia_rs_canvas::Image::width))
 }
 
 /// Get the image height.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_image_get_height(image: *const sk_image_t) -> i32 {
-    catch_panic(|| RefCounted::get_ref(image).map_or(0, |i| i.height()))
+    catch_panic(|| RefCounted::get_ref(image).map_or(0, skia_rs_canvas::Image::height))
 }
 
 /// Encode an image as PNG into a caller-allocated buffer.
@@ -2257,10 +2258,10 @@ pub unsafe extern "C" fn sk_image_encode_png(
     dst_len: usize,
 ) -> usize {
     catch_panic(|| {
+        use skia_rs_codec::ImageEncoder;
         let Some(img) = RefCounted::get_ref(image) else {
             return 0;
         };
-        use skia_rs_codec::ImageEncoder;
         let encoder = skia_rs_codec::PngEncoder::new();
         let Ok(bytes) = encoder.encode_bytes(img) else {
             return 0;
@@ -2294,19 +2295,13 @@ pub unsafe extern "C" fn sk_typeface_default() -> *mut sk_typeface_t {
 
 /// Load a typeface from raw font file data (TTF/OTF).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_typeface_from_data(
-    data: *const u8,
-    len: usize,
-) -> *mut sk_typeface_t {
+pub unsafe extern "C" fn sk_typeface_from_data(data: *const u8, len: usize) -> *mut sk_typeface_t {
     catch_panic(|| {
         if data.is_null() || len == 0 {
             return ptr::null_mut();
         }
         let buf = slice::from_raw_parts(data, len).to_vec();
-        match Typeface::from_data(buf) {
-            Some(t) => RefCounted::new(Arc::new(t)),
-            None => ptr::null_mut(),
-        }
+        Typeface::from_data(buf).map_or(ptr::null_mut(), |t| RefCounted::new(Arc::new(t)))
     })
 }
 
@@ -2370,7 +2365,7 @@ pub unsafe extern "C" fn sk_font_unref(font: *mut sk_font_t) {
 /// Get font size.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_font_get_size(font: *const sk_font_t) -> f32 {
-    catch_panic(|| RefCounted::get_ref(font).map_or(0.0, |f| f.size()))
+    catch_panic(|| RefCounted::get_ref(font).map_or(0.0, skia_rs_text::Font::size))
 }
 
 /// Measure a UTF-8 text string at the font's current size. Returns the
@@ -2389,7 +2384,7 @@ pub unsafe extern "C" fn sk_font_measure_text(
         let Some(f) = RefCounted::get_ref(font) else {
             return -1.0;
         };
-        let slice = slice::from_raw_parts(text as *const u8, text_len);
+        let slice = slice::from_raw_parts(text.cast::<u8>(), text_len);
         let Ok(s) = std::str::from_utf8(slice) else {
             return -1.0;
         };
@@ -2451,7 +2446,13 @@ pub unsafe extern "C" fn sk_shader_new_linear_gradient(
         let Some(tile_mode) = decode_tile_mode(tile_mode) else {
             return ptr::null_mut();
         };
-        let grad = LinearGradient::new(start.into(), end.into(), colors_vec, positions_vec, tile_mode);
+        let grad = LinearGradient::new(
+            start.into(),
+            end.into(),
+            colors_vec,
+            positions_vec,
+            tile_mode,
+        );
         let shader: ShaderRef = Arc::new(grad);
         RefCounted::new(shader)
     })
@@ -2562,9 +2563,7 @@ pub unsafe extern "C" fn sk_colorfilter_new_saturation(amount: f32) -> *mut sk_c
 
 /// Create a color-matrix filter from 20 floats (row-major 4x5).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_colorfilter_new_matrix(
-    values: *const f32,
-) -> *mut sk_colorfilter_t {
+pub unsafe extern "C" fn sk_colorfilter_new_matrix(values: *const f32) -> *mut sk_colorfilter_t {
     catch_panic(|| {
         if values.is_null() {
             return ptr::null_mut();
@@ -2601,13 +2600,9 @@ pub unsafe extern "C" fn sk_maskfilter_unref(f: *mut sk_maskfilter_t) {
 ///
 /// `style` follows [`BlurStyle`]: 0=Normal, 1=Solid, 2=Outer, 3=Inner.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sk_maskfilter_new_blur(
-    style: u32,
-    sigma: f32,
-) -> *mut sk_maskfilter_t {
+pub unsafe extern "C" fn sk_maskfilter_new_blur(style: u32, sigma: f32) -> *mut sk_maskfilter_t {
     catch_panic(|| {
         let s = match style {
-            0 => BlurStyle::Normal,
             1 => BlurStyle::Solid,
             2 => BlurStyle::Outer,
             3 => BlurStyle::Inner,
@@ -2684,7 +2679,7 @@ impl From<Matrix44> for sk_matrix44_t {
 
 impl From<sk_matrix44_t> for Matrix44 {
     fn from(m: sk_matrix44_t) -> Self {
-        Matrix44 { values: m.values }
+        Self { values: m.values }
     }
 }
 
@@ -2745,14 +2740,11 @@ pub unsafe extern "C" fn sk_matrix44_invert(
             return false;
         }
         let mat: Matrix44 = ptr::read(matrix).into();
-        match mat.invert() {
-            Some(inv) => {
-                let out: sk_matrix44_t = inv.into();
-                ptr::write(result, out);
-                true
-            }
-            None => false,
-        }
+        mat.invert().is_some_and(|inv| {
+            let out: sk_matrix44_t = inv.into();
+            ptr::write(result, out);
+            true
+        })
     })
 }
 
@@ -2849,13 +2841,13 @@ pub unsafe extern "C" fn sk_colorspace_from_icc(
 /// Return true if this color space is sRGB.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_colorspace_is_srgb(cs: *const sk_colorspace_t) -> bool {
-    catch_panic(|| RefCounted::get_ref(cs).is_some_and(|c| c.is_srgb()))
+    catch_panic(|| RefCounted::get_ref(cs).is_some_and(skia_rs_core::ColorSpace::is_srgb))
 }
 
 /// Return true if this color space has a linear transfer function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_colorspace_is_linear(cs: *const sk_colorspace_t) -> bool {
-    catch_panic(|| RefCounted::get_ref(cs).is_some_and(|c| c.is_linear()))
+    catch_panic(|| RefCounted::get_ref(cs).is_some_and(skia_rs_core::ColorSpace::is_linear))
 }
 
 /// Increment color space refcount.
@@ -2894,7 +2886,7 @@ pub unsafe extern "C" fn sk_textblob_make_from_text(
         let Some(f) = RefCounted::get_ref(font) else {
             return ptr::null_mut();
         };
-        let slice = slice::from_raw_parts(text as *const u8, text_len);
+        let slice = slice::from_raw_parts(text.cast::<u8>(), text_len);
         let Ok(s) = std::str::from_utf8(slice) else {
             return ptr::null_mut();
         };
@@ -2943,17 +2935,17 @@ pub unsafe extern "C" fn sk_canvas_draw_text_blob(
     paint: *const sk_paint_t,
 ) -> bool {
     catch_panic(|| {
-        let Some(c) = canvas.as_mut() else {
+        let Some(canvas_ref) = canvas.as_mut() else {
             return false;
         };
-        let Some(b) = RefCounted::get_ref(blob).cloned() else {
+        let Some(blob_ref) = RefCounted::get_ref(blob).cloned() else {
             return false;
         };
-        let Some(p) = RefCounted::get_ref(paint).cloned() else {
+        let Some(paint_ref) = RefCounted::get_ref(paint).cloned() else {
             return false;
         };
-        let mut inner = c.canvas_with_state();
-        inner.draw_text_blob(&b, x, y, &p);
+        let mut inner = canvas_ref.canvas_with_state();
+        inner.draw_text_blob(&blob_ref, x, y, &paint_ref);
         true
     })
 }
@@ -3052,14 +3044,15 @@ unsafe fn resolve_recording_canvas<'a>(
     }
     let rec = rc.recorder.as_mut()?;
     // Split borrow: `rec.state` and `rec` otherwise alias.
-    let state_ptr: *mut Option<CanvasState> = &mut rec.state;
+    let state_ptr: *mut Option<CanvasState> = &raw mut rec.state;
     let state = (&mut *state_ptr).as_mut()?;
     Some((rec, state))
 }
 
-/// Begin recording into a fresh picture. Returns a recording canvas handle
-/// that draw ops append to. The caller drops the handle via
-/// [`sk_recording_canvas_release`] but **must** call
+/// Begin recording into a fresh picture.
+///
+/// Returns a recording canvas handle that draw ops append to. The caller
+/// drops the handle via [`sk_recording_canvas_release`] but **must** call
 /// [`sk_picture_recorder_finish_recording`] to get the recorded picture.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_picture_recorder_begin_recording(
@@ -3073,10 +3066,7 @@ pub unsafe extern "C" fn sk_picture_recorder_begin_recording(
         if rec.recording {
             return ptr::null_mut();
         }
-        let cull = match bounds.as_ref() {
-            Some(b) => Rect::from(*b),
-            None => Rect::EMPTY,
-        };
+        let cull = bounds.as_ref().map_or(Rect::EMPTY, |b| Rect::from(*b));
         rec.commands.clear();
         rec.cull_rect = cull;
         rec.recording = true;
@@ -3120,8 +3110,7 @@ pub unsafe extern "C" fn sk_picture_recorder_finish_recording(
         rec.recording = false;
         rec.state = None;
         let commands = std::mem::take(&mut rec.commands);
-        let picture =
-            Arc::new(skia_rs_canvas::Picture::from_parts(commands, rec.cull_rect));
+        let picture = Arc::new(skia_rs_canvas::Picture::from_parts(commands, rec.cull_rect));
         RefCounted::new(picture)
     })
 }
@@ -3139,7 +3128,7 @@ pub unsafe extern "C" fn sk_recording_canvas_save(canvas: *mut sk_recording_canv
         };
         state.stack.push(frame);
         state.save_count += 1;
-        state.save_count as i32
+        i32::try_from(state.save_count).unwrap_or(i32::MAX)
     })
 }
 
@@ -3363,7 +3352,7 @@ pub unsafe extern "C" fn sk_region_get_bounds(
 /// Return true if the region is empty.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_region_is_empty(region: *const sk_region_t) -> bool {
-    catch_panic(|| RefCounted::get_ref(region).is_none_or(|r| r.is_empty()))
+    catch_panic(|| RefCounted::get_ref(region).is_none_or(skia_rs_core::Region::is_empty))
 }
 
 /// Return true if the region contains a point.
@@ -3393,10 +3382,12 @@ pub unsafe extern "C" fn sk_region_unref(region: *mut sk_region_t) {
 /// Reference counted [`PathEffectRef`].
 pub type sk_patheffect_t = RefCounted<PathEffectRef>;
 
-/// Create a dash path effect. `intervals` must be non-null with `count`
-/// positive entries; the pattern is duplicated internally if `count` is
-/// odd, matching Skia's semantics. `phase` shifts where the pattern starts.
-/// Returns null if the intervals are invalid (empty, negative, or sum to 0).
+/// Create a dash path effect.
+///
+/// `intervals` must be non-null with `count` positive entries; the pattern
+/// is duplicated internally if `count` is odd, matching Skia's semantics.
+/// `phase` shifts where the pattern starts. Returns null if the intervals
+/// are invalid (empty, negative, or sum to 0).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_patheffect_new_dash(
     intervals: *const f32,
@@ -3408,13 +3399,10 @@ pub unsafe extern "C" fn sk_patheffect_new_dash(
             return ptr::null_mut();
         }
         let src = slice::from_raw_parts(intervals, count).to_vec();
-        match DashEffect::new(src, phase) {
-            Some(e) => {
-                let pe: PathEffectRef = Arc::new(e);
-                RefCounted::new(pe)
-            }
-            None => ptr::null_mut(),
-        }
+        DashEffect::new(src, phase).map_or(ptr::null_mut(), |e| {
+            let pe: PathEffectRef = Arc::new(e);
+            RefCounted::new(pe)
+        })
     })
 }
 
@@ -3431,13 +3419,10 @@ pub unsafe extern "C" fn sk_patheffect_new_trim(
         let Some(trim_mode) = decode_trim_mode(mode) else {
             return ptr::null_mut();
         };
-        match TrimEffect::new(start, end, trim_mode) {
-            Some(e) => {
-                let pe: PathEffectRef = Arc::new(e);
-                RefCounted::new(pe)
-            }
-            None => ptr::null_mut(),
-        }
+        TrimEffect::new(start, end, trim_mode).map_or(ptr::null_mut(), |e| {
+            let pe: PathEffectRef = Arc::new(e);
+            RefCounted::new(pe)
+        })
     })
 }
 
@@ -3477,7 +3462,7 @@ pub unsafe extern "C" fn sk_patheffect_unref(effect: *mut sk_patheffect_t) {
 // conversion glue declared elsewhere in the crate, but rustc can't see them
 // used directly.
 #[allow(dead_code)]
-fn _unused_deps() {
+const fn _unused_deps() {
     let _: Option<IPoint> = None;
     let _: Option<IRect> = None;
     let _: Option<ISize> = None;
@@ -3527,11 +3512,11 @@ mod tests {
             assert!(!paint.is_null());
             assert_eq!(sk_paint_get_refcnt(paint), 1);
 
-            sk_paint_set_color(paint, 0xFF0000FF); // Blue
-            assert_eq!(sk_paint_get_color(paint), 0xFF0000FF);
+            sk_paint_set_color(paint, 0xFF00_00FF); // Blue
+            assert_eq!(sk_paint_get_color(paint), 0xFF00_00FF);
 
             sk_paint_set_stroke_width(paint, 2.0);
-            assert_eq!(sk_paint_get_stroke_width(paint), 2.0);
+            assert!((sk_paint_get_stroke_width(paint) - 2.0).abs() < f32::EPSILON);
 
             sk_paint_delete(paint);
         }
@@ -3575,9 +3560,9 @@ mod tests {
             assert_eq!(sk_path_get_refcnt(path), 1);
 
             let mut bounds = sk_rect_t::default();
-            sk_path_get_bounds(path, &mut bounds);
-            assert_eq!(bounds.left, 0.0);
-            assert_eq!(bounds.right, 100.0);
+            sk_path_get_bounds(path, &raw mut bounds);
+            assert!((bounds.left - 0.0).abs() < f32::EPSILON);
+            assert!((bounds.right - 100.0).abs() < f32::EPSILON);
 
             sk_path_delete(path);
             sk_pathbuilder_delete(builder);
@@ -3600,20 +3585,20 @@ mod tests {
             let mut pts = [sk_point_t::default(); 4];
             let mut w: f32 = 0.0;
 
-            let v0 = sk_path_iter_next(it, pts.as_mut_ptr(), &mut w);
+            let v0 = sk_path_iter_next(it, pts.as_mut_ptr(), &raw mut w);
             assert_eq!(v0, SK_PATH_VERB_MOVE);
-            assert_eq!(pts[0].x, 1.0);
-            assert_eq!(pts[0].y, 2.0);
+            assert!((pts[0].x - 1.0).abs() < f32::EPSILON);
+            assert!((pts[0].y - 2.0).abs() < f32::EPSILON);
 
-            let v1 = sk_path_iter_next(it, pts.as_mut_ptr(), &mut w);
+            let v1 = sk_path_iter_next(it, pts.as_mut_ptr(), &raw mut w);
             assert_eq!(v1, SK_PATH_VERB_LINE);
-            assert_eq!(pts[0].x, 10.0);
-            assert_eq!(pts[0].y, 20.0);
+            assert!((pts[0].x - 10.0).abs() < f32::EPSILON);
+            assert!((pts[0].y - 20.0).abs() < f32::EPSILON);
 
-            let v2 = sk_path_iter_next(it, pts.as_mut_ptr(), &mut w);
+            let v2 = sk_path_iter_next(it, pts.as_mut_ptr(), &raw mut w);
             assert_eq!(v2, SK_PATH_VERB_CLOSE);
 
-            let v3 = sk_path_iter_next(it, pts.as_mut_ptr(), &mut w);
+            let v3 = sk_path_iter_next(it, pts.as_mut_ptr(), &raw mut w);
             assert_eq!(v3, SK_PATH_VERB_DONE);
 
             sk_path_iter_delete(it);
@@ -3646,14 +3631,14 @@ mod tests {
     fn test_matrix_operations() {
         unsafe {
             let mut matrix = sk_matrix_t::default();
-            sk_matrix_set_translate(&mut matrix, 10.0, 20.0);
+            sk_matrix_set_translate(&raw mut matrix, 10.0, 20.0);
 
             let point = sk_point_t { x: 0.0, y: 0.0 };
             let mut result = sk_point_t::default();
-            sk_matrix_map_point(&matrix, &point, &mut result);
+            sk_matrix_map_point(&raw const matrix, &raw const point, &raw mut result);
 
-            assert_eq!(result.x, 10.0);
-            assert_eq!(result.y, 20.0);
+            assert!((result.x - 10.0).abs() < f32::EPSILON);
+            assert!((result.y - 20.0).abs() < f32::EPSILON);
         }
     }
 
@@ -3661,21 +3646,19 @@ mod tests {
     fn test_matrix_invert() {
         unsafe {
             let mut matrix = sk_matrix_t::default();
-            sk_matrix_set_scale(&mut matrix, 2.0, 4.0);
+            sk_matrix_set_scale(&raw mut matrix, 2.0, 4.0);
             let mut inv = sk_matrix_t::default();
-            assert!(sk_matrix_invert(&matrix, &mut inv));
+            assert!(sk_matrix_invert(&raw const matrix, &raw mut inv));
             // (2,4) scaled then halved/quartered should return origin-offset.
             let p = sk_point_t { x: 2.0, y: 4.0 };
             let mut r = sk_point_t::default();
-            sk_matrix_map_point(&inv, &p, &mut r);
-            assert_eq!(r.x, 1.0);
-            assert_eq!(r.y, 1.0);
+            sk_matrix_map_point(&raw const inv, &raw const p, &raw mut r);
+            assert!((r.x - 1.0).abs() < f32::EPSILON);
+            assert!((r.y - 1.0).abs() < f32::EPSILON);
 
             // Singular matrix should fail.
-            let zero = sk_matrix_t {
-                values: [0.0; 9],
-            };
-            assert!(!sk_matrix_invert(&zero, &mut inv));
+            let zero = sk_matrix_t { values: [0.0; 9] };
+            assert!(!sk_matrix_invert(&raw const zero, &raw mut inv));
         }
     }
 
@@ -3683,8 +3666,8 @@ mod tests {
     fn test_matrix_is_identity_and_determinant() {
         unsafe {
             let m = sk_matrix_t::default();
-            assert!(sk_matrix_is_identity(&m));
-            assert_eq!(sk_matrix_determinant(&m), 1.0);
+            assert!(sk_matrix_is_identity(&raw const m));
+            assert!((sk_matrix_determinant(&raw const m) - 1.0).abs() < f32::EPSILON);
         }
     }
 
@@ -3693,8 +3676,8 @@ mod tests {
         unsafe {
             let surface = sk_surface_new_raster(100, 100);
             let paint = sk_paint_new();
-            sk_paint_set_color(paint, 0xFFFF0000);
-            sk_surface_clear(surface, 0xFFFFFFFF);
+            sk_paint_set_color(paint, 0xFFFF_0000);
+            sk_surface_clear(surface, 0xFFFF_FFFF);
 
             let rect = sk_rect_t {
                 left: 10.0,
@@ -3702,7 +3685,7 @@ mod tests {
                 right: 50.0,
                 bottom: 50.0,
             };
-            sk_surface_draw_rect(surface, &rect, paint);
+            sk_surface_draw_rect(surface, &raw const rect, paint);
 
             sk_paint_delete(paint);
             sk_surface_unref(surface);
@@ -3879,7 +3862,7 @@ mod tests {
     #[test]
     fn test_image_from_color_and_encode() {
         unsafe {
-            let img = sk_image_from_color(8, 8, 0xFF00FF00);
+            let img = sk_image_from_color(8, 8, 0xFF00_FF00);
             assert!(!img.is_null());
             assert_eq!(sk_image_get_width(img), 8);
             assert_eq!(sk_image_get_height(img), 8);
@@ -3906,7 +3889,7 @@ mod tests {
             assert!(!tf.is_null());
             let font = sk_font_new(tf, 14.0);
             assert!(!font.is_null());
-            assert_eq!(sk_font_get_size(font), 14.0);
+            assert!((sk_font_get_size(font) - 14.0).abs() < f32::EPSILON);
             sk_font_unref(font);
             sk_typeface_unref(tf);
         }
@@ -3926,16 +3909,16 @@ mod tests {
             sk_canvas_translate(canvas, 10.0, 5.0);
             sk_canvas_scale(canvas, 2.0, 2.0);
 
-            sk_canvas_clear(canvas, 0xFFFFFFFF);
+            sk_canvas_clear(canvas, 0xFFFF_FFFF);
             let paint = sk_paint_new();
-            sk_paint_set_color(paint, 0xFFFF0000);
+            sk_paint_set_color(paint, 0xFFFF_0000);
             let rect = sk_rect_t {
                 left: 0.0,
                 top: 0.0,
                 right: 5.0,
                 bottom: 5.0,
             };
-            sk_canvas_draw_rect(canvas, &rect, paint);
+            sk_canvas_draw_rect(canvas, &raw const rect, paint);
             sk_paint_unref(paint);
 
             sk_canvas_restore(canvas);
@@ -3948,7 +3931,7 @@ mod tests {
     fn test_surface_read_pixels_copies() {
         unsafe {
             let surface = sk_surface_new_raster(4, 4);
-            sk_surface_clear(surface, 0xFF112233);
+            sk_surface_clear(surface, 0xFF11_2233);
 
             let mut buf = vec![0u8; 4 * 4 * 4];
             let wrote = sk_surface_read_pixels(surface, buf.as_mut_ptr(), buf.len());
@@ -3973,20 +3956,24 @@ mod tests {
                 color_type: 4,
                 alpha_type: 3,
             };
-            let surface = sk_surface_new_raster_with_info(&info);
+            let surface = sk_surface_new_raster_with_info(&raw const info);
             assert!(!surface.is_null());
 
             // Half-transparent red — the surface's internal buffer stores
             // this premultiplied (~128,0,0,128), but a caller reading an
             // Unpremul-typed surface should see it unpremultiplied back to
             // ~255,0,0,128.
-            sk_surface_clear(surface, 0x80FF0000);
+            sk_surface_clear(surface, 0x80FF_0000);
 
             // `peek_pixels` cannot convert a borrowed buffer — must reject
             // Unpremul surfaces.
             let mut px: *const u8 = ptr::null();
             let mut row_bytes: usize = 0;
-            assert!(!sk_surface_peek_pixels(surface, &mut px, &mut row_bytes));
+            assert!(!sk_surface_peek_pixels(
+                surface,
+                &raw mut px,
+                &raw mut row_bytes
+            ));
 
             let mut buf = vec![0u8; 2 * 2 * 4];
             let wrote = sk_surface_read_pixels(surface, buf.as_mut_ptr(), buf.len());
@@ -4013,9 +4000,12 @@ mod tests {
             sk_paint_unref(ptr::null_mut());
             sk_surface_unref(ptr::null_mut());
             let mut bounds = sk_rect_t::default();
-            sk_path_get_bounds(ptr::null(), &mut bounds);
+            sk_path_get_bounds(ptr::null(), &raw mut bounds);
             sk_path_unref(ptr::null_mut());
-            assert_eq!(sk_path_iter_next(ptr::null_mut(), ptr::null_mut(), ptr::null_mut()), SK_PATH_VERB_DONE);
+            assert_eq!(
+                sk_path_iter_next(ptr::null_mut(), ptr::null_mut(), ptr::null_mut()),
+                SK_PATH_VERB_DONE
+            );
             assert!(!sk_last_call_panicked());
         }
     }
@@ -4039,7 +4029,7 @@ mod tests {
         unsafe {
             let surface = sk_surface_new_raster(10, 10);
             let canvas = sk_surface_lock_canvas(surface);
-            sk_canvas_clear(canvas, 0xFF000000);
+            sk_canvas_clear(canvas, 0xFF00_0000);
 
             // Intersect with a 4x4 inner square.
             let clip_rect = sk_rect_t {
@@ -4048,18 +4038,23 @@ mod tests {
                 right: 7.0,
                 bottom: 7.0,
             };
-            assert!(sk_canvas_clip_rect(canvas, &clip_rect, SkClipOp::Intersect as u32, false));
+            assert!(sk_canvas_clip_rect(
+                canvas,
+                &raw const clip_rect,
+                SkClipOp::Intersect as u32,
+                false
+            ));
 
             // Draw a full-canvas white rect — only the inner box survives.
             let paint = sk_paint_new();
-            sk_paint_set_color(paint, 0xFFFFFFFF);
+            sk_paint_set_color(paint, 0xFFFF_FFFF);
             let big = sk_rect_t {
                 left: 0.0,
                 top: 0.0,
                 right: 10.0,
                 bottom: 10.0,
             };
-            sk_canvas_draw_rect(canvas, &big, paint);
+            sk_canvas_draw_rect(canvas, &raw const big, paint);
             sk_paint_unref(paint);
 
             sk_canvas_release(canvas);
@@ -4085,7 +4080,7 @@ mod tests {
             let surface = sk_surface_new_raster(10, 10);
             let canvas = sk_surface_lock_canvas(surface);
             // Known background color (opaque blue).
-            sk_canvas_clear(canvas, 0xFF0000FF);
+            sk_canvas_clear(canvas, 0xFF00_00FF);
 
             // Intersect with a 4x4 inner square.
             let clip_rect = sk_rect_t {
@@ -4094,11 +4089,16 @@ mod tests {
                 right: 7.0,
                 bottom: 7.0,
             };
-            assert!(sk_canvas_clip_rect(canvas, &clip_rect, SkClipOp::Intersect as u32, false));
+            assert!(sk_canvas_clip_rect(
+                canvas,
+                &raw const clip_rect,
+                SkClipOp::Intersect as u32,
+                false
+            ));
 
             // `clear` must respect the current clip: only the inner box
             // should turn red.
-            sk_canvas_clear(canvas, 0xFFFF0000);
+            sk_canvas_clear(canvas, 0xFFFF_0000);
 
             sk_canvas_release(canvas);
 
@@ -4129,7 +4129,12 @@ mod tests {
             let path = sk_pathbuilder_detach(b);
             sk_pathbuilder_delete(b);
 
-            assert!(sk_canvas_clip_path(canvas, path, SkClipOp::Intersect as u32, true));
+            assert!(sk_canvas_clip_path(
+                canvas,
+                path,
+                SkClipOp::Intersect as u32,
+                true
+            ));
 
             sk_path_unref(path);
             sk_canvas_release(canvas);
@@ -4149,11 +4154,21 @@ mod tests {
                 bottom: 5.0,
             };
             // A valid op (Difference = 0) should work.
-            assert!(sk_canvas_clip_rect(canvas, &rect, SkClipOp::Difference as u32, false));
+            assert!(sk_canvas_clip_rect(
+                canvas,
+                &raw const rect,
+                SkClipOp::Difference as u32,
+                false
+            ));
             // An out-of-range raw op value must be rejected, not silently
             // coerced into a Rust enum (which would be UB) or defaulted.
-            assert!(!sk_canvas_clip_rect(canvas, &rect, 2, false));
-            assert!(!sk_canvas_clip_rect(canvas, &rect, u32::MAX, false));
+            assert!(!sk_canvas_clip_rect(canvas, &raw const rect, 2, false));
+            assert!(!sk_canvas_clip_rect(
+                canvas,
+                &raw const rect,
+                u32::MAX,
+                false
+            ));
             sk_canvas_release(canvas);
             sk_surface_unref(surface);
         }
@@ -4187,15 +4202,15 @@ mod tests {
                 right: 10,
                 bottom: 10,
             };
-            assert!(sk_region_set_rect(r, &rect));
+            assert!(sk_region_set_rect(r, &raw const rect));
             let other = sk_irect_t {
                 left: 5,
                 top: 5,
                 right: 15,
                 bottom: 15,
             };
-            assert!(!sk_region_op_rect(r, &other, 6));
-            assert!(!sk_region_op_rect(r, &other, u32::MAX));
+            assert!(!sk_region_op_rect(r, &raw const other, 6));
+            assert!(!sk_region_op_rect(r, &raw const other, u32::MAX));
             sk_region_unref(r);
         }
     }
@@ -4215,7 +4230,7 @@ mod tests {
             let canvas = sk_surface_lock_canvas(surface);
             let n0 = sk_canvas_save(canvas);
             let n1 = sk_canvas_save_layer(canvas, ptr::null(), ptr::null());
-            assert_eq!(n1 as i32, n0 + 1);
+            assert_eq!(i32::try_from(n1).unwrap(), n0 + 1);
             sk_canvas_restore(canvas);
             sk_canvas_restore(canvas);
             sk_canvas_release(canvas);
@@ -4229,7 +4244,7 @@ mod tests {
             let surface = sk_surface_new_raster(10, 10);
             let canvas = sk_surface_lock_canvas(surface);
             let mut bounds = sk_irect_t::default();
-            assert!(sk_canvas_get_clip_ibounds(canvas, &mut bounds));
+            assert!(sk_canvas_get_clip_ibounds(canvas, &raw mut bounds));
             assert_eq!(bounds.right, 10);
             assert_eq!(bounds.bottom, 10);
 
@@ -4239,8 +4254,8 @@ mod tests {
                 right: 6.0,
                 bottom: 6.0,
             };
-            sk_canvas_clip_rect(canvas, &inner, SkClipOp::Intersect as u32, false);
-            assert!(sk_canvas_get_clip_ibounds(canvas, &mut bounds));
+            sk_canvas_clip_rect(canvas, &raw const inner, SkClipOp::Intersect as u32, false);
+            assert!(sk_canvas_get_clip_ibounds(canvas, &raw mut bounds));
             assert!(bounds.left >= 2 && bounds.right <= 6);
 
             sk_canvas_release(canvas);
@@ -4252,8 +4267,8 @@ mod tests {
     fn test_matrix44_new_is_identity_ffi() {
         unsafe {
             let m = sk_matrix44_new();
-            assert!(sk_matrix44_is_identity(&m));
-            assert_eq!(sk_matrix44_determinant(&m), 1.0);
+            assert!(sk_matrix44_is_identity(&raw const m));
+            assert!((sk_matrix44_determinant(&raw const m) - 1.0).abs() < f32::EPSILON);
         }
     }
 
@@ -4268,24 +4283,24 @@ mod tests {
                 0.0, 0.0, 0.0, 1.0, // column 3
             ];
             let m = sk_matrix44_from_array(values.as_ptr());
-            assert!(!sk_matrix44_is_identity(&m));
+            assert!(!sk_matrix44_is_identity(&raw const m));
 
             let pt = sk_point_t { x: 3.0, y: 4.0 };
             let mut out = sk_point_t::default();
-            sk_matrix44_map_point(&m, &pt, &mut out);
-            assert_eq!(out.x, 6.0);
-            assert_eq!(out.y, 8.0);
+            sk_matrix44_map_point(&raw const m, &raw const pt, &raw mut out);
+            assert!((out.x - 6.0).abs() < f32::EPSILON);
+            assert!((out.y - 8.0).abs() < f32::EPSILON);
 
             let mut inv = sk_matrix44_new();
-            assert!(sk_matrix44_invert(&m, &mut inv));
+            assert!(sk_matrix44_invert(&raw const m, &raw mut inv));
             let mut roundtrip = sk_point_t::default();
-            sk_matrix44_map_point(&inv, &out, &mut roundtrip);
+            sk_matrix44_map_point(&raw const inv, &raw const out, &raw mut roundtrip);
             assert!((roundtrip.x - pt.x).abs() < 1e-4);
             assert!((roundtrip.y - pt.y).abs() < 1e-4);
 
             // Singular matrix rejects invert.
             let zero = sk_matrix44_t { values: [0.0; 16] };
-            assert!(!sk_matrix44_invert(&zero, &mut inv));
+            assert!(!sk_matrix44_invert(&raw const zero, &raw mut inv));
         }
     }
 
@@ -4295,24 +4310,22 @@ mod tests {
             // scale(2) * scale(3) = scale(6).
             let s2 = sk_matrix44_from_array(
                 [
-                    2.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0,
-                    1.0,
+                    2.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0,
                 ]
                 .as_ptr(),
             );
             let s3 = sk_matrix44_from_array(
                 [
-                    3.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 0.0,
-                    1.0,
+                    3.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0,
                 ]
                 .as_ptr(),
             );
             let mut out = sk_matrix44_new();
-            sk_matrix44_concat(&mut out, &s2, &s3);
+            sk_matrix44_concat(&raw mut out, &raw const s2, &raw const s3);
             // map (1,1) -> (6, 6).
             let p = sk_point_t { x: 1.0, y: 1.0 };
             let mut mapped = sk_point_t::default();
-            sk_matrix44_map_point(&out, &p, &mut mapped);
+            sk_matrix44_map_point(&raw const out, &raw const p, &raw mut mapped);
             assert!((mapped.x - 6.0).abs() < 1e-4);
             assert!((mapped.y - 6.0).abs() < 1e-4);
         }
@@ -4359,16 +4372,16 @@ mod tests {
             let tf = sk_typeface_default();
             let font = sk_font_new(tf, 16.0);
             let text = b"hi\0";
-            let blob = sk_textblob_make_from_text(text.as_ptr() as *const c_char, 2, font);
+            let blob = sk_textblob_make_from_text(text.as_ptr().cast::<c_char>(), 2, font);
             assert!(!blob.is_null());
 
             let mut bounds = sk_rect_t::default();
-            assert!(sk_textblob_get_bounds(blob, &mut bounds));
+            assert!(sk_textblob_get_bounds(blob, &raw mut bounds));
 
             let surface = sk_surface_new_raster(64, 32);
             let canvas = sk_surface_lock_canvas(surface);
             let paint = sk_paint_new();
-            sk_paint_set_color(paint, 0xFF000000);
+            sk_paint_set_color(paint, 0xFF00_0000);
             assert!(sk_canvas_draw_text_blob(canvas, blob, 2.0, 20.0, paint));
             sk_paint_unref(paint);
             sk_canvas_release(canvas);
@@ -4391,11 +4404,11 @@ mod tests {
                 right: 16.0,
                 bottom: 16.0,
             };
-            let rcanvas = sk_picture_recorder_begin_recording(rec, &cull);
+            let rcanvas = sk_picture_recorder_begin_recording(rec, &raw const cull);
             assert!(!rcanvas.is_null());
 
             let paint = sk_paint_new();
-            sk_paint_set_color(paint, 0xFFFF0000);
+            sk_paint_set_color(paint, 0xFFFF_0000);
             let r = sk_rect_t {
                 left: 2.0,
                 top: 2.0,
@@ -4404,7 +4417,7 @@ mod tests {
             };
             sk_recording_canvas_save(rcanvas);
             sk_recording_canvas_translate(rcanvas, 1.0, 1.0);
-            sk_recording_canvas_draw_rect(rcanvas, &r, paint);
+            sk_recording_canvas_draw_rect(rcanvas, &raw const r, paint);
             sk_recording_canvas_restore(rcanvas);
             sk_paint_unref(paint);
             sk_recording_canvas_release(rcanvas);
@@ -4414,13 +4427,13 @@ mod tests {
             assert!(sk_picture_approximate_op_count(picture) > 0);
 
             let mut cull_out = sk_rect_t::default();
-            assert!(sk_picture_get_cull_rect(picture, &mut cull_out));
-            assert_eq!(cull_out.right, 16.0);
+            assert!(sk_picture_get_cull_rect(picture, &raw mut cull_out));
+            assert!((cull_out.right - 16.0).abs() < f32::EPSILON);
 
             // Playback onto a fresh canvas.
             let surface = sk_surface_new_raster(16, 16);
             let canvas = sk_surface_lock_canvas(surface);
-            sk_canvas_clear(canvas, 0xFFFFFFFF);
+            sk_canvas_clear(canvas, 0xFFFF_FFFF);
             assert!(sk_picture_playback(picture, canvas));
             sk_canvas_release(canvas);
 
@@ -4464,13 +4477,13 @@ mod tests {
                 right: 10,
                 bottom: 10,
             };
-            assert!(sk_region_set_rect(r, &rect));
+            assert!(sk_region_set_rect(r, &raw const rect));
             assert!(!sk_region_is_empty(r));
             assert!(sk_region_contains(r, 5, 5));
             assert!(!sk_region_contains(r, 15, 15));
 
             let mut bounds = sk_irect_t::default();
-            assert!(sk_region_get_bounds(r, &mut bounds));
+            assert!(sk_region_get_bounds(r, &raw mut bounds));
             assert_eq!(bounds.right, 10);
             assert_eq!(bounds.bottom, 10);
 
@@ -4481,12 +4494,20 @@ mod tests {
                 right: 20,
                 bottom: 20,
             };
-            assert!(sk_region_op_rect(r, &other, SkRegionOp::Union as u32));
-            assert!(sk_region_get_bounds(r, &mut bounds));
+            assert!(sk_region_op_rect(
+                r,
+                &raw const other,
+                SkRegionOp::Union as u32
+            ));
+            assert!(sk_region_get_bounds(r, &raw mut bounds));
             assert_eq!(bounds.right, 20);
 
             // Test intersect op.
-            assert!(sk_region_op_rect(r, &other, SkRegionOp::Intersect as u32));
+            assert!(sk_region_op_rect(
+                r,
+                &raw const other,
+                SkRegionOp::Intersect as u32
+            ));
 
             sk_region_ref(r);
             assert_eq!(sk_refcnt_get_count(r as *const sk_refcnt_t), 2);
@@ -4537,7 +4558,7 @@ mod tests {
         unsafe {
             let surface = sk_surface_new_raster(32, 4);
             let canvas = sk_surface_lock_canvas(surface);
-            sk_canvas_clear(canvas, 0xFF000000);
+            sk_canvas_clear(canvas, 0xFF00_0000);
 
             let b = sk_pathbuilder_new();
             sk_pathbuilder_move_to(b, 0.0, 2.0);
@@ -4546,7 +4567,7 @@ mod tests {
             sk_pathbuilder_delete(b);
 
             let paint = sk_paint_new();
-            sk_paint_set_color(paint, 0xFFFFFFFF);
+            sk_paint_set_color(paint, 0xFFFF_FFFF);
             sk_paint_set_style(paint, 1); // stroke
             sk_paint_set_stroke_width(paint, 2.0);
             let intervals = [4.0f32, 4.0];
@@ -4605,7 +4626,7 @@ mod tests {
                 color_type: u32::MAX,
                 alpha_type: 2, // Premul
             };
-            let surface = sk_surface_new_raster_with_info(&info);
+            let surface = sk_surface_new_raster_with_info(&raw const info);
             assert!(surface.is_null());
         }
     }
@@ -4618,9 +4639,10 @@ mod tests {
         assert_eq!(decode_color_type(5), Some(ColorType::Rgb888x));
         assert_eq!(decode_color_type(6), Some(ColorType::Bgra8888));
 
-        // The raster backend only supports RGBA-order 8888 surfaces, so a
-        // BGRA request decodes correctly but surface creation reports
-        // failure (null) instead of silently mislabeling an RGBA buffer.
+        // The raster backend now supports BGRA-order 8888 surfaces (stored
+        // RGBA internally, presented BGRA on snapshot readback), so a BGRA
+        // request creates a surface rather than reporting failure. This is
+        // what makes N32 raster surfaces work on Windows (where n32 is BGRA).
         unsafe {
             let info_bgra = sk_imageinfo_t {
                 width: 2,
@@ -4628,8 +4650,9 @@ mod tests {
                 color_type: 6,
                 alpha_type: 2, // Premul
             };
-            let s = sk_surface_new_raster_with_info(&info_bgra);
-            assert!(s.is_null());
+            let s = sk_surface_new_raster_with_info(&raw const info_bgra);
+            assert!(!s.is_null());
+            sk_surface_unref(s);
         }
     }
 
@@ -4684,10 +4707,14 @@ mod tests {
             let scale: sk_matrix_t = Matrix::scale(2.0, 2.0).into();
             // result aliases `a` — must not UB and must produce the correct
             // concatenation (m = m * scale).
-            let ptr = &mut m as *mut sk_matrix_t;
-            sk_matrix_concat(ptr, ptr, &scale);
-            let expect: sk_matrix_t = Matrix::translate(2.0, 3.0).concat(&Matrix::scale(2.0, 2.0)).into();
-            assert_eq!(m.values, expect.values);
+            let ptr = &raw mut m;
+            sk_matrix_concat(ptr, ptr, &raw const scale);
+            let expect: sk_matrix_t = Matrix::translate(2.0, 3.0)
+                .concat(&Matrix::scale(2.0, 2.0))
+                .into();
+            for (a, b) in m.values.iter().zip(expect.values.iter()) {
+                assert!((a - b).abs() < f32::EPSILON);
+            }
         }
     }
 
@@ -4695,10 +4722,12 @@ mod tests {
     fn test_matrix_invert_in_place_aliasing_is_safe() {
         unsafe {
             let mut m: sk_matrix_t = Matrix::scale(2.0, 4.0).into();
-            let ptr = &mut m as *mut sk_matrix_t;
+            let ptr = &raw mut m;
             assert!(sk_matrix_invert(ptr, ptr));
             let expect: sk_matrix_t = Matrix::scale(2.0, 4.0).invert().unwrap().into();
-            assert_eq!(m.values, expect.values);
+            for (a, b) in m.values.iter().zip(expect.values.iter()) {
+                assert!((a - b).abs() < f32::EPSILON);
+            }
         }
     }
 
@@ -4707,10 +4736,10 @@ mod tests {
         unsafe {
             let m: sk_matrix_t = Matrix::translate(1.0, 1.0).into();
             let mut p = sk_point_t { x: 2.0, y: 3.0 };
-            let ptr = &mut p as *mut sk_point_t;
-            sk_matrix_map_point(&m, ptr, ptr);
-            assert_eq!(p.x, 3.0);
-            assert_eq!(p.y, 4.0);
+            let ptr = &raw mut p;
+            sk_matrix_map_point(&raw const m, ptr, ptr);
+            assert!((p.x - 3.0).abs() < f32::EPSILON);
+            assert!((p.y - 4.0).abs() < f32::EPSILON);
         }
     }
 
@@ -4744,7 +4773,7 @@ mod tests {
             assert!(!canvas.is_null());
 
             let paint = sk_paint_new();
-            sk_paint_set_color(paint, 0xFFFFFFFF);
+            sk_paint_set_color(paint, 0xFFFF_FFFF);
             let rect = sk_rect_t {
                 left: 0.0,
                 top: 0.0,
@@ -4753,7 +4782,7 @@ mod tests {
             };
             // Drawing directly on the surface (bypassing the locked canvas)
             // must be a no-op while a canvas lock is outstanding.
-            sk_surface_draw_rect(surface, &rect, paint);
+            sk_surface_draw_rect(surface, &raw const rect, paint);
             assert!(!sk_last_call_panicked());
 
             sk_paint_unref(paint);
@@ -4763,7 +4792,10 @@ mod tests {
             // all-zero (the surface was never cleared/drawn on).
             let mut buf = vec![0xAAu8; 10 * 10 * 4];
             sk_surface_read_pixels(surface, buf.as_mut_ptr(), buf.len());
-            assert!(buf.iter().all(|&b| b == 0), "surface was drawn on while locked");
+            assert!(
+                buf.iter().all(|&b| b == 0),
+                "surface was drawn on while locked"
+            );
 
             sk_surface_unref(surface);
         }
@@ -4808,7 +4840,7 @@ mod tests {
             // A live, non-refcounted allocation of sufficient size must
             // fail the tag check and return 0, not a bogus count.
             let junk: [u32; 4] = [0xDEAD_BEEF, 1, 2, 3];
-            assert_eq!(sk_refcnt_get_count(junk.as_ptr() as *const sk_refcnt_t), 0);
+            assert_eq!(sk_refcnt_get_count(junk.as_ptr().cast::<sk_refcnt_t>()), 0);
         }
     }
 }

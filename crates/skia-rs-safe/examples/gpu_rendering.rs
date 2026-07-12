@@ -8,7 +8,7 @@
 //!
 //! Note: This requires a GPU. If no GPU is available, it will fail gracefully.
 //!
-//! Run with: cargo run --example gpu_rendering --features "wgpu-backend,codec"
+//! Run with: cargo run --example `gpu_rendering` --features "wgpu-backend,codec"
 
 #[cfg(all(feature = "wgpu-backend", feature = "codec"))]
 use skia_rs_codec::{ImageEncoder, ImageInfo, PngEncoder};

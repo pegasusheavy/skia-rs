@@ -4,7 +4,11 @@
 //! mixed text/element content) and walks the tree to build an `SvgDom`.
 
 use crate::css::Stylesheet;
-use crate::dom::*;
+use crate::dom::{
+    AlignX, AlignY, GradientStop, GradientUnits, MeetOrSlice, PreserveAspectRatio, SpreadMethod,
+    SvgCircle, SvgDom, SvgEllipse, SvgImage, SvgLine, SvgLinearGradient, SvgNode, SvgNodeKind,
+    SvgPaint, SvgRadialGradient, SvgRect, SvgText, TextAnchor,
+};
 use skia_rs_core::{Color, Matrix, Point, Rect, Scalar};
 use skia_rs_path::parse_svg_path;
 use std::collections::HashMap;
@@ -32,6 +36,10 @@ pub enum SvgError {
 /// `style` attributes are preserved on each node, and the contents of
 /// `<style>` elements are parsed into `dom.stylesheet` for later
 /// application during rendering.
+///
+/// # Errors
+///
+/// Returns [`SvgError::XmlError`] if `svg` is not well-formed XML.
 pub fn parse_svg(svg: &str) -> Result<SvgDom, SvgError> {
     let doc = roxmltree::Document::parse(svg).map_err(|e| SvgError::XmlError(e.to_string()))?;
 
@@ -70,7 +78,7 @@ pub fn parse_svg(svg: &str) -> Result<SvgDom, SvgError> {
     apply_common_attrs(&mut root_node, &attrs_of(root));
 
     for child in root.children() {
-        if let Some(node) = build_node(child, &mut dom.stylesheet, &lctx)? {
+        if let Some(node) = build_node(child, &mut dom.stylesheet, lctx)? {
             root_node.add_child(node);
         }
     }
@@ -79,7 +87,7 @@ pub fn parse_svg(svg: &str) -> Result<SvgDom, SvgError> {
     Ok(dom)
 }
 
-/// Collect all attributes of a roxmltree node into a HashMap.
+/// Collect all attributes of a roxmltree node into a `HashMap`.
 ///
 /// Namespaced attributes are stored under both their local name and their
 /// `prefix:local` form so that common lookups like `xlink:href` still work.
@@ -95,7 +103,7 @@ fn attrs_of(node: roxmltree::Node) -> HashMap<String, String> {
             // Convert common namespaces to a prefix.
             let prefix = ns_to_prefix(ns);
             if !prefix.is_empty() {
-                map.insert(format!("{}:{}", prefix, name), value);
+                map.insert(format!("{prefix}:{name}"), value);
             }
         }
     }
@@ -126,10 +134,18 @@ fn collect_text(node: roxmltree::Node) -> String {
 /// Build an `SvgNode` from a roxmltree element. Returns `None` for text or
 /// non-element nodes at the position being iterated. Stop elements are
 /// handled by their parent gradient builder and are skipped here.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one match arm per SVG element kind; splitting would scatter closely related parsing logic and harm readability"
+)]
+#[allow(
+    clippy::similar_names,
+    reason = "fx/fy mirror the SVG `fx`/`fy` attribute names; renaming would obscure the correspondence"
+)]
 fn build_node(
     xml_node: roxmltree::Node,
     stylesheet: &mut Stylesheet,
-    lctx: &LengthContext,
+    lctx: LengthContext,
 ) -> Result<Option<SvgNode>, SvgError> {
     if !xml_node.is_element() {
         return Ok(None);
@@ -142,21 +158,18 @@ fn build_node(
     // defaulting to `dflt` when the attribute is absent.
     let hlen = |k: &str, dflt: &str| {
         lctx.resolve(
-            attrs.get(k).map(String::as_str).unwrap_or(dflt),
+            attrs.get(k).map_or(dflt, String::as_str),
             LengthType::Horizontal,
         )
     };
     let vlen = |k: &str, dflt: &str| {
         lctx.resolve(
-            attrs.get(k).map(String::as_str).unwrap_or(dflt),
+            attrs.get(k).map_or(dflt, String::as_str),
             LengthType::Vertical,
         )
     };
     let olen = |k: &str, dflt: &str| {
-        lctx.resolve(
-            attrs.get(k).map(String::as_str).unwrap_or(dflt),
-            LengthType::Other,
-        )
+        lctx.resolve(attrs.get(k).map_or(dflt, String::as_str), LengthType::Other)
     };
 
     // <style> elements contribute to the document stylesheet rather than
@@ -203,17 +216,17 @@ fn build_node(
             y2: vlen("y2", "0"),
         })),
         "polyline" => {
-            let points = parse_points(attrs.get("points").map(String::as_str).unwrap_or(""));
+            let points = parse_points(attrs.get("points").map_or("", String::as_str));
             SvgNode::new(SvgNodeKind::Polyline(points))
         }
         "polygon" => {
-            let points = parse_points(attrs.get("points").map(String::as_str).unwrap_or(""));
+            let points = parse_points(attrs.get("points").map_or("", String::as_str));
             SvgNode::new(SvgNodeKind::Polygon(points))
         }
         "path" => {
-            let d = attrs.get("d").map(String::as_str).unwrap_or("");
+            let d = attrs.get("d").map_or("", String::as_str);
             let path = parse_svg_path(d).unwrap_or_default();
-            SvgNode::new(SvgNodeKind::Path(path))
+            SvgNode::new(SvgNodeKind::Path(Box::new(path)))
         }
         "text" => {
             let content = collect_text(xml_node);
@@ -255,38 +268,36 @@ fn build_node(
         }
         "linearGradient" => {
             let gradient = SvgLinearGradient {
-                x1: parse_length(attrs.get("x1").map(String::as_str).unwrap_or("0")),
-                y1: parse_length(attrs.get("y1").map(String::as_str).unwrap_or("0")),
-                x2: parse_length(attrs.get("x2").map(String::as_str).unwrap_or("100%")),
-                y2: parse_length(attrs.get("y2").map(String::as_str).unwrap_or("0")),
+                x1: parse_length(attrs.get("x1").map_or("0", String::as_str)),
+                y1: parse_length(attrs.get("y1").map_or("0", String::as_str)),
+                x2: parse_length(attrs.get("x2").map_or("100%", String::as_str)),
+                y2: parse_length(attrs.get("y2").map_or("0", String::as_str)),
                 stops: collect_stops(xml_node),
                 spread: parse_spread(attrs.get("spreadMethod").map(String::as_str)),
                 units: parse_gradient_units(attrs.get("gradientUnits").map(String::as_str)),
                 transform: attrs
                     .get("gradientTransform")
-                    .map(|s| parse_transform_str(s))
-                    .unwrap_or(Matrix::IDENTITY),
+                    .map_or(Matrix::IDENTITY, |s| parse_transform_str(s)),
             };
             SvgNode::new(SvgNodeKind::LinearGradient(gradient))
         }
         "radialGradient" => {
-            let cx = parse_length(attrs.get("cx").map(String::as_str).unwrap_or("50%"));
-            let cy = parse_length(attrs.get("cy").map(String::as_str).unwrap_or("50%"));
-            let fx_str = attrs.get("fx").cloned();
-            let fy_str = attrs.get("fy").cloned();
+            let cx = parse_length(attrs.get("cx").map_or("50%", String::as_str));
+            let cy = parse_length(attrs.get("cy").map_or("50%", String::as_str));
+            let focal_x_str = attrs.get("fx").cloned();
+            let focal_y_str = attrs.get("fy").cloned();
             let gradient = SvgRadialGradient {
                 cx,
                 cy,
-                r: parse_length(attrs.get("r").map(String::as_str).unwrap_or("50%")),
-                fx: fx_str.map(|s| parse_length(&s)).unwrap_or(cx),
-                fy: fy_str.map(|s| parse_length(&s)).unwrap_or(cy),
+                r: parse_length(attrs.get("r").map_or("50%", String::as_str)),
+                fx: focal_x_str.map_or(cx, |s| parse_length(&s)),
+                fy: focal_y_str.map_or(cy, |s| parse_length(&s)),
                 stops: collect_stops(xml_node),
                 spread: parse_spread(attrs.get("spreadMethod").map(String::as_str)),
                 units: parse_gradient_units(attrs.get("gradientUnits").map(String::as_str)),
                 transform: attrs
                     .get("gradientTransform")
-                    .map(|s| parse_transform_str(s))
-                    .unwrap_or(Matrix::IDENTITY),
+                    .map_or(Matrix::IDENTITY, |s| parse_transform_str(s)),
             };
             SvgNode::new(SvgNodeKind::RadialGradient(gradient))
         }
@@ -331,7 +342,10 @@ fn apply_common_attrs(node: &mut SvgNode, attrs: &HashMap<String, String>) {
     node.id = attrs.get("id").cloned();
 
     if let Some(class) = attrs.get("class") {
-        node.classes = class.split_whitespace().map(|s| s.to_string()).collect();
+        node.classes = class
+            .split_whitespace()
+            .map(std::string::ToString::to_string)
+            .collect();
     }
 
     if let Some(transform) = attrs.get("transform") {
@@ -383,8 +397,7 @@ fn apply_common_attrs(node: &mut SvgNode, attrs: &HashMap<String, String>) {
     // Preserve `style="..."` so css::apply_stylesheet can reapply inline
     // declarations after stylesheet rules.
     if let Some(style) = attrs.get("style") {
-        node.attributes
-            .insert("style".to_string(), style.to_string());
+        node.attributes.insert("style".to_string(), style.clone());
     }
 
     // Preserve a handful of non-standard attributes that downstream code
@@ -400,12 +413,12 @@ fn apply_common_attrs(node: &mut SvgNode, attrs: &HashMap<String, String>) {
         "clip-path",
     ] {
         if let Some(v) = attrs.get(key) {
-            node.attributes.insert(key.to_string(), v.to_string());
+            node.attributes.insert(key.to_string(), v.clone());
         }
     }
 }
 
-/// Collect `<stop>` children of a gradient element into GradientStops.
+/// Collect `<stop>` children of a gradient element into `GradientStops`.
 fn collect_stops(gradient: roxmltree::Node) -> Vec<GradientStop> {
     let mut stops = Vec::new();
     for child in gradient.children() {
@@ -418,7 +431,7 @@ fn collect_stops(gradient: roxmltree::Node) -> Vec<GradientStop> {
         let attrs = attrs_of(child);
 
         // Offset may be a plain number (0..1) or a percentage.
-        let offset_str = attrs.get("offset").map(String::as_str).unwrap_or("0");
+        let offset_str = attrs.get("offset").map_or("0", String::as_str);
         let offset = parse_length(offset_str).clamp(0.0, 1.0);
 
         // stop-color can live on the element or in a style attribute.
@@ -486,18 +499,19 @@ fn parse_gradient_units(s: Option<&str>) -> GradientUnits {
 /// default font size — this matches browsers when no parent font is set.
 /// Physical units (`cm`, `mm`, `in`, `pt`, `pc`) convert to CSS pixels at
 /// 96dpi.
+#[must_use]
 pub fn parse_length(s: &str) -> Scalar {
-    let s = s.trim();
-    if s.is_empty() {
-        return 0.0;
-    }
-
     // Strip optional trailing unit; anything else is treated as a plain
     // number in user units. Ordered longest-first so that `1rem` matches
     // `rem` before falling through to `em`.
     const UNITS: &[&str] = &[
         "vmin", "vmax", "rem", "px", "pt", "pc", "em", "ex", "ch", "vw", "vh", "cm", "mm", "in",
     ];
+
+    let s = s.trim();
+    if s.is_empty() {
+        return 0.0;
+    }
 
     // Percentage is a different beast: return as a fraction in [0,1].
     if let Some(stripped) = s.strip_suffix('%') {
@@ -508,17 +522,14 @@ pub fn parse_length(s: &str) -> Scalar {
         if let Some(num) = s.strip_suffix(unit) {
             let n: Scalar = num.parse().unwrap_or(0.0);
             return match *unit {
-                "px" => n,
                 "pt" => n * 96.0 / 72.0,
-                "pc" => n * 16.0, // 1pc = 12pt = 16px
-                "em" | "rem" => n * 16.0,
-                "ex" => n * 8.0, // rough x-height approximation
-                "ch" => n * 8.0, // rough 0-character width approximation
+                "pc" | "em" | "rem" => n * 16.0, // 1pc = 12pt = 16px
+                "ex" | "ch" => n * 8.0,          // rough x-height/0-character-width approximation
                 "vw" | "vh" | "vmin" | "vmax" => n * 10.0, // 1% of a 1000-unit viewport
                 "cm" => n * 96.0 / 2.54,
                 "mm" => n * 96.0 / 25.4,
                 "in" => n * 96.0,
-                _ => n,
+                _ => n, // "px" and unrecognized units pass through as-is
             };
         }
     }
@@ -563,20 +574,18 @@ pub(crate) struct LengthContext {
 }
 
 impl LengthContext {
-    fn size_for_type(&self, t: LengthType) -> Scalar {
+    fn size_for_type(self, t: LengthType) -> Scalar {
         match t {
             LengthType::Horizontal => self.vw,
             LengthType::Vertical => self.vh,
             // https://www.w3.org/TR/SVG11/coords.html#Units_viewport_percentage
-            LengthType::Other => {
-                (1.0 / std::f32::consts::SQRT_2) * (self.vw * self.vw + self.vh * self.vh).sqrt()
-            }
+            LengthType::Other => (1.0 / std::f32::consts::SQRT_2) * self.vw.hypot(self.vh),
         }
     }
 
     /// Resolve a length string to user units. Percentages resolve against
     /// the viewport per `t`; all other units go through [`parse_length`].
-    pub(crate) fn resolve(&self, s: &str, t: LengthType) -> Scalar {
+    pub(crate) fn resolve(self, s: &str, t: LengthType) -> Scalar {
         let s = s.trim();
         if let Some(stripped) = s.strip_suffix('%') {
             let pct = stripped.trim().parse::<Scalar>().unwrap_or(0.0) / 100.0;
@@ -602,11 +611,11 @@ fn parse_preserve_aspect_ratio(s: &str) -> PreserveAspectRatio {
         "xMidYMin" => Some((AlignX::Mid, AlignY::Min)),
         "xMaxYMin" => Some((AlignX::Max, AlignY::Min)),
         "xMinYMid" => Some((AlignX::Min, AlignY::Mid)),
-        "xMidYMid" => Some((AlignX::Mid, AlignY::Mid)),
         "xMaxYMid" => Some((AlignX::Max, AlignY::Mid)),
         "xMinYMax" => Some((AlignX::Min, AlignY::Max)),
         "xMidYMax" => Some((AlignX::Mid, AlignY::Max)),
         "xMaxYMax" => Some((AlignX::Max, AlignY::Max)),
+        // "xMidYMid" and any unrecognized token fall back to the SVG default.
         _ => Some((AlignX::Mid, AlignY::Mid)),
     };
     let meet_or_slice = match tokens.next() {
@@ -701,6 +710,12 @@ pub(crate) fn parse_color(s: &str) -> Option<Color> {
 }
 
 /// Parse a transform string (public for CSS module).
+///
+/// # Panics
+///
+/// Never panics in practice: the internal `unwrap()` only fires on a
+/// character just confirmed present via `peek()`.
+#[must_use]
 pub fn parse_transform_str(s: &str) -> Matrix {
     let mut result = Matrix::IDENTITY;
     let s = s.trim();
@@ -748,7 +763,7 @@ pub fn parse_transform_str(s: &str) -> Matrix {
                 }
                 "rotate" => {
                     let angle = nums.first().copied().unwrap_or(0.0);
-                    let radians = angle * std::f32::consts::PI / 180.0;
+                    let radians = angle.to_radians();
                     if nums.len() >= 3 {
                         let cx = nums[1];
                         let cy = nums[2];
@@ -787,6 +802,10 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact test assertions against literals from unit-less/px-suffixed inputs"
+    )]
     fn test_parse_length() {
         assert_eq!(parse_length("100"), 100.0);
         assert_eq!(parse_length("50px"), 50.0);
@@ -830,6 +849,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact test assertion against a literal parsed from fixed SVG text"
+    )]
     fn test_parse_simple_svg() {
         let svg = r#"<svg width="100" height="100" xmlns="http://www.w3.org/2000/svg">
             <rect x="10" y="10" width="80" height="80" fill="red"/>
@@ -853,6 +876,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact test assertion against a literal parsed from a fixed font-size attribute"
+    )]
     fn test_text_content_captured() {
         let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
             <text x="10" y="20" font-size="14">Hello, world!</text>
@@ -935,6 +962,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact test assertions against literals parsed from fixed SVG attributes"
+    )]
     fn test_image_parsed() {
         let svg = r#"<svg xmlns="http://www.w3.org/2000/svg">
           <image x="5" y="6" width="100" height="200" href="data:image/png;base64,AAAA"/>
@@ -1024,12 +1055,12 @@ mod tests {
                 assert_eq!(id, "#grad");
                 assert_eq!(color, Color::from_rgb(255, 0, 0));
             }
-            other => panic!("expected url with fallback, got {:?}", other),
+            other => panic!("expected url with fallback, got {other:?}"),
         }
         // No fallback.
         match parse_paint("url(#grad)") {
             Some(SvgPaint::Url(id, None)) => assert_eq!(id, "#grad"),
-            other => panic!("expected url without fallback, got {:?}", other),
+            other => panic!("expected url without fallback, got {other:?}"),
         }
         // Explicit `none` fallback.
         assert!(matches!(

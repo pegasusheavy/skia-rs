@@ -4,8 +4,9 @@
 //! of complex paths with correct winding rule handling.
 
 use crate::tessellation::{TessIndex, TessMesh, TessVertex};
+use skia_rs_core::cast::scalar_from_i32;
 use skia_rs_core::{Point, Rect, Scalar};
-use skia_rs_path::{FillType, Path, PathBuilder, PathElement};
+use skia_rs_path::{FillType, Path, PathElement};
 
 /// Fill rule for stencil operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -20,8 +21,8 @@ pub enum StencilFillRule {
 impl From<FillType> for StencilFillRule {
     fn from(fill_type: FillType) -> Self {
         match fill_type {
-            FillType::Winding | FillType::InverseWinding => StencilFillRule::NonZero,
-            FillType::EvenOdd | FillType::InverseEvenOdd => StencilFillRule::EvenOdd,
+            FillType::Winding | FillType::InverseWinding => Self::NonZero,
+            FillType::EvenOdd | FillType::InverseEvenOdd => Self::EvenOdd,
         }
     }
 }
@@ -159,6 +160,7 @@ impl StencilCoverConfig {
     /// Build a config from a path's [`FillType`], carrying the inverse bit
     /// that [`StencilFillRule::from`] discards. `clip_bounds` bounds the
     /// cover pass for inverse fills (typically the device/clip rect).
+    #[must_use]
     pub fn from_fill_type(fill_type: FillType, clip_bounds: Option<Rect>) -> Self {
         Self {
             fill_rule: StencilFillRule::from(fill_type),
@@ -269,7 +271,7 @@ fn tessellate_path_for_stencil(path: &Path) -> TessMesh {
             *start = None;
         };
 
-    for element in path.iter() {
+    for element in path {
         match element {
             PathElement::Move(p) => {
                 // A new contour begins; implicitly close the previous one.
@@ -290,7 +292,7 @@ fn tessellate_path_for_stencil(path: &Path) -> TessMesh {
             PathElement::Quad(ctrl, end) => {
                 let steps = 8;
                 for i in 1..=steps {
-                    let t = i as Scalar / steps as Scalar;
+                    let t = scalar_from_i32(i) / scalar_from_i32(steps);
                     let p = eval_quad(current_point, ctrl, end, t);
                     let curr_vertex = mesh.add_vertex(TessVertex::from_point(p));
                     if let Some(prev) = prev_vertex {
@@ -303,7 +305,7 @@ fn tessellate_path_for_stencil(path: &Path) -> TessMesh {
             PathElement::Conic(ctrl, end, weight) => {
                 let steps = 8;
                 for i in 1..=steps {
-                    let t = i as Scalar / steps as Scalar;
+                    let t = scalar_from_i32(i) / scalar_from_i32(steps);
                     let p = eval_conic(current_point, ctrl, end, weight, t);
                     let curr_vertex = mesh.add_vertex(TessVertex::from_point(p));
                     if let Some(prev) = prev_vertex {
@@ -316,7 +318,7 @@ fn tessellate_path_for_stencil(path: &Path) -> TessMesh {
             PathElement::Cubic(ctrl1, ctrl2, end) => {
                 let steps = 12;
                 for i in 1..=steps {
-                    let t = i as Scalar / steps as Scalar;
+                    let t = scalar_from_i32(i) / scalar_from_i32(steps);
                     let p = eval_cubic(current_point, ctrl1, ctrl2, end, t);
                     let curr_vertex = mesh.add_vertex(TessVertex::from_point(p));
                     if let Some(prev) = prev_vertex {
@@ -355,7 +357,7 @@ fn create_cover_mesh(bounds: Rect) -> TessMesh {
 /// Cover-pass test function for the fill: `NotEqual 0` paints where the
 /// stencil winding count is non-zero (normal fill); `Equal 0` paints where
 /// it is zero (inverse fill — the region outside the path).
-fn cover_func(inverse: bool) -> StencilFunc {
+const fn cover_func(inverse: bool) -> StencilFunc {
     if inverse {
         StencilFunc::Equal
     } else {
@@ -364,7 +366,10 @@ fn cover_func(inverse: bool) -> StencilFunc {
 }
 
 /// Create stencil states for non-zero winding rule.
-fn create_nonzero_stencil_states(two_sided: bool, inverse: bool) -> (StencilState, StencilState) {
+const fn create_nonzero_stencil_states(
+    two_sided: bool,
+    inverse: bool,
+) -> (StencilState, StencilState) {
     let cover_test = cover_func(inverse);
     if two_sided {
         let stencil = StencilState {
@@ -450,7 +455,7 @@ fn create_nonzero_stencil_states(two_sided: bool, inverse: bool) -> (StencilStat
 }
 
 /// Create stencil states for even-odd rule.
-fn create_evenodd_stencil_states(inverse: bool) -> (StencilState, StencilState) {
+const fn create_evenodd_stencil_states(inverse: bool) -> (StencilState, StencilState) {
     let cover_test = cover_func(inverse);
     let stencil = StencilState {
         enabled: true,
@@ -500,8 +505,8 @@ fn eval_quad(p0: Point, p1: Point, p2: Point, t: Scalar) -> Point {
     let mt2 = mt * mt;
     let t2 = t * t;
     Point::new(
-        mt2 * p0.x + 2.0 * mt * t * p1.x + t2 * p2.x,
-        mt2 * p0.y + 2.0 * mt * t * p1.y + t2 * p2.y,
+        t2.mul_add(p2.x, mt2 * p0.x + 2.0 * mt * t * p1.x),
+        t2.mul_add(p2.y, mt2 * p0.y + 2.0 * mt * t * p1.y),
     )
 }
 
@@ -512,8 +517,8 @@ fn eval_conic(p0: Point, p1: Point, p2: Point, w: Scalar, t: Scalar) -> Point {
     let wt = 2.0 * w * mt * t;
     let denom = mt2 + wt + t2;
     Point::new(
-        (mt2 * p0.x + wt * p1.x + t2 * p2.x) / denom,
-        (mt2 * p0.y + wt * p1.y + t2 * p2.y) / denom,
+        t2.mul_add(p2.x, mt2 * p0.x + wt * p1.x) / denom,
+        t2.mul_add(p2.y, mt2 * p0.y + wt * p1.y) / denom,
     )
 }
 
@@ -524,14 +529,21 @@ fn eval_cubic(p0: Point, p1: Point, p2: Point, p3: Point, t: Scalar) -> Point {
     let t2 = t * t;
     let t3 = t2 * t;
     Point::new(
-        mt3 * p0.x + 3.0 * mt2 * t * p1.x + 3.0 * mt * t2 * p2.x + t3 * p3.x,
-        mt3 * p0.y + 3.0 * mt2 * t * p1.y + 3.0 * mt * t2 * p2.y + t3 * p3.y,
+        t3.mul_add(
+            p3.x,
+            (3.0 * mt * t2).mul_add(p2.x, mt3 * p0.x + 3.0 * mt2 * t * p1.x),
+        ),
+        t3.mul_add(
+            p3.y,
+            (3.0 * mt * t2).mul_add(p2.y, mt3 * p0.y + 3.0 * mt2 * t * p1.y),
+        ),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skia_rs_path::PathBuilder;
 
     #[test]
     fn test_stencil_fill_rule_conversion() {
@@ -650,18 +662,32 @@ mod tests {
         let path = builder.build();
 
         let clip = Rect::new(0.0, 0.0, 200.0, 200.0);
-        let config =
-            StencilCoverConfig::from_fill_type(FillType::InverseWinding, Some(clip));
+        let config = StencilCoverConfig::from_fill_type(FillType::InverseWinding, Some(clip));
         assert!(config.inverse);
 
         let result = prepare_stencil_cover(&path, &config);
-        assert_eq!(result.cover_pass.stencil_state.front_func, StencilFunc::Equal);
-        assert_eq!(result.cover_pass.stencil_state.back_func, StencilFunc::Equal);
+        assert_eq!(
+            result.cover_pass.stencil_state.front_func,
+            StencilFunc::Equal
+        );
+        assert_eq!(
+            result.cover_pass.stencil_state.back_func,
+            StencilFunc::Equal
+        );
 
         // Cover mesh must span the clip bounds, not the tiny path bounds.
-        let xs: Vec<f32> = result.cover_pass.mesh.vertices.iter().map(|v| v.position[0]).collect();
-        let max_x = xs.iter().cloned().fold(f32::MIN, f32::max);
-        assert!(max_x >= 200.0, "inverse cover must span clip bounds, got max_x={max_x}");
+        let xs: Vec<f32> = result
+            .cover_pass
+            .mesh
+            .vertices
+            .iter()
+            .map(|v| v.position[0])
+            .collect();
+        let max_x = xs.iter().copied().fold(f32::MIN, f32::max);
+        assert!(
+            max_x >= 200.0,
+            "inverse cover must span clip bounds, got max_x={max_x}"
+        );
     }
 
     #[test]

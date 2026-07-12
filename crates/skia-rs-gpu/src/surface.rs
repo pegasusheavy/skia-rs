@@ -1,7 +1,7 @@
 //! GPU surface abstraction.
 
-use crate::{GpuError, GpuResult, TextureDescriptor, TextureFormat, TextureUsage};
-use skia_rs_core::{Color, Rect, Scalar};
+use crate::TextureFormat;
+use skia_rs_core::Color;
 
 /// GPU surface properties.
 #[derive(Debug, Clone)]
@@ -32,6 +32,7 @@ impl Default for GpuSurfaceProps {
 
 impl GpuSurfaceProps {
     /// Create new surface properties.
+    #[must_use]
     pub fn new(width: u32, height: u32) -> Self {
         Self {
             width,
@@ -41,19 +42,22 @@ impl GpuSurfaceProps {
     }
 
     /// Set format.
-    pub fn with_format(mut self, format: TextureFormat) -> Self {
+    #[must_use]
+    pub const fn with_format(mut self, format: TextureFormat) -> Self {
         self.format = format;
         self
     }
 
     /// Set sample count.
-    pub fn with_sample_count(mut self, count: u32) -> Self {
+    #[must_use]
+    pub const fn with_sample_count(mut self, count: u32) -> Self {
         self.sample_count = count;
         self
     }
 
     /// Enable sRGB.
-    pub fn with_srgb(mut self, srgb: bool) -> Self {
+    #[must_use]
+    pub const fn with_srgb(mut self, srgb: bool) -> Self {
         self.srgb = srgb;
         self
     }
@@ -109,7 +113,8 @@ impl Default for RenderPassDescriptor {
 
 impl RenderPassDescriptor {
     /// Create with no clearing.
-    pub fn no_clear() -> Self {
+    #[must_use]
+    pub const fn no_clear() -> Self {
         Self {
             clear_color: None,
             clear_depth: None,
@@ -118,7 +123,8 @@ impl RenderPassDescriptor {
     }
 
     /// Create with color clear only.
-    pub fn color_clear(r: f32, g: f32, b: f32, a: f32) -> Self {
+    #[must_use]
+    pub const fn color_clear(r: f32, g: f32, b: f32, a: f32) -> Self {
         Self {
             clear_color: Some([r, g, b, a]),
             clear_depth: None,

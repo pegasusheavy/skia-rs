@@ -33,8 +33,10 @@
 //! }
 //! ```
 
+use crate::cast_util::u32_from_usize;
 use std::collections::HashMap;
 use std::fmt;
+use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 // =============================================================================
@@ -61,12 +63,12 @@ pub enum ShaderType {
 impl fmt::Display for ShaderType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ShaderType::Vertex => write!(f, "Vertex"),
-            ShaderType::Fragment => write!(f, "Fragment"),
-            ShaderType::Compute => write!(f, "Compute"),
-            ShaderType::Geometry => write!(f, "Geometry"),
-            ShaderType::TessControl => write!(f, "TessControl"),
-            ShaderType::TessEval => write!(f, "TessEval"),
+            Self::Vertex => write!(f, "Vertex"),
+            Self::Fragment => write!(f, "Fragment"),
+            Self::Compute => write!(f, "Compute"),
+            Self::Geometry => write!(f, "Geometry"),
+            Self::TessControl => write!(f, "TessControl"),
+            Self::TessEval => write!(f, "TessEval"),
         }
     }
 }
@@ -89,11 +91,11 @@ pub enum ShaderLanguage {
 impl fmt::Display for ShaderLanguage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ShaderLanguage::Glsl => write!(f, "GLSL"),
-            ShaderLanguage::Wgsl => write!(f, "WGSL"),
-            ShaderLanguage::SpirV => write!(f, "SPIR-V"),
-            ShaderLanguage::Msl => write!(f, "MSL"),
-            ShaderLanguage::Hlsl => write!(f, "HLSL"),
+            Self::Glsl => write!(f, "GLSL"),
+            Self::Wgsl => write!(f, "WGSL"),
+            Self::SpirV => write!(f, "SPIR-V"),
+            Self::Msl => write!(f, "MSL"),
+            Self::Hlsl => write!(f, "HLSL"),
         }
     }
 }
@@ -201,7 +203,8 @@ pub struct ValidationResult {
 
 impl ValidationResult {
     /// Create a valid result
-    pub fn valid() -> Self {
+    #[must_use]
+    pub const fn valid() -> Self {
         Self {
             is_valid: true,
             errors: Vec::new(),
@@ -211,6 +214,7 @@ impl ValidationResult {
     }
 
     /// Create an invalid result with a single error
+    #[must_use]
     pub fn error(error: ShaderError) -> Self {
         Self {
             is_valid: false,
@@ -264,7 +268,11 @@ pub struct ShaderWarning {
 impl fmt::Display for ShaderWarning {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.line > 0 {
-            write!(f, "{}:{}: warning: {}", self.line, self.column, self.message)
+            write!(
+                f,
+                "{}:{}: warning: {}",
+                self.line, self.column, self.message
+            )
         } else {
             write!(f, "warning: {}", self.message)
         }
@@ -314,6 +322,7 @@ impl Default for ShaderDebugger {
 
 impl ShaderDebugger {
     /// Create a new shader debugger
+    #[must_use]
     pub fn new() -> Self {
         Self {
             shader_cache: HashMap::new(),
@@ -325,17 +334,17 @@ impl ShaderDebugger {
     }
 
     /// Set debug verbosity level
-    pub fn set_verbosity(&mut self, verbosity: DebugVerbosity) {
+    pub const fn set_verbosity(&mut self, verbosity: DebugVerbosity) {
         self.verbosity = verbosity;
     }
 
     /// Enable/disable source capture
-    pub fn set_capture_source(&mut self, capture: bool) {
+    pub const fn set_capture_source(&mut self, capture: bool) {
         self.capture_source = capture;
     }
 
     /// Enable/disable binary capture
-    pub fn set_capture_binary(&mut self, capture: bool) {
+    pub const fn set_capture_binary(&mut self, capture: bool) {
         self.capture_binary = capture;
     }
 
@@ -374,11 +383,13 @@ impl ShaderDebugger {
     }
 
     /// Get information about a registered shader
+    #[must_use]
     pub fn get_shader_info(&self, id: u64) -> Option<&ShaderInfo> {
         self.shader_cache.get(&id)
     }
 
     /// Validate a shader
+    #[must_use]
     pub fn validate_shader(
         &self,
         source: &str,
@@ -386,11 +397,11 @@ impl ShaderDebugger {
         language: ShaderLanguage,
     ) -> ValidationResult {
         match language {
-            ShaderLanguage::Glsl => self.validate_glsl(source, shader_type),
-            ShaderLanguage::Wgsl => self.validate_wgsl(source, shader_type),
+            ShaderLanguage::Glsl => Self::validate_glsl(source, shader_type),
+            ShaderLanguage::Wgsl => Self::validate_wgsl(source, shader_type),
             ShaderLanguage::SpirV => ValidationResult::valid(), // Binary validation not implemented
-            ShaderLanguage::Msl => self.validate_msl(source, shader_type),
-            ShaderLanguage::Hlsl => self.validate_hlsl(source, shader_type),
+            ShaderLanguage::Msl => Self::validate_msl(source, shader_type),
+            ShaderLanguage::Hlsl => Self::validate_hlsl(source, shader_type),
         }
     }
 
@@ -404,25 +415,27 @@ impl ShaderDebugger {
 
         // Count lines (rough instruction estimate)
         let lines: Vec<&str> = source.lines().collect();
-        stats.instruction_count = lines
-            .iter()
-            .filter(|l| {
-                let trimmed = l.trim();
-                !trimmed.is_empty() && !trimmed.starts_with("//") && !trimmed.starts_with('#')
-            })
-            .count() as u32;
+        stats.instruction_count = u32_from_usize(
+            lines
+                .iter()
+                .filter(|l| {
+                    let trimmed = l.trim();
+                    !trimmed.is_empty() && !trimmed.starts_with("//") && !trimmed.starts_with('#')
+                })
+                .count(),
+        );
 
         // Count specific patterns based on language
         match language {
             ShaderLanguage::Glsl => {
-                stats.sampler_count = source.matches("sampler").count() as u32;
-                stats.uniform_buffer_count = source.matches("uniform ").count() as u32;
+                stats.sampler_count = u32_from_usize(source.matches("sampler").count());
+                stats.uniform_buffer_count = u32_from_usize(source.matches("uniform ").count());
                 stats.uses_derivatives = source.contains("dFdx") || source.contains("dFdy");
                 stats.uses_discard = source.contains("discard");
             }
             ShaderLanguage::Wgsl => {
-                stats.sampler_count = source.matches("sampler").count() as u32;
-                stats.uniform_buffer_count = source.matches("@group").count() as u32;
+                stats.sampler_count = u32_from_usize(source.matches("sampler").count());
+                stats.uniform_buffer_count = u32_from_usize(source.matches("@group").count());
                 stats.uses_derivatives = source.contains("dpdx") || source.contains("dpdy");
                 stats.uses_discard = source.contains("discard");
             }
@@ -445,7 +458,7 @@ impl ShaderDebugger {
                         if let Some(name) = Self::extract_glsl_uniform_name(line) {
                             bindings.push(ShaderBinding {
                                 name,
-                                location: idx as u32,
+                                location: u32_from_usize(idx),
                                 binding_type: BindingType::UniformBuffer,
                                 group: 0,
                             });
@@ -489,7 +502,9 @@ impl ShaderDebugger {
         let after_var = &line[var_idx..];
         let name_start = after_var.find(' ')? + 1;
         let name_end = after_var[name_start..].find(':')?;
-        let name = after_var[name_start..name_start + name_end].trim().to_string();
+        let name = after_var[name_start..name_start + name_end]
+            .trim()
+            .to_string();
 
         let binding_type = if line.contains("sampler") {
             BindingType::Sampler
@@ -518,7 +533,7 @@ impl ShaderDebugger {
     }
 
     // Validation implementations
-    fn validate_glsl(&self, source: &str, shader_type: ShaderType) -> ValidationResult {
+    fn validate_glsl(source: &str, shader_type: ShaderType) -> ValidationResult {
         let mut result = ValidationResult::valid();
 
         // Check for version directive
@@ -574,10 +589,7 @@ impl ShaderDebugger {
         let close_braces = source.matches('}').count();
         if open_braces != close_braces {
             result.errors.push(ShaderError {
-                message: format!(
-                    "Mismatched braces: {} open, {} close",
-                    open_braces, close_braces
-                ),
+                message: format!("Mismatched braces: {open_braces} open, {close_braces} close"),
                 line: 0,
                 column: 0,
                 code: Some("E002".to_string()),
@@ -589,7 +601,7 @@ impl ShaderDebugger {
         result
     }
 
-    fn validate_wgsl(&self, source: &str, shader_type: ShaderType) -> ValidationResult {
+    fn validate_wgsl(source: &str, shader_type: ShaderType) -> ValidationResult {
         let mut result = ValidationResult::valid();
 
         // Parse with naga's WGSL frontend. If this fails we surface the
@@ -617,7 +629,7 @@ impl ShaderDebugger {
         );
         if let Err(err) = validator.validate(&module) {
             result.errors.push(ShaderError {
-                message: format!("WGSL semantic validation failed: {}", err),
+                message: format!("WGSL semantic validation failed: {err}"),
                 line: 0,
                 column: 0,
                 code: Some("E002".to_string()),
@@ -639,7 +651,7 @@ impl ShaderDebugger {
             let has_stage = module.entry_points.iter().any(|ep| ep.stage == stage);
             if !has_stage {
                 result.errors.push(ShaderError {
-                    message: format!("No {:?} entry point in WGSL module", stage),
+                    message: format!("No {stage:?} entry point in WGSL module"),
                     line: 0,
                     column: 0,
                     code: Some("E003".to_string()),
@@ -652,7 +664,7 @@ impl ShaderDebugger {
         result
     }
 
-    fn validate_msl(&self, source: &str, _shader_type: ShaderType) -> ValidationResult {
+    fn validate_msl(source: &str, _shader_type: ShaderType) -> ValidationResult {
         let mut result = ValidationResult::valid();
 
         // Check for metal stdlib
@@ -668,7 +680,7 @@ impl ShaderDebugger {
         result
     }
 
-    fn validate_hlsl(&self, source: &str, _shader_type: ShaderType) -> ValidationResult {
+    fn validate_hlsl(source: &str, _shader_type: ShaderType) -> ValidationResult {
         let mut result = ValidationResult::valid();
 
         // Basic HLSL validation
@@ -685,55 +697,54 @@ impl ShaderDebugger {
     }
 
     /// Dump shader information for debugging
+    #[must_use]
     pub fn dump_shader(&self, id: u64) -> String {
-        if let Some(info) = self.shader_cache.get(&id) {
-            let mut output = String::new();
-            output.push_str(&format!("=== Shader {} ===\n", id));
-            output.push_str(&format!("Type: {}\n", info.shader_type));
-            output.push_str(&format!("Language: {}\n", info.language));
-            output.push_str(&format!("Entry Point: {}\n", info.entry_point));
-            output.push_str(&format!("Compile Time: {:?}\n", info.compile_time));
-            output.push_str("\n--- Statistics ---\n");
-            output.push_str(&format!(
-                "Instructions: ~{}\n",
-                info.stats.instruction_count
-            ));
-            output.push_str(&format!("Registers: ~{}\n", info.stats.register_count));
-            output.push_str(&format!("Samplers: {}\n", info.stats.sampler_count));
-            output.push_str(&format!(
-                "Uniform Buffers: {}\n",
-                info.stats.uniform_buffer_count
-            ));
-            output.push_str(&format!(
-                "Uses Derivatives: {}\n",
-                info.stats.uses_derivatives
-            ));
-            output.push_str(&format!("Uses Discard: {}\n", info.stats.uses_discard));
+        self.shader_cache.get(&id).map_or_else(
+            || format!("Shader {id} not found"),
+            |info| {
+                let mut output = String::new();
+                let _ = writeln!(output, "=== Shader {id} ===");
+                let _ = writeln!(output, "Type: {}", info.shader_type);
+                let _ = writeln!(output, "Language: {}", info.language);
+                let _ = writeln!(output, "Entry Point: {}", info.entry_point);
+                let _ = writeln!(output, "Compile Time: {:?}", info.compile_time);
+                output.push_str("\n--- Statistics ---\n");
+                let _ = writeln!(output, "Instructions: ~{}", info.stats.instruction_count);
+                let _ = writeln!(output, "Registers: ~{}", info.stats.register_count);
+                let _ = writeln!(output, "Samplers: {}", info.stats.sampler_count);
+                let _ = writeln!(
+                    output,
+                    "Uniform Buffers: {}",
+                    info.stats.uniform_buffer_count
+                );
+                let _ = writeln!(output, "Uses Derivatives: {}", info.stats.uses_derivatives);
+                let _ = writeln!(output, "Uses Discard: {}", info.stats.uses_discard);
 
-            if !info.bindings.is_empty() {
-                output.push_str("\n--- Bindings ---\n");
-                for binding in &info.bindings {
-                    output.push_str(&format!(
-                        "  {} (group={}, binding={}, type={:?})\n",
-                        binding.name, binding.group, binding.location, binding.binding_type
-                    ));
+                if !info.bindings.is_empty() {
+                    output.push_str("\n--- Bindings ---\n");
+                    for binding in &info.bindings {
+                        let _ = writeln!(
+                            output,
+                            "  {} (group={}, binding={}, type={:?})",
+                            binding.name, binding.group, binding.location, binding.binding_type
+                        );
+                    }
                 }
-            }
 
-            if !info.source.is_empty() {
-                output.push_str("\n--- Source ---\n");
-                for (i, line) in info.source.lines().enumerate() {
-                    output.push_str(&format!("{:4} | {}\n", i + 1, line));
+                if !info.source.is_empty() {
+                    output.push_str("\n--- Source ---\n");
+                    for (i, line) in info.source.lines().enumerate() {
+                        let _ = writeln!(output, "{:4} | {}", i + 1, line);
+                    }
                 }
-            }
 
-            output
-        } else {
-            format!("Shader {} not found", id)
-        }
+                output
+            },
+        )
     }
 
     /// Get all registered shader IDs
+    #[must_use]
     pub fn get_shader_ids(&self) -> Vec<u64> {
         self.shader_cache.keys().copied().collect()
     }
@@ -759,6 +770,7 @@ pub struct ShaderProfiler {
 
 impl ShaderProfiler {
     /// Create a new shader profiler
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -780,55 +792,52 @@ impl ShaderProfiler {
     }
 
     /// Get average compilation time for a shader
+    #[must_use]
     pub fn avg_compile_time(&self, shader_id: u64) -> Option<Duration> {
         self.compile_times.get(&shader_id).map(|times| {
             let total: Duration = times.iter().sum();
-            total / times.len() as u32
+            total / u32_from_usize(times.len())
         })
     }
 
     /// Get average execution time for a shader
+    #[must_use]
     pub fn avg_execution_time(&self, shader_id: u64) -> Option<Duration> {
         self.execution_times.get(&shader_id).map(|times| {
             let total: Duration = times.iter().sum();
-            total / times.len() as u32
+            total / u32_from_usize(times.len())
         })
     }
 
     /// Generate a profiling report
+    #[must_use]
     pub fn generate_report(&self) -> String {
         let mut output = String::new();
         output.push_str("=== Shader Profiling Report ===\n\n");
 
         output.push_str("Compilation Times:\n");
         for (id, times) in &self.compile_times {
-            let avg = times.iter().sum::<Duration>() / times.len() as u32;
-            let min = times.iter().min().unwrap();
-            let max = times.iter().max().unwrap();
-            output.push_str(&format!(
-                "  Shader {}: avg={:?}, min={:?}, max={:?}, samples={}\n",
-                id,
-                avg,
-                min,
-                max,
-                times.len()
-            ));
+            if let (Some(min), Some(max)) = (times.iter().min(), times.iter().max()) {
+                let avg = times.iter().sum::<Duration>() / u32_from_usize(times.len());
+                let _ = writeln!(
+                    output,
+                    "  Shader {id}: avg={avg:?}, min={min:?}, max={max:?}, samples={}",
+                    times.len()
+                );
+            }
         }
 
         if !self.execution_times.is_empty() {
             output.push_str("\nExecution Times:\n");
             for (id, times) in &self.execution_times {
-                let avg = times.iter().sum::<Duration>() / times.len() as u32;
-                let min = times.iter().min().unwrap();
-                let max = times.iter().max().unwrap();
-                output.push_str(&format!(
-                    "  Shader {}: avg={:?}, min={:?}, max={:?}, samples={}\n",
-                    id,
-                    avg,
-                    min,
-                    max,
-                    times.len()
-                ));
+                if let (Some(min), Some(max)) = (times.iter().min(), times.iter().max()) {
+                    let avg = times.iter().sum::<Duration>() / u32_from_usize(times.len());
+                    let _ = writeln!(
+                        output,
+                        "  Shader {id}: avg={avg:?}, min={min:?}, max={max:?}, samples={}",
+                        times.len()
+                    );
+                }
             }
         }
 
@@ -844,7 +853,7 @@ mod tests {
     fn test_shader_debugger() {
         let mut debugger = ShaderDebugger::new();
 
-        let glsl_source = r#"
+        let glsl_source = r"
 #version 450
 uniform mat4 uMVP;
 in vec3 aPosition;
@@ -853,7 +862,7 @@ void main() {
     gl_Position = uMVP * vec4(aPosition, 1.0);
     vColor = vec4(1.0);
 }
-"#;
+";
 
         let id = debugger.register_shader(glsl_source, ShaderType::Vertex, ShaderLanguage::Glsl);
         assert!(id > 0);
@@ -868,20 +877,20 @@ void main() {
         let debugger = ShaderDebugger::new();
 
         // Valid shader
-        let valid = r#"
+        let valid = r"
 #version 450
 void main() {
     gl_Position = vec4(0.0);
 }
-"#;
+";
         let result = debugger.validate_shader(valid, ShaderType::Vertex, ShaderLanguage::Glsl);
         assert!(result.is_valid);
 
         // Invalid shader (missing main)
-        let invalid = r#"
+        let invalid = r"
 #version 450
 void notmain() { }
-"#;
+";
         let result = debugger.validate_shader(invalid, ShaderType::Vertex, ShaderLanguage::Glsl);
         assert!(!result.is_valid);
     }
@@ -890,12 +899,12 @@ void notmain() { }
     fn test_wgsl_validation() {
         let debugger = ShaderDebugger::new();
 
-        let wgsl = r#"
+        let wgsl = r"
 @vertex
 fn main(@location(0) position: vec3<f32>) -> @builtin(position) vec4<f32> {
     return vec4<f32>(position, 1.0);
 }
-"#;
+";
         let result = debugger.validate_shader(wgsl, ShaderType::Vertex, ShaderLanguage::Wgsl);
         assert!(result.is_valid);
     }
@@ -907,12 +916,12 @@ fn main(@location(0) position: vec3<f32>) -> @builtin(position) vec4<f32> {
         // syntax errors.
         let debugger = ShaderDebugger::new();
 
-        let syntax_error = r#"
+        let syntax_error = r"
 @vertex
 fn main() -> @builtin(position) vec4<f32> {
     return vec4<f32>(0.0, 0.0, 0.0
 }
-"#;
+";
         let result =
             debugger.validate_shader(syntax_error, ShaderType::Vertex, ShaderLanguage::Wgsl);
         assert!(!result.is_valid);
@@ -924,12 +933,12 @@ fn main() -> @builtin(position) vec4<f32> {
         // A fragment-only source compiled as a vertex shader must fail.
         let debugger = ShaderDebugger::new();
 
-        let fragment_only = r#"
+        let fragment_only = r"
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
     return vec4<f32>(1.0, 0.0, 0.0, 1.0);
 }
-"#;
+";
         let result =
             debugger.validate_shader(fragment_only, ShaderType::Vertex, ShaderLanguage::Wgsl);
         assert!(!result.is_valid);

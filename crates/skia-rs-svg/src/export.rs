@@ -3,7 +3,9 @@
 //! This module provides functionality to convert an `SvgDom` back to SVG markup,
 //! enabling round-trip editing and programmatic SVG generation.
 
-use crate::dom::*;
+use crate::dom::{
+    GradientStop, GradientUnits, SpreadMethod, SvgDom, SvgNode, SvgNodeKind, SvgPaint, TextAnchor,
+};
 use skia_rs_core::{Color, Matrix, Scalar};
 use std::fmt::Write;
 
@@ -36,7 +38,8 @@ impl Default for SvgExportOptions {
 
 impl SvgExportOptions {
     /// Create options for minified output.
-    pub fn minified() -> Self {
+    #[must_use]
+    pub const fn minified() -> Self {
         Self {
             indent: String::new(),
             xml_declaration: false,
@@ -48,11 +51,13 @@ impl SvgExportOptions {
 }
 
 /// Export an SVG DOM to a string.
+#[must_use]
 pub fn export_svg(dom: &SvgDom) -> String {
     export_svg_with_options(dom, &SvgExportOptions::default())
 }
 
 /// Export an SVG DOM to a string with custom options.
+#[must_use]
 pub fn export_svg_with_options(dom: &SvgDom, options: &SvgExportOptions) -> String {
     let mut output = String::new();
 
@@ -101,6 +106,10 @@ pub fn export_svg_with_options(dom: &SvgDom, options: &SvgExportOptions) -> Stri
     output
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one match arm per SVG element kind; splitting would scatter closely related serialization logic and harm readability"
+)]
 fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, depth: usize) {
     if !node.visible && !options.include_defaults {
         return;
@@ -250,7 +259,7 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
             output.push_str("<path");
 
             let path_data = export_path_data(path, options);
-            write!(output, " d=\"{}\"", path_data).unwrap();
+            write!(output, " d=\"{path_data}\"").unwrap();
 
             export_common_attrs(output, node, options);
             output.push_str("/>");
@@ -354,7 +363,7 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
             )
             .unwrap();
 
-            export_gradient_attrs(output, &grad.spread, &grad.units);
+            export_gradient_attrs(output, grad.spread, grad.units);
 
             if !grad.transform.is_identity() {
                 export_gradient_transform_attr(output, &grad.transform, options);
@@ -398,7 +407,7 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
                 .unwrap();
             }
 
-            export_gradient_attrs(output, &grad.spread, &grad.units);
+            export_gradient_attrs(output, grad.spread, grad.units);
 
             if !grad.transform.is_identity() {
                 export_gradient_transform_attr(output, &grad.transform, options);
@@ -430,7 +439,7 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
         }
         SvgNodeKind::Unknown(tag) => {
             output.push_str(&indent);
-            write!(output, "<{}", tag).unwrap();
+            write!(output, "<{tag}").unwrap();
             export_common_attrs(output, node, options);
 
             // `<style>` nodes carry their CSS source in the
@@ -450,7 +459,7 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
                         if options.pretty_print {
                             output.push_str(&options.indent.repeat(depth + 1));
                         }
-                        write!(output, "<![CDATA[{}]]>", css).unwrap();
+                        write!(output, "<![CDATA[{css}]]>").unwrap();
                         output.push_str(newline);
                     }
                 }
@@ -460,7 +469,7 @@ fn export_node(output: &mut String, node: &SvgNode, options: &SvgExportOptions, 
                 }
 
                 output.push_str(&indent);
-                write!(output, "</{}>", tag).unwrap();
+                write!(output, "</{tag}>").unwrap();
             }
             output.push_str(newline);
         }
@@ -493,7 +502,7 @@ fn export_common_attrs(output: &mut String, node: &SvgNode, options: &SvgExportO
     if let Some(ref fill) = node.fill {
         let fill_str = format_paint(fill);
         if fill_str != "black" || options.include_defaults {
-            write!(output, " fill=\"{}\"", fill_str).unwrap();
+            write!(output, " fill=\"{fill_str}\"").unwrap();
         }
     }
 
@@ -502,6 +511,10 @@ fn export_common_attrs(output: &mut String, node: &SvgNode, options: &SvgExportO
         write!(output, " stroke=\"{}\"", format_paint(stroke)).unwrap();
 
         match node.stroke_width {
+            #[allow(
+                clippy::float_cmp,
+                reason = "exact match against the SVG default stroke-width of 1.0, not an approximate comparison"
+            )]
             Some(sw) if sw != 1.0 || options.include_defaults => {
                 write!(
                     output,
@@ -653,7 +666,7 @@ fn export_path_data(path: &skia_rs_path::Path, options: &SvgExportOptions) -> St
     let mut current = Point::new(0.0, 0.0);
     let mut subpath_start = Point::new(0.0, 0.0);
 
-    for elem in path.iter() {
+    for elem in path {
         match elem {
             PathElement::Move(p) => {
                 write!(
@@ -742,28 +755,6 @@ fn conic_to_quads(
 ) -> Vec<(skia_rs_core::Point, skia_rs_core::Point)> {
     use skia_rs_core::Point;
 
-    // Degenerate/invalid weight: a single quad through the control point.
-    if !w.is_finite() || w <= 0.0 {
-        return vec![(ctrl, end)];
-    }
-
-    // computeQuadPOW2 with tol = 0.25.
-    const TOL: f32 = 0.25;
-    const MAX_POW2: i32 = 5;
-    let a = w - 1.0;
-    let k = a / (4.0 * (2.0 + a));
-    let ex = k * (start.x - 2.0 * ctrl.x + end.x);
-    let ey = k * (start.y - 2.0 * ctrl.y + end.y);
-    let mut error = (ex * ex + ey * ey).sqrt();
-    let mut pow2 = 0;
-    while pow2 < MAX_POW2 {
-        if error <= TOL {
-            break;
-        }
-        error *= 0.25;
-        pow2 += 1;
-    }
-
     // Recursive chop to 2^pow2 quads, emitting (ctrl, end) for each.
     fn subdivide(
         p0: skia_rs_core::Point,
@@ -785,12 +776,35 @@ fn conic_to_quads(
         let cp1 = Point::new(t0.x + t1.x, t0.y + t1.y);
         let cp3 = Point::new(t1.x + t2.x, t1.y + t2.y);
         let cp2 = Point::new(
-            0.5 * t0.x + t1.x + 0.5 * t2.x,
-            0.5 * t0.y + t1.y + 0.5 * t2.y,
+            0.5f32.mul_add(t2.x, 0.5f32.mul_add(t0.x, t1.x)),
+            0.5f32.mul_add(t2.y, 0.5f32.mul_add(t0.y, t1.y)),
         );
-        let new_w = (0.5 + w * 0.5).sqrt();
+        let new_w = w.mul_add(0.5, 0.5).sqrt();
         subdivide(p0, cp1, cp2, new_w, level - 1, out);
         subdivide(cp2, cp3, p2, new_w, level - 1, out);
+    }
+
+    // computeQuadPOW2 with tol = 0.25.
+    const TOL: f32 = 0.25;
+    const MAX_POW2: i32 = 5;
+
+    // Degenerate/invalid weight: a single quad through the control point.
+    if !w.is_finite() || w <= 0.0 {
+        return vec![(ctrl, end)];
+    }
+
+    let a = w - 1.0;
+    let k = a / (4.0 * (2.0 + a));
+    let ex = k * (2.0f32.mul_add(-ctrl.x, start.x) + end.x);
+    let ey = k * (2.0f32.mul_add(-ctrl.y, start.y) + end.y);
+    let mut error = ex.hypot(ey);
+    let mut pow2 = 0;
+    while pow2 < MAX_POW2 {
+        if error <= TOL {
+            break;
+        }
+        error *= 0.25;
+        pow2 += 1;
     }
 
     let mut out = Vec::with_capacity(1 << pow2);
@@ -798,7 +812,7 @@ fn conic_to_quads(
     out
 }
 
-fn export_gradient_attrs(output: &mut String, spread: &SpreadMethod, units: &GradientUnits) {
+fn export_gradient_attrs(output: &mut String, spread: SpreadMethod, units: GradientUnits) {
     match spread {
         SpreadMethod::Reflect => output.push_str(" spreadMethod=\"reflect\""),
         SpreadMethod::Repeat => output.push_str(" spreadMethod=\"repeat\""),
@@ -829,7 +843,7 @@ fn export_gradient_stop(
         output,
         "<stop offset=\"{}\" stop-color=\"{}\"",
         format_scalar(stop.offset, options.precision),
-        format_color(&stop.color)
+        format_color(stop.color)
     )
     .unwrap();
 
@@ -848,17 +862,17 @@ fn export_gradient_stop(
 
 fn format_paint(paint: &SvgPaint) -> String {
     match paint {
-        SvgPaint::Color(color) => format_color(color),
+        SvgPaint::Color(color) => format_color(*color),
         SvgPaint::CurrentColor => "currentColor".to_string(),
-        SvgPaint::Url(url, fallback) => match fallback {
-            Some(color) => format!("url({}) {}", url, format_color(color)),
-            None => format!("url({})", url),
-        },
+        SvgPaint::Url(url, fallback) => fallback.map_or_else(
+            || format!("url({url})"),
+            |color| format!("url({url}) {}", format_color(color)),
+        ),
         SvgPaint::None => "none".to_string(),
     }
 }
 
-fn format_color(color: &Color) -> String {
+fn format_color(color: Color) -> String {
     if color.alpha() == 255 {
         format!(
             "#{:02x}{:02x}{:02x}",
@@ -872,13 +886,13 @@ fn format_color(color: &Color) -> String {
             color.red(),
             color.green(),
             color.blue(),
-            color.alpha() as f32 / 255.0
+            f32::from(color.alpha()) / 255.0
         )
     }
 }
 
 fn format_scalar(value: Scalar, precision: usize) -> String {
-    let formatted = format!("{:.prec$}", value, prec = precision);
+    let formatted = format!("{value:.precision$}");
     // Remove trailing zeros and decimal point if unnecessary
     let trimmed = formatted.trim_end_matches('0').trim_end_matches('.');
     if trimmed.is_empty() {
@@ -899,7 +913,7 @@ fn escape_xml(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dom::SvgRect;
+    use crate::dom::{SvgLinearGradient, SvgRect};
 
     #[test]
     fn test_export_simple_svg() {
@@ -973,7 +987,7 @@ mod tests {
         let path = b.build();
         let data = export_path_data(&path, &SvgExportOptions::default());
         assert!(data.starts_with('M'));
-        assert!(data.contains('Q'), "conic exported as quad(s): {}", data);
+        assert!(data.contains('Q'), "conic exported as quad(s): {data}");
     }
 
     #[test]
@@ -991,7 +1005,7 @@ mod tests {
     fn test_format_scalar() {
         assert_eq!(format_scalar(10.0, 3), "10");
         assert_eq!(format_scalar(10.5, 3), "10.5");
-        assert_eq!(format_scalar(10.123456, 2), "10.12");
+        assert_eq!(format_scalar(10.123_456, 2), "10.12");
     }
 
     #[test]
@@ -1002,9 +1016,9 @@ mod tests {
 
     #[test]
     fn test_format_color() {
-        assert_eq!(format_color(&Color::from_rgb(255, 0, 0)), "#ff0000");
+        assert_eq!(format_color(Color::from_rgb(255, 0, 0)), "#ff0000");
         assert_eq!(
-            format_color(&Color::from_argb(128, 255, 0, 0)),
+            format_color(Color::from_argb(128, 255, 0, 0)),
             "rgba(255, 0, 0, 0.5019608)"
         );
     }
@@ -1039,8 +1053,7 @@ mod tests {
         let svg = export_svg(&dom);
         assert!(
             svg.contains("gradientTransform="),
-            "expected gradientTransform attribute, got:\n{}",
-            svg
+            "expected gradientTransform attribute, got:\n{svg}"
         );
         assert!(
             !svg.contains("<linearGradient")
@@ -1049,8 +1062,7 @@ mod tests {
                     .next()
                     .unwrap()
                     .contains(" transform="),
-            "linearGradient element must not use `transform=`, got:\n{}",
-            svg
+            "linearGradient element must not use `transform=`, got:\n{svg}"
         );
     }
 
@@ -1072,8 +1084,7 @@ mod tests {
         let exported = export_svg(&dom);
         assert!(
             exported.contains("<style") && exported.contains("fill: red"),
-            "style block should round-trip, got:\n{}",
-            exported
+            "style block should round-trip, got:\n{exported}"
         );
 
         let reparsed = parse_svg(&exported).unwrap();

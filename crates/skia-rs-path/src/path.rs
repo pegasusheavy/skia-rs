@@ -1,5 +1,6 @@
 //! Path data structure and iteration.
 
+use skia_rs_core::cast::scalar_from_i32;
 use skia_rs_core::{Point, Rect, Scalar};
 use smallvec::SmallVec;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -22,18 +23,20 @@ pub enum FillType {
 impl FillType {
     /// Check if this is an inverse fill type.
     #[inline]
+    #[must_use]
     pub const fn is_inverse(&self) -> bool {
-        matches!(self, FillType::InverseWinding | FillType::InverseEvenOdd)
+        matches!(self, Self::InverseWinding | Self::InverseEvenOdd)
     }
 
     /// Convert to the inverse fill type.
     #[inline]
+    #[must_use]
     pub const fn inverse(&self) -> Self {
         match self {
-            FillType::Winding => FillType::InverseWinding,
-            FillType::EvenOdd => FillType::InverseEvenOdd,
-            FillType::InverseWinding => FillType::Winding,
-            FillType::InverseEvenOdd => FillType::EvenOdd,
+            Self::Winding => Self::InverseWinding,
+            Self::EvenOdd => Self::InverseEvenOdd,
+            Self::InverseWinding => Self::Winding,
+            Self::InverseEvenOdd => Self::EvenOdd,
         }
     }
 }
@@ -59,12 +62,13 @@ pub enum Verb {
 impl Verb {
     /// Number of points consumed by this verb.
     #[inline]
+    #[must_use]
     pub const fn point_count(&self) -> usize {
         match self {
-            Verb::Move | Verb::Line => 1,
-            Verb::Quad | Verb::Conic => 2,
-            Verb::Cubic => 3,
-            Verb::Close => 0,
+            Self::Move | Self::Line => 1,
+            Self::Quad | Self::Conic => 2,
+            Self::Cubic => 3,
+            Self::Close => 0,
         }
     }
 }
@@ -94,11 +98,11 @@ pub enum PathConvexity {
 }
 
 impl PathConvexity {
-    fn from_u8(v: u8) -> Self {
+    const fn from_u8(v: u8) -> Self {
         match v {
-            1 => PathConvexity::Convex,
-            2 => PathConvexity::Concave,
-            _ => PathConvexity::Unknown,
+            1 => Self::Convex,
+            2 => Self::Concave,
+            _ => Self::Unknown,
         }
     }
 }
@@ -116,7 +120,7 @@ pub struct Path {
     pub(crate) fill_type: FillType,
     /// Cached bounds (lazily computed).
     pub(crate) bounds: Option<Rect>,
-    /// Cached convexity (stored as u8 for Send+Sync via AtomicU8).
+    /// Cached convexity (stored as u8 for Send+Sync via `AtomicU8`).
     pub(crate) convexity: AtomicU8,
 }
 
@@ -156,7 +160,7 @@ impl PartialEq for Path {
 }
 
 #[inline]
-fn axis_of(p: Point, axis: usize) -> Scalar {
+const fn axis_of(p: Point, axis: usize) -> Scalar {
     if axis == 0 { p.x } else { p.y }
 }
 
@@ -170,30 +174,39 @@ fn record_axis_bound(
     max_y: &mut Scalar,
 ) {
     if axis == 0 {
-        if val < *min_x { *min_x = val; }
-        if val > *max_x { *max_x = val; }
+        if val < *min_x {
+            *min_x = val;
+        }
+        if val > *max_x {
+            *max_x = val;
+        }
     } else {
-        if val < *min_y { *min_y = val; }
-        if val > *max_y { *max_y = val; }
+        if val < *min_y {
+            *min_y = val;
+        }
+        if val > *max_y {
+            *max_y = val;
+        }
     }
 }
 
 impl Path {
     /// Create a new empty path.
     #[inline]
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Get the fill type.
     #[inline]
-    pub fn fill_type(&self) -> FillType {
+    pub const fn fill_type(&self) -> FillType {
         self.fill_type
     }
 
     /// Set the fill type.
     #[inline]
-    pub fn set_fill_type(&mut self, fill_type: FillType) {
+    pub const fn set_fill_type(&mut self, fill_type: FillType) {
         self.fill_type = fill_type;
     }
 
@@ -257,7 +270,7 @@ impl Path {
     }
 
     /// Iterate over the path elements.
-    pub fn iter(&self) -> PathIter<'_> {
+    pub const fn iter(&self) -> PathIter<'_> {
         PathIter {
             path: self,
             verb_index: 0,
@@ -335,9 +348,8 @@ impl Path {
             return false;
         }
 
-        let start = match elements[0] {
-            PathElement::Move(p) => p,
-            _ => return false,
+        let PathElement::Move(start) = elements[0] else {
+            return false;
         };
         if !matches!(elements[5], PathElement::Close) {
             return false;
@@ -376,10 +388,8 @@ impl Path {
         }
 
         for elem in &elements[1..5] {
-            let end = match *elem {
-                PathElement::Cubic(_, _, p) => p,
-                PathElement::Conic(_, p, _) => p,
-                _ => return false,
+            let (PathElement::Cubic(_, _, end) | PathElement::Conic(_, end, _)) = *elem else {
+                return false;
             };
             if !on_cardinal(end) {
                 return false;
@@ -522,12 +532,19 @@ impl Path {
 
             // If there is more than 1 distinct point at the y-max, take the
             // x-min and x-max of them and subtract to compute the direction.
-            let cross = if pts[(index + 1) % n].y == pts[index].y {
+            #[allow(
+                clippy::float_cmp,
+                reason = "exact y equality mirrors upstream SkPathPriv::ComputeFirstDirection's bitwise comparison"
+            )]
+            let same_y = pts[(index + 1) % n].y == pts[index].y;
+            let cross = if same_y {
                 let (min_index, max_index) = find_min_max_x_at_y(pts, index);
                 if min_index == max_index {
                     try_crossprod(pts, index)
                 } else {
-                    (min_index as Scalar) - (max_index as Scalar)
+                    let min_i32 = i32::try_from(min_index).unwrap_or(i32::MAX);
+                    let max_i32 = i32::try_from(max_index).unwrap_or(i32::MAX);
+                    scalar_from_i32(min_i32) - scalar_from_i32(max_i32)
                 }
             } else {
                 try_crossprod(pts, index)
@@ -579,6 +596,11 @@ impl Path {
     /// Ported from `SkPathPriv::ReverseAddPath`: walks contours back-to-front,
     /// emitting `Move` first, points in reverse order with per-verb point-count
     /// handling, and preserving one `Close` per originally-closed contour.
+    #[allow(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        reason = "faithful port of SkPathPriv::ReverseAddPath's signed back-to-front index walk; converting to unsigned arithmetic risks changing underflow/panic behavior"
+    )]
     pub fn reverse(&mut self) {
         if self.verbs.is_empty() {
             return;
@@ -651,7 +673,8 @@ impl Path {
         self.points = np;
         self.conic_weights = nw;
         self.bounds = None;
-        self.convexity.store(PathConvexity::Unknown as u8, Ordering::Relaxed);
+        self.convexity
+            .store(PathConvexity::Unknown as u8, Ordering::Relaxed);
     }
 
     /// Transform the path by a matrix.
@@ -660,10 +683,12 @@ impl Path {
             *point = matrix.map_point(*point);
         }
         self.bounds = None;
-        self.convexity.store(PathConvexity::Unknown as u8, Ordering::Relaxed);
+        self.convexity
+            .store(PathConvexity::Unknown as u8, Ordering::Relaxed);
     }
 
     /// Create a transformed copy of the path.
+    #[must_use]
     pub fn transformed(&self, matrix: &skia_rs_core::Matrix) -> Self {
         let mut result = self.clone();
         result.transform(matrix);
@@ -692,7 +717,10 @@ impl Path {
     /// `SkPathEdgeIter`), uses inclusive bounds for the early-out, and XORs the
     /// result with the inverse-fill flag.
     pub fn contains(&self, point: Point) -> bool {
-        use crate::flatten::{flatten_conic_adaptive, flatten_cubic_adaptive, flatten_quad_adaptive};
+        use crate::flatten::{
+            flatten_conic_adaptive, flatten_cubic_adaptive, flatten_quad_adaptive,
+        };
+        const TOL: Scalar = 0.1;
 
         let is_inverse = self.fill_type.is_inverse();
         if self.is_empty() {
@@ -712,10 +740,9 @@ impl Path {
         let mut current = Point::zero();
         let mut contour_start = Point::zero();
         let mut needs_close_line = false;
-        const TOL: Scalar = 0.1;
         let mut pts: Vec<Point> = Vec::with_capacity(32);
 
-        for element in self.iter() {
+        for element in self {
             match element {
                 PathElement::Move(p) => {
                     if needs_close_line {
@@ -801,10 +828,15 @@ impl Path {
     /// Unlike `bounds()`, this computes the bounds from the actual curve
     /// extents, not the control-point bounding box. For cubic and quadratic
     /// Bezier curves with control points outside the actual curve range,
-    /// tight_bounds() may be significantly smaller than bounds().
+    /// `tight_bounds()` may be significantly smaller than `bounds()`.
     ///
     /// Conics fall back to control-polygon bounds (exact extrema for rational
     /// curves would require solving a quartic).
+    #[allow(
+        clippy::too_many_lines,
+        clippy::many_single_char_names,
+        reason = "faithful port of Skia's per-verb curve-extrema tight-bounds computation; short names (s, e, cv, c1v, c2v, a, b, cc) mirror the algebraic derivation"
+    )]
     pub fn tight_bounds(&self) -> Rect {
         if self.verbs.is_empty() {
             return Rect::EMPTY;
@@ -815,16 +847,28 @@ impl Path {
         let mut max_x = Scalar::NEG_INFINITY;
         let mut max_y = Scalar::NEG_INFINITY;
 
-        let include = |p: Point, min_x: &mut Scalar, min_y: &mut Scalar, max_x: &mut Scalar, max_y: &mut Scalar| {
-            if p.x < *min_x { *min_x = p.x; }
-            if p.y < *min_y { *min_y = p.y; }
-            if p.x > *max_x { *max_x = p.x; }
-            if p.y > *max_y { *max_y = p.y; }
+        let include = |p: Point,
+                       min_x: &mut Scalar,
+                       min_y: &mut Scalar,
+                       max_x: &mut Scalar,
+                       max_y: &mut Scalar| {
+            if p.x < *min_x {
+                *min_x = p.x;
+            }
+            if p.y < *min_y {
+                *min_y = p.y;
+            }
+            if p.x > *max_x {
+                *max_x = p.x;
+            }
+            if p.y > *max_y {
+                *max_y = p.y;
+            }
         };
 
         let mut current = Point::new(0.0, 0.0);
 
-        for elem in self.iter() {
+        for elem in self {
             match elem {
                 PathElement::Move(p) | PathElement::Line(p) => {
                     include(p, &mut min_x, &mut min_y, &mut max_x, &mut max_y);
@@ -838,13 +882,16 @@ impl Path {
                         let s = axis_of(current, axis);
                         let cv = axis_of(c, axis);
                         let e = axis_of(p, axis);
-                        let denom = s - 2.0 * cv + e;
+                        let denom = 2.0f32.mul_add(-cv, s) + e;
                         if denom.abs() > 1e-9 {
                             let t = (s - cv) / denom;
                             if t > 0.0 && t < 1.0 {
                                 let mt = 1.0 - t;
-                                let val = mt * mt * s + 2.0 * mt * t * cv + t * t * e;
-                                record_axis_bound(axis, val, &mut min_x, &mut max_x, &mut min_y, &mut max_y);
+                                let val =
+                                    (t * t).mul_add(e, (mt * mt).mul_add(s, 2.0 * mt * t * cv));
+                                record_axis_bound(
+                                    axis, val, &mut min_x, &mut max_x, &mut min_y, &mut max_y,
+                                );
                             }
                         }
                     }
@@ -861,8 +908,8 @@ impl Path {
                         let c1v = axis_of(c1, axis);
                         let c2v = axis_of(c2, axis);
                         let e = axis_of(p, axis);
-                        let a = 3.0 * (e - 3.0 * c2v + 3.0 * c1v - s);
-                        let b = 6.0 * (c2v - 2.0 * c1v + s);
+                        let a = 3.0 * (3.0f32.mul_add(c1v, 3.0f32.mul_add(-c2v, e)) - s);
+                        let b = 6.0 * (2.0f32.mul_add(-c1v, c2v) + s);
                         let cc = 3.0 * (c1v - s);
 
                         let mut roots: [Scalar; 2] = [Scalar::NAN, Scalar::NAN];
@@ -885,15 +932,19 @@ impl Path {
                             }
                         }
 
-                        for i in 0..n_roots {
-                            let t = roots[i];
+                        for &t in &roots[..n_roots] {
                             if t.is_finite() && t > 0.0 && t < 1.0 {
                                 let mt = 1.0 - t;
-                                let val = mt * mt * mt * s
-                                    + 3.0 * mt * mt * t * c1v
-                                    + 3.0 * mt * t * t * c2v
-                                    + t * t * t * e;
-                                record_axis_bound(axis, val, &mut min_x, &mut max_x, &mut min_y, &mut max_y);
+                                let val = (t * t * t).mul_add(
+                                    e,
+                                    (3.0 * mt * t * t).mul_add(
+                                        c2v,
+                                        (mt * mt * mt).mul_add(s, 3.0 * mt * mt * t * c1v),
+                                    ),
+                                );
+                                record_axis_bound(
+                                    axis, val, &mut min_x, &mut max_x, &mut min_y, &mut max_y,
+                                );
                             }
                         }
                     }
@@ -919,15 +970,17 @@ impl Path {
 
     /// Get the total length of the path.
     pub fn length(&self) -> Scalar {
-        use crate::flatten::{flatten_cubic_adaptive, flatten_conic_adaptive, flatten_quad_adaptive};
+        use crate::flatten::{
+            flatten_conic_adaptive, flatten_cubic_adaptive, flatten_quad_adaptive,
+        };
 
+        const TOL: Scalar = 0.25;
         let mut total = 0.0;
         let mut current = Point::zero();
         let mut contour_start = Point::zero();
-        const TOL: Scalar = 0.25;
         let mut pts: Vec<Point> = Vec::with_capacity(32);
 
-        for element in self.iter() {
+        for element in self {
             match element {
                 PathElement::Move(p) => {
                     current = p;
@@ -1010,17 +1063,20 @@ fn find_diff_pt(pts: &[Point], index: usize, inc: usize) -> usize {
 /// From `index` moving forward, find the xmin and xmax of contiguous same-Y points.
 /// Returns `(min_index, max_index)` (ported from `find_min_max_x_at_y`).
 fn find_min_max_x_at_y(pts: &[Point], index: usize) -> (usize, usize) {
-    let n = pts.len();
     let y = pts[index].y;
     let mut min = pts[index].x;
     let mut max = min;
     let mut min_index = index;
     let mut max_index = index;
-    for i in (index + 1)..n {
-        if pts[i].y != y {
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact y equality mirrors upstream find_min_max_x_at_y's bitwise comparison"
+    )]
+    for (i, p) in pts.iter().enumerate().skip(index + 1) {
+        if p.y != y {
             break;
         }
-        let x = pts[i].x;
+        let x = p.x;
         if x < min {
             min = x;
             min_index = i;
@@ -1033,21 +1089,29 @@ fn find_min_max_x_at_y(pts: &[Point], index: usize) -> (usize, usize) {
 }
 
 /// cross product of (p1 - p0) and (p2 - p0) (ported from `cross_prod`, f64 promotion).
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "f64 promotion is deliberately used to recover precision near-zero, then narrowed back to Scalar (f32); this is the whole point of the promotion and matches upstream cross_prod"
+)]
 fn cross_prod(p0: Point, p1: Point, p2: Point) -> Scalar {
-    let cross = (p1.x - p0.x) * (p2.y - p0.y) - (p1.y - p0.y) * (p2.x - p0.x);
+    let cross = (p1.x - p0.x).mul_add(p2.y - p0.y, -((p1.y - p0.y) * (p2.x - p0.x)));
     if cross == 0.0 {
-        let p0x = p0.x as f64;
-        let p0y = p0.y as f64;
-        let p1x = p1.x as f64;
-        let p1y = p1.y as f64;
-        let p2x = p2.x as f64;
-        let p2y = p2.y as f64;
-        return ((p1x - p0x) * (p2y - p0y) - (p1y - p0y) * (p2x - p0x)) as Scalar;
+        let p0x = f64::from(p0.x);
+        let p0y = f64::from(p0.y);
+        let p1x = f64::from(p1.x);
+        let p1y = f64::from(p1.y);
+        let p2x = f64::from(p2.x);
+        let p2y = f64::from(p2.y);
+        return (p1x - p0x).mul_add(p2y - p0y, -((p1y - p0y) * (p2x - p0x))) as Scalar;
     }
     cross
 }
 
 /// The `TRY_CROSSPROD` path from `ComputeFirstDirection`.
+#[allow(
+    clippy::float_cmp,
+    reason = "exact equality mirrors upstream TRY_CROSSPROD's bitwise comparisons"
+)]
 fn try_crossprod(pts: &[Point], index: usize) -> Scalar {
     let n = pts.len();
     let prev = find_diff_pt(pts, index, n - 1);
@@ -1065,12 +1129,12 @@ fn try_crossprod(pts: &[Point], index: usize) -> Scalar {
 /// Ported from `rect_make_dir`: encode an axis-aligned edge direction (0..3).
 #[inline]
 fn rect_make_dir(dx: Scalar, dy: Scalar) -> i32 {
-    ((dx != 0.0) as i32) | (((dx > 0.0 || dy > 0.0) as i32) << 1)
+    i32::from(dx != 0.0) | (i32::from(dx > 0.0 || dy > 0.0) << 1)
 }
 
 /// Build a sorted rect spanning two corner points.
 #[inline]
-fn rect_from_corners(a: Point, b: Point) -> Rect {
+const fn rect_from_corners(a: Point, b: Point) -> Rect {
     Rect::new(a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y))
 }
 
@@ -1088,9 +1152,11 @@ fn trivial_rect(pts: &[Point], vbs: &[Verb]) -> Option<Rect> {
 
     // One vector axis-aligned, and each following vector orthogonal to the last.
     let axis_aligned = |a: &Point| (a.x == 0.0) ^ (a.y == 0.0);
-    let orthogonal = |a: &Point, b: &Point| ((a.x == 0.0) ^ (b.x == 0.0)) && ((a.y == 0.0) ^ (b.y == 0.0));
+    let orthogonal =
+        |a: &Point, b: &Point| ((a.x == 0.0) ^ (b.x == 0.0)) && ((a.y == 0.0) ^ (b.y == 0.0));
 
-    if !(axis_aligned(&v0) && orthogonal(&v0, &v1) && orthogonal(&v1, &v2) && orthogonal(&v2, &v3)) {
+    if !(axis_aligned(&v0) && orthogonal(&v0, &v1) && orthogonal(&v1, &v2) && orthogonal(&v2, &v3))
+    {
         return None;
     }
     Some(rect_from_corners(pts[0], pts[2]))
@@ -1098,6 +1164,10 @@ fn trivial_rect(pts: &[Point], vbs: &[Verb]) -> Option<Rect> {
 
 /// General port of `SkPathPriv::IsRectContour` for a single contour
 /// (`allowPartial = false`).
+#[allow(
+    clippy::too_many_lines,
+    reason = "faithful port of SkPathPriv::IsRectContour's edge-direction state machine"
+)]
 fn is_rect_contour(points: &[Point], verbs: &[Verb]) -> Option<Rect> {
     let verb_cnt = verbs.len();
     let mut pi = 0usize;
@@ -1156,7 +1226,6 @@ fn is_rect_contour(points: &[Point], verbs: &[Verb]) -> Option<Rect> {
                             if corners == 3 && verb == Verb::Line {
                                 third_corner = line_end;
                             }
-                            line_start = line_end;
                         } else {
                             directions[corners] = next_direction;
                             corners += 1;
@@ -1175,8 +1244,8 @@ fn is_rect_contour(points: &[Point], verbs: &[Verb]) -> Option<Rect> {
                                 }
                                 _ => return None, // too many direction changes
                             }
-                            line_start = line_end;
                         }
+                        line_start = line_end;
                     }
                 }
             }
@@ -1199,7 +1268,7 @@ fn is_rect_contour(points: &[Point], verbs: &[Verb]) -> Option<Rect> {
         curr_verb += 1;
     }
 
-    if corners < 3 || corners > 4 {
+    if !(3..=4).contains(&corners) {
         return None;
     }
     let cx = first_pt.x - last_pt.x;
@@ -1224,17 +1293,15 @@ fn between(a: Scalar, b: Scalar, c: Scalar) -> bool {
 
 #[inline]
 fn sign_as_int(x: Scalar) -> i32 {
-    if x < 0.0 {
-        -1
-    } else if x > 0.0 {
-        1
-    } else {
-        0
-    }
+    if x < 0.0 { -1 } else { i32::from(x > 0.0) }
 }
 
 /// Ported from `checkOnCurve`.
 #[inline]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact equality mirrors upstream checkOnCurve's bitwise comparisons"
+)]
 fn check_on_curve(x: Scalar, y: Scalar, start: Point, end: Point) -> bool {
     if start.y == end.y {
         between(start.x, x, end.x) && x != end.x
@@ -1248,6 +1315,10 @@ fn check_on_curve(x: Scalar, y: Scalar, start: Point, end: Point) -> bool {
 /// Ported from `winding_line` in `SkPathPriv.cpp`: returns +1/-1 for a crossing
 /// to the right of the point (sign encodes the edge's y-direction), 0 otherwise,
 /// and increments `on_curve_count` when the point lies on the edge.
+#[allow(
+    clippy::float_cmp,
+    reason = "exact equality mirrors upstream winding_line's bitwise comparisons"
+)]
 fn winding_line(a: Point, b: Point, x: Scalar, y: Scalar, on_curve_count: &mut i32) -> i32 {
     let x0 = a.x;
     let mut y0 = a.y;
@@ -1255,10 +1326,9 @@ fn winding_line(a: Point, b: Point, x: Scalar, y: Scalar, on_curve_count: &mut i
     let mut y1 = b.y;
 
     let dy = y1 - y0;
-    let mut dir = 1;
-    if y0 > y1 {
+    let (mut dir, swapped) = if y0 > y1 { (-1, true) } else { (1, false) };
+    if swapped {
         std::mem::swap(&mut y0, &mut y1);
-        dir = -1;
     }
     if y < y0 || y > y1 {
         return 0;
@@ -1270,7 +1340,7 @@ fn winding_line(a: Point, b: Point, x: Scalar, y: Scalar, on_curve_count: &mut i
     if y == y1 {
         return 0;
     }
-    let cross = (x1 - x0) * (y - a.y) - dy * (x - x0);
+    let cross = (x1 - x0).mul_add(y - a.y, -(dy * (x - x0)));
 
     if cross == 0.0 {
         if x != x1 || y != b.y {
@@ -1290,8 +1360,8 @@ mod convex {
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum FirstDir {
-        CW,
-        CCW,
+        Cw,
+        Ccw,
         Unknown,
     }
 
@@ -1312,6 +1382,10 @@ mod convex {
 
     /// Quick concave test: counts direction-sign changes around the contour.
     /// Ported from `Convexicator::IsConcaveBySign`.
+    #[allow(
+        clippy::similar_names,
+        reason = "dxes/dyes and last_sx/last_sy mirror upstream Convexicator field names"
+    )]
     pub fn is_concave_by_sign(pts: &[Point]) -> bool {
         let count = pts.len();
         if count <= 3 {
@@ -1325,11 +1399,11 @@ mod convex {
         let mut last_sy = 2i32;
 
         let process = |next: Point,
-                           curr: &mut Point,
-                           dxes: &mut i32,
-                           dyes: &mut i32,
-                           last_sx: &mut i32,
-                           last_sy: &mut i32|
+                       curr: &mut Point,
+                       dxes: &mut i32,
+                       dyes: &mut i32,
+                       last_sx: &mut i32,
+                       last_sy: &mut i32|
          -> Option<bool> {
             let vx = next.x - curr.x;
             let vy = next.y - curr.y;
@@ -1337,10 +1411,10 @@ mod convex {
                 if !vx.is_finite() || !vy.is_finite() {
                     return Some(true);
                 }
-                let sx = (vx < 0.0) as i32;
-                let sy = (vy < 0.0) as i32;
-                *dxes += (sx != *last_sx) as i32;
-                *dyes += (sy != *last_sy) as i32;
+                let sx = i32::from(vx < 0.0);
+                let sy = i32::from(vy < 0.0);
+                *dxes += i32::from(sx != *last_sx);
+                *dyes += i32::from(sy != *last_sy);
                 if *dxes > 3 || *dyes > 3 {
                     return Some(true);
                 }
@@ -1352,12 +1426,26 @@ mod convex {
         };
 
         for &p in &pts[1..count] {
-            if let Some(r) = process(p, &mut curr_pt, &mut dxes, &mut dyes, &mut last_sx, &mut last_sy) {
+            if let Some(r) = process(
+                p,
+                &mut curr_pt,
+                &mut dxes,
+                &mut dyes,
+                &mut last_sx,
+                &mut last_sy,
+            ) {
                 return r;
             }
         }
         // closing edge back to the first point
-        if let Some(r) = process(first_pt, &mut curr_pt, &mut dxes, &mut dyes, &mut last_sx, &mut last_sy) {
+        if let Some(r) = process(
+            first_pt,
+            &mut curr_pt,
+            &mut dxes,
+            &mut dyes,
+            &mut last_sx,
+            &mut last_sy,
+        ) {
             return r;
         }
         false
@@ -1375,7 +1463,7 @@ mod convex {
     }
 
     impl Convexicator {
-        pub fn new() -> Self {
+        pub const fn new() -> Self {
             Self {
                 first_pt: Point::zero(),
                 first_vec: Point::zero(),
@@ -1387,15 +1475,15 @@ mod convex {
             }
         }
 
-        pub fn first_direction(&self) -> FirstDir {
+        pub const fn first_direction(&self) -> FirstDir {
             self.first_direction
         }
 
-        pub fn reversals(&self) -> i32 {
+        pub const fn reversals(&self) -> i32 {
             self.reversals
         }
 
-        pub fn set_move_pt(&mut self, pt: Point) {
+        pub const fn set_move_pt(&mut self, pt: Point) {
             self.first_pt = pt;
             self.last_pt = pt;
             self.expected_dir = DirChange::Invalid;
@@ -1450,9 +1538,9 @@ mod convex {
                     if self.expected_dir == DirChange::Invalid {
                         self.expected_dir = dir;
                         self.first_direction = if dir == DirChange::Right {
-                            FirstDir::CW
+                            FirstDir::Cw
                         } else {
-                            FirstDir::CCW
+                            FirstDir::Ccw
                         };
                     } else if dir != self.expected_dir {
                         self.first_direction = FirstDir::Unknown;
@@ -1495,6 +1583,15 @@ pub enum PathElement {
     Close,
 }
 
+impl<'a> IntoIterator for &'a Path {
+    type Item = PathElement;
+    type IntoIter = PathIter<'a>;
+
+    fn into_iter(self) -> PathIter<'a> {
+        self.iter()
+    }
+}
+
 /// Iterator over path elements.
 pub struct PathIter<'a> {
     path: &'a Path,
@@ -1503,7 +1600,7 @@ pub struct PathIter<'a> {
     weight_index: usize,
 }
 
-impl<'a> Iterator for PathIter<'a> {
+impl Iterator for PathIter<'_> {
     type Item = PathElement;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1577,7 +1674,10 @@ mod tests {
         builder.cubic_to(95.0, 45.0, 100.0, 47.0, 0.0, 0.0);
         builder.close();
         let path = builder.build();
-        assert!(!path.is_oval(), "Random 4-cubic path should not be detected as oval");
+        assert!(
+            !path.is_oval(),
+            "Random 4-cubic path should not be detected as oval"
+        );
     }
 
     #[test]
@@ -1611,7 +1711,8 @@ mod tests {
         assert!(
             loose.top <= -99.0 || loose.bottom >= 99.0,
             "Loose bounds should include control points (top={}, bottom={})",
-            loose.top, loose.bottom
+            loose.top,
+            loose.bottom
         );
 
         // Tight bounds should be strictly tighter on at least one of top/bottom
@@ -1624,7 +1725,8 @@ mod tests {
         assert!(
             tight.bottom < 30.0 && tight.top > -30.0,
             "Tight bounds should reflect actual curve range (got top={}, bottom={})",
-            tight.top, tight.bottom
+            tight.top,
+            tight.bottom
         );
     }
 
@@ -1656,9 +1758,7 @@ mod tests {
         let expected = std::f32::consts::FRAC_PI_2;
         assert!(
             (len - expected).abs() < 0.05,
-            "expected ~π/2 = {}, got {}",
-            expected,
-            len
+            "expected ~π/2 = {expected}, got {len}"
         );
     }
 
@@ -1671,11 +1771,7 @@ mod tests {
         builder.cubic_to(1.0, 0.0, 2.0, 0.0, 3.0, 0.0);
         let path = builder.build();
         let len = path.length();
-        assert!(
-            (len - 3.0).abs() < 0.1,
-            "expected 3.0, got {}",
-            len
-        );
+        assert!((len - 3.0).abs() < 0.1, "expected 3.0, got {len}");
     }
 
     #[test]
@@ -1693,7 +1789,9 @@ mod tests {
         let mut b = PathBuilder::new();
         b.add_rect(&Rect::new(1.0, 2.0, 5.0, 8.0));
         let path = b.build();
-        let r = path.is_rect().expect("add_rect output must be recognized as a rect");
+        let r = path
+            .is_rect()
+            .expect("add_rect output must be recognized as a rect");
         assert!((r.left - 1.0).abs() < 1e-4 && (r.top - 2.0).abs() < 1e-4);
         assert!((r.right - 5.0).abs() < 1e-4 && (r.bottom - 8.0).abs() < 1e-4);
     }
@@ -1772,7 +1870,11 @@ mod tests {
         b.move_to(0.0, 0.0);
         b.line_to(Scalar::INFINITY, 10.0);
         let path = b.build();
-        assert_eq!(path.bounds(), Rect::EMPTY, "non-finite path has empty bounds");
+        assert_eq!(
+            path.bounds(),
+            Rect::EMPTY,
+            "non-finite path has empty bounds"
+        );
     }
 
     #[test]
@@ -1822,7 +1924,10 @@ mod tests {
         b.line_to(5.0, 10.0);
         // no close()
         let path = b.build();
-        assert!(path.contains(Point::new(5.0, 3.0)), "implicit closing edge fills the triangle");
+        assert!(
+            path.contains(Point::new(5.0, 3.0)),
+            "implicit closing edge fills the triangle"
+        );
     }
 
     #[test]

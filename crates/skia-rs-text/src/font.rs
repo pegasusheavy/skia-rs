@@ -85,6 +85,7 @@ pub struct FontMetrics {
 impl FontMetrics {
     /// Calculate the line height.
     #[inline]
+    #[must_use]
     pub fn line_height(&self) -> Scalar {
         -self.ascent + self.descent + self.leading
     }
@@ -95,8 +96,8 @@ impl FontMetrics {
 /// baseline) and optional `thickness`.
 ///
 /// Matches Skia's `SkFontHost_FreeType.cpp`:
-///   underlinePosition = -(post.underline_position +
-///                         post.underline_thickness / 2) / upem
+///   underlinePosition = -(`post.underline_position` +
+///                         `post.underline_thickness` / 2) / upem
 /// i.e. the distance to the **top** of the stroke, folding in the
 /// half-thickness. `scale` is `size / units_per_em`.
 fn underline_metrics_from_post(
@@ -105,8 +106,8 @@ fn underline_metrics_from_post(
     scale: Scalar,
     size: Scalar,
 ) -> (Scalar, Scalar) {
-    let thick = thickness.unwrap_or(0) as Scalar;
-    let screen_position = -((position as Scalar) + thick / 2.0) * scale;
+    let thick = Scalar::from(thickness.unwrap_or(0));
+    let screen_position = -(Scalar::from(position) + thick / 2.0) * scale;
     let screen_thickness = if thickness.is_some() {
         thick * scale
     } else {
@@ -119,6 +120,10 @@ fn underline_metrics_from_post(
 ///
 /// Corresponds to Skia's `SkFont`.
 #[derive(Debug, Clone)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "mirrors SkFont's fixed boolean flag set (subpixel, forceAutoHinting, embeddedBitmaps, linearMetrics, embolden)"
+)]
 pub struct Font {
     /// The typeface.
     typeface: TypefaceRef,
@@ -152,7 +157,7 @@ impl Default for Font {
 
 impl Font {
     /// Create a new font with the given typeface and size.
-    pub fn new(typeface: TypefaceRef, size: Scalar) -> Self {
+    pub const fn new(typeface: TypefaceRef, size: Scalar) -> Self {
         Self {
             typeface,
             size,
@@ -169,19 +174,22 @@ impl Font {
     }
 
     /// Create a font with default typeface.
+    #[must_use]
     pub fn from_size(size: Scalar) -> Self {
         Self::new(Arc::new(Typeface::default_typeface()), size)
     }
 
     /// Get the typeface.
     #[inline]
+    #[must_use]
     pub fn typeface(&self) -> Option<&Typeface> {
         Some(self.typeface.as_ref())
     }
 
     /// Get the typeface reference.
     #[inline]
-    pub fn typeface_ref(&self) -> &TypefaceRef {
+    #[must_use]
+    pub const fn typeface_ref(&self) -> &TypefaceRef {
         &self.typeface
     }
 
@@ -194,92 +202,141 @@ impl Font {
 
     /// Get the font size.
     #[inline]
-    pub fn size(&self) -> Scalar {
+    #[must_use]
+    pub const fn size(&self) -> Scalar {
         self.size
     }
 
     /// Set the font size.
     #[inline]
-    pub fn set_size(&mut self, size: Scalar) -> &mut Self {
+    pub const fn set_size(&mut self, size: Scalar) -> &mut Self {
         self.size = size.max(0.0);
         self
     }
 
     /// Get the horizontal scale.
     #[inline]
-    pub fn scale_x(&self) -> Scalar {
+    #[must_use]
+    pub const fn scale_x(&self) -> Scalar {
         self.scale_x
     }
 
     /// Set the horizontal scale.
     #[inline]
-    pub fn set_scale_x(&mut self, scale: Scalar) -> &mut Self {
+    pub const fn set_scale_x(&mut self, scale: Scalar) -> &mut Self {
         self.scale_x = scale;
         self
     }
 
     /// Get the skew factor.
     #[inline]
-    pub fn skew_x(&self) -> Scalar {
+    #[must_use]
+    pub const fn skew_x(&self) -> Scalar {
         self.skew_x
     }
 
     /// Set the skew factor.
     #[inline]
-    pub fn set_skew_x(&mut self, skew: Scalar) -> &mut Self {
+    pub const fn set_skew_x(&mut self, skew: Scalar) -> &mut Self {
         self.skew_x = skew;
         self
     }
 
     /// Get the edging mode.
     #[inline]
-    pub fn edging(&self) -> FontEdging {
+    #[must_use]
+    pub const fn edging(&self) -> FontEdging {
         self.edging
     }
 
     /// Set the edging mode.
     #[inline]
-    pub fn set_edging(&mut self, edging: FontEdging) -> &mut Self {
+    pub const fn set_edging(&mut self, edging: FontEdging) -> &mut Self {
         self.edging = edging;
         self
     }
 
     /// Get the hinting level.
     #[inline]
-    pub fn hinting(&self) -> FontHinting {
+    #[must_use]
+    pub const fn hinting(&self) -> FontHinting {
         self.hinting
     }
 
     /// Set the hinting level.
     #[inline]
-    pub fn set_hinting(&mut self, hinting: FontHinting) -> &mut Self {
+    pub const fn set_hinting(&mut self, hinting: FontHinting) -> &mut Self {
         self.hinting = hinting;
         self
     }
 
     /// Check if subpixel positioning is enabled.
     #[inline]
-    pub fn is_subpixel(&self) -> bool {
+    #[must_use]
+    pub const fn is_subpixel(&self) -> bool {
         self.subpixel
     }
 
     /// Set subpixel positioning.
     #[inline]
-    pub fn set_subpixel(&mut self, subpixel: bool) -> &mut Self {
+    pub const fn set_subpixel(&mut self, subpixel: bool) -> &mut Self {
         self.subpixel = subpixel;
         self
     }
 
     /// Check if emboldening is enabled.
     #[inline]
-    pub fn is_embolden(&self) -> bool {
+    #[must_use]
+    pub const fn is_embolden(&self) -> bool {
         self.embolden
     }
 
     /// Set emboldening.
     #[inline]
-    pub fn set_embolden(&mut self, embolden: bool) -> &mut Self {
+    pub const fn set_embolden(&mut self, embolden: bool) -> &mut Self {
         self.embolden = embolden;
+        self
+    }
+
+    /// Check if forced auto-hinting is enabled.
+    #[inline]
+    #[must_use]
+    pub const fn is_force_auto_hinting(&self) -> bool {
+        self.force_auto_hinting
+    }
+
+    /// Set forced auto-hinting.
+    #[inline]
+    pub const fn set_force_auto_hinting(&mut self, force_auto_hinting: bool) -> &mut Self {
+        self.force_auto_hinting = force_auto_hinting;
+        self
+    }
+
+    /// Check if embedded bitmaps are used.
+    #[inline]
+    #[must_use]
+    pub const fn is_embedded_bitmaps(&self) -> bool {
+        self.embedded_bitmaps
+    }
+
+    /// Set whether embedded bitmaps are used.
+    #[inline]
+    pub const fn set_embedded_bitmaps(&mut self, embedded_bitmaps: bool) -> &mut Self {
+        self.embedded_bitmaps = embedded_bitmaps;
+        self
+    }
+
+    /// Check if linear metrics are enabled.
+    #[inline]
+    #[must_use]
+    pub const fn is_linear_metrics(&self) -> bool {
+        self.linear_metrics
+    }
+
+    /// Set linear metrics.
+    #[inline]
+    pub const fn set_linear_metrics(&mut self, linear_metrics: bool) -> &mut Self {
+        self.linear_metrics = linear_metrics;
         self
     }
 
@@ -308,21 +365,22 @@ impl Font {
     ///
     /// All values are fully cache-served from the typeface's `ParsedTypeface`
     /// metadata — no re-parsing of the font on every call.
+    #[must_use]
     pub fn metrics(&self) -> FontMetrics {
         if let Some(raw) = self.typeface.raw_metrics() {
             let upem = raw.units_per_em;
             if upem > 0 {
-                let scale = self.size / upem as Scalar;
+                let scale = self.size / Scalar::from(upem);
 
                 // Font-space ascender is positive (units above baseline).
                 // Screen-space ascent is negative (y grows downward).
-                let ascent = -(raw.ascender as Scalar) * scale;
+                let ascent = -Scalar::from(raw.ascender) * scale;
                 // Font-space descender is negative (units below baseline).
                 // Screen-space descent is positive.
-                let descent = -(raw.descender as Scalar) * scale;
+                let descent = -Scalar::from(raw.descender) * scale;
                 // Disallow negative linespacing (SkFontHost_FreeType.cpp:
                 // `if (leading < 0.0f) leading = 0.0f;`).
-                let leading = (raw.line_gap as Scalar * scale).max(0.0);
+                let leading = (Scalar::from(raw.line_gap) * scale).max(0.0);
 
                 // Cap and x heights. Per the FreeType port these are stored
                 // *positive* (`os2->sxHeight / upem * scale.y`); when the OS/2
@@ -331,12 +389,10 @@ impl Font {
                 // the screen-space `ascent` is negative.
                 let cap_height = raw
                     .cap_height
-                    .map(|v| v as Scalar * scale)
-                    .unwrap_or(-ascent * 0.875);
+                    .map_or(-ascent * 0.875, |v| Scalar::from(v) * scale);
                 let x_height = raw
                     .x_height
-                    .map(|v| v as Scalar * scale)
-                    .unwrap_or(-ascent * 0.625);
+                    .map_or(-ascent * 0.625, |v| Scalar::from(v) * scale);
 
                 // Underline from `post` (cached). Skia measures the underline
                 // position to the *top* of the stroke, so it folds in half
@@ -345,50 +401,46 @@ impl Font {
                 // The font-space position is the stroke centre measured
                 // upward from the baseline (usually negative); negating lands
                 // it in screen space (positive = below baseline).
-                let (underline_position, underline_thickness) = raw
-                    .underline_position
-                    .map(|pos| {
-                        underline_metrics_from_post(
-                            pos,
-                            raw.underline_thickness,
-                            scale,
-                            self.size,
-                        )
-                    })
-                    .unwrap_or((0.1 * self.size, 0.05 * self.size));
+                let (underline_position, underline_thickness) =
+                    raw.underline_position
+                        .map_or((0.1 * self.size, 0.05 * self.size), |pos| {
+                            underline_metrics_from_post(
+                                pos,
+                                raw.underline_thickness,
+                                scale,
+                                self.size,
+                            )
+                        });
 
                 // Strikeout from OS/2 (cached). `-yStrikeoutPosition/upem`.
-                let (strikeout_position, strikeout_thickness) = raw
-                    .strikeout_position
-                    .map(|pos| {
-                        (
-                            -(pos as Scalar) * scale,
-                            raw.strikeout_thickness
-                                .map(|t| t as Scalar * scale)
-                                .unwrap_or(0.05 * self.size),
-                        )
-                    })
-                    .unwrap_or((-0.3 * self.size, 0.05 * self.size));
+                let (strikeout_position, strikeout_thickness) =
+                    raw.strikeout_position
+                        .map_or((-0.3 * self.size, 0.05 * self.size), |pos| {
+                            (
+                                -Scalar::from(pos) * scale,
+                                raw.strikeout_thickness
+                                    .map_or(0.05 * self.size, |t| Scalar::from(t) * scale),
+                            )
+                        });
 
                 // Visible bounds come from the font's global bounding box,
                 // matching Skia's `fTop = -bbox.yMax/upem*scale` and
                 // `fBottom = -bbox.yMin/upem*scale`. The parsed bbox is
                 // already cached as (xmin, ymin, xmax, ymax).
                 let (xmin, ymin, xmax, ymax) = raw.bbox;
-                let top = -(ymax as Scalar) * scale;
-                let bottom = -(ymin as Scalar) * scale;
+                let top = -Scalar::from(ymax) * scale;
+                let bottom = -Scalar::from(ymin) * scale;
 
                 // Max char width is the bbox width; avg char width comes from
                 // OS/2 `xAvgCharWidth` when present, else the bbox width
                 // (SkFontHost_FreeType.cpp: `if (!avgCharWidth) avgCharWidth =
                 // xmax - xmin;`).
-                let bbox_width = (xmax as Scalar - xmin as Scalar) * scale;
+                let bbox_width = (Scalar::from(xmax) - Scalar::from(xmin)) * scale;
                 let max_char_width = bbox_width;
                 let avg_char_width = raw
                     .avg_char_width
                     .filter(|&a| a != 0)
-                    .map(|a| a as Scalar * scale)
-                    .unwrap_or(bbox_width);
+                    .map_or(bbox_width, |a| Scalar::from(a) * scale);
 
                 return FontMetrics {
                     ascent,
@@ -430,6 +482,7 @@ impl Font {
 
     /// Get spacing between baselines.
     #[inline]
+    #[must_use]
     pub fn spacing(&self) -> Scalar {
         let m = self.metrics();
         m.line_height()
@@ -437,12 +490,14 @@ impl Font {
 
     /// Get the ascent (negative value, distance from baseline to top).
     #[inline]
+    #[must_use]
     pub fn ascent(&self) -> Scalar {
         self.metrics().ascent
     }
 
     /// Get the descent (positive value, distance from baseline to bottom).
     #[inline]
+    #[must_use]
     pub fn descent(&self) -> Scalar {
         self.metrics().descent
     }
@@ -452,6 +507,7 @@ impl Font {
     /// Sums `glyph_advance` across each character's glyph so that fonts with
     /// real `hmtx` data measure correctly. Falls back to the crude
     /// `size * 0.5 * char_count` estimate for the dataless default typeface.
+    #[must_use]
     pub fn measure_text(&self, text: &str) -> Scalar {
         text.chars()
             .map(|c| self.glyph_advance(self.char_to_glyph(c)))
@@ -464,6 +520,7 @@ impl Font {
     /// `glyph_advance`, which reads the font's `hmtx` table when present,
     /// so this function produces correct per-character positioning for real
     /// fonts rather than the old uniform `size / 2` approximation.
+    #[must_use]
     pub fn get_widths(&self, text: &str) -> Vec<Scalar> {
         text.chars()
             .map(|c| self.glyph_advance(self.char_to_glyph(c)))
@@ -477,6 +534,7 @@ impl Font {
     /// tight visual extent is taken from `ttf_parser::Face::glyph_bounding_box`
     /// when present; otherwise we fall back to the previous ascent/descent
     /// rectangle with the measured advance as its width.
+    #[must_use]
     pub fn get_bounds(&self, text: &str) -> Vec<skia_rs_core::Rect> {
         let metrics = self.metrics();
         let mut out = Vec::with_capacity(text.chars().count());
@@ -486,53 +544,57 @@ impl Font {
             .font_data()
             .and_then(|data| ttf_parser::Face::parse(data, 0).ok());
 
-        let scale = if let Some(face) = parsed.as_ref() {
+        let scale = parsed.as_ref().map_or(1.0, |face| {
             let upem = face.units_per_em();
             if upem > 0 {
-                self.size / upem as Scalar
+                self.size / Scalar::from(upem)
             } else {
                 1.0
             }
-        } else {
-            1.0
-        };
+        });
 
         let mut x_offset: Scalar = 0.0;
         for c in text.chars() {
             let glyph = self.char_to_glyph(c);
             let advance = self.glyph_advance(glyph);
 
-            let rect = if let Some(face) = parsed.as_ref() {
-                if glyph != 0 {
-                    if let Some(bbox) = face.glyph_bounding_box(ttf_parser::GlyphId(glyph)) {
-                        // Font-space bbox is y-up; flip to y-down screen
-                        // space (negate y and swap top/bottom).
-                        let left = bbox.x_min as Scalar * scale * self.scale_x;
-                        let right = bbox.x_max as Scalar * scale * self.scale_x;
-                        let top = -(bbox.y_max as Scalar) * scale;
-                        let bottom = -(bbox.y_min as Scalar) * scale;
-                        skia_rs_core::Rect::new(
-                            x_offset + left,
-                            top,
-                            x_offset + right,
-                            bottom,
-                        )
-                    } else {
-                        // Glyph has no outline (e.g. space). Zero-sized box.
-                        skia_rs_core::Rect::from_xywh(x_offset, 0.0, 0.0, 0.0)
+            let rect = parsed.as_ref().map_or_else(
+                || {
+                    // Dataless typeface — fall back to advance×line-height box.
+                    skia_rs_core::Rect::from_xywh(
+                        x_offset,
+                        metrics.ascent,
+                        advance,
+                        -metrics.ascent + metrics.descent,
+                    )
+                },
+                |face| {
+                    if glyph == 0 {
+                        return skia_rs_core::Rect::from_xywh(x_offset, 0.0, 0.0, 0.0);
                     }
-                } else {
-                    skia_rs_core::Rect::from_xywh(x_offset, 0.0, 0.0, 0.0)
-                }
-            } else {
-                // Dataless typeface — fall back to advance×line-height box.
-                skia_rs_core::Rect::from_xywh(
-                    x_offset,
-                    metrics.ascent,
-                    advance,
-                    -metrics.ascent + metrics.descent,
-                )
-            };
+                    face.glyph_bounding_box(ttf_parser::GlyphId(glyph))
+                        .map_or_else(
+                            || {
+                                // Glyph has no outline (e.g. space). Zero-sized box.
+                                skia_rs_core::Rect::from_xywh(x_offset, 0.0, 0.0, 0.0)
+                            },
+                            |bbox| {
+                                // Font-space bbox is y-up; flip to y-down screen
+                                // space (negate y and swap top/bottom).
+                                let left = Scalar::from(bbox.x_min) * scale * self.scale_x;
+                                let right = Scalar::from(bbox.x_max) * scale * self.scale_x;
+                                let top = -Scalar::from(bbox.y_max) * scale;
+                                let bottom = -Scalar::from(bbox.y_min) * scale;
+                                skia_rs_core::Rect::new(
+                                    x_offset + left,
+                                    top,
+                                    x_offset + right,
+                                    bottom,
+                                )
+                            },
+                        )
+                },
+            );
 
             out.push(rect);
             x_offset += advance;
@@ -543,12 +605,14 @@ impl Font {
 
     /// Convert character to glyph ID.
     #[inline]
+    #[must_use]
     pub fn char_to_glyph(&self, c: char) -> u16 {
         self.typeface.char_to_glyph(c)
     }
 
     /// Convert string to glyph IDs.
     #[inline]
+    #[must_use]
     pub fn text_to_glyphs(&self, text: &str) -> Vec<u16> {
         self.typeface.chars_to_glyphs(text)
     }
@@ -564,6 +628,7 @@ impl Font {
     /// `hmtx` table scaled by `size / units_per_em`; otherwise a crude
     /// `size * 0.5` approximation is used for the dataless default
     /// typeface.
+    #[must_use]
     pub fn glyph_advance(&self, glyph: u16) -> Scalar {
         // Glyph 0 (.notdef) is a real glyph: it carries an `hmtx` advance
         // like any other and Skia advances the pen by it (a tofu box takes
@@ -573,7 +638,7 @@ impl Font {
                 let upem = face.units_per_em();
                 if upem > 0 {
                     if let Some(adv) = face.glyph_hor_advance(ttf_parser::GlyphId(glyph)) {
-                        return adv as Scalar * self.size / upem as Scalar * self.scale_x;
+                        return Scalar::from(adv) * self.size / Scalar::from(upem) * self.scale_x;
                     }
                 }
             }
@@ -582,6 +647,7 @@ impl Font {
     }
 
     /// Get advance widths for multiple glyphs.
+    #[must_use]
     pub fn glyph_advances(&self, glyphs: &[u16]) -> Vec<Scalar> {
         glyphs.iter().map(|&g| self.glyph_advance(g)).collect()
     }
@@ -596,6 +662,7 @@ impl Font {
     /// For the dataless default typeface or when a glyph has no outline,
     /// falls back to an ascent×descent rectangle sized by the measured
     /// advance.
+    #[must_use]
     pub fn glyph_bounds(&self, glyph: u16) -> skia_rs_core::Rect {
         // Glyph 0 (.notdef) has a real outline (the tofu box) and real
         // bounds; treat it like any other glyph.
@@ -604,11 +671,11 @@ impl Font {
                 let upem = face.units_per_em();
                 if upem > 0 {
                     if let Some(bbox) = face.glyph_bounding_box(ttf_parser::GlyphId(glyph)) {
-                        let scale = self.size / upem as Scalar;
-                        let left = bbox.x_min as Scalar * scale * self.scale_x;
-                        let right = bbox.x_max as Scalar * scale * self.scale_x;
-                        let top = -(bbox.y_max as Scalar) * scale;
-                        let bottom = -(bbox.y_min as Scalar) * scale;
+                        let scale = self.size / Scalar::from(upem);
+                        let left = Scalar::from(bbox.x_min) * scale * self.scale_x;
+                        let right = Scalar::from(bbox.x_max) * scale * self.scale_x;
+                        let top = -Scalar::from(bbox.y_max) * scale;
+                        let bottom = -Scalar::from(bbox.y_min) * scale;
                         return skia_rs_core::Rect::new(left, top, right, bottom);
                     }
                     // No outline — still report a zero-sized rect rather
@@ -630,6 +697,7 @@ impl Font {
     }
 
     /// Get bounding boxes for multiple glyphs.
+    #[must_use]
     pub fn glyph_bounds_batch(&self, glyphs: &[u16]) -> Vec<skia_rs_core::Rect> {
         glyphs.iter().map(|&g| self.glyph_bounds(g)).collect()
     }
@@ -647,6 +715,7 @@ impl Font {
     /// - the underlying typeface has no font data (e.g. the default typeface)
     /// - the font data fails to parse
     /// - the glyph has no outline (e.g. space, non-printing characters)
+    #[must_use]
     pub fn glyph_path(&self, glyph: u16) -> Option<skia_rs_path::Path> {
         // Glyph 0 (.notdef) has a real outline (the tofu box) in a
         // well-formed font; emit it like any other glyph.
@@ -657,7 +726,7 @@ impl Font {
         if upem == 0 {
             return None;
         }
-        let scale = self.size / upem as Scalar;
+        let scale = self.size / Scalar::from(upem);
 
         let mut builder = GlyphOutlineBuilder {
             builder: skia_rs_path::PathBuilder::new(),
@@ -670,6 +739,7 @@ impl Font {
     }
 
     /// Get paths for multiple glyphs.
+    #[must_use]
     pub fn glyph_paths(&self, glyphs: &[u16]) -> Vec<Option<skia_rs_path::Path>> {
         glyphs.iter().map(|&g| self.glyph_path(g)).collect()
     }
@@ -677,6 +747,7 @@ impl Font {
     /// Get the path for a string of text.
     ///
     /// The returned path contains all glyph outlines positioned correctly.
+    #[must_use]
     pub fn text_path(&self, text: &str) -> skia_rs_path::Path {
         let mut builder = skia_rs_path::PathBuilder::new();
         let glyphs = self.text_to_glyphs(text);
@@ -708,6 +779,7 @@ impl Font {
     /// both false-positives for any normal font with >4096 glyphs and
     /// false-negatives for small emoji-only fonts. The new check
     /// consults the actual font tables via `ttf_parser`.
+    #[must_use]
     pub fn glyph_is_color(&self, glyph: u16) -> bool {
         if glyph == 0 {
             return false;
@@ -725,7 +797,7 @@ impl Font {
             return true;
         }
 
-        let ppem = self.size.ceil().max(1.0) as u16;
+        let ppem = skia_rs_core::cast::f32_to_u16_sat(self.size.ceil().max(1.0));
         if face.glyph_raster_image(gid, ppem).is_some() {
             return true;
         }
@@ -753,6 +825,7 @@ impl Font {
     /// treat it as premultiplied BGRA, not straight RGBA. The field
     /// order and pixel values are preserved byte-for-byte from the
     /// font; no color conversion is done.
+    #[must_use]
     pub fn glyph_image(&self, glyph: u16) -> Option<GlyphImage> {
         if glyph == 0 {
             return None;
@@ -761,7 +834,7 @@ impl Font {
         let face = ttf_parser::Face::parse(data, 0).ok()?;
         let gid = ttf_parser::GlyphId(glyph);
 
-        let ppem = self.size.ceil().max(1.0) as u16;
+        let ppem = skia_rs_core::cast::f32_to_u16_sat(self.size.ceil().max(1.0));
         let raster = face.glyph_raster_image(gid, ppem)?;
 
         // Scale raster bitmap offsets from the strike's ppem into the
@@ -769,7 +842,7 @@ impl Font {
         // display pixels. The strike's `pixels_per_em` may differ from
         // `size` — ttf-parser picks the nearest available strike.
         let scale = if raster.pixels_per_em > 0 {
-            self.size / raster.pixels_per_em as Scalar
+            self.size / Scalar::from(raster.pixels_per_em)
         } else {
             1.0
         };
@@ -787,16 +860,16 @@ impl Font {
         };
 
         Some(GlyphImage {
-            width: raster.width as i32,
-            height: raster.height as i32,
+            width: i32::from(raster.width),
+            height: i32::from(raster.height),
             // Preserve the raw data buffer — no decode, no conversion.
             pixels: raster.data.to_vec(),
             format,
-            left: raster.x as Scalar * scale,
+            left: Scalar::from(raster.x) * scale,
             // `raster.y` is the bitmap-top bearing measured upward (y-up)
             // from the glyph origin. Screen space is y-down, so negate it
             // (matches Skia's `-bearingY` convention for bitmap strikes).
-            top: -(raster.y as Scalar) * scale,
+            top: -Scalar::from(raster.y) * scale,
         })
     }
 
@@ -807,6 +880,7 @@ impl Font {
     ///
     /// Returns `None` for non-SVG glyphs and for the dataless default
     /// typeface.
+    #[must_use]
     pub fn glyph_svg(&self, glyph: u16) -> Option<Vec<u8>> {
         if glyph == 0 {
             return None;
@@ -820,6 +894,7 @@ impl Font {
     /// Return the number of color palettes in the `CPAL` table, or `None`
     /// if the font has no color palette (equivalently: no COLR table or
     /// no CPAL).
+    #[must_use]
     pub fn color_palette_count(&self) -> Option<u16> {
         let data = self.typeface.font_data()?;
         let face = ttf_parser::Face::parse(data, 0).ok()?;
@@ -838,19 +913,20 @@ impl Font {
     ///   palette — Noto Color Emoji v1, Segoe UI Emoji) every layer
     ///   carries [`GlyphPaint::Solid`] with the palette colour, an
     ///   identity transform, and no clip.
-    /// - For **COLR v1** fonts (Noto Color Emoji v2, COLRv1 reference
+    /// - For **COLR v1** fonts (Noto Color Emoji v2, `COLRv1` reference
     ///   fonts) the paint graph is walked and each "outline + paint"
     ///   pair becomes a layer:
     ///   * solid fills → [`GlyphPaint::Solid`]
     ///   * linear gradients (three-point form) → [`GlyphPaint::LinearGradient`]
     ///   * radial gradients (two-circle form) → [`GlyphPaint::RadialGradient`]
     ///   * sweep gradients → [`GlyphPaint::SweepGradient`]
+    ///
     ///   The combined affine transform active at the paint node is
     ///   folded into [`ColorGlyphLayer::transform`] so the caller
     ///   applies a single transform per layer. Clip paths (from
     ///   `PaintClip` nodes) and composite modes are tracked on the
     ///   layer; only the subset of [`CompositeMode`] actually emitted
-    ///   by real fonts (SourceOver is overwhelmingly the common case)
+    ///   by real fonts (`SourceOver` is overwhelmingly the common case)
     ///   is preserved, others are reported verbatim for callers that
     ///   want to implement the full Porter-Duff set.
     ///
@@ -861,6 +937,7 @@ impl Font {
     ///
     /// Returns `None` if the glyph has no COLR definition, the font has
     /// no CPAL, or the typeface has no data.
+    #[must_use]
     pub fn glyph_color_layers(
         &self,
         glyph: u16,
@@ -889,7 +966,7 @@ impl Font {
         // allows).
         let upem = face.units_per_em();
         let scale = if upem > 0 {
-            self.size / upem as Scalar
+            self.size / Scalar::from(upem)
         } else {
             1.0
         };
@@ -923,6 +1000,7 @@ impl Font {
     }
 
     /// Get positioning information for a run of glyphs.
+    #[must_use]
     pub fn glyph_positions(
         &self,
         glyphs: &[u16],
@@ -958,6 +1036,7 @@ impl Font {
     /// typeface) or a glyph has no outline (spaces), the function falls
     /// back to the bounding-box intercepts — the old placeholder
     /// behaviour — which produces a continuous underline for that glyph.
+    #[must_use]
     pub fn glyph_intercepts(
         &self,
         glyphs: &[u16],
@@ -979,16 +1058,11 @@ impl Font {
             }
             let pos = positions.get(i).copied().unwrap_or_default();
 
-            let glyph_xs = match self.glyph_path(glyph) {
-                Some(path) => path_band_intercepts(&path, top - pos.y, bottom - pos.y),
-                None => Vec::new(),
-            };
+            let glyph_xs = self.glyph_path(glyph).map_or_else(Vec::new, |path| {
+                path_band_intercepts(&path, top - pos.y, bottom - pos.y)
+            });
 
-            if !glyph_xs.is_empty() {
-                for x in glyph_xs {
-                    intercepts.push(pos.x + x);
-                }
-            } else {
+            if glyph_xs.is_empty() {
                 // Fallback: bounding box test. For the dataless default
                 // typeface (no outline) this preserves the previous
                 // placeholder behaviour so callers still get *something*.
@@ -1001,6 +1075,10 @@ impl Font {
                         intercepts.push(pos.x + bounds.right);
                     }
                 }
+            } else {
+                for x in glyph_xs {
+                    intercepts.push(pos.x + x);
+                }
             }
         }
 
@@ -1012,7 +1090,7 @@ impl Font {
 }
 
 /// Flatten a Path into line segments and return the x-coordinates where
-/// the outline crosses the horizontal band [y_top, y_bottom] (y-down
+/// the outline crosses the horizontal band [`y_top`, `y_bottom`] (y-down
 /// screen space). Returns crossings grouped as enter/exit pairs per
 /// continuous interval.
 ///
@@ -1022,11 +1100,7 @@ impl Font {
 /// whichever is larger). For typical font sizes this produces 4-16
 /// segments per curve, which is plenty for decoration gap rendering
 /// without being wasteful.
-fn path_band_intercepts(
-    path: &skia_rs_path::Path,
-    y_top: Scalar,
-    y_bottom: Scalar,
-) -> Vec<Scalar> {
+fn path_band_intercepts(path: &skia_rs_path::Path, y_top: Scalar, y_bottom: Scalar) -> Vec<Scalar> {
     use skia_rs_core::Point;
     use skia_rs_path::PathElement;
 
@@ -1041,7 +1115,7 @@ fn path_band_intercepts(
     let mut current = Point::zero();
     let mut contour_start = Point::zero();
 
-    for elem in path.iter() {
+    for elem in path {
         match elem {
             PathElement::Move(p) => {
                 current = p;
@@ -1109,8 +1183,8 @@ fn path_band_intercepts(
         if t0 > t1 {
             continue;
         }
-        let x0 = a.x + (b.x - a.x) * t0;
-        let x1 = a.x + (b.x - a.x) * t1;
+        let x0 = (b.x - a.x).mul_add(t0, a.x);
+        let x1 = (b.x - a.x).mul_add(t1, a.x);
         xs.push(x0.min(x1));
         xs.push(x0.max(x1));
     }
@@ -1149,6 +1223,10 @@ fn path_band_intercepts(
 
 /// Recursively subdivide a quadratic bezier into chord approximations
 /// until the control point is within `tol` of the chord midpoint.
+#[allow(
+    clippy::similar_names,
+    reason = "midx/midy are the natural names for a chord midpoint's x/y in curve-flattening math"
+)]
 fn flatten_quad(
     p0: skia_rs_core::Point,
     p1: skia_rs_core::Point,
@@ -1241,7 +1319,7 @@ impl GlyphOutlineBuilder {
     fn map(&self, x: f32, y: f32) -> (f32, f32) {
         let px = x * self.scale;
         let py = -y * self.scale;
-        (self.scale_x * px + self.skew_x * py, py)
+        (self.scale_x.mul_add(px, self.skew_x * py), py)
     }
 }
 
@@ -1362,7 +1440,8 @@ pub struct GradientStop {
 impl GradientStop {
     /// Create a stop from a float offset and ARGB color.
     #[inline]
-    pub fn new(offset: f32, color: u32) -> Self {
+    #[must_use]
+    pub const fn new(offset: f32, color: u32) -> Self {
         Self {
             offset: offset.to_bits(),
             color,
@@ -1371,7 +1450,8 @@ impl GradientStop {
 
     /// Return the offset as a float in `[0, 1]`.
     #[inline]
-    pub fn offset_f32(&self) -> f32 {
+    #[must_use]
+    pub const fn offset_f32(&self) -> f32 {
         f32::from_bits(self.offset)
     }
 }
@@ -1448,21 +1528,21 @@ impl GlyphPaint {
     /// gradient at t=0" approximation used as a fallback when the
     /// caller can't rasterise a real gradient. Returns `0xFF_00_00_00`
     /// (opaque black) if the gradient has no stops.
+    #[must_use]
     pub fn representative_color(&self) -> u32 {
         match self {
             Self::Solid(c) => *c,
             Self::LinearGradient { stops, .. }
             | Self::RadialGradient { stops, .. }
-            | Self::SweepGradient { stops, .. } => {
-                stops.first().map(|s| s.color).unwrap_or(0xFF_00_00_00)
-            }
+            | Self::SweepGradient { stops, .. } => stops.first().map_or(0xFF_00_00_00, |s| s.color),
         }
     }
 
     /// Returns `true` if this paint is a gradient (i.e. not
     /// [`GlyphPaint::Solid`]).
     #[inline]
-    pub fn is_gradient(&self) -> bool {
+    #[must_use]
+    pub const fn is_gradient(&self) -> bool {
         !matches!(self, Self::Solid(_))
     }
 }
@@ -1614,6 +1694,7 @@ impl ColorGlyphLayer {
     /// is the first stop's color — useful as a fallback when the
     /// caller can't rasterise the full gradient.
     #[inline]
+    #[must_use]
     pub fn color(&self) -> u32 {
         self.paint.representative_color()
     }
@@ -1623,12 +1704,13 @@ impl ColorGlyphLayer {
     /// Preserved for source compatibility with the Phase 6A API — new
     /// code should match on [`Self::paint`] directly.
     #[inline]
-    pub fn is_gradient(&self) -> bool {
+    #[must_use]
+    pub const fn is_gradient(&self) -> bool {
         self.paint.is_gradient()
     }
 }
 
-/// Convert a `0xAARRGGBB` u32 to ttf_parser's `RgbaColor`.
+/// Convert a `0xAARRGGBB` u32 to `ttf_parser`'s `RgbaColor`.
 fn ttf_rgba_from_argb(argb: u32) -> ttf_parser::RgbaColor {
     let a = ((argb >> 24) & 0xff) as u8;
     let r = ((argb >> 16) & 0xff) as u8;
@@ -1637,12 +1719,12 @@ fn ttf_rgba_from_argb(argb: u32) -> ttf_parser::RgbaColor {
     ttf_parser::RgbaColor::new(r, g, b, a)
 }
 
-/// Pack a ttf_parser `RgbaColor` back into an ARGB u32.
+/// Pack a `ttf_parser` `RgbaColor` back into an ARGB u32.
 fn argb_from_ttf_rgba(c: ttf_parser::RgbaColor) -> u32 {
-    ((c.alpha as u32) << 24)
-        | ((c.red as u32) << 16)
-        | ((c.green as u32) << 8)
-        | (c.blue as u32)
+    (u32::from(c.alpha) << 24)
+        | (u32::from(c.red) << 16)
+        | (u32::from(c.green) << 8)
+        | u32::from(c.blue)
 }
 
 /// Convert a ttf-parser affine (`a b c d e f` column vectors in y-up
@@ -1672,7 +1754,7 @@ fn matrix_from_ttf_transform(t: ttf_parser::Transform) -> Matrix {
 ///
 /// A COLR transform `A` acts on font-space points; the outline it composes
 /// against has already been mapped into pixel space by the linear map `L`
-/// that `GlyphOutlineBuilder::map` applies (scale, y-flip, scale_x, skew_x).
+/// that `GlyphOutlineBuilder::map` applies (scale, y-flip, `scale_x`, `skew_x`).
 /// To keep `A` consistent with pixel-space geometry it must be conjugated:
 /// `T = L · A · L⁻¹`, so that `T(L(p)) == L(A(p))` for every font-space
 /// point `p`. When `scale_x == 1.0 && skew_x == 0.0`, `L` reduces to the
@@ -1806,9 +1888,7 @@ impl ColorLayerWalker {
     fn convert_paint(&self, paint: ttf_parser::colr::Paint<'_>) -> GlyphPaint {
         let palette = self.palette;
         match paint {
-            ttf_parser::colr::Paint::Solid(color) => {
-                GlyphPaint::Solid(argb_from_ttf_rgba(color))
-            }
+            ttf_parser::colr::Paint::Solid(color) => GlyphPaint::Solid(argb_from_ttf_rgba(color)),
             ttf_parser::colr::Paint::LinearGradient(g) => {
                 // Font space is y-up; our glyph paths live in y-down
                 // screen space, already scaled by size/upem and sheared by
@@ -1868,7 +1948,7 @@ impl ColorLayerWalker {
 fn scale_colr_point(x: f32, y: f32, scale: Scalar, scale_x: Scalar, skew_x: Scalar) -> Point {
     let px = x * scale;
     let py = -y * scale;
-    Point::new(scale_x * px + skew_x * py, py)
+    Point::new(scale_x.mul_add(px, skew_x * py), py)
 }
 
 fn collect_stops(iter: ttf_parser::colr::GradientStopsIter<'_, '_>) -> Vec<GradientStop> {
@@ -1987,6 +2067,10 @@ impl<'a> ttf_parser::colr::Painter<'a> for ColorLayerWalker {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact-value assertions on deterministic metric math"
+)]
 mod tests {
     use super::*;
 
@@ -2044,13 +2128,13 @@ mod tests {
             p1: Point::new(10.0, 0.0),
             p2: Point::new(0.0, 10.0),
             stops: vec![
-                GradientStop::new(0.0, 0xFF_ff_00_00),
-                GradientStop::new(1.0, 0xFF_00_ff_00),
+                GradientStop::new(0.0, 0xFF_FF_00_00),
+                GradientStop::new(1.0, 0xFF_00_FF_00),
             ],
             extend: GradientExtend::Pad,
         };
         // Representative color = first stop color (t=0 sample).
-        assert_eq!(paint.representative_color(), 0xFF_ff_00_00);
+        assert_eq!(paint.representative_color(), 0xFF_FF_00_00);
         assert!(paint.is_gradient());
     }
 
@@ -2126,15 +2210,21 @@ mod tests {
         // is machine-checked by `From::from` exhaustiveness.
         use ttf_parser::colr::CompositeMode as M;
         assert_eq!(CompositeMode::from(M::Clear), CompositeMode::Clear);
-        assert_eq!(CompositeMode::from(M::SourceOver), CompositeMode::SourceOver);
+        assert_eq!(
+            CompositeMode::from(M::SourceOver),
+            CompositeMode::SourceOver
+        );
         assert_eq!(CompositeMode::from(M::Multiply), CompositeMode::Multiply);
-        assert_eq!(CompositeMode::from(M::Luminosity), CompositeMode::Luminosity);
+        assert_eq!(
+            CompositeMode::from(M::Luminosity),
+            CompositeMode::Luminosity
+        );
     }
 
     #[test]
     fn matrix_from_ttf_transform_identity_is_identity() {
         let m = matrix_from_ttf_transform(ttf_parser::Transform::default());
-        assert!(m.is_identity(), "{:?}", m);
+        assert!(m.is_identity(), "{m:?}");
     }
 
     #[test]
@@ -2213,7 +2303,7 @@ mod tests {
         let p = scale_colr_point(900.0, 250.0, scale, scale_x, skew_x);
         let px = 900.0 * scale;
         let py = -250.0 * scale;
-        assert_eq!(p.x, scale_x * px + skew_x * py);
+        assert_eq!(p.x, scale_x.mul_add(px, skew_x * py));
         assert_eq!(p.y, py);
         // Sanity: this must differ from the naive (unsheared) mapping,
         // otherwise the regression wouldn't be exercised.
@@ -2236,7 +2326,7 @@ mod tests {
 
         let px = 200.0 * scale;
         let py = -300.0 * scale;
-        let expected_x = scale_x * px + skew_x * py;
+        let expected_x = scale_x.mul_add(px, skew_x * py);
         let expected_y = py;
         assert!((m.values[Matrix::TRANS_X] - expected_x).abs() < 1e-5);
         assert!((m.values[Matrix::TRANS_Y] - expected_y).abs() < 1e-5);

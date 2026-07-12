@@ -3,7 +3,11 @@
 //! This example measures memory allocation patterns for common operations.
 //!
 //! Usage:
-//!   cargo run --example memory_profile -p skia-rs-bench --release
+//!   cargo run --example `memory_profile` -p skia-rs-bench --release
+#![allow(
+    clippy::cast_precision_loss,
+    reason = "loop indices are bounded by small fixed ranges (<=1000); precision loss cannot occur in practice"
+)]
 
 use skia_rs_bench::memory::{self, MemoryProfile};
 use skia_rs_canvas::Surface;
@@ -11,21 +15,7 @@ use skia_rs_core::{Color, Point, Rect};
 use skia_rs_paint::Paint;
 use skia_rs_path::PathBuilder;
 
-fn main() {
-    println!("skia-rs Memory Profile");
-    println!("======================\n");
-
-    // Print type sizes
-    println!("Type Sizes:");
-    memory::size_of::print_summary();
-    println!();
-
-    // Memory profiling
-    let mut profile = MemoryProfile::new();
-
-    // ==========================================================================
-    // Surface Allocation
-    // ==========================================================================
+fn profile_surface_allocation(profile: &mut MemoryProfile) {
     println!("Profiling surface allocation...");
 
     profile.measure("Surface 64x64", || {
@@ -43,10 +33,9 @@ fn main() {
     profile.measure("Surface 1920x1080", || {
         let _ = Surface::new_raster_n32_premul(1920, 1080);
     });
+}
 
-    // ==========================================================================
-    // Path Construction
-    // ==========================================================================
+fn profile_path_construction(profile: &mut MemoryProfile) {
     println!("Profiling path construction...");
 
     profile.measure("Path 10 lines", || {
@@ -89,10 +78,9 @@ fn main() {
         builder.close();
         let _ = builder.build();
     });
+}
 
-    // ==========================================================================
-    // Paint
-    // ==========================================================================
+fn profile_paint(profile: &mut MemoryProfile) {
     println!("Profiling paint...");
 
     profile.measure("Paint create", || {
@@ -103,10 +91,9 @@ fn main() {
     profile.measure("Paint clone", || {
         let _ = paint.clone();
     });
+}
 
-    // ==========================================================================
-    // Drawing Operations
-    // ==========================================================================
+fn profile_drawing_operations(profile: &mut MemoryProfile) {
     println!("Profiling drawing operations...");
 
     let mut surface = Surface::new_raster_n32_premul(1000, 1000).unwrap();
@@ -136,7 +123,7 @@ fn main() {
     // Create a path for repeated drawing
     let mut builder = PathBuilder::new();
     for i in 0..5 {
-        let angle = (i as f32 * 72.0 - 90.0).to_radians();
+        let angle = (i as f32).mul_add(72.0, -90.0).to_radians();
         let x = 50.0 * angle.cos();
         let y = 50.0 * angle.sin();
         if i == 0 {
@@ -154,10 +141,9 @@ fn main() {
             canvas.draw_path(&star, &paint);
         }
     });
+}
 
-    // ==========================================================================
-    // Batch Operations
-    // ==========================================================================
+fn profile_batch_operations(profile: &mut MemoryProfile) {
     println!("Profiling batch operations...");
 
     profile.measure("Alloc 1000 Points", || {
@@ -172,13 +158,19 @@ fn main() {
 
     profile.measure("Alloc 1000 Colors", || {
         let _colors: Vec<Color> = (0..1000)
-            .map(|i| Color::from_argb(255, (i % 256) as u8, ((i / 256) % 256) as u8, 0))
+            .map(|i| {
+                Color::from_argb(
+                    255,
+                    u8::try_from(i % 256).unwrap_or(0),
+                    u8::try_from((i / 256) % 256).unwrap_or(0),
+                    0,
+                )
+            })
             .collect();
     });
+}
 
-    // ==========================================================================
-    // Report
-    // ==========================================================================
+fn print_report_and_notes(profile: &MemoryProfile) {
     println!("\n{}", profile.report());
 
     // Summary calculations
@@ -199,7 +191,10 @@ fn main() {
     // Estimate for common operations
     let surface_4k = 3840 * 2160 * 4;
     println!("Estimated memory for common scenarios:");
-    println!("- 4K surface: {} MB", surface_4k as f64 / 1024.0 / 1024.0);
+    println!(
+        "- 4K surface: {} MB",
+        f64::from(surface_4k) / 1024.0 / 1024.0
+    );
     println!(
         "- 10 layers of 1080p: {} MB",
         10.0 * 1920.0 * 1080.0 * 4.0 / 1024.0 / 1024.0
@@ -208,4 +203,25 @@ fn main() {
         "- 1000 complex paths (100 segments each): ~{} KB",
         1000 * (memory::size_of::path() + 100 * 16) / 1024
     );
+}
+
+fn main() {
+    println!("skia-rs Memory Profile");
+    println!("======================\n");
+
+    // Print type sizes
+    println!("Type Sizes:");
+    memory::size_of::print_summary();
+    println!();
+
+    // Memory profiling
+    let mut profile = MemoryProfile::new();
+
+    profile_surface_allocation(&mut profile);
+    profile_path_construction(&mut profile);
+    profile_paint(&mut profile);
+    profile_drawing_operations(&mut profile);
+    profile_batch_operations(&mut profile);
+
+    print_report_and_notes(&profile);
 }

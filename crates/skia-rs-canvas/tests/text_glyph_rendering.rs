@@ -22,6 +22,10 @@ fn demo_font(size: f32) -> Font {
 }
 
 #[test]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "pixel-count ratio in a test; precision is irrelevant"
+)]
 fn draw_string_renders_non_rectangular_glyph() {
     // Big canvas and big font — a 200pt 'A' gives us plenty of pixels to
     // sample inside vs. outside the triangular body.
@@ -48,10 +52,7 @@ fn draw_string_renders_non_rectangular_glyph() {
         }
     }
 
-    assert!(
-        painted > 0,
-        "glyph 'A' should produce some painted pixels"
-    );
+    assert!(painted > 0, "glyph 'A' should produce some painted pixels");
     assert!(
         empty > 0,
         "glyph 'A' must have unfilled pixels within its bbox — a solid \
@@ -104,12 +105,7 @@ fn draw_color_glyph_returns_false_for_outline_font() {
     let font = demo_font(24.0);
     let mut paint = Paint::new();
     paint.set_color(Color::WHITE.into());
-    let handled = canvas.draw_color_glyph(
-        1,
-        skia_rs_core::Point::new(10.0, 40.0),
-        &font,
-        &paint,
-    );
+    let handled = canvas.draw_color_glyph(1, skia_rs_core::Point::new(10.0, 40.0), &font, &paint);
     assert!(
         !handled,
         "demo.ttf is outline-only; draw_color_glyph must not claim the glyph"

@@ -15,6 +15,34 @@ members = [
     "crates/skia-rs-safe",
     "crates/skia-rs-bench",
     "crates/skia-rs",
+    "crates/skia-rs-node",
+    "crates/skia-rs-python",
+]
+
+# Binding crates (node/python) require external toolchains (napi/pyo3) and
+# build cdylibs; keep them out of the default `cargo build` set so a plain
+# workspace build stays lean, while `cargo build --workspace` still covers them.
+#
+# INVARIANT: this list must equal `members` above MINUS the binding crates
+# (skia-rs-node, skia-rs-python). When you add a new non-binding crate to
+# `members`, add it here too — otherwise it is silently dropped from the
+# default `cargo build`/`test`/`clippy` runs (CI uses `--workspace`, which
+# overrides default-members, so CI would not catch the omission).
+default-members = [
+    "crates/skia-rs-core",
+    "crates/skia-rs-path",
+    "crates/skia-rs-paint",
+    "crates/skia-rs-canvas",
+    "crates/skia-rs-text",
+    "crates/skia-rs-gpu",
+    "crates/skia-rs-codec",
+    "crates/skia-rs-svg",
+    "crates/skia-rs-pdf",
+    "crates/skia-rs-skottie",
+    "crates/skia-rs-ffi",
+    "crates/skia-rs-safe",
+    "crates/skia-rs-bench",
+    "crates/skia-rs",
 ]
 exclude = ["fuzz"]  # Fuzz crate uses different edition for libfuzzer compatibility
 
@@ -130,3 +158,13 @@ opt-level = 3
 inherits = "release"
 debug = true
 lto = "thin"
+
+# Workspace-wide lint policy: pedantic + nursery are enforced (the CI clippy
+# job and the pre-push/pre-commit hooks run `-D warnings`, which promotes these
+# to errors). Individual, justified `#[allow(clippy::..., reason = "...")]`
+# attributes at item/module scope override this where a lint is a false
+# positive for a faithful Skia port. Each member crate opts in via
+# `[lints] workspace = true`.
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }

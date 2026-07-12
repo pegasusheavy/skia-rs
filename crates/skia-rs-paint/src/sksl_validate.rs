@@ -1,4 +1,4 @@
-//! Semantic validation for SkSL programs.
+//! Semantic validation for `SkSL` programs.
 //!
 //! The [`crate::sksl`] module produces a syntactic AST, nothing more.
 //! That AST will happily describe programs that reference undeclared
@@ -29,7 +29,7 @@
 //!   result as `Float`). Adding a real struct-field check requires
 //!   threading [`crate::sksl::StructDecl`] information through the
 //!   checker and is left for a future pass.
-//! - **Overload resolution** — SkSL allows multiple functions with the
+//! - **Overload resolution** — `SkSL` allows multiple functions with the
 //!   same name but different parameter types. The parser does not
 //!   support this (the [`SkslProgram::functions`] vector is a flat
 //!   name->decl map), so the validator doesn't either. Built-ins with
@@ -38,7 +38,7 @@
 //! - **Implicit numeric conversions beyond equal types** — `float` and
 //!   `int` are not silently interchanged. Code that mixes them should
 //!   wrap the value explicitly (`float(i)` or `int(f)`). This matches
-//!   strict SkSL semantics and keeps the checker simple.
+//!   strict `SkSL` semantics and keeps the checker simple.
 //! - **Array types and indexing correctness** — arrays parse, but
 //!   indexing an array currently yields the array's element type
 //!   without bounds checking.
@@ -51,8 +51,8 @@
 use crate::sksl::{BinaryOp, Expr, FnDecl, SkslProgram, SkslType, Stmt, UnaryOp};
 use std::collections::HashMap;
 
-/// A semantic error discovered while validating an SkSL program.
-#[derive(Debug, Clone, PartialEq)]
+/// A semantic error discovered while validating an `SkSL` program.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
     /// A name was referenced that is not a local, parameter, uniform,
     /// or global function.
@@ -113,51 +113,48 @@ pub enum ValidationError {
 impl std::fmt::Display for ValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ValidationError::UndeclaredVariable(n) => {
-                write!(f, "undeclared variable '{}'", n)
+            Self::UndeclaredVariable(n) => {
+                write!(f, "undeclared variable '{n}'")
             }
-            ValidationError::TypeMismatch {
+            Self::TypeMismatch {
                 expected,
                 actual,
                 context,
             } => write!(
                 f,
-                "type mismatch in {}: expected {}, got {}",
-                context, expected, actual
+                "type mismatch in {context}: expected {expected}, got {actual}"
             ),
-            ValidationError::ArityMismatch {
+            Self::ArityMismatch {
                 function,
                 expected,
                 actual,
             } => write!(
                 f,
-                "function '{}' takes {} arg(s), got {}",
-                function, expected, actual
+                "function '{function}' takes {expected} arg(s), got {actual}"
             ),
-            ValidationError::ReturnTypeMismatch {
+            Self::ReturnTypeMismatch {
                 function,
                 expected,
                 actual,
             } => write!(
                 f,
-                "function '{}' declared return type {} but returns {}",
-                function, expected, actual
+                "function '{function}' declared return type {expected} but returns {actual}"
             ),
-            ValidationError::MissingReturn(n) => {
-                write!(f, "function '{}' is missing a return statement", n)
+            Self::MissingReturn(n) => {
+                write!(f, "function '{n}' is missing a return statement")
             }
-            ValidationError::InvalidOperator { op, lhs, rhs } => {
+            Self::InvalidOperator { op, lhs, rhs } => {
                 if rhs.is_empty() {
-                    write!(f, "invalid operator '{}' on {}", op, lhs)
+                    write!(f, "invalid operator '{op}' on {lhs}")
                 } else {
-                    write!(f, "invalid operator '{}' between {} and {}", op, lhs, rhs)
+                    write!(f, "invalid operator '{op}' between {lhs} and {rhs}")
                 }
             }
-            ValidationError::InvalidSwizzle { field, base } => {
-                write!(f, "invalid swizzle '.{}' on {}", field, base)
+            Self::InvalidSwizzle { field, base } => {
+                write!(f, "invalid swizzle '.{field}' on {base}")
             }
-            ValidationError::NotAssignable(ctx) => {
-                write!(f, "expression is not assignable: {}", ctx)
+            Self::NotAssignable(ctx) => {
+                write!(f, "expression is not assignable: {ctx}")
             }
         }
     }
@@ -167,6 +164,12 @@ impl std::error::Error for ValidationError {}
 
 /// Walk `program` and return the first semantic error encountered, or
 /// `Ok(())` if the program is well-typed.
+///
+/// # Errors
+///
+/// Returns a [`ValidationError`] describing the first type or scoping
+/// violation found (undeclared variable, arity/type mismatch, missing
+/// return, etc.).
 pub fn validate_program(program: &SkslProgram) -> Result<(), ValidationError> {
     let mut v = Validator::new(program);
     v.validate()
@@ -232,8 +235,15 @@ impl<'a> Validator<'a> {
         self.pop_scope();
         self.current_fn = None;
 
-        match returned {
-            Some(actual) => {
+        returned.map_or_else(
+            || {
+                if matches!(f.return_type, SkslType::Void) {
+                    Ok(())
+                } else {
+                    Err(ValidationError::MissingReturn(f.name.clone()))
+                }
+            },
+            |actual| {
                 if types_compatible(&f.return_type, &actual) {
                     Ok(())
                 } else {
@@ -243,15 +253,8 @@ impl<'a> Validator<'a> {
                         actual: actual.to_string(),
                     })
                 }
-            }
-            None => {
-                if matches!(f.return_type, SkslType::Void) {
-                    Ok(())
-                } else {
-                    Err(ValidationError::MissingReturn(f.name.clone()))
-                }
-            }
-        }
+            },
+        )
     }
 
     fn validate_stmts(&mut self, stmts: &[Stmt]) -> Result<ReturnSignal, ValidationError> {
@@ -278,7 +281,7 @@ impl<'a> Validator<'a> {
                         return Err(ValidationError::TypeMismatch {
                             expected: ty.to_string(),
                             actual: init_ty.to_string(),
-                            context: format!("variable '{}' initializer", name),
+                            context: format!("variable '{name}' initializer"),
                         });
                     }
                 }
@@ -295,82 +298,15 @@ impl<'a> Validator<'a> {
                 cond,
                 then_branch,
                 else_branch,
-            } => {
-                let ct = self.validate_expr(cond)?;
-                if !matches!(ct, SkslType::Bool) {
-                    return Err(ValidationError::TypeMismatch {
-                        expected: "bool".into(),
-                        actual: ct.to_string(),
-                        context: "if condition".into(),
-                    });
-                }
-                let then_ret = self.validate_stmt(then_branch)?;
-                let else_ret = if let Some(eb) = else_branch {
-                    self.validate_stmt(eb)?
-                } else {
-                    None
-                };
-                // Only report a definite return if BOTH branches return,
-                // otherwise the function might still fall through.
-                match (then_ret, else_ret) {
-                    (Some(a), Some(_)) => Ok(Some(a)),
-                    _ => Ok(None),
-                }
-            }
+            } => self.validate_if(cond, then_branch, else_branch.as_deref()),
             Stmt::For {
                 init,
                 cond,
                 update,
                 body,
-            } => {
-                self.push_scope();
-                if let Some(i) = init {
-                    self.validate_stmt(i)?;
-                }
-                if let Some(c) = cond {
-                    let ct = self.validate_expr(c)?;
-                    if !matches!(ct, SkslType::Bool) {
-                        self.pop_scope();
-                        return Err(ValidationError::TypeMismatch {
-                            expected: "bool".into(),
-                            actual: ct.to_string(),
-                            context: "for condition".into(),
-                        });
-                    }
-                }
-                if let Some(u) = update {
-                    self.validate_expr(u)?;
-                }
-                // Loop body may or may not execute — never treat as
-                // definitely-returning.
-                let _ = self.validate_stmt(body)?;
-                self.pop_scope();
-                Ok(None)
-            }
-            Stmt::While { cond, body } => {
-                let ct = self.validate_expr(cond)?;
-                if !matches!(ct, SkslType::Bool) {
-                    return Err(ValidationError::TypeMismatch {
-                        expected: "bool".into(),
-                        actual: ct.to_string(),
-                        context: "while condition".into(),
-                    });
-                }
-                let _ = self.validate_stmt(body)?;
-                Ok(None)
-            }
-            Stmt::DoWhile { body, cond } => {
-                let _ = self.validate_stmt(body)?;
-                let ct = self.validate_expr(cond)?;
-                if !matches!(ct, SkslType::Bool) {
-                    return Err(ValidationError::TypeMismatch {
-                        expected: "bool".into(),
-                        actual: ct.to_string(),
-                        context: "do-while condition".into(),
-                    });
-                }
-                Ok(None)
-            }
+            } => self.validate_for(init.as_deref(), cond.as_ref(), update.as_ref(), body),
+            Stmt::While { cond, body } => self.validate_while(cond, body),
+            Stmt::DoWhile { body, cond } => self.validate_do_while(body, cond),
             Stmt::Return(expr_opt) => {
                 let ty = match expr_opt {
                     Some(e) => self.validate_expr(e)?,
@@ -380,6 +316,100 @@ impl<'a> Validator<'a> {
             }
             Stmt::Break | Stmt::Continue | Stmt::Discard => Ok(None),
         }
+    }
+
+    fn validate_if(
+        &mut self,
+        cond: &Expr,
+        then_branch: &Stmt,
+        else_branch: Option<&Stmt>,
+    ) -> Result<ReturnSignal, ValidationError> {
+        let ct = self.validate_expr(cond)?;
+        if !matches!(ct, SkslType::Bool) {
+            return Err(ValidationError::TypeMismatch {
+                expected: "bool".into(),
+                actual: ct.to_string(),
+                context: "if condition".into(),
+            });
+        }
+        let then_ret = self.validate_stmt(then_branch)?;
+        let else_ret = if let Some(eb) = else_branch {
+            self.validate_stmt(eb)?
+        } else {
+            None
+        };
+        // Only report a definite return if BOTH branches return,
+        // otherwise the function might still fall through.
+        match (then_ret, else_ret) {
+            (Some(a), Some(_)) => Ok(Some(a)),
+            _ => Ok(None),
+        }
+    }
+
+    fn validate_for(
+        &mut self,
+        init: Option<&Stmt>,
+        cond: Option<&Expr>,
+        update: Option<&Expr>,
+        body: &Stmt,
+    ) -> Result<ReturnSignal, ValidationError> {
+        self.push_scope();
+        if let Some(i) = init {
+            self.validate_stmt(i)?;
+        }
+        if let Some(c) = cond {
+            let ct = self.validate_expr(c)?;
+            if !matches!(ct, SkslType::Bool) {
+                self.pop_scope();
+                return Err(ValidationError::TypeMismatch {
+                    expected: "bool".into(),
+                    actual: ct.to_string(),
+                    context: "for condition".into(),
+                });
+            }
+        }
+        if let Some(u) = update {
+            self.validate_expr(u)?;
+        }
+        // Loop body may or may not execute — never treat as
+        // definitely-returning.
+        let _ = self.validate_stmt(body)?;
+        self.pop_scope();
+        Ok(None)
+    }
+
+    fn validate_while(
+        &mut self,
+        cond: &Expr,
+        body: &Stmt,
+    ) -> Result<ReturnSignal, ValidationError> {
+        let ct = self.validate_expr(cond)?;
+        if !matches!(ct, SkslType::Bool) {
+            return Err(ValidationError::TypeMismatch {
+                expected: "bool".into(),
+                actual: ct.to_string(),
+                context: "while condition".into(),
+            });
+        }
+        let _ = self.validate_stmt(body)?;
+        Ok(None)
+    }
+
+    fn validate_do_while(
+        &mut self,
+        body: &Stmt,
+        cond: &Expr,
+    ) -> Result<ReturnSignal, ValidationError> {
+        let _ = self.validate_stmt(body)?;
+        let ct = self.validate_expr(cond)?;
+        if !matches!(ct, SkslType::Bool) {
+            return Err(ValidationError::TypeMismatch {
+                expected: "bool".into(),
+                actual: ct.to_string(),
+                context: "do-while condition".into(),
+            });
+        }
+        Ok(None)
     }
 
     fn validate_expr(&mut self, expr: &Expr) -> Result<SkslType, ValidationError> {
@@ -406,12 +436,10 @@ impl<'a> Validator<'a> {
 
             Expr::Unary { op, expr } => {
                 let t = self.validate_expr(expr)?;
-                result_type_for_unop(*op, &t).ok_or_else(|| {
-                    ValidationError::InvalidOperator {
-                        op: op.glsl_str().to_string(),
-                        lhs: t.to_string(),
-                        rhs: String::new(),
-                    }
+                result_type_for_unop(*op, &t).ok_or_else(|| ValidationError::InvalidOperator {
+                    op: op.glsl_str().to_string(),
+                    lhs: t.to_string(),
+                    rhs: String::new(),
                 })
             }
 
@@ -421,29 +449,7 @@ impl<'a> Validator<'a> {
                 receiver,
                 method,
                 args,
-            } => {
-                // `child.eval(coord)` on a child shader/colorFilter/blender.
-                if method == "eval" {
-                    if let Expr::Var(name) = receiver.as_ref() {
-                        if let Some(ty) = self.uniforms.get(name).cloned() {
-                            if matches!(
-                                ty,
-                                SkslType::Shader | SkslType::ColorFilter | SkslType::Blender
-                            ) {
-                                for a in args {
-                                    self.validate_expr(a)?;
-                                }
-                                return Ok(SkslType::Half4);
-                            }
-                        }
-                    }
-                }
-                Err(ValidationError::InvalidOperator {
-                    op: format!(".{method}()"),
-                    lhs: "non-child receiver".into(),
-                    rhs: String::new(),
-                })
-            }
+            } => self.validate_method_call(receiver, method, args),
 
             Expr::Constructor { ty, args } => {
                 for a in args {
@@ -456,97 +462,25 @@ impl<'a> Validator<'a> {
                 Ok(ty.clone())
             }
 
-            Expr::Field { expr, field } => {
-                let base_ty = self.validate_expr(expr)?;
-                // Structs are a documented limitation: we accept any
-                // field name and assume Float, because the AST doesn't
-                // carry enough information for the validator to look
-                // the field up in the enclosing struct declaration.
-                if matches!(base_ty, SkslType::Struct(_)) {
-                    return Ok(SkslType::Float);
-                }
-                swizzle_result_type(&base_ty, field).ok_or_else(|| {
-                    ValidationError::InvalidSwizzle {
-                        field: field.clone(),
-                        base: base_ty.to_string(),
-                    }
-                })
-            }
+            Expr::Field { expr, field } => self.validate_field(expr, field),
 
-            Expr::Index { expr, index } => {
-                let base_ty = self.validate_expr(expr)?;
-                let idx_ty = self.validate_expr(index)?;
-                if !matches!(idx_ty, SkslType::Int) {
-                    return Err(ValidationError::TypeMismatch {
-                        expected: "int".into(),
-                        actual: idx_ty.to_string(),
-                        context: "array/vector index".into(),
-                    });
-                }
-                Ok(index_result_type(&base_ty))
-            }
+            Expr::Index { expr, index } => self.validate_index(expr, index),
 
             Expr::Ternary {
                 cond,
                 then_expr,
                 else_expr,
-            } => {
-                let ct = self.validate_expr(cond)?;
-                if !matches!(ct, SkslType::Bool) {
-                    return Err(ValidationError::TypeMismatch {
-                        expected: "bool".into(),
-                        actual: ct.to_string(),
-                        context: "ternary condition".into(),
-                    });
-                }
-                let tt = self.validate_expr(then_expr)?;
-                let et = self.validate_expr(else_expr)?;
-                if types_compatible(&tt, &et) {
-                    Ok(tt)
-                } else {
-                    Err(ValidationError::TypeMismatch {
-                        expected: tt.to_string(),
-                        actual: et.to_string(),
-                        context: "ternary branches".into(),
-                    })
-                }
-            }
+            } => self.validate_ternary(cond, then_expr, else_expr),
 
-            Expr::Assign { target, value } => {
-                if !is_assignable(target) {
-                    return Err(ValidationError::NotAssignable(format!("{:?}", target)));
-                }
-                let tt = self.validate_expr(target)?;
-                let vt = self.validate_expr(value)?;
-                if !types_compatible(&tt, &vt) {
-                    return Err(ValidationError::TypeMismatch {
-                        expected: tt.to_string(),
-                        actual: vt.to_string(),
-                        context: "assignment".into(),
-                    });
-                }
-                Ok(tt)
-            }
+            Expr::Assign { target, value } => self.validate_assign(target, value),
 
             Expr::CompoundAssign { target, op, value } => {
-                if !is_assignable(target) {
-                    return Err(ValidationError::NotAssignable(format!("{:?}", target)));
-                }
-                let tt = self.validate_expr(target)?;
-                let vt = self.validate_expr(value)?;
-                result_type_for_binop(*op, &tt, &vt).ok_or_else(|| {
-                    ValidationError::InvalidOperator {
-                        op: op.glsl_str().to_string(),
-                        lhs: tt.to_string(),
-                        rhs: vt.to_string(),
-                    }
-                })?;
-                Ok(tt)
+                self.validate_compound_assign(target, *op, value)
             }
 
             Expr::PostIncDec { expr, .. } | Expr::PreIncDec { expr, .. } => {
                 if !is_assignable(expr) {
-                    return Err(ValidationError::NotAssignable(format!("{:?}", expr)));
+                    return Err(ValidationError::NotAssignable(format!("{expr:?}")));
                 }
                 let t = self.validate_expr(expr)?;
                 if !is_numeric(&t) {
@@ -561,11 +495,130 @@ impl<'a> Validator<'a> {
         }
     }
 
-    fn validate_call(
+    fn validate_method_call(
         &mut self,
-        name: &str,
+        receiver: &Expr,
+        method: &str,
         args: &[Expr],
     ) -> Result<SkslType, ValidationError> {
+        // `child.eval(coord)` on a child shader/colorFilter/blender.
+        if method == "eval" {
+            if let Expr::Var(name) = receiver {
+                if let Some(ty) = self.uniforms.get(name).cloned() {
+                    if matches!(
+                        ty,
+                        SkslType::Shader | SkslType::ColorFilter | SkslType::Blender
+                    ) {
+                        for a in args {
+                            self.validate_expr(a)?;
+                        }
+                        return Ok(SkslType::Half4);
+                    }
+                }
+            }
+        }
+        Err(ValidationError::InvalidOperator {
+            op: format!(".{method}()"),
+            lhs: "non-child receiver".into(),
+            rhs: String::new(),
+        })
+    }
+
+    fn validate_field(&mut self, expr: &Expr, field: &str) -> Result<SkslType, ValidationError> {
+        let base_ty = self.validate_expr(expr)?;
+        // Structs are a documented limitation: we accept any field name
+        // and assume Float, because the AST doesn't carry enough
+        // information for the validator to look the field up in the
+        // enclosing struct declaration.
+        if matches!(base_ty, SkslType::Struct(_)) {
+            return Ok(SkslType::Float);
+        }
+        swizzle_result_type(&base_ty, field).ok_or_else(|| ValidationError::InvalidSwizzle {
+            field: field.to_string(),
+            base: base_ty.to_string(),
+        })
+    }
+
+    fn validate_index(&mut self, expr: &Expr, index: &Expr) -> Result<SkslType, ValidationError> {
+        let base_ty = self.validate_expr(expr)?;
+        let idx_ty = self.validate_expr(index)?;
+        if !matches!(idx_ty, SkslType::Int) {
+            return Err(ValidationError::TypeMismatch {
+                expected: "int".into(),
+                actual: idx_ty.to_string(),
+                context: "array/vector index".into(),
+            });
+        }
+        Ok(index_result_type(&base_ty))
+    }
+
+    fn validate_ternary(
+        &mut self,
+        cond: &Expr,
+        then_expr: &Expr,
+        else_expr: &Expr,
+    ) -> Result<SkslType, ValidationError> {
+        let ct = self.validate_expr(cond)?;
+        if !matches!(ct, SkslType::Bool) {
+            return Err(ValidationError::TypeMismatch {
+                expected: "bool".into(),
+                actual: ct.to_string(),
+                context: "ternary condition".into(),
+            });
+        }
+        let tt = self.validate_expr(then_expr)?;
+        let et = self.validate_expr(else_expr)?;
+        if types_compatible(&tt, &et) {
+            Ok(tt)
+        } else {
+            Err(ValidationError::TypeMismatch {
+                expected: tt.to_string(),
+                actual: et.to_string(),
+                context: "ternary branches".into(),
+            })
+        }
+    }
+
+    fn validate_assign(
+        &mut self,
+        target: &Expr,
+        value: &Expr,
+    ) -> Result<SkslType, ValidationError> {
+        if !is_assignable(target) {
+            return Err(ValidationError::NotAssignable(format!("{target:?}")));
+        }
+        let tt = self.validate_expr(target)?;
+        let vt = self.validate_expr(value)?;
+        if !types_compatible(&tt, &vt) {
+            return Err(ValidationError::TypeMismatch {
+                expected: tt.to_string(),
+                actual: vt.to_string(),
+                context: "assignment".into(),
+            });
+        }
+        Ok(tt)
+    }
+
+    fn validate_compound_assign(
+        &mut self,
+        target: &Expr,
+        op: BinaryOp,
+        value: &Expr,
+    ) -> Result<SkslType, ValidationError> {
+        if !is_assignable(target) {
+            return Err(ValidationError::NotAssignable(format!("{target:?}")));
+        }
+        let tt = self.validate_expr(target)?;
+        let vt = self.validate_expr(value)?;
+        result_type_for_binop(op, &tt, &vt).ok_or_else(|| ValidationError::InvalidOperator {
+            op: op.glsl_str().to_string(),
+            lhs: tt.to_string(),
+            rhs: vt.to_string(),
+        })?;
+        Ok(tt)
+    }
+
+    fn validate_call(&mut self, name: &str, args: &[Expr]) -> Result<SkslType, ValidationError> {
         // User-declared functions are looked up first so users can
         // shadow built-ins (matches SkSL semantics).
         if let Some((params, ret)) = self.functions.get(name).cloned() {
@@ -582,7 +635,7 @@ impl<'a> Validator<'a> {
                     return Err(ValidationError::TypeMismatch {
                         expected: expected.to_string(),
                         actual: actual.to_string(),
-                        context: format!("argument to '{}'", name),
+                        context: format!("argument to '{name}'"),
                     });
                 }
             }
@@ -630,13 +683,19 @@ impl<'a> Validator<'a> {
             for a in args {
                 arg_types.push(self.validate_expr(a)?);
             }
-            return return_rule.apply(&arg_types).ok_or_else(|| {
-                ValidationError::InvalidOperator {
+            return return_rule
+                .apply(&arg_types)
+                .ok_or_else(|| ValidationError::InvalidOperator {
                     op: name.to_string(),
-                    lhs: arg_types.first().map(|t| t.to_string()).unwrap_or_default(),
-                    rhs: arg_types.get(1).map(|t| t.to_string()).unwrap_or_default(),
-                }
-            });
+                    lhs: arg_types
+                        .first()
+                        .map(std::string::ToString::to_string)
+                        .unwrap_or_default(),
+                    rhs: arg_types
+                        .get(1)
+                        .map(std::string::ToString::to_string)
+                        .unwrap_or_default(),
+                });
         }
 
         // `sample(child, coord)` style calls on child shaders.
@@ -687,12 +746,10 @@ impl<'a> Validator<'a> {
 fn is_assignable(expr: &Expr) -> bool {
     match expr {
         Expr::Var(_) => true,
-        Expr::Field { expr, .. } => is_assignable(expr),
-        Expr::Index { expr, .. } => is_assignable(expr),
+        Expr::Field { expr, .. } | Expr::Index { expr, .. } => is_assignable(expr),
         _ => false,
     }
 }
-
 
 /// Our "compatibility" predicate. Strict equality with a couple of
 /// equivalences: `float`/`half` and their matching vectors are
@@ -715,7 +772,7 @@ fn types_compatible(expected: &SkslType, actual: &SkslType) -> bool {
     )
 }
 
-fn is_numeric(ty: &SkslType) -> bool {
+const fn is_numeric(ty: &SkslType) -> bool {
     matches!(
         ty,
         SkslType::Int
@@ -733,14 +790,17 @@ fn is_numeric(ty: &SkslType) -> bool {
     )
 }
 
-fn is_integer(ty: &SkslType) -> bool {
+const fn is_integer(ty: &SkslType) -> bool {
     matches!(ty, SkslType::Int)
 }
 
 /// Binary op result typing. Returns None when the operator/types pair
 /// is invalid (e.g. `bool + bool`).
 fn result_type_for_binop(op: BinaryOp, lhs: &SkslType, rhs: &SkslType) -> Option<SkslType> {
-    use BinaryOp::*;
+    use BinaryOp::{
+        Add, And, BitAnd, BitOr, BitXor, Div, Eq, Gt, GtEq, Lt, LtEq, Mod, Mul, NotEq, Or, Shl,
+        Shr, Sub,
+    };
     match op {
         Add | Sub | Mul | Div | Mod => {
             if !is_numeric(lhs) || !is_numeric(rhs) {
@@ -826,14 +886,11 @@ fn result_type_for_unop(op: UnaryOp, t: &SkslType) -> Option<SkslType> {
     }
 }
 
-fn is_scalar_numeric(ty: &SkslType) -> bool {
-    matches!(
-        ty,
-        SkslType::Int | SkslType::Float | SkslType::Half
-    )
+const fn is_scalar_numeric(ty: &SkslType) -> bool {
+    matches!(ty, SkslType::Int | SkslType::Float | SkslType::Half)
 }
 
-fn is_vector_or_matrix(ty: &SkslType) -> bool {
+const fn is_vector_or_matrix(ty: &SkslType) -> bool {
     matches!(
         ty,
         SkslType::Vec2
@@ -857,17 +914,17 @@ enum BuiltinArity {
 }
 
 impl BuiltinArity {
-    fn accepts(self, n: usize) -> bool {
+    const fn accepts(self, n: usize) -> bool {
         match self {
-            BuiltinArity::Exact(k) => n == k,
-            BuiltinArity::Range(lo, hi) => n >= lo && n <= hi,
+            Self::Exact(k) => n == k,
+            Self::Range(lo, hi) => n >= lo && n <= hi,
         }
     }
 
-    fn canonical(self) -> usize {
+    const fn canonical(self) -> usize {
         match self {
-            BuiltinArity::Exact(k) => k,
-            BuiltinArity::Range(_, hi) => hi,
+            Self::Exact(k) => k,
+            Self::Range(_, hi) => hi,
         }
     }
 }
@@ -903,15 +960,12 @@ enum SkslTypeTag {
 impl BuiltinReturn {
     fn apply(self, args: &[SkslType]) -> Option<SkslType> {
         match self {
-            BuiltinReturn::Fixed(tag) => Some(tag_to_type(tag)),
-            BuiltinReturn::SameAsFirst => args.first().cloned().map(|t| {
-                if is_numeric(&t) {
-                    t
-                } else {
-                    SkslType::Float
-                }
-            }),
-            BuiltinReturn::ScalarFromVec => {
+            Self::Fixed(tag) => Some(tag_to_type(tag)),
+            Self::SameAsFirst => args
+                .first()
+                .cloned()
+                .map(|t| if is_numeric(&t) { t } else { SkslType::Float }),
+            Self::ScalarFromVec => {
                 let first = args.first()?;
                 if is_numeric(first) {
                     Some(SkslType::Float)
@@ -923,7 +977,7 @@ impl BuiltinReturn {
     }
 }
 
-fn tag_to_type(tag: SkslTypeTag) -> SkslType {
+const fn tag_to_type(tag: SkslTypeTag) -> SkslType {
     match tag {
         SkslTypeTag::Float => SkslType::Float,
         SkslTypeTag::Vec3 => SkslType::Vec3,
@@ -937,28 +991,23 @@ fn tag_to_type(tag: SkslTypeTag) -> SkslType {
 /// few type coercion helpers). Each entry states the accepted arity
 /// and a rule for computing the return type.
 fn builtin_signature(name: &str) -> Option<(BuiltinArity, BuiltinReturn)> {
-    use BuiltinArity::*;
-    use BuiltinReturn::*;
+    use BuiltinArity::{Exact, Range};
+    use BuiltinReturn::{Fixed, SameAsFirst, ScalarFromVec};
     Some(match name {
         // Component-wise scalar/vector ops: result shape == arg shape.
-        "abs" | "sign" | "floor" | "ceil" | "fract" | "sin" | "cos" | "tan" | "asin"
-        | "acos" | "exp" | "exp2" | "log" | "log2" | "sqrt" | "inversesqrt" | "radians"
-        | "degrees" => (Exact(1), SameAsFirst),
+        "abs" | "sign" | "floor" | "ceil" | "fract" | "sin" | "cos" | "tan" | "asin" | "acos"
+        | "exp" | "exp2" | "log" | "log2" | "sqrt" | "inversesqrt" | "radians" | "degrees" => {
+            (Exact(1), SameAsFirst)
+        }
         "atan" => (Range(1, 2), SameAsFirst),
-        "atan2" => (Exact(2), SameAsFirst),
-        "pow" | "mod" | "min" | "max" | "step" => (Exact(2), SameAsFirst),
-        "clamp" | "mix" | "smoothstep" => (Exact(3), SameAsFirst),
-        // Vector-returning. `normalize` preserves shape.
-        "normalize" => (Exact(1), SameAsFirst),
-        "reflect" => (Exact(2), SameAsFirst),
-        "refract" => (Exact(3), SameAsFirst),
+        "atan2" | "pow" | "mod" | "min" | "max" | "step" | "reflect" => (Exact(2), SameAsFirst),
+        "clamp" | "mix" | "smoothstep" | "refract" => (Exact(3), SameAsFirst),
+        // Vector-returning. `normalize`/`transpose`/`inverse` preserve shape.
+        "normalize" | "transpose" | "inverse" => (Exact(1), SameAsFirst),
         // Geometry built-ins that collapse to a scalar.
         "length" => (Exact(1), ScalarFromVec),
-        "distance" => (Exact(2), ScalarFromVec),
-        "dot" => (Exact(2), ScalarFromVec),
+        "distance" | "dot" => (Exact(2), ScalarFromVec),
         "cross" => (Exact(2), Fixed(SkslTypeTag::Vec3)),
-        // Matrix/misc.
-        "transpose" | "inverse" => (Exact(1), SameAsFirst),
         // Sampler / child invocation style calls — treat as vec4 for
         // shaders. Parsers usually desugar these to child-shader calls,
         // but if they reach here we still type them sensibly.
@@ -1025,13 +1074,13 @@ fn swizzle_result_type(base: &SkslType, field: &str) -> Option<SkslType> {
 /// Result type of indexing into a vector/matrix/array.
 fn index_result_type(base: &SkslType) -> SkslType {
     match base {
-        SkslType::Vec2 | SkslType::Vec3 | SkslType::Vec4 => SkslType::Float,
         SkslType::Half2 | SkslType::Half3 | SkslType::Half4 => SkslType::Half,
         SkslType::Mat2 => SkslType::Vec2,
         SkslType::Mat3 => SkslType::Vec3,
         SkslType::Mat4 => SkslType::Vec4,
         SkslType::Array(inner, _) => (**inner).clone(),
-        // Unknown base: fall back to Float so we don't cascade errors.
+        // Vec2/Vec3/Vec4 index to Float; unknown base also falls back to
+        // Float so we don't cascade errors.
         _ => SkslType::Float,
     }
 }
@@ -1047,9 +1096,7 @@ mod tests {
 
     #[test]
     fn validates_simple_shader() {
-        let p = parse(
-            "vec4 main(vec2 coord) { return vec4(coord.x, coord.y, 0.0, 1.0); }",
-        );
+        let p = parse("vec4 main(vec2 coord) { return vec4(coord.x, coord.y, 0.0, 1.0); }");
         validate_program(&p).unwrap();
     }
 
@@ -1127,9 +1174,7 @@ mod tests {
 
     #[test]
     fn rejects_out_of_bounds_swizzle() {
-        let p = parse(
-            "vec4 main(vec2 coord) { return vec4(coord.z, 0.0, 0.0, 1.0); }",
-        );
+        let p = parse("vec4 main(vec2 coord) { return vec4(coord.z, 0.0, 0.0, 1.0); }");
         let err = validate_program(&p).unwrap_err();
         assert!(matches!(err, ValidationError::InvalidSwizzle { .. }));
     }

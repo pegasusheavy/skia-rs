@@ -79,3 +79,6 @@ web-sys = { version = "0.3", features = ["Window", "Document", "HtmlCanvasElemen
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[lints]
+workspace = true

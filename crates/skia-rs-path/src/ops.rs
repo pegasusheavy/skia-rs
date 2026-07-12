@@ -54,7 +54,7 @@ pub enum PathOp {
 ///
 /// [`BooleanOps`]: geo::BooleanOps
 pub fn op(path1: &Path, path2: &Path, op: PathOp) -> Option<Path> {
-    PathOps::new(path1, path2, op).compute()
+    Some(PathOps::new(path1, path2, op).compute())
 }
 
 /// Simplify a path by resolving self-intersections and overlaps.
@@ -79,27 +79,27 @@ struct PathOps<'a> {
 }
 
 impl<'a> PathOps<'a> {
-    fn new(path1: &'a Path, path2: &'a Path, op: PathOp) -> Self {
+    const fn new(path1: &'a Path, path2: &'a Path, op: PathOp) -> Self {
         Self { path1, path2, op }
     }
 
-    fn compute(&self) -> Option<Path> {
+    fn compute(&self) -> Path {
         // Handle empty paths
         if self.path1.is_empty() && self.path2.is_empty() {
-            return Some(Path::new());
+            return Path::new();
         }
 
         if self.path1.is_empty() {
             return match self.op {
-                PathOp::Union | PathOp::ReverseDifference | PathOp::Xor => Some(self.path2.clone()),
-                PathOp::Difference | PathOp::Intersect => Some(Path::new()),
+                PathOp::Union | PathOp::ReverseDifference | PathOp::Xor => self.path2.clone(),
+                PathOp::Difference | PathOp::Intersect => Path::new(),
             };
         }
 
         if self.path2.is_empty() {
             return match self.op {
-                PathOp::Union | PathOp::Difference | PathOp::Xor => Some(self.path1.clone()),
-                PathOp::Intersect | PathOp::ReverseDifference => Some(Path::new()),
+                PathOp::Union | PathOp::Difference | PathOp::Xor => self.path1.clone(),
+                PathOp::Intersect | PathOp::ReverseDifference => Path::new(),
             };
         }
 
@@ -112,18 +112,18 @@ impl<'a> PathOps<'a> {
                 PathOp::Union => {
                     // Combine both paths
                     let mut builder = PathBuilder::new();
-                    self.add_path_to_builder(&mut builder, self.path1);
-                    self.add_path_to_builder(&mut builder, self.path2);
-                    Some(builder.build())
+                    Self::add_path_to_builder(&mut builder, self.path1);
+                    Self::add_path_to_builder(&mut builder, self.path2);
+                    builder.build()
                 }
-                PathOp::Intersect => Some(Path::new()),
-                PathOp::Difference => Some(self.path1.clone()),
-                PathOp::ReverseDifference => Some(self.path2.clone()),
+                PathOp::Intersect => Path::new(),
+                PathOp::Difference => self.path1.clone(),
+                PathOp::ReverseDifference => self.path2.clone(),
                 PathOp::Xor => {
                     let mut builder = PathBuilder::new();
-                    self.add_path_to_builder(&mut builder, self.path1);
-                    self.add_path_to_builder(&mut builder, self.path2);
-                    Some(builder.build())
+                    Self::add_path_to_builder(&mut builder, self.path1);
+                    Self::add_path_to_builder(&mut builder, self.path2);
+                    builder.build()
                 }
             };
         }
@@ -132,8 +132,8 @@ impl<'a> PathOps<'a> {
         self.compute_polygon_ops()
     }
 
-    fn add_path_to_builder(&self, builder: &mut PathBuilder, path: &Path) {
-        for elem in path.iter() {
+    fn add_path_to_builder(builder: &mut PathBuilder, path: &Path) {
+        for elem in path {
             match elem {
                 PathElement::Move(p) => {
                     builder.move_to(p.x, p.y);
@@ -157,7 +157,7 @@ impl<'a> PathOps<'a> {
         }
     }
 
-    fn compute_polygon_ops(&self) -> Option<Path> {
+    fn compute_polygon_ops(&self) -> Path {
         // Convert paths to polygons (linearize curves)
         let polys1 = path_to_polygons(self.path1, 0.5);
         let polys2 = path_to_polygons(self.path2, 0.5);
@@ -172,7 +172,7 @@ impl<'a> PathOps<'a> {
         };
 
         // Convert result back to path
-        Some(polygons_to_path(&result_polys))
+        polygons_to_path(&result_polys)
     }
 }
 
@@ -188,7 +188,7 @@ struct Polygon {
 }
 
 impl Polygon {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             points: Vec::new(),
             is_hole: false,
@@ -253,7 +253,7 @@ impl Polygon {
 
 #[cfg(test)]
 fn is_left(p0: Point, p1: Point, p2: Point) -> Scalar {
-    (p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y)
+    (p1.x - p0.x).mul_add(p2.y - p0.y, -((p2.x - p0.x) * (p1.y - p0.y)))
 }
 
 /// Convert a path to a list of polygons.
@@ -263,7 +263,7 @@ fn path_to_polygons(path: &Path, tolerance: Scalar) -> Vec<Polygon> {
     let mut current_point = Point::new(0.0, 0.0);
     let mut first_point = Point::new(0.0, 0.0);
 
-    for elem in path.iter() {
+    for elem in path {
         match elem {
             PathElement::Move(p) => {
                 if !current_poly.is_empty() {
@@ -372,13 +372,13 @@ fn linearize_cubic(
 fn distance_to_line(p: Point, line_start: Point, line_end: Point) -> Scalar {
     let dx = line_end.x - line_start.x;
     let dy = line_end.y - line_start.y;
-    let len_sq = dx * dx + dy * dy;
+    let len_sq = dx.mul_add(dx, dy * dy);
 
     if len_sq < 1e-10 {
         return p.distance(&line_start);
     }
 
-    let cross = (p.x - line_start.x) * dy - (p.y - line_start.y) * dx;
+    let cross = (p.x - line_start.x).mul_add(dy, -((p.y - line_start.y) * dx));
     cross.abs() / len_sq.sqrt()
 }
 
@@ -403,8 +403,8 @@ fn skia_polygons_to_geo(polys: &[Polygon]) -> MultiPolygon<f64> {
             .points
             .iter()
             .map(|p| Coord {
-                x: p.x as f64,
-                y: p.y as f64,
+                x: f64::from(p.x),
+                y: f64::from(p.y),
             })
             .collect();
 
@@ -442,6 +442,10 @@ fn skia_polygons_to_geo(polys: &[Polygon]) -> MultiPolygon<f64> {
 /// polygon as a separate subpath, so the ordering here matters:
 /// shells come first, then the matching holes, and `is_hole` is set
 /// correctly so downstream consumers can distinguish them.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "narrowing f64 (geo crate's coordinate type) back to Scalar (f32); path coordinates are f32 throughout, so this is an unavoidable boundary conversion at the boolean-ops adapter"
+)]
 fn geo_to_skia_polygons(mp: &MultiPolygon<f64>) -> Vec<Polygon> {
     let mut out = Vec::new();
     for poly in mp.iter() {
@@ -617,7 +621,7 @@ mod tests {
         let polygon = &polygons[0];
         let mut arc_point_count = 0;
         for p in &polygon.points {
-            let dist_sq = p.x * p.x + p.y * p.y;
+            let dist_sq = p.x.mul_add(p.x, p.y * p.y);
             if dist_sq < 0.5 {
                 // Origin — skip
                 continue;
@@ -626,14 +630,15 @@ mod tests {
             assert!(
                 (dist_sq - 1.0).abs() < 0.05,
                 "Point ({}, {}) should be near unit circle (dist² = {})",
-                p.x, p.y, dist_sq
+                p.x,
+                p.y,
+                dist_sq
             );
         }
         // Verify we actually got subdivided arc points, not just endpoints.
         assert!(
             arc_point_count >= 4,
-            "Expected at least 4 arc points from subdivision, got {}",
-            arc_point_count
+            "Expected at least 4 arc points from subdivision, got {arc_point_count}"
         );
     }
 
@@ -653,9 +658,7 @@ mod tests {
     /// lies inside any of them (ignoring holes). Used by the
     /// correctness tests below to check the output of a boolean op.
     fn polys_contain_probe(polys: &[Polygon], probe: Point) -> bool {
-        polys
-            .iter()
-            .any(|p| !p.is_hole && p.contains_point(probe))
+        polys.iter().any(|p| !p.is_hole && p.contains_point(probe))
     }
 
     /// Build a square subpath from top-left corner + side length.

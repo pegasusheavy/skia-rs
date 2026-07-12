@@ -1,7 +1,7 @@
 //! Byte-level TrueType subsetter for PDF embedding.
 //!
 //! This subsetter prunes a TrueType font's `glyf` / `loca` tables so the
-//! emitted FontFile2 stream contains only the glyph outlines actually used
+//! emitted `FontFile2` stream contains only the glyph outlines actually used
 //! by the document (plus `.notdef` and composite-glyph dependencies), while
 //! preserving every other table unchanged. Preserving `cmap`, `hmtx`,
 //! `hhea`, `OS/2`, `post`, `name`, `head`, `maxp` lets the PDF continue to
@@ -14,7 +14,7 @@
 //! The `subsetter` crate (typst) produces output explicitly designed for
 //! CID-keyed Type0 PDF embedding: it strips `cmap` and expects the caller
 //! to provide a replacement in PDF. Our embedding path is simple TrueType
-//! with WinAnsi encoding, where the reader walks the font's own cmap — so
+//! with `WinAnsi` encoding, where the reader walks the font's own cmap — so
 //! a `subsetter` drop-in would break glyph resolution. Klippa (fontations)
 //! would work but is not yet a stable crate on crates.io.
 //!
@@ -36,6 +36,8 @@
 
 use std::collections::BTreeSet;
 
+use skia_rs_core::cast::floor_to_i32;
+
 /// Subsetting failure modes.
 #[derive(Debug)]
 pub enum SubsetError {
@@ -51,9 +53,9 @@ pub enum SubsetError {
 impl core::fmt::Display for SubsetError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Malformed(why) => write!(f, "malformed font: {}", why),
+            Self::Malformed(why) => write!(f, "malformed font: {why}"),
             Self::CollectionNotSupported => write!(f, "TTC collection not supported"),
-            Self::MissingTable(t) => write!(f, "missing required table: {}", t),
+            Self::MissingTable(t) => write!(f, "missing required table: {t}"),
         }
     }
 }
@@ -69,28 +71,28 @@ impl std::error::Error for SubsetError {}
 /// the used glyphs' outlines (with zero-length entries for the rest) and
 /// the `loca` table has been rebuilt accordingly. `head.checkSumAdjustment`
 /// is zeroed — PDF readers and PDF/A validators do not require a valid
-/// checksum on embedded FontFile2 streams, and computing it correctly
+/// checksum on embedded `FontFile2` streams, and computing it correctly
 /// would require re-hashing the entire output file.
 pub fn subset_truetype(data: &[u8], used_glyphs: &BTreeSet<u16>) -> Result<Vec<u8>, SubsetError> {
     let face = read_face(data)?;
 
     let glyf_range = face
-        .table_range(b"glyf")
+        .table_range(*b"glyf")
         .ok_or(SubsetError::MissingTable("glyf"))?;
     let loca_range = face
-        .table_range(b"loca")
+        .table_range(*b"loca")
         .ok_or(SubsetError::MissingTable("loca"))?;
     let head_range = face
-        .table_range(b"head")
+        .table_range(*b"head")
         .ok_or(SubsetError::MissingTable("head"))?;
     let maxp_range = face
-        .table_range(b"maxp")
+        .table_range(*b"maxp")
         .ok_or(SubsetError::MissingTable("maxp"))?;
 
-    let glyf = &data[glyf_range.clone()];
-    let loca = &data[loca_range.clone()];
-    let head = &data[head_range.clone()];
-    let maxp = &data[maxp_range.clone()];
+    let glyf = &data[glyf_range];
+    let loca = &data[loca_range];
+    let head = &data[head_range];
+    let maxp = &data[maxp_range];
 
     // head.indexToLocFormat is at offset 50-51 (u16). 0 = short (u16 * 2),
     // 1 = long (u32).
@@ -116,11 +118,16 @@ pub fn subset_truetype(data: &[u8], used_glyphs: &BTreeSet<u16>) -> Result<Vec<u
     let mut keep: BTreeSet<u16> = BTreeSet::new();
     keep.insert(0);
     for &gid in used_glyphs {
-        if (gid as usize) < num_glyphs {
+        if usize::from(gid) < num_glyphs {
             keep.insert(gid);
         }
     }
-    expand_composites(glyf, &glyf_offsets, &mut keep, num_glyphs as u16);
+    expand_composites(
+        glyf,
+        &glyf_offsets,
+        &mut keep,
+        u16::try_from(num_glyphs).unwrap_or(u16::MAX),
+    );
 
     // Rebuild glyf + loca. For unused glyphs we emit a zero-length slot
     // (loca[i] == loca[i+1]). For used glyphs we copy their bytes verbatim.
@@ -138,13 +145,13 @@ pub fn subset_truetype(data: &[u8], used_glyphs: &BTreeSet<u16>) -> Result<Vec<u
         } else if &tag == b"head" {
             // Zero out checkSumAdjustment (bytes 8..12) so the output is
             // well-formed even without recomputing the file checksum.
-            let mut h = data[face.table_range(&tag).unwrap()].to_vec();
+            let mut h = data[face.table_range(tag).unwrap()].to_vec();
             if h.len() >= 12 {
                 h[8..12].copy_from_slice(&[0, 0, 0, 0]);
             }
             h
         } else {
-            data[face.table_range(&tag).unwrap()].to_vec()
+            data[face.table_range(tag).unwrap()].to_vec()
         };
         tables.push((tag, body));
     }
@@ -168,8 +175,8 @@ struct TableRecord {
 }
 
 impl Face {
-    fn table_range(&self, tag: &[u8; 4]) -> Option<std::ops::Range<usize>> {
-        self.records.iter().find(|r| &r.tag == tag).map(|r| {
+    fn table_range(&self, tag: Tag) -> Option<std::ops::Range<usize>> {
+        self.records.iter().find(|r| r.tag == tag).map(|r| {
             let start = r.offset as usize;
             let end = start + r.length as usize;
             start..end
@@ -209,16 +216,27 @@ fn read_face(data: &[u8]) -> Result<Face, SubsetError> {
         if (offset as usize) + (length as usize) > data.len() {
             return Err(SubsetError::Malformed("table body truncated"));
         }
-        records.push(TableRecord { tag, offset, length });
+        records.push(TableRecord {
+            tag,
+            offset,
+            length,
+        });
     }
 
     let mut sfnt_version = [0u8; 4];
     sfnt_version.copy_from_slice(sfnt);
-    Ok(Face { sfnt_version, records })
+    Ok(Face {
+        sfnt_version,
+        records,
+    })
 }
 
 fn parse_loca(loca: &[u8], long: bool, num_glyphs: usize) -> Result<Vec<u32>, SubsetError> {
-    let expected = if long { (num_glyphs + 1) * 4 } else { (num_glyphs + 1) * 2 };
+    let expected = if long {
+        (num_glyphs + 1) * 4
+    } else {
+        (num_glyphs + 1) * 2
+    };
     if loca.len() < expected {
         return Err(SubsetError::Malformed("loca too short"));
     }
@@ -228,7 +246,7 @@ fn parse_loca(loca: &[u8], long: bool, num_glyphs: usize) -> Result<Vec<u32>, Su
             read_u32_be(loca, i * 4)
         } else {
             // Short loca stores offset / 2.
-            read_u16_be(loca, i * 2) as u32 * 2
+            u32::from(read_u16_be(loca, i * 2)) * 2
         };
         out.push(off);
     }
@@ -245,12 +263,7 @@ const WE_HAVE_A_TWO_BY_TWO: u16 = 0x0080;
 /// Walk the `keep` set and add component glyphs that any composite glyph
 /// in the set references. Iterates to a fixed point so that composite
 /// chains (glyph A refs B which refs C) are fully captured.
-fn expand_composites(
-    glyf: &[u8],
-    offsets: &[u32],
-    keep: &mut BTreeSet<u16>,
-    num_glyphs: u16,
-) {
+fn expand_composites(glyf: &[u8], offsets: &[u32], keep: &mut BTreeSet<u16>, num_glyphs: u16) {
     let mut changed = true;
     while changed {
         changed = false;
@@ -288,7 +301,11 @@ fn expand_composites(
                 }
 
                 // Skip over argument payload.
-                cursor += if flags & ARG_1_AND_2_ARE_WORDS != 0 { 4 } else { 2 };
+                cursor += if flags & ARG_1_AND_2_ARE_WORDS != 0 {
+                    4
+                } else {
+                    2
+                };
                 if flags & WE_HAVE_A_SCALE != 0 {
                     cursor += 2;
                 } else if flags & WE_HAVE_AN_X_AND_Y_SCALE != 0 {
@@ -318,7 +335,7 @@ fn rebuild_glyf_and_loca(
     new_offsets.push(0);
 
     for gid in 0..num_glyphs {
-        if keep.contains(&(gid as u16)) {
+        if keep.contains(&u16::try_from(gid).unwrap_or(u16::MAX)) {
             let start = offsets[gid] as usize;
             let end = offsets[gid + 1] as usize;
             if end > start && end <= glyf.len() {
@@ -330,18 +347,19 @@ fn rebuild_glyf_and_loca(
         if !long_loca && new_glyf.len() % 2 == 1 {
             new_glyf.push(0);
         }
-        new_offsets.push(new_glyf.len() as u32);
+        new_offsets.push(u32::try_from(new_glyf.len()).unwrap_or(u32::MAX));
     }
 
     // Emit loca in the same format as the source.
-    let mut new_loca: Vec<u8> = Vec::with_capacity(new_offsets.len() * if long_loca { 4 } else { 2 });
+    let mut new_loca: Vec<u8> =
+        Vec::with_capacity(new_offsets.len() * if long_loca { 4 } else { 2 });
     if long_loca {
         for o in &new_offsets {
             new_loca.extend_from_slice(&o.to_be_bytes());
         }
     } else {
         for o in &new_offsets {
-            let half = (*o / 2) as u16;
+            let half = u16::try_from(*o / 2).unwrap_or(u16::MAX);
             new_loca.extend_from_slice(&half.to_be_bytes());
         }
     }
@@ -357,8 +375,8 @@ fn write_font(sfnt_version: [u8; 4], tables: &[(Tag, Vec<u8>)]) -> Vec<u8> {
     let mut sorted: Vec<(Tag, Vec<u8>)> = tables.to_vec();
     sorted.sort_by_key(|t| t.0);
 
-    let num_tables = sorted.len() as u16;
-    let entry_selector = (num_tables as f64).log2() as u16;
+    let num_tables = u16::try_from(sorted.len()).unwrap_or(u16::MAX);
+    let entry_selector = u16::try_from(floor_to_i32(f32::from(num_tables).log2())).unwrap_or(0);
     let search_range = (1u16 << entry_selector) * 16;
     let range_shift = num_tables * 16 - search_range;
 
@@ -369,7 +387,7 @@ fn write_font(sfnt_version: [u8; 4], tables: &[(Tag, Vec<u8>)]) -> Vec<u8> {
     let mut body_offsets: Vec<u32> = Vec::with_capacity(sorted.len());
     let mut cursor = directory_size;
     for (_, body) in &sorted {
-        body_offsets.push(cursor as u32);
+        body_offsets.push(u32::try_from(cursor).unwrap_or(u32::MAX));
         cursor += body.len();
         // 4-byte alignment between table bodies.
         while cursor % 4 != 0 {
@@ -393,7 +411,7 @@ fn write_font(sfnt_version: [u8; 4], tables: &[(Tag, Vec<u8>)]) -> Vec<u8> {
         out.extend_from_slice(tag);
         out.extend_from_slice(&checksum.to_be_bytes());
         out.extend_from_slice(&offset.to_be_bytes());
-        out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        out.extend_from_slice(&u32::try_from(body.len()).unwrap_or(u32::MAX).to_be_bytes());
     }
 
     // Table bodies.
@@ -460,7 +478,9 @@ mod tests {
         assert!(face.tables().glyf.is_some());
         // numGlyphs preserved.
         assert_eq!(face.number_of_glyphs(), {
-            ttf_parser::Face::parse(DEMO_TTF, 0).unwrap().number_of_glyphs()
+            ttf_parser::Face::parse(DEMO_TTF, 0)
+                .unwrap()
+                .number_of_glyphs()
         });
     }
 
@@ -512,7 +532,8 @@ mod tests {
     fn table_checksum_pads_tail() {
         // 5 bytes → first word = [1,2,3,4], second = [5,0,0,0].
         let body = [1u8, 2, 3, 4, 5];
-        let expected = u32::from_be_bytes([1, 2, 3, 4]).wrapping_add(u32::from_be_bytes([5, 0, 0, 0]));
+        let expected =
+            u32::from_be_bytes([1, 2, 3, 4]).wrapping_add(u32::from_be_bytes([5, 0, 0, 0]));
         assert_eq!(table_checksum(&body), expected);
     }
 }

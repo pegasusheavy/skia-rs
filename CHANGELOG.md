@@ -25,6 +25,15 @@ the regenerated headers.
   (see the skia-rs-pdf section).
 
 ### Changed (skia-rs-canvas — conformance audit)
+- `Surface::new_raster` now accepts `Bgra8888` surfaces (previously it
+  returned `None` for anything but RGBA-order 8888). This makes N32 raster
+  surfaces work on Windows, where `ColorType::n32()` selects BGRA. The
+  backing buffer is still stored in RGBA order (the hot path is unchanged);
+  the declared BGRA byte order is produced only on `make_image_snapshot`
+  readback (R/B swapped). **Caveat:** `Surface::pixels()`/`pixels_mut()`
+  expose the raw physical buffer, so for a BGRA surface they return
+  RGBA-ordered bytes — use `make_image_snapshot` to get declared-order
+  pixels.
 - The raster pixel pipeline now stores **premultiplied** pixels end to end
   (`SkSurface_Raster` with `AlphaType::Premul`). Paint colors are
   premultiplied once at the paint→device boundary; blends operate on

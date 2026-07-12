@@ -203,6 +203,7 @@ impl FontStyle {
     };
 
     /// Create a new font style.
+    #[must_use]
     pub const fn new(weight: FontWeight, width: FontWidth, slant: FontSlant) -> Self {
         Self {
             weight,
@@ -281,7 +282,7 @@ impl Typeface {
         } else {
             FontSlant::Upright
         };
-        let width = FontWidth(face.width().to_number() as u8);
+        let width = FontWidth(u8::try_from(face.width().to_number()).unwrap_or(u8::MAX));
 
         Some(Self {
             family_name,
@@ -306,31 +307,31 @@ impl Typeface {
 
     /// Get the font style.
     #[inline]
-    pub fn style(&self) -> FontStyle {
+    pub const fn style(&self) -> FontStyle {
         self.style
     }
 
     /// Get the unique ID.
     #[inline]
-    pub fn unique_id(&self) -> u32 {
+    pub const fn unique_id(&self) -> u32 {
         self.id
     }
 
     /// Get units per EM.
     #[inline]
-    pub fn units_per_em(&self) -> u16 {
+    pub const fn units_per_em(&self) -> u16 {
         self.units_per_em
     }
 
     /// Get the number of glyphs.
     #[inline]
-    pub fn glyph_count(&self) -> u16 {
+    pub const fn glyph_count(&self) -> u16 {
         self.glyph_count
     }
 
     /// Check if this is a bold typeface.
     #[inline]
-    pub fn is_bold(&self) -> bool {
+    pub const fn is_bold(&self) -> bool {
         self.style.weight.0 >= FontWeight::BOLD.0
     }
 
@@ -345,9 +346,7 @@ impl Typeface {
     /// Reads the `post` table's `isFixedPitch` flag via `ttf_parser`. Returns
     /// `false` for dataless typefaces (no `post` table is loaded).
     pub fn is_fixed_pitch(&self) -> bool {
-        self.parsed()
-            .map(|p| p.is_monospaced)
-            .unwrap_or(false)
+        self.parsed().is_some_and(|p| p.is_monospaced)
     }
 
     /// Get cached parsed metadata if font data is available.
@@ -361,12 +360,10 @@ impl Typeface {
                 let face = ttf_parser::Face::parse(data, 0).ok()?;
                 let (underline_position, underline_thickness) = face
                     .underline_metrics()
-                    .map(|lm| (Some(lm.position), Some(lm.thickness)))
-                    .unwrap_or((None, None));
+                    .map_or((None, None), |lm| (Some(lm.position), Some(lm.thickness)));
                 let (strikeout_position, strikeout_thickness) = face
                     .strikeout_metrics()
-                    .map(|lm| (Some(lm.position), Some(lm.thickness)))
-                    .unwrap_or((None, None));
+                    .map_or((None, None), |lm| (Some(lm.position), Some(lm.thickness)));
                 Some(ParsedTypeface {
                     units_per_em: face.units_per_em(),
                     ascender: face.ascender(),
@@ -404,17 +401,13 @@ impl Typeface {
     pub fn char_to_glyph(&self, c: char) -> u16 {
         if let Some(data) = self.font_data() {
             if let Ok(face) = ttf_parser::Face::parse(data, 0) {
-                return face.glyph_index(c).map(|g| g.0).unwrap_or(0);
+                return face.glyph_index(c).map_or(0, |g| g.0);
             }
         }
         // Fallback for the dataless default typeface — just use the codepoint
         // for ASCII so existing non-data tests continue to produce non-zero
         // glyph IDs.
-        if c.is_ascii() {
-            c as u16
-        } else {
-            0
-        }
+        if c.is_ascii() { c as u16 } else { 0 }
     }
 
     /// Get glyph IDs for a string.

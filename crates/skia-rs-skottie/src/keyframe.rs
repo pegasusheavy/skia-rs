@@ -10,9 +10,10 @@ use crate::model::{AnimatedValue, TangentModel};
 use skia_rs_core::Scalar;
 
 /// Easing function for keyframe interpolation.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Easing {
     /// Linear interpolation.
+    #[default]
     Linear,
     /// Hold (step function).
     Hold,
@@ -29,16 +30,11 @@ pub enum Easing {
     },
 }
 
-impl Default for Easing {
-    fn default() -> Self {
-        Easing::Linear
-    }
-}
-
 impl Easing {
     /// Create a bezier easing from tangent models.
+    #[must_use]
     pub fn from_tangents(out_tangent: &TangentModel, in_tangent: &TangentModel) -> Self {
-        Easing::Bezier {
+        Self::Bezier {
             out_x: out_tangent.x.first(),
             out_y: out_tangent.y.first(),
             in_x: in_tangent.x.first(),
@@ -47,11 +43,12 @@ impl Easing {
     }
 
     /// Evaluate the easing function at time t (0..1).
+    #[must_use]
     pub fn evaluate(&self, t: Scalar) -> Scalar {
         match self {
-            Easing::Linear => t,
-            Easing::Hold => 0.0,
-            Easing::Bezier {
+            Self::Linear => t,
+            Self::Hold => 0.0,
+            Self::Bezier {
                 out_x,
                 out_y,
                 in_x,
@@ -97,7 +94,7 @@ fn cubic_bezier_x(p1: Scalar, p2: Scalar, t: Scalar) -> Scalar {
     let mt = 1.0 - t;
     let mt2 = mt * mt;
 
-    3.0 * mt2 * t * p1 + 3.0 * mt * t2 * p2 + t3
+    (3.0 * mt2 * t).mul_add(p1, 3.0 * mt * t2 * p2) + t3
 }
 
 /// Cubic bezier x derivative.
@@ -106,7 +103,7 @@ fn cubic_bezier_dx(p1: Scalar, p2: Scalar, t: Scalar) -> Scalar {
     let mt = 1.0 - t;
     let mt2 = mt * mt;
 
-    3.0 * mt2 * p1 + 6.0 * mt * t * (p2 - p1) + 3.0 * t2 * (1.0 - p2)
+    (3.0 * t2).mul_add(1.0 - p2, (3.0 * mt2).mul_add(p1, 6.0 * mt * t * (p2 - p1)))
 }
 
 /// Cubic bezier y coordinate.
@@ -116,7 +113,7 @@ fn cubic_bezier_y(p1: Scalar, p2: Scalar, t: Scalar) -> Scalar {
     let mt = 1.0 - t;
     let mt2 = mt * mt;
 
-    3.0 * mt2 * t * p1 + 3.0 * mt * t2 * p2 + t3
+    (3.0 * mt2 * t).mul_add(p1, 3.0 * mt * t2 * p2) + t3
 }
 
 /// A single keyframe in an animation.
@@ -140,7 +137,8 @@ pub struct Keyframe {
 
 impl Keyframe {
     /// Create a new keyframe.
-    pub fn new(time: Scalar, value: KeyframeValue) -> Self {
+    #[must_use]
+    pub const fn new(time: Scalar, value: KeyframeValue) -> Self {
         Self {
             time,
             value,
@@ -151,7 +149,8 @@ impl Keyframe {
     }
 
     /// Set the easing function.
-    pub fn with_easing(mut self, easing: Easing) -> Self {
+    #[must_use]
+    pub const fn with_easing(mut self, easing: Easing) -> Self {
         self.easing = easing;
         self
     }
@@ -177,10 +176,11 @@ pub enum KeyframeValue {
 
 impl KeyframeValue {
     /// Get as scalar.
-    pub fn as_scalar(&self) -> Option<Scalar> {
+    #[must_use]
+    pub const fn as_scalar(&self) -> Option<Scalar> {
         match self {
-            KeyframeValue::Scalar(v) => Some(*v),
-            KeyframeValue::Vec2(v) => Some(v[0]),
+            Self::Scalar(v) => Some(*v),
+            Self::Vec2(v) => Some(v[0]),
             _ => None,
         }
     }
@@ -190,73 +190,73 @@ impl KeyframeValue {
     /// Bodymovin frequently exports positions/anchors as 3-component
     /// arrays (with a z of 0 for 2D layers); accept `Vec3` by taking the
     /// first two components.
-    pub fn as_vec2(&self) -> Option<[Scalar; 2]> {
+    #[must_use]
+    pub const fn as_vec2(&self) -> Option<[Scalar; 2]> {
         match self {
-            KeyframeValue::Vec2(v) => Some(*v),
-            KeyframeValue::Vec3(v) => Some([v[0], v[1]]),
-            KeyframeValue::Scalar(v) => Some([*v, *v]),
+            Self::Vec2(v) => Some(*v),
+            Self::Vec3(v) => Some([v[0], v[1]]),
+            Self::Scalar(v) => Some([*v, *v]),
             _ => None,
         }
     }
 
     /// Get as vec3.
-    pub fn as_vec3(&self) -> Option<[Scalar; 3]> {
+    #[must_use]
+    pub const fn as_vec3(&self) -> Option<[Scalar; 3]> {
         match self {
-            KeyframeValue::Vec3(v) => Some(*v),
-            KeyframeValue::Vec2(v) => Some([v[0], v[1], 0.0]),
-            KeyframeValue::Scalar(v) => Some([*v, *v, *v]),
+            Self::Vec3(v) => Some(*v),
+            Self::Vec2(v) => Some([v[0], v[1], 0.0]),
+            Self::Scalar(v) => Some([*v, *v, *v]),
             _ => None,
         }
     }
 
     /// Get as color.
-    pub fn as_color(&self) -> Option<[Scalar; 4]> {
+    #[must_use]
+    pub const fn as_color(&self) -> Option<[Scalar; 4]> {
         match self {
-            KeyframeValue::Color(v) => Some(*v),
-            KeyframeValue::Vec3(v) => Some([v[0], v[1], v[2], 1.0]),
+            Self::Color(v) => Some(*v),
+            Self::Vec3(v) => Some([v[0], v[1], v[2], 1.0]),
             _ => None,
         }
     }
 
     /// Get as a raw float array (e.g. gradient stop tables).
+    #[must_use]
     pub fn as_float_array(&self) -> Option<&[Scalar]> {
         match self {
-            KeyframeValue::FloatArray(v) => Some(v),
+            Self::FloatArray(v) => Some(v),
             _ => None,
         }
     }
 
     /// Interpolate between two values.
-    pub fn lerp(&self, other: &KeyframeValue, t: Scalar) -> KeyframeValue {
+    #[must_use]
+    pub fn lerp(&self, other: &Self, t: Scalar) -> Self {
         match (self, other) {
-            (KeyframeValue::Scalar(a), KeyframeValue::Scalar(b)) => {
-                KeyframeValue::Scalar(a + (b - a) * t)
-            }
-            (KeyframeValue::Vec2(a), KeyframeValue::Vec2(b)) => {
-                KeyframeValue::Vec2([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t])
-            }
-            (KeyframeValue::Vec3(a), KeyframeValue::Vec3(b)) => KeyframeValue::Vec3([
-                a[0] + (b[0] - a[0]) * t,
-                a[1] + (b[1] - a[1]) * t,
-                a[2] + (b[2] - a[2]) * t,
+            (Self::Scalar(a), Self::Scalar(b)) => Self::Scalar(a + (b - a) * t),
+            (Self::Vec2(a), Self::Vec2(b)) => Self::Vec2([
+                (b[0] - a[0]).mul_add(t, a[0]),
+                (b[1] - a[1]).mul_add(t, a[1]),
             ]),
-            (KeyframeValue::Color(a), KeyframeValue::Color(b)) => KeyframeValue::Color([
-                a[0] + (b[0] - a[0]) * t,
-                a[1] + (b[1] - a[1]) * t,
-                a[2] + (b[2] - a[2]) * t,
-                a[3] + (b[3] - a[3]) * t,
+            (Self::Vec3(a), Self::Vec3(b)) => Self::Vec3([
+                (b[0] - a[0]).mul_add(t, a[0]),
+                (b[1] - a[1]).mul_add(t, a[1]),
+                (b[2] - a[2]).mul_add(t, a[2]),
             ]),
-            (KeyframeValue::Path(a), KeyframeValue::Path(b)) => KeyframeValue::Path(a.lerp(b, t)),
-            (KeyframeValue::FloatArray(a), KeyframeValue::FloatArray(b))
-                if a.len() == b.len() =>
-            {
-                KeyframeValue::FloatArray(
-                    a.iter()
-                        .zip(b.iter())
-                        .map(|(x, y)| x + (y - x) * t)
-                        .collect(),
-                )
-            }
+            (Self::Color(a), Self::Color(b)) => Self::Color([
+                (b[0] - a[0]).mul_add(t, a[0]),
+                (b[1] - a[1]).mul_add(t, a[1]),
+                (b[2] - a[2]).mul_add(t, a[2]),
+                (b[3] - a[3]).mul_add(t, a[3]),
+            ]),
+            (Self::Path(a), Self::Path(b)) => Self::Path(a.lerp(b, t)),
+            (Self::FloatArray(a), Self::FloatArray(b)) if a.len() == b.len() => Self::FloatArray(
+                a.iter()
+                    .zip(b.iter())
+                    .map(|(x, y)| x + (y - x) * t)
+                    .collect(),
+            ),
             // Mismatched types - return first
             _ => self.clone(),
         }
@@ -278,7 +278,8 @@ pub struct PathData {
 
 impl PathData {
     /// Create an empty path.
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             vertices: Vec::new(),
             in_tangents: Vec::new(),
@@ -288,43 +289,42 @@ impl PathData {
     }
 
     /// Interpolate between two paths.
-    pub fn lerp(&self, other: &PathData, t: Scalar) -> PathData {
+    #[must_use]
+    pub fn lerp(&self, other: &Self, t: Scalar) -> Self {
         let len = self.vertices.len().min(other.vertices.len());
 
-        PathData {
+        Self {
             vertices: (0..len)
                 .map(|i| {
                     [
-                        self.vertices[i][0] + (other.vertices[i][0] - self.vertices[i][0]) * t,
-                        self.vertices[i][1] + (other.vertices[i][1] - self.vertices[i][1]) * t,
+                        (other.vertices[i][0] - self.vertices[i][0])
+                            .mul_add(t, self.vertices[i][0]),
+                        (other.vertices[i][1] - self.vertices[i][1])
+                            .mul_add(t, self.vertices[i][1]),
                     ]
                 })
                 .collect(),
             in_tangents: (0..len)
                 .map(|i| {
                     [
-                        self.in_tangents.get(i).map(|v| v[0]).unwrap_or(0.0)
-                            + (other.in_tangents.get(i).map(|v| v[0]).unwrap_or(0.0)
-                                - self.in_tangents.get(i).map(|v| v[0]).unwrap_or(0.0))
-                                * t,
-                        self.in_tangents.get(i).map(|v| v[1]).unwrap_or(0.0)
-                            + (other.in_tangents.get(i).map(|v| v[1]).unwrap_or(0.0)
-                                - self.in_tangents.get(i).map(|v| v[1]).unwrap_or(0.0))
-                                * t,
+                        (other.in_tangents.get(i).map_or(0.0, |v| v[0])
+                            - self.in_tangents.get(i).map_or(0.0, |v| v[0]))
+                        .mul_add(t, self.in_tangents.get(i).map_or(0.0, |v| v[0])),
+                        (other.in_tangents.get(i).map_or(0.0, |v| v[1])
+                            - self.in_tangents.get(i).map_or(0.0, |v| v[1]))
+                        .mul_add(t, self.in_tangents.get(i).map_or(0.0, |v| v[1])),
                     ]
                 })
                 .collect(),
             out_tangents: (0..len)
                 .map(|i| {
                     [
-                        self.out_tangents.get(i).map(|v| v[0]).unwrap_or(0.0)
-                            + (other.out_tangents.get(i).map(|v| v[0]).unwrap_or(0.0)
-                                - self.out_tangents.get(i).map(|v| v[0]).unwrap_or(0.0))
-                                * t,
-                        self.out_tangents.get(i).map(|v| v[1]).unwrap_or(0.0)
-                            + (other.out_tangents.get(i).map(|v| v[1]).unwrap_or(0.0)
-                                - self.out_tangents.get(i).map(|v| v[1]).unwrap_or(0.0))
-                                * t,
+                        (other.out_tangents.get(i).map_or(0.0, |v| v[0])
+                            - self.out_tangents.get(i).map_or(0.0, |v| v[0]))
+                        .mul_add(t, self.out_tangents.get(i).map_or(0.0, |v| v[0])),
+                        (other.out_tangents.get(i).map_or(0.0, |v| v[1])
+                            - self.out_tangents.get(i).map_or(0.0, |v| v[1]))
+                        .mul_add(t, self.out_tangents.get(i).map_or(0.0, |v| v[1])),
                     ]
                 })
                 .collect(),
@@ -348,13 +348,15 @@ pub struct AnimatedProperty {
 
 impl AnimatedProperty {
     /// Create a new animated property.
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             keyframes: Vec::new(),
         }
     }
 
     /// Create from a static value.
+    #[must_use]
     pub fn static_value(value: KeyframeValue) -> Self {
         Self {
             keyframes: vec![Keyframe::new(0.0, value)],
@@ -364,16 +366,17 @@ impl AnimatedProperty {
     /// Add a keyframe.
     pub fn add_keyframe(&mut self, keyframe: Keyframe) {
         self.keyframes.push(keyframe);
-        self.keyframes
-            .sort_by(|a, b| a.time.total_cmp(&b.time));
+        self.keyframes.sort_by(|a, b| a.time.total_cmp(&b.time));
     }
 
     /// Check if this property is animated.
+    #[must_use]
     pub fn is_animated(&self) -> bool {
         self.keyframes.len() > 1
     }
 
     /// Get the value at a specific frame.
+    #[must_use]
     pub fn value_at(&self, frame: Scalar) -> KeyframeValue {
         if self.keyframes.is_empty() {
             return KeyframeValue::Scalar(0.0);
@@ -434,7 +437,7 @@ impl AnimatedProperty {
                     next.spatial_in,
                     eased_t,
                 ) {
-                    let z = v0[2] + (v1[2] - v0[2]) * eased_t;
+                    let z = (v1[2] - v0[2]).mul_add(eased_t, v0[2]);
                     return KeyframeValue::Vec3([pos[0], pos[1], z]);
                 }
             }
@@ -445,12 +448,13 @@ impl AnimatedProperty {
     }
 
     /// Parse from Lottie animated value.
+    #[must_use]
     pub fn from_lottie(value: &AnimatedValue) -> Self {
         match value {
             AnimatedValue::Animated { keyframes, .. } => {
                 let mut prop = Self::new();
 
-                for kf in keyframes.iter() {
+                for kf in keyframes {
                     let value = if let Some(ref start) = kf.start {
                         parse_json_value(start)
                     } else if let Some(ref end) = kf.end {
@@ -494,11 +498,7 @@ impl AnimatedProperty {
 
                 prop
             }
-            AnimatedValue::Static { value, .. } => {
-                let kf_value = parse_json_value(value);
-                Self::static_value(kf_value)
-            }
-            AnimatedValue::Direct(value) => {
+            AnimatedValue::Static { value, .. } | AnimatedValue::Direct(value) => {
                 let kf_value = parse_json_value(value);
                 Self::static_value(kf_value)
             }
@@ -521,6 +521,10 @@ impl Default for AnimatedProperty {
 ///
 /// Returns `None` when neither tangent is present (caller falls back to a
 /// plain linear lerp).
+#[allow(
+    clippy::float_cmp,
+    reason = "exact zero-tangent/coincident-endpoint detection mirrors upstream SkottieJson semantics; a tolerance would change which keyframes get spatial interpolation"
+)]
 fn spatial_bezier_at(
     v0: [Scalar; 2],
     to: Option<[Scalar; 2]>,
@@ -564,10 +568,26 @@ fn spatial_bezier_at(
         // upstream's overshoot handling for sub/super-normal easing weights.
         let tan = measure.get_tangent_at(clamped)?;
         let overshoot = distance - clamped;
-        return Some([point.x + tan.x * overshoot, point.y + tan.y * overshoot]);
+        return Some([
+            tan.x.mul_add(overshoot, point.x),
+            tan.y.mul_add(overshoot, point.y),
+        ]);
     }
 
     Some([point.x, point.y])
+}
+
+/// Narrow a JSON-sourced `f64` down to the crate's `f32` [`Scalar`].
+///
+/// Lottie/Bodymovin documents are parsed via `serde_json`, whose `Number`
+/// type is always `f64`; every animation value is ultimately stored as a
+/// `Scalar` (`f32`), so this narrowing is unavoidable at the JSON boundary.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "serde_json::Number is always f64; downcasting to the crate's f32 Scalar at the JSON boundary is unavoidable and matches Skia's f32 Scalar type"
+)]
+const fn scalar_from_f64(x: f64) -> Scalar {
+    x as Scalar
 }
 
 fn parse_keyframe_value(values: &[Scalar]) -> KeyframeValue {
@@ -585,25 +605,24 @@ fn parse_keyframe_value(values: &[Scalar]) -> KeyframeValue {
 
 fn parse_json_value(value: &serde_json::Value) -> KeyframeValue {
     match value {
-        serde_json::Value::Number(n) => KeyframeValue::Scalar(n.as_f64().unwrap_or(0.0) as Scalar),
+        serde_json::Value::Number(n) => {
+            KeyframeValue::Scalar(scalar_from_f64(n.as_f64().unwrap_or(0.0)))
+        }
         serde_json::Value::Object(_) => {
             // Static (non-animated) bezier path value: `"k": {"i","o","v","c"}`.
-            parse_path_object(value)
-                .map(KeyframeValue::Path)
-                .unwrap_or(KeyframeValue::Scalar(0.0))
+            parse_path_object(value).map_or(KeyframeValue::Scalar(0.0), KeyframeValue::Path)
         }
         serde_json::Value::Array(arr) => {
             // Animated bezier path value: `"s": [{"i","o","v","c"}]`.
             if let Some(first) = arr.first() {
                 if first.is_object() {
                     return parse_path_object(first)
-                        .map(KeyframeValue::Path)
-                        .unwrap_or(KeyframeValue::Scalar(0.0));
+                        .map_or(KeyframeValue::Scalar(0.0), KeyframeValue::Path);
                 }
             }
             let values: Vec<Scalar> = arr
                 .iter()
-                .filter_map(|v| v.as_f64().map(|n| n as Scalar))
+                .filter_map(|v| v.as_f64().map(scalar_from_f64))
                 .collect();
             parse_keyframe_value(&values)
         }
@@ -624,8 +643,8 @@ fn parse_path_object(value: &serde_json::Value) -> Option<PathData> {
                 arr.iter()
                     .filter_map(|p| {
                         let pa = p.as_array()?;
-                        let x = pa.first()?.as_f64()? as Scalar;
-                        let y = pa.get(1)?.as_f64()? as Scalar;
+                        let x = scalar_from_f64(pa.first()?.as_f64()?);
+                        let y = scalar_from_f64(pa.get(1)?.as_f64()?);
                         Some([x, y])
                     })
                     .collect()
@@ -637,11 +656,18 @@ fn parse_path_object(value: &serde_json::Value) -> Option<PathData> {
         vertices: get_points("v"),
         in_tangents: get_points("i"),
         out_tangents: get_points("o"),
-        closed: obj.get("c").and_then(|v| v.as_bool()).unwrap_or(false),
+        closed: obj
+            .get("c")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
     })
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "tests assert exact keyframe/interpolation output values, not tolerances"
+)]
 mod tests {
     use super::*;
 
@@ -702,7 +728,8 @@ mod tests {
     fn test_static_bezier_path_value_parses_geometry() {
         use crate::model::AnimatedValue;
 
-        let json = r#"{"a":0,"k":{"i":[[0,0],[0,0]],"o":[[0,0],[0,0]],"v":[[0,0],[10,10]],"c":false}}"#;
+        let json =
+            r#"{"a":0,"k":{"i":[[0,0],[0,0]],"o":[[0,0],[0,0]],"v":[[0,0],[10,10]],"c":false}}"#;
         let av: AnimatedValue = serde_json::from_str(json).unwrap();
         let prop = AnimatedProperty::from_lottie(&av);
         match prop.value_at(0.0) {

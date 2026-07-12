@@ -73,6 +73,21 @@
 // Perspective 2 index.
 #define Matrix_PERSP_2 8
 
+// Filter mode for image sampling.
+enum FilterMode
+#ifdef __cplusplus
+  : uint8_t
+#endif // __cplusplus
+ {
+    // Nearest neighbor sampling.
+    FilterMode_Nearest = 0,
+    // Bilinear interpolation.
+    FilterMode_Linear,
+};
+#ifndef __cplusplus
+typedef uint8_t FilterMode;
+#endif // __cplusplus
+
 // Mipmap mode for image sampling.
 enum MipmapMode
 #ifdef __cplusplus
@@ -88,21 +103,6 @@ enum MipmapMode
 };
 #ifndef __cplusplus
 typedef uint8_t MipmapMode;
-#endif // __cplusplus
-
-// Filter mode for image sampling.
-enum FilterMode
-#ifdef __cplusplus
-  : uint8_t
-#endif // __cplusplus
- {
-    // Nearest neighbor sampling.
-    FilterMode_Nearest = 0,
-    // Bilinear interpolation.
-    FilterMode_Linear,
-};
-#ifndef __cplusplus
-typedef uint8_t FilterMode;
 #endif // __cplusplus
 
 // Describes the color space for interpreting colors.
@@ -237,9 +237,11 @@ typedef struct sk_matrix_t {
     float values[9];
 } sk_matrix_t;
 
-// C ABI type for [`SkClipOp`]. Functions taking a clip op accept this raw
-// `uint32_t` and decode it via [`decode_clip_op`], rejecting out-of-range
-// values instead of constructing an invalid Rust enum from C.
+// C ABI type for [`SkClipOp`].
+//
+// Functions taking a clip op accept this raw `uint32_t` and decode it via
+// [`decode_clip_op`], rejecting out-of-range values instead of constructing
+// an invalid Rust enum from C.
 typedef uint32_t sk_clip_op_t;
 
 // C-compatible integer rectangle structure.
@@ -290,29 +292,37 @@ typedef struct RefCounted_PathEffectRef sk_patheffect_t;
 // C ABI type for [`SkTrimMode`]; see [`decode_trim_mode`].
 typedef uint32_t sk_trim_mode_t;
 
-// Binary-compatible 2D point (matches SkPoint exactly)
+// Binary-compatible 2D point (matches `SkPoint` exactly)
 typedef struct SkPointABI {
+    // X coordinate.
     float x;
+    // Y coordinate.
     float y;
 } SkPointABI;
 
-// Binary-compatible rectangle (matches SkRect exactly)
+// Binary-compatible rectangle (matches `SkRect` exactly)
 typedef struct SkRectABI {
+    // Left edge.
     float left;
+    // Top edge.
     float top;
+    // Right edge.
     float right;
+    // Bottom edge.
     float bottom;
 } SkRectABI;
 
-// Binary-compatible 3x3 matrix (matches SkMatrix exactly)
+// Binary-compatible 3x3 matrix (matches `SkMatrix` exactly)
 //
 // Layout: [scaleX, skewX, transX, skewY, scaleY, transY, persp0, persp1, persp2]
 typedef struct SkMatrixABI {
+    // Row-major 3x3 matrix values.
     float values[9];
 } SkMatrixABI;
 
 // Binary-compatible 4x4 matrix (matches SkMatrix44/SkM44 exactly)
 typedef struct SkMatrix44ABI {
+    // Row-major 4x4 matrix values.
     float values[16];
 } SkMatrix44ABI;
 
@@ -439,6 +449,11 @@ void sk_surface_ref(sk_surface_t *surface);
 // Decrement the reference count of a surface.
 //
 // Frees the surface when the count reaches 0.
+//
+// # Panics
+// Panics (caught by `catch_panic_void`, see the crate-level docs) if the
+// internal locked-surfaces mutex is poisoned by another thread panicking
+// while holding it.
 void sk_surface_unref(sk_surface_t *surface);
 
 // Get the reference count of a surface.
@@ -538,9 +553,11 @@ void sk_paint_set_antialias(sk_paint_t *paint,
 // Check if anti-alias is enabled.
 bool sk_paint_is_antialias(const sk_paint_t *paint);
 
-// Set the paint's blend mode. `mode` follows upstream `SkBlendMode`
-// (0-28); see [`BlendMode::from_u8`]. Returns false (leaving the paint's
-// blend mode unchanged) if `paint` is null or `mode` is out of range.
+// Set the paint's blend mode.
+//
+// `mode` follows upstream `SkBlendMode` (0-28); see [`BlendMode::from_u8`].
+// Returns false (leaving the paint's blend mode unchanged) if `paint` is
+// null or `mode` is out of range.
 bool sk_paint_set_blend_mode(sk_paint_t *paint,
                              sk_blend_mode_t mode);
 
@@ -611,10 +628,11 @@ struct sk_path_iter_t *sk_path_iter_new(const sk_path_t *path);
 // Destroy a path iterator.
 void sk_path_iter_delete(struct sk_path_iter_t *iter);
 
-// Advance the iterator. Fills up to four points in `out_points` (caller
-// provides at least 4 slots) and the conic weight (if applicable) in
-// `out_weight`. Returns the verb code; `SK_PATH_VERB_DONE` indicates
-// exhaustion.
+// Advance the iterator.
+//
+// Fills up to four points in `out_points` (caller provides at least 4
+// slots) and the conic weight (if applicable) in `out_weight`. Returns the
+// verb code; `SK_PATH_VERB_DONE` indicates exhaustion.
 uint32_t sk_path_iter_next(struct sk_path_iter_t *iter,
                            struct sk_point_t *out_points,
                            float *out_weight);
@@ -786,9 +804,19 @@ void sk_surface_draw_line(sk_surface_t *surface,
 // (which bypass the locked canvas and draw directly on the surface) are
 // rejected (no-op) to avoid two independent mutable views of the same
 // pixel buffer.
+//
+// # Panics
+// Panics (caught by `catch_panic`, see the crate-level docs) if the
+// internal locked-surfaces mutex is poisoned by another thread panicking
+// while holding it.
 struct sk_canvas_t *sk_surface_lock_canvas(sk_surface_t *surface);
 
 // Release a canvas acquired via [`sk_surface_lock_canvas`].
+//
+// # Panics
+// Panics (caught by `catch_panic_void`, see the crate-level docs) if the
+// internal locked-surfaces mutex is poisoned by another thread panicking
+// while holding it.
 void sk_canvas_release(struct sk_canvas_t *canvas);
 
 // Get the width of the canvas.
@@ -809,7 +837,7 @@ int32_t sk_canvas_save(struct sk_canvas_t *canvas);
 // or 0 on failure (null canvas).
 //
 // **Pragmatic note:** because the FFI canvas reconstructs its underlying
-// [`Canvas`] between calls, the layer_paint / layer_bounds are tracked but
+// [`Canvas`] between calls, the `layer_paint` / `layer_bounds` are tracked but
 // composition is delegated to the transient canvas at the next draw — the
 // effective behavior matches the recording-only semantics in
 // [`skia_rs_canvas::Canvas::save_layer`].
@@ -1128,9 +1156,10 @@ struct sk_picture_recorder_t *sk_picture_recorder_new(void);
 // out safely instead of dereferencing freed memory.
 void sk_picture_recorder_delete(struct sk_picture_recorder_t *r);
 
-// Begin recording into a fresh picture. Returns a recording canvas handle
-// that draw ops append to. The caller drops the handle via
-// [`sk_recording_canvas_release`] but **must** call
+// Begin recording into a fresh picture.
+//
+// Returns a recording canvas handle that draw ops append to. The caller
+// drops the handle via [`sk_recording_canvas_release`] but **must** call
 // [`sk_picture_recorder_finish_recording`] to get the recorded picture.
 struct sk_recording_canvas_t *sk_picture_recorder_begin_recording(struct sk_picture_recorder_t *r,
                                                                   const struct sk_rect_t *bounds);
@@ -1220,10 +1249,12 @@ void sk_region_ref(sk_region_t *region);
 // Decrement region refcount.
 void sk_region_unref(sk_region_t *region);
 
-// Create a dash path effect. `intervals` must be non-null with `count`
-// positive entries; the pattern is duplicated internally if `count` is
-// odd, matching Skia's semantics. `phase` shifts where the pattern starts.
-// Returns null if the intervals are invalid (empty, negative, or sum to 0).
+// Create a dash path effect.
+//
+// `intervals` must be non-null with `count` positive entries; the pattern
+// is duplicated internally if `count` is odd, matching Skia's semantics.
+// `phase` shifts where the pattern starts. Returns null if the intervals
+// are invalid (empty, negative, or sum to 0).
 sk_patheffect_t *sk_patheffect_new_dash(const float *intervals,
                                         uintptr_t count,
                                         float phase);
@@ -1269,19 +1300,19 @@ struct SkMatrixABI sk_matrix_identity(void);
 // Create identity matrix 4x4
 struct SkMatrix44ABI sk_matrix44_identity(void);
 
-// Get size of SkPointABI (for runtime verification)
+// Get size of `SkPointABI` (for runtime verification)
 uintptr_t sk_sizeof_point(void);
 
-// Get size of SkRectABI (for runtime verification)
+// Get size of `SkRectABI` (for runtime verification)
 uintptr_t sk_sizeof_rect(void);
 
-// Get size of SkMatrixABI (for runtime verification)
+// Get size of `SkMatrixABI` (for runtime verification)
 uintptr_t sk_sizeof_matrix(void);
 
-// Get size of SkImageInfoABI (for runtime verification)
+// Get size of `SkImageInfoABI` (for runtime verification)
 uintptr_t sk_sizeof_imageinfo(void);
 
-// Get size of SkColor4fABI (for runtime verification)
+// Get size of `SkColor4fABI` (for runtime verification)
 uintptr_t sk_sizeof_color4f(void);
 
 // Validate that all ABI types have expected sizes

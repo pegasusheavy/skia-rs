@@ -3,7 +3,7 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use skia_rs_bench::{
     generate_complex_path, generate_multi_contour_path, generate_nested_rects,
-    generate_simple_path, generate_star, sizes,
+    generate_simple_path, generate_star,
 };
 use skia_rs_core::Rect;
 use skia_rs_path::{FillType, Path, PathBuilder};
@@ -12,7 +12,7 @@ use std::hint::black_box;
 fn bench_path_builder(c: &mut Criterion) {
     let mut group = c.benchmark_group("PathBuilder");
 
-    group.bench_function("new", |b| b.iter(|| PathBuilder::new()));
+    group.bench_function("new", |b| b.iter(PathBuilder::new));
 
     group.bench_function("move_to", |b| {
         b.iter_batched(
@@ -22,7 +22,7 @@ fn bench_path_builder(c: &mut Criterion) {
                 builder
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("line_to", |b| {
@@ -37,7 +37,7 @@ fn bench_path_builder(c: &mut Criterion) {
                 builder
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("quad_to", |b| {
@@ -57,8 +57,14 @@ fn bench_path_builder(c: &mut Criterion) {
                 builder
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
+
+    group.finish();
+}
+
+fn bench_path_builder_curves(c: &mut Criterion) {
+    let mut group = c.benchmark_group("PathBuilder/curves");
 
     group.bench_function("cubic_to", |b| {
         b.iter_batched(
@@ -79,7 +85,7 @@ fn bench_path_builder(c: &mut Criterion) {
                 builder
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("conic_to", |b| {
@@ -100,7 +106,7 @@ fn bench_path_builder(c: &mut Criterion) {
                 builder
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("close", |b| {
@@ -117,7 +123,7 @@ fn bench_path_builder(c: &mut Criterion) {
                 builder
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.finish();
@@ -136,7 +142,7 @@ fn bench_path_shapes(c: &mut Criterion) {
                 builder.build()
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("add_oval", |b| {
@@ -147,7 +153,7 @@ fn bench_path_shapes(c: &mut Criterion) {
                 builder.build()
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("add_circle", |b| {
@@ -158,7 +164,7 @@ fn bench_path_shapes(c: &mut Criterion) {
                 builder.build()
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("add_round_rect", |b| {
@@ -169,13 +175,13 @@ fn bench_path_shapes(c: &mut Criterion) {
                 builder.build()
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     // Star shapes with varying complexity
     for points in [5, 8, 12, 24] {
         group.bench_with_input(BenchmarkId::new("star", points), &points, |b, &points| {
-            b.iter(|| generate_star(points, 100.0, 50.0))
+            b.iter(|| generate_star(points, 100.0, 50.0));
         });
     }
 
@@ -190,17 +196,17 @@ fn bench_path_construction(c: &mut Criterion) {
         group.throughput(Throughput::Elements(size as u64));
 
         group.bench_with_input(BenchmarkId::new("simple_lines", size), &size, |b, &size| {
-            b.iter(|| generate_simple_path(size))
+            b.iter(|| generate_simple_path(size));
         });
 
         group.bench_with_input(BenchmarkId::new("mixed_curves", size), &size, |b, &size| {
-            b.iter(|| generate_complex_path(size))
+            b.iter(|| generate_complex_path(size));
         });
     }
 
     // Multi-contour paths
     for (contours, segments) in [(5, 20), (10, 10), (20, 5), (50, 10)] {
-        let label = format!("{}x{}", contours, segments);
+        let label = format!("{contours}x{segments}");
         group.throughput(Throughput::Elements((contours * segments) as u64));
 
         group.bench_with_input(
@@ -230,36 +236,36 @@ fn bench_path_queries(c: &mut Criterion) {
     let multi_contour = generate_multi_contour_path(10, 20);
 
     group.bench_function("is_empty/false", |b| {
-        b.iter(|| black_box(&simple_path).is_empty())
+        b.iter(|| black_box(&simple_path).is_empty());
     });
 
     group.bench_function("is_empty/true", |b| {
         let empty = Path::new();
-        b.iter(|| black_box(&empty).is_empty())
+        b.iter(|| black_box(&empty).is_empty());
     });
 
     group.bench_function("verb_count", |b| {
-        b.iter(|| black_box(&simple_path).verb_count())
+        b.iter(|| black_box(&simple_path).verb_count());
     });
 
     group.bench_function("point_count", |b| {
-        b.iter(|| black_box(&simple_path).point_count())
+        b.iter(|| black_box(&simple_path).point_count());
     });
 
     group.bench_function("bounds/simple", |b| {
-        b.iter(|| black_box(&simple_path).bounds())
+        b.iter(|| black_box(&simple_path).bounds());
     });
 
     group.bench_function("bounds/complex", |b| {
-        b.iter(|| black_box(&complex_path).bounds())
+        b.iter(|| black_box(&complex_path).bounds());
     });
 
     group.bench_function("bounds/multi_contour", |b| {
-        b.iter(|| black_box(&multi_contour).bounds())
+        b.iter(|| black_box(&multi_contour).bounds());
     });
 
     group.bench_function("fill_type", |b| {
-        b.iter(|| black_box(&simple_path).fill_type())
+        b.iter(|| black_box(&simple_path).fill_type());
     });
 
     group.finish();
@@ -317,7 +323,7 @@ fn bench_path_mutation(c: &mut Criterion) {
                 p
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.bench_function("set_fill_type", |b| {
@@ -328,7 +334,7 @@ fn bench_path_mutation(c: &mut Criterion) {
                 p
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.finish();
@@ -337,6 +343,7 @@ fn bench_path_mutation(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_path_builder,
+    bench_path_builder_curves,
     bench_path_shapes,
     bench_path_construction,
     bench_path_queries,

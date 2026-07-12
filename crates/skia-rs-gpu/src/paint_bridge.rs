@@ -32,15 +32,15 @@
 //! ```
 
 use crate::pipeline::{
-    BlendComponent, BlendFactor, BlendOperation, BlendState, ColorTargetState,
-    PipelineKey, RenderPipelineDescriptor, VertexAttribute, VertexBufferLayout, VertexFormat,
+    BlendComponent, BlendFactor, BlendOperation, BlendState, ColorTargetState, PipelineKey,
+    RenderPipelineDescriptor, VertexAttribute, VertexBufferLayout, VertexFormat,
 };
 use crate::shader::builtin;
 use crate::texture::TextureFormat;
-use skia_rs_paint::{BlendMode, Paint, Style};
 use skia_rs_paint::shader::{
     LinearGradient, RadialGradient, Shader, ShaderKind, ShaderRef, SweepGradient,
 };
+use skia_rs_paint::{BlendMode, Paint, Style};
 
 /// Which built-in GPU shader a paint maps to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -63,18 +63,22 @@ pub enum BuiltinShader {
 
 impl BuiltinShader {
     /// Return the vertex and fragment WGSL source for this built-in.
-    pub fn wgsl_sources(self) -> (&'static str, &'static str) {
+    #[must_use]
+    pub const fn wgsl_sources(self) -> (&'static str, &'static str) {
         match self {
-            Self::SolidColor => (builtin::SOLID_COLOR_VS, builtin::SOLID_COLOR_FS),
-            Self::LinearGradient => (builtin::GRADIENT_VS, builtin::LINEAR_GRADIENT_FS),
-            Self::RadialGradient => (builtin::GRADIENT_VS, builtin::RADIAL_GRADIENT_FS),
+            // `Unsupported` falls back to the solid-color built-in.
+            Self::SolidColor | Self::Unsupported => {
+                (builtin::SOLID_COLOR_VS, builtin::SOLID_COLOR_FS)
+            }
             // No dedicated sweep shader in the built-in library yet; linear
             // is the closest analogue (same vertex layout, same single-color
             // output semantics). Callers can override by registering a
             // custom shader in `ShaderLibrary`.
-            Self::SweepGradient => (builtin::GRADIENT_VS, builtin::LINEAR_GRADIENT_FS),
+            Self::LinearGradient | Self::SweepGradient => {
+                (builtin::GRADIENT_VS, builtin::LINEAR_GRADIENT_FS)
+            }
+            Self::RadialGradient => (builtin::GRADIENT_VS, builtin::RADIAL_GRADIENT_FS),
             Self::Image => (builtin::TEXTURED_VS, builtin::TEXTURED_FS),
-            Self::Unsupported => (builtin::SOLID_COLOR_VS, builtin::SOLID_COLOR_FS),
         }
     }
 }
@@ -97,7 +101,12 @@ pub enum BlendClass {
 /// `BlendClass::Advanced` tag so the caller knows it needs a read-modify-write
 /// strategy (destination texture binding + custom shader) rather than the
 /// fixed-function blender.
-pub fn blend_mode_to_state(mode: BlendMode) -> (BlendState, BlendClass) {
+#[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive one-arm-per-BlendMode table; splitting it up would obscure the Porter-Duff mapping"
+)]
+pub const fn blend_mode_to_state(mode: BlendMode) -> (BlendState, BlendClass) {
     let (color, class) = match mode {
         BlendMode::Clear => (
             BlendComponent {
@@ -267,7 +276,7 @@ pub fn blend_mode_to_state(mode: BlendMode) -> (BlendState, BlendClass) {
 /// *color* coefficient as the corresponding source/destination *alpha*
 /// (there is no separate "color" for a single-component channel). Factors
 /// that already reference alpha (or constants) are unchanged.
-fn to_alpha_factor(f: BlendFactor) -> BlendFactor {
+const fn to_alpha_factor(f: BlendFactor) -> BlendFactor {
     match f {
         BlendFactor::Src => BlendFactor::SrcAlpha,
         BlendFactor::OneMinusSrc => BlendFactor::OneMinusSrcAlpha,
@@ -302,11 +311,13 @@ pub struct PaintUniforms {
 
 impl PaintUniforms {
     /// Number of bytes in the uniform block.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.bytes.len()
     }
 
     /// True if no uniform data is set.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }
@@ -328,6 +339,7 @@ pub struct PaintPlan {
 /// Examines the paint's shader (if any) and blend mode, picks an appropriate
 /// built-in GPU shader, builds the pipeline descriptor and key, and packs
 /// the shader parameters into a uniform blob.
+#[must_use]
 pub fn paint_to_pipeline(paint: &Paint) -> PaintPlan {
     let (blend, blend_class) = blend_mode_to_state(paint.blend_mode());
 
@@ -355,11 +367,13 @@ pub fn paint_to_pipeline(paint: &Paint) -> PaintPlan {
 /// Target format is `Rgba8Unorm` by default; callers that render to sRGB
 /// or other formats should call [`build_pipeline_descriptor_with_target`]
 /// directly.
+#[must_use]
 pub fn build_pipeline_descriptor(selection: &PipelineSelection) -> RenderPipelineDescriptor {
     build_pipeline_descriptor_with_target(selection, TextureFormat::Rgba8Unorm)
 }
 
 /// Build a `RenderPipelineDescriptor` for a specific render target format.
+#[must_use]
 pub fn build_pipeline_descriptor_with_target(
     selection: &PipelineSelection,
     target: TextureFormat,
@@ -397,17 +411,17 @@ pub fn build_pipeline_descriptor_with_target(
 }
 
 fn classify_paint_shader(paint: &Paint) -> (BuiltinShader, PaintUniforms) {
-    match paint.shader() {
-        None => {
+    paint.shader().map_or_else(
+        || {
             // Solid color from `paint.color()`.
             let c = paint.color();
             (
                 BuiltinShader::SolidColor,
                 pack_solid_color(c.r, c.g, c.b, c.a),
             )
-        }
-        Some(shader_ref) => classify_shader_ref(shader_ref, paint),
-    }
+        },
+        |shader_ref| classify_shader_ref(shader_ref, paint),
+    )
 }
 
 fn classify_shader_ref(shader_ref: &ShaderRef, paint: &Paint) -> (BuiltinShader, PaintUniforms) {
@@ -582,7 +596,12 @@ fn sample_linear_endpoints(shader: &dyn Shader) -> ([f32; 2], [f32; 2], [f32; 4]
         let colors = g.colors();
         let c0 = colors.first().copied().unwrap_or_default();
         let c1 = colors.last().copied().unwrap_or_default();
-        return (start, end, [c0.r, c0.g, c0.b, c0.a], [c1.r, c1.g, c1.b, c1.a]);
+        return (
+            start,
+            end,
+            [c0.r, c0.g, c0.b, c0.a],
+            [c1.r, c1.g, c1.b, c1.a],
+        );
     }
 
     // Fallback path: sample the shader at a unit segment to recover
@@ -604,7 +623,12 @@ fn sample_radial_endpoints(shader: &dyn Shader) -> ([f32; 2], f32, [f32; 4], [f3
         let colors = g.colors();
         let c0 = colors.first().copied().unwrap_or_default();
         let c1 = colors.last().copied().unwrap_or_default();
-        return (center, radius, [c0.r, c0.g, c0.b, c0.a], [c1.r, c1.g, c1.b, c1.a]);
+        return (
+            center,
+            radius,
+            [c0.r, c0.g, c0.b, c0.a],
+            [c1.r, c1.g, c1.b, c1.a],
+        );
     }
 
     let s = shader.sample(0.0, 0.0);
@@ -619,7 +643,12 @@ fn sample_sweep_as_linear(shader: &dyn Shader) -> ([f32; 2], [f32; 2], [f32; 4],
         let colors = g.colors();
         let c0 = colors.first().copied().unwrap_or_default();
         let c1 = colors.last().copied().unwrap_or_default();
-        return (center, end, [c0.r, c0.g, c0.b, c0.a], [c1.r, c1.g, c1.b, c1.a]);
+        return (
+            center,
+            end,
+            [c0.r, c0.g, c0.b, c0.a],
+            [c1.r, c1.g, c1.b, c1.a],
+        );
     }
 
     let s = shader.sample(0.0, 0.0);
@@ -665,9 +694,11 @@ fn as_sweep_gradient(shader: &dyn Shader) -> Option<&SweepGradient> {
 mod tests {
     use super::*;
     use skia_rs_core::Color4f;
-    use skia_rs_paint::shader::{ColorShader, LinearGradient as LG, RadialGradient as RG, TileMode};
-    use skia_rs_paint::Paint;
     use skia_rs_core::Point;
+    use skia_rs_paint::Paint;
+    use skia_rs_paint::shader::{
+        ColorShader, LinearGradient as LG, RadialGradient as RG, TileMode,
+    };
     use std::sync::Arc;
 
     #[test]
@@ -743,7 +774,7 @@ mod tests {
             BlendMode::Luminosity,
         ] {
             let (_state, class) = blend_mode_to_state(mode);
-            assert_eq!(class, BlendClass::Advanced, "mode {:?}", mode);
+            assert_eq!(class, BlendClass::Advanced, "mode {mode:?}");
         }
     }
 
@@ -814,7 +845,10 @@ mod tests {
         assert!((f(4) - 3.0).abs() < 1e-6, "start.y from geometry");
         assert!((f(8) - 7.0).abs() < 1e-6, "end.x from geometry");
         // color0 at offset 16: straight red 1.0, not premultiplied 0.5.
-        assert!((f(16) - 1.0).abs() < 1e-6, "color0.r must be straight (1.0)");
+        assert!(
+            (f(16) - 1.0).abs() < 1e-6,
+            "color0.r must be straight (1.0)"
+        );
         assert!((f(28) - 0.5).abs() < 1e-6, "color0.a preserved");
     }
 
@@ -823,7 +857,10 @@ mod tests {
         let gradient = RG::new(
             Point::new(4.0, 5.0),
             9.0,
-            vec![Color4f::new(1.0, 1.0, 1.0, 1.0), Color4f::new(0.0, 0.0, 0.0, 1.0)],
+            vec![
+                Color4f::new(1.0, 1.0, 1.0, 1.0),
+                Color4f::new(0.0, 0.0, 0.0, 1.0),
+            ],
             None,
             TileMode::Clamp,
         );
@@ -844,7 +881,10 @@ mod tests {
 
         let a = paint_to_pipeline(&paint).pipeline_key;
         let b = paint_to_pipeline(&paint).pipeline_key;
-        assert_eq!(a, b, "identical paints must produce identical pipeline keys");
+        assert_eq!(
+            a, b,
+            "identical paints must produce identical pipeline keys"
+        );
     }
 
     #[test]
@@ -858,7 +898,10 @@ mod tests {
         let gradient = LG::new(
             Point::new(0.0, 0.0),
             Point::new(1.0, 0.0),
-            vec![Color4f::new(1.0, 0.0, 0.0, 1.0), Color4f::new(0.0, 0.0, 1.0, 1.0)],
+            vec![
+                Color4f::new(1.0, 0.0, 0.0, 1.0),
+                Color4f::new(0.0, 0.0, 1.0, 1.0),
+            ],
             None,
             TileMode::Clamp,
         );
@@ -901,7 +944,10 @@ mod tests {
         let gradient = LG::new(
             Point::new(0.0, 0.0),
             Point::new(1.0, 0.0),
-            vec![Color4f::new(1.0, 1.0, 1.0, 1.0), Color4f::new(1.0, 1.0, 1.0, 1.0)],
+            vec![
+                Color4f::new(1.0, 1.0, 1.0, 1.0),
+                Color4f::new(1.0, 1.0, 1.0, 1.0),
+            ],
             None,
             TileMode::Clamp,
         );
@@ -913,7 +959,10 @@ mod tests {
         // color0.a is at byte offset 16 + 12 = 28 (vec2 start + vec2 end + r,g,b)
         let alpha_bytes = &plan.uniforms.bytes[28..32];
         let alpha = f32::from_le_bytes(alpha_bytes.try_into().unwrap());
-        assert!((alpha - 0.5).abs() < 1e-6, "paint alpha should fold into uniform color");
+        assert!(
+            (alpha - 0.5).abs() < 1e-6,
+            "paint alpha should fold into uniform color"
+        );
     }
 
     #[test]

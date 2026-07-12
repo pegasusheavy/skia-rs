@@ -4,9 +4,10 @@
 //! storage in texture atlases for efficient GPU rendering.
 
 use crate::atlas::{AtlasAllocResult, AtlasConfig, AtlasEntryId, AtlasRegion, TextureAtlas};
+use crate::cast_util::{f64_from_u64, scalar_from_u32, u8_from_scalar_sat, u32_from_scalar_sat};
 use skia_rs_core::{Point, Rect, Scalar};
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 
 /// A unique key for identifying a glyph in the cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -27,19 +28,21 @@ pub struct GlyphKey {
 
 impl GlyphKey {
     /// Create a new glyph key.
+    #[must_use]
     pub fn new(font_id: u32, glyph_id: u32, size: f32, sub_pixel: Point) -> Self {
         Self {
             font_id,
             glyph_id,
-            size_px: (size * 4.0) as u32, // Quarter pixel precision
-            sub_pixel_x: ((sub_pixel.x.fract() * 4.0) as u8).min(3),
-            sub_pixel_y: ((sub_pixel.y.fract() * 4.0) as u8).min(3),
+            size_px: u32_from_scalar_sat(size * 4.0), // Quarter pixel precision
+            sub_pixel_x: u8_from_scalar_sat(sub_pixel.x.fract() * 4.0).min(3),
+            sub_pixel_y: u8_from_scalar_sat(sub_pixel.y.fract() * 4.0).min(3),
             flags: 0,
         }
     }
 
     /// Create with flags.
-    pub fn with_flags(mut self, flags: u8) -> Self {
+    #[must_use]
+    pub const fn with_flags(mut self, flags: u8) -> Self {
         self.flags = flags;
         self
     }
@@ -77,12 +80,13 @@ pub struct GlyphCacheStats {
 
 impl GlyphCacheStats {
     /// Calculate hit rate.
+    #[must_use]
     pub fn hit_rate(&self) -> f64 {
         let total = self.hits + self.misses;
         if total == 0 {
             0.0
         } else {
-            self.hits as f64 / total as f64
+            f64_from_u64(self.hits) / f64_from_u64(total)
         }
     }
 }
@@ -130,6 +134,7 @@ pub struct GlyphCache {
 
 impl GlyphCache {
     /// Create a new glyph cache.
+    #[must_use]
     pub fn new(config: GlyphCacheConfig) -> Self {
         let atlas = TextureAtlas::new(config.atlas_config.clone());
         Self {
@@ -142,17 +147,20 @@ impl GlyphCache {
     }
 
     /// Get cache configuration.
-    pub fn config(&self) -> &GlyphCacheConfig {
+    #[must_use]
+    pub const fn config(&self) -> &GlyphCacheConfig {
         &self.config
     }
 
     /// Get cache statistics.
-    pub fn stats(&self) -> &GlyphCacheStats {
+    #[must_use]
+    pub const fn stats(&self) -> &GlyphCacheStats {
         &self.stats
     }
 
     /// Get the glyph atlas.
-    pub fn atlas(&self) -> &TextureAtlas {
+    #[must_use]
+    pub const fn atlas(&self) -> &TextureAtlas {
         &self.atlas
     }
 
@@ -173,6 +181,7 @@ impl GlyphCache {
     }
 
     /// Check if a glyph is cached without updating LRU.
+    #[must_use]
     pub fn contains(&self, key: &GlyphKey) -> bool {
         self.cache.contains_key(key)
     }
@@ -226,7 +235,7 @@ impl GlyphCache {
             }
         };
 
-        let bounds = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
+        let bounds = Rect::from_xywh(0.0, 0.0, scalar_from_u32(width), scalar_from_u32(height));
 
         let glyph = CachedGlyph {
             entry_id,
@@ -303,7 +312,8 @@ impl GlyphCache {
     /// Current atlas generation. Emit it into a [`GlyphBatch`] and revalidate
     /// batches against it before drawing (a reset or compaction bumps it,
     /// invalidating outstanding UV coordinates).
-    pub fn atlas_generation(&self) -> u64 {
+    #[must_use]
+    pub const fn atlas_generation(&self) -> u64 {
         self.atlas.generation()
     }
 
@@ -316,11 +326,13 @@ impl GlyphCache {
     }
 
     /// Get number of cached glyphs.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.cache.len()
     }
 
     /// Check if cache is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.cache.is_empty()
     }
@@ -368,7 +380,8 @@ pub struct GlyphInstance {
 
 impl GlyphBatch {
     /// Create a new empty batch.
-    pub fn new(atlas_generation: u64) -> Self {
+    #[must_use]
+    pub const fn new(atlas_generation: u64) -> Self {
         Self {
             atlas_generation,
             instances: Vec::new(),
@@ -388,18 +401,23 @@ impl GlyphBatch {
         self.instances.push(GlyphInstance {
             position: Point::new(position.x + glyph.offset.x, position.y + glyph.offset.y),
             uv,
-            size: [glyph.region.width as f32, glyph.region.height as f32],
+            size: [
+                scalar_from_u32(glyph.region.width),
+                scalar_from_u32(glyph.region.height),
+            ],
             color,
             layer: glyph.region.layer,
         });
     }
 
     /// Check if batch is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.instances.is_empty()
     }
 
     /// Get number of glyphs in batch.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.instances.len()
     }
@@ -417,7 +435,7 @@ impl GlyphBatch {
     /// glyphs. A [`BatchValidity::Stale`] result means the batch must be
     /// rebuilt from the (repopulated) cache.
     #[must_use]
-    pub fn validate(&self, current_generation: u64) -> BatchValidity {
+    pub const fn validate(&self, current_generation: u64) -> BatchValidity {
         if self.atlas_generation == current_generation {
             BatchValidity::Current
         } else {
@@ -441,6 +459,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact literal values, no accumulated error"
+    )]
     fn test_glyph_cache_insert_lookup() {
         let mut cache = GlyphCache::default();
 
@@ -493,6 +515,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact literal values, no accumulated error"
+    )]
     fn test_glyph_batch() {
         let mut batch = GlyphBatch::new(0);
         assert!(batch.is_empty());
@@ -570,7 +596,10 @@ mod tests {
             assert!(r.is_some(), "insert {i} failed to place a fitting glyph");
         }
         // The cache is bounded by atlas capacity via eviction, not unbounded.
-        assert!(cache.len() <= 32, "cache should be bounded by atlas capacity");
+        assert!(
+            cache.len() <= 32,
+            "cache should be bounded by atlas capacity"
+        );
         assert!(cache.stats().evictions > 0);
     }
 
@@ -590,9 +619,18 @@ mod tests {
     fn test_reset_bumps_atlas_generation() {
         let mut cache = GlyphCache::default();
         let g0 = cache.atlas_generation();
-        cache.insert(GlyphKey::new(1, 1, 16.0, Point::zero()), 16, 16, Point::zero(), 10.0);
+        cache.insert(
+            GlyphKey::new(1, 1, 16.0, Point::zero()),
+            16,
+            16,
+            Point::zero(),
+            10.0,
+        );
         cache.reset();
-        assert!(cache.atlas_generation() > g0, "reset must bump atlas generation");
+        assert!(
+            cache.atlas_generation() > g0,
+            "reset must bump atlas generation"
+        );
     }
 
     #[test]

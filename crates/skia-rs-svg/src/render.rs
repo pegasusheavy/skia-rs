@@ -7,10 +7,13 @@
 //! the referenced `<clipPath>` element.
 
 use crate::css::apply_stylesheet;
-use crate::dom::*;
+use crate::dom::{
+    AlignX, AlignY, GradientStop, GradientUnits, MeetOrSlice, PreserveAspectRatio, SpreadMethod,
+    SvgDom, SvgImage, SvgNode, SvgNodeKind, SvgPaint, SvgText, TextAnchor,
+};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use skia_rs_canvas::{Canvas, ClipOp, SaveLayerRec, Surface};
+use skia_rs_canvas::{Canvas, ClipOp, SaveLayerFlags, SaveLayerRec, Surface};
 use skia_rs_codec::decode_image;
 use skia_rs_core::{Color, Color4f, Matrix, Point, Rect, Scalar};
 use skia_rs_paint::{
@@ -63,7 +66,7 @@ struct PresentationState {
 impl PresentationState {
     /// The document-root initial presentation state
     /// (`SkSVGPresentationAttributes::MakeInitial`).
-    fn initial() -> Self {
+    const fn initial() -> Self {
         Self {
             fill: SvgPaint::Color(Color::BLACK),
             stroke: SvgPaint::None,
@@ -158,7 +161,7 @@ fn parse_dash_array(s: &str) -> Option<Vec<Scalar>> {
 /// `create_paint_from_svg_paint` has O(1) access to gradient/clipPath
 /// lookup instead of re-walking the DOM for each element.
 struct RenderContext<'a> {
-    /// id -> SvgNode for all nodes in the DOM that carry an id.
+    /// id -> `SvgNode` for all nodes in the DOM that carry an id.
     defs: HashMap<String, &'a SvgNode>,
 }
 
@@ -212,6 +215,10 @@ pub fn render_svg(dom: &SvgDom, canvas: &mut Canvas<'_>) {
     // Map the viewBox into the device viewport honouring preserveAspectRatio
     // (SkSVGSVG::onPrepareToRender + ComputeViewboxMatrix).
     let view_box = working.get_view_box();
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "canvas dimensions are pixel counts far below 2^24; exact in f32"
+    )]
     let viewport = Rect::from_xywh(
         0.0,
         0.0,
@@ -270,16 +277,15 @@ fn compute_viewbox_matrix(view_box: &Rect, viewport: &Rect, par: PreserveAspectR
     let sx = viewport.width() / view_box.width();
     let sy = viewport.height() / view_box.height();
 
-    let (scale_x, scale_y) = match par.align {
-        // "none" -> anisotropic scaling regardless of meet/slice.
-        None => (sx, sy),
-        Some(_) => {
-            let s = match par.meet_or_slice {
-                MeetOrSlice::Meet => sx.min(sy),
-                MeetOrSlice::Slice => sx.max(sy),
-            };
-            (s, s)
-        }
+    // "none" -> anisotropic scaling regardless of meet/slice.
+    let (scale_x, scale_y) = if par.align.is_none() {
+        (sx, sy)
+    } else {
+        let s = match par.meet_or_slice {
+            MeetOrSlice::Meet => sx.min(sy),
+            MeetOrSlice::Slice => sx.max(sy),
+        };
+        (s, s)
     };
 
     let (cx, cy) = match par.align {
@@ -298,8 +304,14 @@ fn compute_viewbox_matrix(view_box: &Rect, viewport: &Rect, par: PreserveAspectR
         ),
     };
 
-    let tx = -view_box.left * scale_x + (viewport.width() - view_box.width() * scale_x) * cx;
-    let ty = -view_box.top * scale_y + (viewport.height() - view_box.height() * scale_y) * cy;
+    let tx = (-view_box.left).mul_add(
+        scale_x,
+        view_box.width().mul_add(-scale_x, viewport.width()) * cx,
+    );
+    let ty = (-view_box.top).mul_add(
+        scale_y,
+        view_box.height().mul_add(-scale_y, viewport.height()) * cy,
+    );
 
     Matrix::translate(viewport.left + tx, viewport.top + ty)
         .concat(&Matrix::scale(scale_x, scale_y))
@@ -333,6 +345,10 @@ fn is_leaf_shape(node: &SvgNode) -> bool {
 ///
 /// `depth` bounds `<use>` recursion so cyclic references cannot overflow the
 /// stack.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one match arm per SVG element kind; splitting would scatter closely related rendering logic and harm readability"
+)]
 fn render_node(
     node: &SvgNode,
     canvas: &mut Canvas<'_>,
@@ -375,17 +391,18 @@ fn render_node(
     let can_defer = opacity < 1.0 && is_leaf_shape(node) && (has_fill ^ has_stroke);
     let deferred = if can_defer { opacity } else { 1.0 };
     let use_layer = opacity < 1.0 && !can_defer && !matches!(node.kind, SvgNodeKind::Image(_));
-    let mut layer_open = false;
-    if use_layer {
+    let layer_open = if use_layer {
         let mut layer_paint = Paint::new();
         layer_paint.set_alpha(opacity);
         canvas.save_layer(&SaveLayerRec {
             bounds: None,
             paint: Some(&layer_paint),
-            flags: Default::default(),
+            flags: SaveLayerFlags::default(),
         });
-        layer_open = true;
-    }
+        true
+    } else {
+        false
+    };
 
     let node_bounds_for_gradient = node.bounds();
 
@@ -591,6 +608,10 @@ fn build_dash_effect(state: &PresentationState) -> Option<PathEffectRef> {
 /// Extract the id from an `url(#id)` reference; returns None if `s` is
 /// anything else (including a bare id without the `url()` wrapper — those
 /// are handled by the caller when appropriate).
+#[allow(
+    clippy::option_if_let_else,
+    reason = "three-way url()/#id/none dispatch reads more clearly as if/else-if than nested map_or_else calls"
+)]
 fn extract_url_id(s: &str) -> Option<&str> {
     let s = s.trim();
     if let Some(stripped) = s.strip_prefix("url(") {
@@ -647,7 +668,7 @@ fn add_node_geometry(node: &SvgNode, builder: &mut PathBuilder, parent: &Matrix)
             ));
             Some(b.build())
         }
-        SvgNodeKind::Path(p) => Some(p.clone()),
+        SvgNodeKind::Path(p) => Some((**p).clone()),
         SvgNodeKind::Polygon(points) if points.len() >= 3 => {
             let mut b = PathBuilder::new();
             b.move_to(points[0].x, points[0].y);
@@ -725,21 +746,27 @@ fn render_text(
 /// for other schemes since network fetching is out of scope for this
 /// crate.
 fn render_image(img: &SvgImage, canvas: &mut Canvas<'_>, opacity: Scalar) {
-    let data = match decode_image_href(&img.href) {
-        Some(d) => d,
-        None => return,
+    let Some(data) = decode_image_href(&img.href) else {
+        return;
     };
 
-    let image = match decode_image(&data) {
-        Ok(image) => image,
-        Err(_) => return,
+    let Ok(image) = decode_image(&data) else {
+        return;
     };
 
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "decoded image dimensions are pixel counts far below 2^24; exact in f32"
+    )]
     let target_w = if img.width > 0.0 {
         img.width
     } else {
         image.width() as Scalar
     };
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "decoded image dimensions are pixel counts far below 2^24; exact in f32"
+    )]
     let target_h = if img.height > 0.0 {
         img.height
     } else {
@@ -802,11 +829,11 @@ fn build_paint(
         SvgPaint::None => return None,
         SvgPaint::Color(color) => {
             paint.set_color32(*color);
-            base_alpha = color.alpha() as Scalar / 255.0;
+            base_alpha = Scalar::from(color.alpha()) / 255.0;
         }
         SvgPaint::CurrentColor => {
             paint.set_color32(state.color);
-            base_alpha = state.color.alpha() as Scalar / 255.0;
+            base_alpha = Scalar::from(state.color.alpha()) / 255.0;
         }
         SvgPaint::Url(url, fallback) => {
             let id = url.trim_start_matches('#');
@@ -822,7 +849,7 @@ fn build_paint(
                 // present, else Skia's fallback (black).
                 let fb = fallback.unwrap_or(Color::BLACK);
                 paint.set_color32(fb);
-                base_alpha = fb.alpha() as Scalar / 255.0;
+                base_alpha = Scalar::from(fb.alpha()) / 255.0;
             }
         }
     }
@@ -920,7 +947,7 @@ fn stops_to_colors(stops: &[GradientStop]) -> (Vec<Color4f>, Option<Vec<Scalar>>
     (colors, positions_opt)
 }
 
-fn spread_to_tile_mode(spread: SpreadMethod) -> TileMode {
+const fn spread_to_tile_mode(spread: SpreadMethod) -> TileMode {
     match spread {
         SpreadMethod::Pad => TileMode::Clamp,
         SpreadMethod::Reflect => TileMode::Mirror,
@@ -928,10 +955,11 @@ fn spread_to_tile_mode(spread: SpreadMethod) -> TileMode {
     }
 }
 
-/// Render an SVG DOM into a container of `container_w` × `container_h` under
-/// the canvas's current transform, mapping the document's viewBox into that
-/// container via `preserveAspectRatio` — without stretching to the canvas
-/// pixel dimensions.
+/// Render an SVG DOM into a container of `container_w` × `container_h`.
+///
+/// Renders under the canvas's current transform, mapping the document's
+/// viewBox into that container via `preserveAspectRatio` — without
+/// stretching to the canvas pixel dimensions.
 ///
 /// This is the entry point used for SVG-in-OpenType glyphs: the caller sets
 /// the CTM to `translate(origin) · scale(ppem/upem)` and passes the em box
@@ -961,6 +989,7 @@ pub fn render_svg_in_container(
 }
 
 /// Render an SVG string to a new surface.
+#[must_use]
 pub fn render_svg_string(svg: &str, width: i32, height: i32) -> Option<Surface> {
     let dom = crate::parse_svg(svg).ok()?;
     let mut surface = Surface::new_raster_n32_premul(width, height)?;
@@ -985,8 +1014,8 @@ mod tests {
     fn pixel_at(surface: &Surface, x: i32, y: i32) -> Option<Color> {
         let pixels = surface.pixels();
         let width = surface.width();
-        let row_bytes = (width * 4) as usize;
-        let off = (y as usize) * row_bytes + (x as usize) * 4;
+        let row_bytes = usize::try_from(width).ok()? * 4;
+        let off = usize::try_from(y).ok()? * row_bytes + usize::try_from(x).ok()? * 4;
         if off + 4 > pixels.len() {
             return None;
         }
@@ -1013,7 +1042,7 @@ mod tests {
 
         // Interior of the rect (50,50) should be red.
         let c = pixel_at(&surface, 50, 50).unwrap();
-        assert!(c.red() > 200, "expected mostly red, got {:?}", c);
+        assert!(c.red() > 200, "expected mostly red, got {c:?}");
         assert!(c.green() < 60);
         assert!(c.blue() < 60);
     }
@@ -1027,7 +1056,7 @@ mod tests {
         let surface = render_svg_string(svg, 100, 100).unwrap();
         // Center of the circle should be blue.
         let c = pixel_at(&surface, 50, 50).unwrap();
-        assert!(c.blue() > 200, "center should be blue, got {:?}", c);
+        assert!(c.blue() > 200, "center should be blue, got {c:?}");
         assert!(c.red() < 60);
     }
 
@@ -1039,7 +1068,7 @@ mod tests {
 
         let surface = render_svg_string(svg, 100, 100).unwrap();
         let c = pixel_at(&surface, 50, 50).unwrap();
-        assert!(c.green() > 100, "center should be green-ish, got {:?}", c);
+        assert!(c.green() > 100, "center should be green-ish, got {c:?}");
     }
 
     #[test]
@@ -1052,7 +1081,7 @@ mod tests {
         </svg>"#;
         let surface = render_svg_string(svg, 20, 20).unwrap();
         let c = pixel_at(&surface, 10, 10).unwrap();
-        assert!(c.red() > 200, "css fill should apply, got {:?}", c);
+        assert!(c.red() > 200, "css fill should apply, got {c:?}");
         assert!(c.green() < 60);
     }
 
@@ -1063,7 +1092,7 @@ mod tests {
         </svg>"#;
         let surface = render_svg_string(svg, 20, 20).unwrap();
         let c = pixel_at(&surface, 10, 10).unwrap();
-        assert!(c.blue() > 200, "inline style should apply, got {:?}", c);
+        assert!(c.blue() > 200, "inline style should apply, got {c:?}");
     }
 
     #[test]
@@ -1082,11 +1111,10 @@ mod tests {
 
         let left = pixel_at(&surface, 5, 10).unwrap();
         let right = pixel_at(&surface, 95, 10).unwrap();
-        assert!(left.red() > 200, "left edge should be red, got {:?}", left);
+        assert!(left.red() > 200, "left edge should be red, got {left:?}");
         assert!(
             right.blue() > 200,
-            "right edge should be blue, got {:?}",
-            right
+            "right edge should be blue, got {right:?}"
         );
     }
 
@@ -1109,13 +1137,11 @@ mod tests {
         let outside = pixel_at(&surface, 30, 30).unwrap();
         assert!(
             inside.red() > 200 && inside.green() < 60,
-            "inside clip should be red, got {:?}",
-            inside
+            "inside clip should be red, got {inside:?}"
         );
         assert!(
             outside.red() > 240 && outside.green() > 240 && outside.blue() > 240,
-            "outside clip should remain the white background, got {:?}",
-            outside
+            "outside clip should remain the white background, got {outside:?}"
         );
     }
 
@@ -1144,11 +1170,7 @@ mod tests {
         </svg>"#;
         let surface = render_svg_string(svg, 20, 20).unwrap();
         let c = pixel_at(&surface, 10, 10).unwrap();
-        assert!(
-            c.red() > 200 && c.green() < 60,
-            "inherited red, got {:?}",
-            c
-        );
+        assert!(c.red() > 200 && c.green() < 60, "inherited red, got {c:?}");
     }
 
     #[test]
@@ -1161,8 +1183,7 @@ mod tests {
         let c = pixel_at(&surface, 10, 10).unwrap();
         assert!(
             c.red() < 30 && c.green() < 30 && c.blue() < 30,
-            "black, got {:?}",
-            c
+            "black, got {c:?}"
         );
     }
 
@@ -1178,8 +1199,7 @@ mod tests {
         let c = pixel_at(&surface, 10, 10).unwrap();
         assert!(
             c.blue() > 200 && c.red() < 60,
-            "currentColor blue, got {:?}",
-            c
+            "currentColor blue, got {c:?}"
         );
     }
 
@@ -1191,11 +1211,10 @@ mod tests {
         </svg>"#;
         let surface = render_svg_string(svg, 20, 20).unwrap();
         let c = pixel_at(&surface, 10, 10).unwrap();
-        assert!(c.red() > 240, "red stays high, got {:?}", c);
+        assert!(c.red() > 240, "red stays high, got {c:?}");
         assert!(
-            (c.green() as i32 - 128).abs() < 20 && (c.blue() as i32 - 128).abs() < 20,
-            "half-blended toward white, got {:?}",
-            c
+            (i32::from(c.green()) - 128).abs() < 20 && (i32::from(c.blue()) - 128).abs() < 20,
+            "half-blended toward white, got {c:?}"
         );
     }
 
@@ -1216,7 +1235,7 @@ mod tests {
         // Sample the overlap region (x in [5,15)).
         let c = pixel_at(&surface, 10, 10).unwrap();
         assert!(
-            (c.green() as i32 - 128).abs() < 25,
+            (i32::from(c.green()) - 128).abs() < 25,
             "overlap composited once, got green {}",
             c.green()
         );
@@ -1230,9 +1249,9 @@ mod tests {
         </svg>"#;
         let surface = render_svg_string(svg, 20, 20).unwrap();
         let c = pixel_at(&surface, 10, 10).unwrap();
-        assert!(c.red() > 240, "red high, got {:?}", c);
+        assert!(c.red() > 240, "red high, got {c:?}");
         assert!(
-            (c.green() as i32 - 128).abs() < 20,
+            (i32::from(c.green()) - 128).abs() < 20,
             "fill-opacity blended halfway, got green {}",
             c.green()
         );
@@ -1249,9 +1268,8 @@ mod tests {
         let surface = render_svg_string(svg, 20, 20).unwrap();
         let c = pixel_at(&surface, 10, 10).unwrap();
         assert!(
-            c.red() > 240 && (c.green() as i32 - 128).abs() < 20,
-            "leaf opacity, got {:?}",
-            c
+            c.red() > 240 && (i32::from(c.green()) - 128).abs() < 20,
+            "leaf opacity, got {c:?}"
         );
     }
 
@@ -1269,8 +1287,7 @@ mod tests {
         let past = pixel_at(&surface, 22, 10).unwrap();
         assert!(
             past.red() < 80,
-            "square cap extends past endpoint, got {:?}",
-            past
+            "square cap extends past endpoint, got {past:?}"
         );
         // Butt cap (default) must NOT extend there.
         let svg_butt = r#"<svg xmlns="http://www.w3.org/2000/svg" width="30" height="20">
@@ -1278,11 +1295,7 @@ mod tests {
         </svg>"#;
         let surface2 = render_svg_string(svg_butt, 30, 20).unwrap();
         let past2 = pixel_at(&surface2, 22, 10).unwrap();
-        assert!(
-            past2.red() > 200,
-            "butt cap does not extend, got {:?}",
-            past2
-        );
+        assert!(past2.red() > 200, "butt cap does not extend, got {past2:?}");
     }
 
     #[test]
@@ -1296,8 +1309,7 @@ mod tests {
         let c = pixel_at(&surface, 20, 28).unwrap();
         assert!(
             c.red() < 40 && c.green() < 40 && c.blue() < 40,
-            "polyline interior filled black, got {:?}",
-            c
+            "polyline interior filled black, got {c:?}"
         );
     }
 
@@ -1310,8 +1322,7 @@ mod tests {
         let c = pixel_at(&surface, 20, 28).unwrap();
         assert!(
             c.green() > 100 && c.red() < 60,
-            "polygon filled green, got {:?}",
-            c
+            "polygon filled green, got {c:?}"
         );
     }
 
@@ -1327,14 +1338,12 @@ mod tests {
         let top = pixel_at(&surface, 50, 5).unwrap();
         assert!(
             top.red() > 240 && top.green() > 240,
-            "top stays white, got {:?}",
-            top
+            "top stays white, got {top:?}"
         );
         let band = pixel_at(&surface, 50, 30).unwrap();
         assert!(
             band.red() > 200 && band.green() < 60,
-            "band centered, got {:?}",
-            band
+            "band centered, got {band:?}"
         );
     }
 
@@ -1349,8 +1358,7 @@ mod tests {
         let bottom = pixel_at(&surface, 50, 95).unwrap();
         assert!(
             bottom.red() > 200 && bottom.green() < 60,
-            "stretched to fill, got {:?}",
-            bottom
+            "stretched to fill, got {bottom:?}"
         );
     }
 
@@ -1365,11 +1373,10 @@ mod tests {
         let hole = pixel_at(&surface, 20, 20).unwrap();
         assert!(
             hole.red() > 240 && hole.green() > 240,
-            "even-odd hole white, got {:?}",
-            hole
+            "even-odd hole white, got {hole:?}"
         );
         let ring = pixel_at(&surface, 5, 20).unwrap();
-        assert!(ring.red() < 40, "ring filled black, got {:?}", ring);
+        assert!(ring.red() < 40, "ring filled black, got {ring:?}");
     }
 
     #[test]
@@ -1382,7 +1389,7 @@ mod tests {
         </svg>"#;
         let surface = render_svg_string(svg, 40, 40).unwrap();
         let hole = pixel_at(&surface, 20, 20).unwrap();
-        assert!(hole.red() > 240, "inherited even-odd hole, got {:?}", hole);
+        assert!(hole.red() > 240, "inherited even-odd hole, got {hole:?}");
     }
 
     #[test]
@@ -1406,9 +1413,7 @@ mod tests {
         }
         assert!(
             saw_dark && saw_light,
-            "dashes produce gaps: dark={} light={}",
-            saw_dark,
-            saw_light
+            "dashes produce gaps: dark={saw_dark} light={saw_light}"
         );
     }
 
@@ -1420,7 +1425,7 @@ mod tests {
         </svg>"#;
         let surface = render_svg_string(svg, 20, 20).unwrap();
         let c = pixel_at(&surface, 10, 10).unwrap();
-        assert!(c.red() > 200 && c.green() < 60, "fallback red, got {:?}", c);
+        assert!(c.red() > 200 && c.green() < 60, "fallback red, got {c:?}");
     }
 
     #[test]
@@ -1439,15 +1444,13 @@ mod tests {
         let inside = pixel_at(&surface, 27, 27).unwrap();
         assert!(
             inside.red() > 200 && inside.green() < 60,
-            "inside translated clip, got {:?}",
-            inside
+            "inside translated clip, got {inside:?}"
         );
         // The original (untranslated) location must now be clipped out.
         let outside = pixel_at(&surface, 2, 2).unwrap();
         assert!(
             outside.red() > 240 && outside.green() > 240,
-            "old spot clipped out, got {:?}",
-            outside
+            "old spot clipped out, got {outside:?}"
         );
     }
 
@@ -1460,12 +1463,11 @@ mod tests {
         </svg>"##;
         let surface = render_svg_string(svg, 40, 20).unwrap();
         let shifted = pixel_at(&surface, 25, 10).unwrap();
-        assert!(shifted.red() > 200, "use shifted right, got {:?}", shifted);
+        assert!(shifted.red() > 200, "use shifted right, got {shifted:?}");
         let origin = pixel_at(&surface, 5, 10).unwrap();
         assert!(
             origin.red() > 240 && origin.green() > 240,
-            "origin empty, got {:?}",
-            origin
+            "origin empty, got {origin:?}"
         );
     }
 
@@ -1500,12 +1502,11 @@ mod tests {
         </svg>"#;
         let surface = render_svg_string(svg, 80, 40).unwrap();
         let center = pixel_at(&surface, 40, 20).unwrap();
-        assert!(center.red() > 200, "center near white, got {:?}", center);
+        assert!(center.red() > 200, "center near white, got {center:?}");
         let h_edge = pixel_at(&surface, 78, 20).unwrap();
         assert!(
             h_edge.red() < 80,
-            "horizontal edge near black (ellipse reaches it), got {:?}",
-            h_edge
+            "horizontal edge near black (ellipse reaches it), got {h_edge:?}"
         );
     }
 
@@ -1526,11 +1527,10 @@ mod tests {
         let surface = render_svg_string(svg, 40, 40).unwrap();
         let top = pixel_at(&surface, 20, 3).unwrap();
         let bottom = pixel_at(&surface, 20, 37).unwrap();
-        assert!(top.red() > 180, "top red after rotate, got {:?}", top);
+        assert!(top.red() > 180, "top red after rotate, got {top:?}");
         assert!(
             bottom.blue() > 180,
-            "bottom blue after rotate, got {:?}",
-            bottom
+            "bottom blue after rotate, got {bottom:?}"
         );
     }
 
@@ -1552,7 +1552,7 @@ mod tests {
         }
         let surface_pixels = &buffer.pixels;
         let at = |x: i32, y: i32| -> Color {
-            let off = (y as usize) * 100 * 4 + (x as usize) * 4;
+            let off = usize::try_from(y).unwrap() * 100 * 4 + usize::try_from(x).unwrap() * 4;
             Color::from_argb(
                 surface_pixels[off + 3],
                 surface_pixels[off],

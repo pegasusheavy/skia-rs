@@ -1,13 +1,13 @@
-//! SkSL (Skia Shading Language) parser.
+//! `SkSL` (Skia Shading Language) parser.
 //!
-//! SkSL is a shading language similar to GLSL, designed for Skia's
+//! `SkSL` is a shading language similar to GLSL, designed for Skia's
 //! runtime effects system. This module provides:
-//! - Lexer for tokenizing SkSL source
+//! - Lexer for tokenizing `SkSL` source
 //! - Parser for building an AST
-//! - Type system for SkSL types
+//! - Type system for `SkSL` types
 //! - Compilation to target languages (GLSL, SPIR-V, MSL, WGSL)
 
-/// Preprocess SkSL source: handle #define, #ifdef, #ifndef, #endif.
+/// Preprocess `SkSL` source: handle #define, #ifdef, #ifndef, #endif.
 ///
 /// This is a minimal preprocessor that does NOT support macro functions,
 /// token pasting, or recursive expansion. Values are substituted as plain
@@ -47,7 +47,7 @@ pub fn preprocess(src: &str) -> String {
             let cond = !defines.contains_key(name);
             emit_stack.push(currently_emitting && cond);
         } else if trimmed.starts_with("#else") {
-            if emit_stack.len() > 0 {
+            if !emit_stack.is_empty() {
                 let parent = if emit_stack.len() > 1 {
                     emit_stack[emit_stack.len() - 2]
                 } else {
@@ -102,7 +102,7 @@ fn substitute_defines(line: &str, defines: &std::collections::HashMap<String, St
     out
 }
 
-/// SkSL token types.
+/// `SkSL` token types.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     // Literals
@@ -274,7 +274,7 @@ pub enum Token {
     Unknown(char),
 }
 
-/// SkSL lexer.
+/// `SkSL` lexer.
 pub struct Lexer<'a> {
     source: &'a str,
     chars: std::iter::Peekable<std::str::CharIndices<'a>>,
@@ -283,6 +283,7 @@ pub struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     /// Create a new lexer.
+    #[must_use]
     pub fn new(source: &'a str) -> Self {
         Self {
             source,
@@ -302,7 +303,7 @@ impl<'a> Lexer<'a> {
 
         // Numbers
         if ch.is_ascii_digit()
-            || (ch == '.' && self.peek_next_char().map_or(false, |c| c.is_ascii_digit()))
+            || (ch == '.' && self.peek_next_char().is_some_and(|c| c.is_ascii_digit()))
         {
             return self.scan_number();
         }
@@ -314,6 +315,12 @@ impl<'a> Lexer<'a> {
 
         // Operators and delimiters
         self.chars.next();
+        self.scan_operator(ch)
+    }
+
+    /// Scan an operator or delimiter token starting with `ch` (which has
+    /// already been consumed from the character stream).
+    fn scan_operator(&mut self, ch: char) -> Token {
         match ch {
             '+' => {
                 if self.match_char('+') {
@@ -414,7 +421,7 @@ impl<'a> Lexer<'a> {
     fn skip_whitespace_and_comments(&mut self) {
         loop {
             // Skip whitespace
-            while self.chars.peek().map_or(false, |&(_, c)| c.is_whitespace()) {
+            while self.chars.peek().is_some_and(|&(_, c)| c.is_whitespace()) {
                 self.chars.next();
             }
 
@@ -427,7 +434,7 @@ impl<'a> Lexer<'a> {
                     // Line comment
                     self.chars.next();
                     self.chars.next();
-                    while self.chars.peek().map_or(false, |&(_, c)| c != '\n') {
+                    while self.chars.peek().is_some_and(|&(_, c)| c != '\n') {
                         self.chars.next();
                     }
                     continue;
@@ -437,11 +444,9 @@ impl<'a> Lexer<'a> {
                     self.chars.next();
                     while let Some(&(_, c)) = self.chars.peek() {
                         self.chars.next();
-                        if c == '*' {
-                            if self.chars.peek().map_or(false, |&(_, c)| c == '/') {
-                                self.chars.next();
-                                break;
-                            }
+                        if c == '*' && self.chars.peek().is_some_and(|&(_, c)| c == '/') {
+                            self.chars.next();
+                            break;
                         }
                     }
                     continue;
@@ -453,7 +458,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn match_char(&mut self, expected: char) -> bool {
-        if self.chars.peek().map_or(false, |&(_, c)| c == expected) {
+        if self.chars.peek().is_some_and(|&(_, c)| c == expected) {
             self.chars.next();
             true
         } else {
@@ -484,7 +489,7 @@ impl<'a> Lexer<'a> {
                 if self
                     .chars
                     .peek()
-                    .map_or(false, |&(_, c)| c == '+' || c == '-')
+                    .is_some_and(|&(_, c)| c == '+' || c == '-')
                 {
                     self.chars.next();
                 }
@@ -499,7 +504,7 @@ impl<'a> Lexer<'a> {
         }
 
         let end = self.chars.peek().map_or(self.source.len(), |&(pos, _)| pos);
-        let text = &self.source[start..end].trim_end_matches(|c| c == 'f' || c == 'F');
+        let text = &self.source[start..end].trim_end_matches(['f', 'F']);
 
         if has_dot || has_exp {
             Token::FloatLit(text.parse().unwrap_or(0.0))
@@ -514,7 +519,7 @@ impl<'a> Lexer<'a> {
         while self
             .chars
             .peek()
-            .map_or(false, |&(_, c)| c.is_ascii_alphanumeric() || c == '_')
+            .is_some_and(|&(_, c)| c.is_ascii_alphanumeric() || c == '_')
         {
             self.chars.next();
         }
@@ -565,7 +570,7 @@ impl<'a> Lexer<'a> {
     }
 }
 
-/// SkSL type.
+/// `SkSL` type.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SkslType {
     /// Void type.
@@ -605,7 +610,7 @@ pub enum SkslType {
     /// Blender child.
     Blender,
     /// Array type.
-    Array(Box<SkslType>, usize),
+    Array(Box<Self>, usize),
     /// Struct type.
     Struct(String),
 }
@@ -613,115 +618,104 @@ pub enum SkslType {
 impl std::fmt::Display for SkslType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SkslType::Void => write!(f, "void"),
-            SkslType::Bool => write!(f, "bool"),
-            SkslType::Int => write!(f, "int"),
-            SkslType::Float => write!(f, "float"),
-            SkslType::Half => write!(f, "half"),
-            SkslType::Vec2 => write!(f, "vec2"),
-            SkslType::Vec3 => write!(f, "vec3"),
-            SkslType::Vec4 => write!(f, "vec4"),
-            SkslType::Half2 => write!(f, "half2"),
-            SkslType::Half3 => write!(f, "half3"),
-            SkslType::Half4 => write!(f, "half4"),
-            SkslType::Mat2 => write!(f, "mat2"),
-            SkslType::Mat3 => write!(f, "mat3"),
-            SkslType::Mat4 => write!(f, "mat4"),
-            SkslType::Sampler2D => write!(f, "sampler2D"),
-            SkslType::Shader => write!(f, "shader"),
-            SkslType::ColorFilter => write!(f, "colorFilter"),
-            SkslType::Blender => write!(f, "blender"),
-            SkslType::Array(inner, n) => write!(f, "{}[{}]", inner, n),
-            SkslType::Struct(name) => write!(f, "struct {}", name),
+            Self::Void => write!(f, "void"),
+            Self::Bool => write!(f, "bool"),
+            Self::Int => write!(f, "int"),
+            Self::Float => write!(f, "float"),
+            Self::Half => write!(f, "half"),
+            Self::Vec2 => write!(f, "vec2"),
+            Self::Vec3 => write!(f, "vec3"),
+            Self::Vec4 => write!(f, "vec4"),
+            Self::Half2 => write!(f, "half2"),
+            Self::Half3 => write!(f, "half3"),
+            Self::Half4 => write!(f, "half4"),
+            Self::Mat2 => write!(f, "mat2"),
+            Self::Mat3 => write!(f, "mat3"),
+            Self::Mat4 => write!(f, "mat4"),
+            Self::Sampler2D => write!(f, "sampler2D"),
+            Self::Shader => write!(f, "shader"),
+            Self::ColorFilter => write!(f, "colorFilter"),
+            Self::Blender => write!(f, "blender"),
+            Self::Array(inner, n) => write!(f, "{inner}[{n}]"),
+            Self::Struct(name) => write!(f, "struct {name}"),
         }
     }
 }
 
 impl SkslType {
     /// Get the GLSL type name.
-    pub fn glsl_name(&self) -> &'static str {
+    #[must_use]
+    pub const fn glsl_name(&self) -> &'static str {
         match self {
-            SkslType::Void => "void",
-            SkslType::Bool => "bool",
-            SkslType::Int => "int",
-            SkslType::Float => "float",
-            SkslType::Half => "float", // GLSL uses float for mediump
-            SkslType::Vec2 => "vec2",
-            SkslType::Vec3 => "vec3",
-            SkslType::Vec4 => "vec4",
-            SkslType::Half2 => "vec2",
-            SkslType::Half3 => "vec3",
-            SkslType::Half4 => "vec4",
-            SkslType::Mat2 => "mat2",
-            SkslType::Mat3 => "mat3",
-            SkslType::Mat4 => "mat4",
-            SkslType::Sampler2D => "sampler2D",
-            SkslType::Shader => "sampler2D",
-            SkslType::ColorFilter => "sampler2D",
-            SkslType::Blender => "sampler2D",
-            SkslType::Array(_, _) => "array",
-            SkslType::Struct(_) => "struct",
+            Self::Void => "void",
+            Self::Bool => "bool",
+            Self::Int => "int",
+            // GLSL uses float for mediump
+            Self::Float | Self::Half => "float",
+            Self::Vec2 | Self::Half2 => "vec2",
+            Self::Vec3 | Self::Half3 => "vec3",
+            Self::Vec4 | Self::Half4 => "vec4",
+            Self::Mat2 => "mat2",
+            Self::Mat3 => "mat3",
+            Self::Mat4 => "mat4",
+            Self::Sampler2D | Self::Shader | Self::ColorFilter | Self::Blender => "sampler2D",
+            Self::Array(_, _) => "array",
+            Self::Struct(_) => "struct",
         }
     }
 
     /// Get the WGSL type name.
-    pub fn wgsl_name(&self) -> &'static str {
+    #[must_use]
+    pub const fn wgsl_name(&self) -> &'static str {
         match self {
-            SkslType::Void => "()",
-            SkslType::Bool => "bool",
-            SkslType::Int => "i32",
-            SkslType::Float => "f32",
-            SkslType::Half => "f16",
-            SkslType::Vec2 => "vec2<f32>",
-            SkslType::Vec3 => "vec3<f32>",
-            SkslType::Vec4 => "vec4<f32>",
-            SkslType::Half2 => "vec2<f16>",
-            SkslType::Half3 => "vec3<f16>",
-            SkslType::Half4 => "vec4<f16>",
-            SkslType::Mat2 => "mat2x2<f32>",
-            SkslType::Mat3 => "mat3x3<f32>",
-            SkslType::Mat4 => "mat4x4<f32>",
-            SkslType::Sampler2D => "texture_2d<f32>",
-            SkslType::Shader => "texture_2d<f32>",
-            SkslType::ColorFilter => "texture_2d<f32>",
-            SkslType::Blender => "texture_2d<f32>",
-            SkslType::Array(_, _) => "array",
-            SkslType::Struct(_) => "struct",
+            Self::Void => "()",
+            Self::Bool => "bool",
+            Self::Int => "i32",
+            Self::Float => "f32",
+            Self::Half => "f16",
+            Self::Vec2 => "vec2<f32>",
+            Self::Vec3 => "vec3<f32>",
+            Self::Vec4 => "vec4<f32>",
+            Self::Half2 => "vec2<f16>",
+            Self::Half3 => "vec3<f16>",
+            Self::Half4 => "vec4<f16>",
+            Self::Mat2 => "mat2x2<f32>",
+            Self::Mat3 => "mat3x3<f32>",
+            Self::Mat4 => "mat4x4<f32>",
+            Self::Sampler2D | Self::Shader | Self::ColorFilter | Self::Blender => "texture_2d<f32>",
+            Self::Array(_, _) => "array",
+            Self::Struct(_) => "struct",
         }
     }
 
     /// Check if this is a scalar type.
-    pub fn is_scalar(&self) -> bool {
-        matches!(
-            self,
-            SkslType::Bool | SkslType::Int | SkslType::Float | SkslType::Half
-        )
+    #[must_use]
+    pub const fn is_scalar(&self) -> bool {
+        matches!(self, Self::Bool | Self::Int | Self::Float | Self::Half)
     }
 
     /// Check if this is a vector type.
-    pub fn is_vector(&self) -> bool {
+    #[must_use]
+    pub const fn is_vector(&self) -> bool {
         matches!(
             self,
-            SkslType::Vec2
-                | SkslType::Vec3
-                | SkslType::Vec4
-                | SkslType::Half2
-                | SkslType::Half3
-                | SkslType::Half4
+            Self::Vec2 | Self::Vec3 | Self::Vec4 | Self::Half2 | Self::Half3 | Self::Half4
         )
     }
 
     /// Check if this is a matrix type.
-    pub fn is_matrix(&self) -> bool {
-        matches!(self, SkslType::Mat2 | SkslType::Mat3 | SkslType::Mat4)
+    #[must_use]
+    pub const fn is_matrix(&self) -> bool {
+        matches!(self, Self::Mat2 | Self::Mat3 | Self::Mat4)
     }
 
     /// Get the number of components for vector types.
-    pub fn vector_size(&self) -> Option<usize> {
+    #[must_use]
+    pub const fn vector_size(&self) -> Option<usize> {
         match self {
-            SkslType::Vec2 | SkslType::Half2 => Some(2),
-            SkslType::Vec3 | SkslType::Half3 => Some(3),
-            SkslType::Vec4 | SkslType::Half4 => Some(4),
+            Self::Vec2 | Self::Half2 => Some(2),
+            Self::Vec3 | Self::Half3 => Some(3),
+            Self::Vec4 | Self::Half4 => Some(4),
             _ => None,
         }
     }
@@ -741,92 +735,92 @@ pub enum Expr {
     /// Binary operation.
     Binary {
         /// Left operand.
-        left: Box<Expr>,
+        left: Box<Self>,
         /// Operator.
         op: BinaryOp,
         /// Right operand.
-        right: Box<Expr>,
+        right: Box<Self>,
     },
     /// Unary operation.
     Unary {
         /// Operator.
         op: UnaryOp,
         /// Operand.
-        expr: Box<Expr>,
+        expr: Box<Self>,
     },
     /// Function call.
     Call {
         /// Function name.
         name: String,
         /// Arguments.
-        args: Vec<Expr>,
+        args: Vec<Self>,
     },
     /// Method-style call on a postfix expression (e.g. `child.eval(coord)`).
     MethodCall {
         /// Receiver expression (the value the method is invoked on).
-        receiver: Box<Expr>,
+        receiver: Box<Self>,
         /// Method name.
         method: String,
         /// Arguments.
-        args: Vec<Expr>,
+        args: Vec<Self>,
     },
     /// Constructor (vec2, vec3, etc.).
     Constructor {
         /// Type being constructed.
         ty: SkslType,
         /// Arguments.
-        args: Vec<Expr>,
+        args: Vec<Self>,
     },
     /// Field access (e.g., v.x, v.rgb).
     Field {
         /// Base expression.
-        expr: Box<Expr>,
+        expr: Box<Self>,
         /// Field name.
         field: String,
     },
     /// Array index.
     Index {
         /// Base expression.
-        expr: Box<Expr>,
+        expr: Box<Self>,
         /// Index expression.
-        index: Box<Expr>,
+        index: Box<Self>,
     },
     /// Ternary conditional.
     Ternary {
         /// Condition.
-        cond: Box<Expr>,
+        cond: Box<Self>,
         /// True branch.
-        then_expr: Box<Expr>,
+        then_expr: Box<Self>,
         /// False branch.
-        else_expr: Box<Expr>,
+        else_expr: Box<Self>,
     },
     /// Assignment.
     Assign {
         /// Target.
-        target: Box<Expr>,
+        target: Box<Self>,
         /// Value.
-        value: Box<Expr>,
+        value: Box<Self>,
     },
     /// Compound assignment (+=, -=, etc.).
     CompoundAssign {
         /// Target.
-        target: Box<Expr>,
+        target: Box<Self>,
         /// Operator.
         op: BinaryOp,
         /// Value.
-        value: Box<Expr>,
+        value: Box<Self>,
     },
     /// Post-increment/decrement.
     PostIncDec {
         /// Expression.
-        expr: Box<Expr>,
+        expr: Box<Self>,
         /// Increment (true) or decrement (false).
         inc: bool,
     },
     /// Pre-increment/decrement.
     PreIncDec {
         /// Expression.
-        expr: Box<Expr>,
+        expr: Box<Self>,
         /// Increment (true) or decrement (false).
         inc: bool,
     },
@@ -875,26 +869,27 @@ pub enum BinaryOp {
 
 impl BinaryOp {
     /// Get the GLSL operator string.
-    pub fn glsl_str(&self) -> &'static str {
+    #[must_use]
+    pub const fn glsl_str(&self) -> &'static str {
         match self {
-            BinaryOp::Add => "+",
-            BinaryOp::Sub => "-",
-            BinaryOp::Mul => "*",
-            BinaryOp::Div => "/",
-            BinaryOp::Mod => "%",
-            BinaryOp::Eq => "==",
-            BinaryOp::NotEq => "!=",
-            BinaryOp::Lt => "<",
-            BinaryOp::LtEq => "<=",
-            BinaryOp::Gt => ">",
-            BinaryOp::GtEq => ">=",
-            BinaryOp::And => "&&",
-            BinaryOp::Or => "||",
-            BinaryOp::BitAnd => "&",
-            BinaryOp::BitOr => "|",
-            BinaryOp::BitXor => "^",
-            BinaryOp::Shl => "<<",
-            BinaryOp::Shr => ">>",
+            Self::Add => "+",
+            Self::Sub => "-",
+            Self::Mul => "*",
+            Self::Div => "/",
+            Self::Mod => "%",
+            Self::Eq => "==",
+            Self::NotEq => "!=",
+            Self::Lt => "<",
+            Self::LtEq => "<=",
+            Self::Gt => ">",
+            Self::GtEq => ">=",
+            Self::And => "&&",
+            Self::Or => "||",
+            Self::BitAnd => "&",
+            Self::BitOr => "|",
+            Self::BitXor => "^",
+            Self::Shl => "<<",
+            Self::Shr => ">>",
         }
     }
 }
@@ -912,11 +907,12 @@ pub enum UnaryOp {
 
 impl UnaryOp {
     /// Get the GLSL operator string.
-    pub fn glsl_str(&self) -> &'static str {
+    #[must_use]
+    pub const fn glsl_str(&self) -> &'static str {
         match self {
-            UnaryOp::Neg => "-",
-            UnaryOp::Not => "!",
-            UnaryOp::BitNot => "~",
+            Self::Neg => "-",
+            Self::Not => "!",
+            Self::BitNot => "~",
         }
     }
 }
@@ -936,38 +932,38 @@ pub enum Stmt {
         init: Option<Expr>,
     },
     /// Block of statements.
-    Block(Vec<Stmt>),
+    Block(Vec<Self>),
     /// If statement.
     If {
         /// Condition.
         cond: Expr,
         /// Then branch.
-        then_branch: Box<Stmt>,
+        then_branch: Box<Self>,
         /// Else branch.
-        else_branch: Option<Box<Stmt>>,
+        else_branch: Option<Box<Self>>,
     },
     /// For loop.
     For {
         /// Initialization.
-        init: Option<Box<Stmt>>,
+        init: Option<Box<Self>>,
         /// Condition.
         cond: Option<Expr>,
         /// Update.
         update: Option<Expr>,
         /// Body.
-        body: Box<Stmt>,
+        body: Box<Self>,
     },
     /// While loop.
     While {
         /// Condition.
         cond: Expr,
         /// Body.
-        body: Box<Stmt>,
+        body: Box<Self>,
     },
     /// Do-while loop.
     DoWhile {
         /// Body.
-        body: Box<Stmt>,
+        body: Box<Self>,
         /// Condition.
         cond: Expr,
     },
@@ -1047,7 +1043,7 @@ pub struct StructDecl {
     pub fields: Vec<StructField>,
 }
 
-/// SkSL program (complete parsed shader).
+/// `SkSL` program (complete parsed shader).
 #[derive(Debug, Clone, Default)]
 pub struct SkslProgram {
     /// Struct declarations.
@@ -1060,7 +1056,7 @@ pub struct SkslProgram {
     pub children: Vec<UniformDecl>,
 }
 
-/// SkSL parser.
+/// `SkSL` parser.
 pub struct Parser<'a> {
     lexer: Lexer<'a>,
     current: Token,
@@ -1069,6 +1065,7 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     /// Create a new parser.
+    #[must_use]
     pub fn new(source: &'a str) -> Self {
         let mut lexer = Lexer::new(source);
         let current = lexer.next_token();
@@ -1079,7 +1076,13 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse a complete SkSL program.
+    /// Parse a complete `SkSL` program.
+    ///
+    /// # Errors
+    ///
+    /// Returns a descriptive error string if the token stream does not form
+    /// a well-formed `SkSL` program (unexpected token, unterminated
+    /// construct, etc.).
     pub fn parse_program(&mut self) -> Result<SkslProgram, String> {
         let mut program = SkslProgram::default();
 
@@ -1123,20 +1126,12 @@ impl<'a> Parser<'a> {
     }
 
     fn advance(&mut self) -> Token {
-        let current = std::mem::replace(
+        std::mem::replace(
             &mut self.current,
             self.peeked
                 .take()
                 .unwrap_or_else(|| self.lexer.next_token()),
-        );
-        current
-    }
-
-    fn peek(&mut self) -> &Token {
-        if self.peeked.is_none() {
-            self.peeked = Some(self.lexer.next_token());
-        }
-        self.peeked.as_ref().unwrap()
+        )
     }
 
     fn check(&self, expected: &Token) -> bool {
@@ -1151,7 +1146,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn is_type_token(&self) -> bool {
+    const fn is_type_token(&self) -> bool {
         matches!(
             self.current,
             Token::Void
@@ -1206,7 +1201,7 @@ impl<'a> Parser<'a> {
         self.expect(&Token::Struct)?;
         let name = match self.advance() {
             Token::Ident(name) => name,
-            t => return Err(format!("Expected struct name, got {:?}", t)),
+            t => return Err(format!("Expected struct name, got {t:?}")),
         };
         self.expect(&Token::LBrace)?;
 
@@ -1215,7 +1210,7 @@ impl<'a> Parser<'a> {
             let ty = self.parse_type()?;
             let field_name = match self.advance() {
                 Token::Ident(name) => name,
-                t => return Err(format!("Expected field name, got {:?}", t)),
+                t => return Err(format!("Expected field name, got {t:?}")),
             };
             self.expect(&Token::Semi)?;
             fields.push(StructField {
@@ -1235,14 +1230,15 @@ impl<'a> Parser<'a> {
         let ty = self.parse_type()?;
         let name = match self.advance() {
             Token::Ident(name) => name,
-            t => return Err(format!("Expected uniform name, got {:?}", t)),
+            t => return Err(format!("Expected uniform name, got {t:?}")),
         };
 
         let array_size = if self.check(&Token::LBracket) {
             self.advance();
             let size = match self.advance() {
-                Token::IntLit(n) => n as usize,
-                t => return Err(format!("Expected array size, got {:?}", t)),
+                Token::IntLit(n) => usize::try_from(n)
+                    .map_err(|_| format!("Array size must be non-negative, got {n}"))?,
+                t => return Err(format!("Expected array size, got {t:?}")),
             };
             self.expect(&Token::RBracket)?;
             Some(size)
@@ -1263,7 +1259,7 @@ impl<'a> Parser<'a> {
         let return_type = self.parse_type()?;
         let name = match self.advance() {
             Token::Ident(name) => name,
-            t => return Err(format!("Expected function name, got {:?}", t)),
+            t => return Err(format!("Expected function name, got {t:?}")),
         };
 
         self.expect(&Token::LParen)?;
@@ -1289,7 +1285,7 @@ impl<'a> Parser<'a> {
             let ty = self.parse_type()?;
             let param_name = match self.advance() {
                 Token::Ident(name) => name,
-                t => return Err(format!("Expected parameter name, got {:?}", t)),
+                t => return Err(format!("Expected parameter name, got {t:?}")),
             };
 
             params.push(FnParam {
@@ -1349,10 +1345,10 @@ impl<'a> Parser<'a> {
 
         if self.check(&Token::Return) {
             self.advance();
-            let expr = if !self.check(&Token::Semi) {
-                Some(self.parse_expression()?)
-            } else {
+            let expr = if self.check(&Token::Semi) {
                 None
+            } else {
+                Some(self.parse_expression()?)
             };
             self.expect(&Token::Semi)?;
             return Ok(Stmt::Return(expr));
@@ -1388,7 +1384,7 @@ impl<'a> Parser<'a> {
             let ty = self.parse_type()?;
             let name = match self.advance() {
                 Token::Ident(name) => name,
-                t => return Err(format!("Expected variable name, got {:?}", t)),
+                t => return Err(format!("Expected variable name, got {t:?}")),
             };
 
             let init = if self.check(&Token::Eq) {
@@ -1433,24 +1429,24 @@ impl<'a> Parser<'a> {
         self.expect(&Token::For)?;
         self.expect(&Token::LParen)?;
 
-        let init = if !self.check(&Token::Semi) {
-            Some(Box::new(self.parse_statement()?))
-        } else {
+        let init = if self.check(&Token::Semi) {
             self.advance();
             None
+        } else {
+            Some(Box::new(self.parse_statement()?))
         };
 
-        let cond = if !self.check(&Token::Semi) {
-            Some(self.parse_expression()?)
-        } else {
+        let cond = if self.check(&Token::Semi) {
             None
+        } else {
+            Some(self.parse_expression()?)
         };
         self.expect(&Token::Semi)?;
 
-        let update = if !self.check(&Token::RParen) {
-            Some(self.parse_expression()?)
-        } else {
+        let update = if self.check(&Token::RParen) {
             None
+        } else {
+            Some(self.parse_expression()?)
         };
         self.expect(&Token::RParen)?;
 
@@ -1804,7 +1800,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let field = match self.advance() {
                     Token::Ident(name) => name,
-                    t => return Err(format!("Expected field name, got {:?}", t)),
+                    t => return Err(format!("Expected field name, got {t:?}")),
                 };
                 expr = Expr::Field {
                     expr: Box::new(expr),
@@ -1966,11 +1962,11 @@ mod tests {
 
     #[test]
     fn test_parser_simple_function() {
-        let source = r#"
+        let source = r"
             vec4 main(vec2 fragCoord) {
                 return vec4(1.0, 0.0, 0.0, 1.0);
             }
-        "#;
+        ";
         let mut parser = Parser::new(source);
         let program = parser.parse_program().unwrap();
 
@@ -1981,13 +1977,13 @@ mod tests {
 
     #[test]
     fn test_parser_uniforms() {
-        let source = r#"
+        let source = r"
             uniform float time;
             uniform vec2 resolution;
             vec4 main(vec2 coord) {
                 return vec4(0.0);
             }
-        "#;
+        ";
         let mut parser = Parser::new(source);
         let program = parser.parse_program().unwrap();
 
@@ -2059,8 +2055,7 @@ mod tests {
 
     #[test]
     fn test_parse_multiple_functions() {
-        let src =
-            "float square(float x) { return x * x; }\nhalf4 main(float2 p) { return half4(square(p.x), 0.0, 0.0, 1.0); }";
+        let src = "float square(float x) { return x * x; }\nhalf4 main(float2 p) { return half4(square(p.x), 0.0, 0.0, 1.0); }";
         let mut parser = Parser::new(src);
         let program = parser.parse_program();
         assert!(
@@ -2112,10 +2107,6 @@ mod tests {
         let src = "half4 main(float2 p) { float x = p.x > 0.0 ? 1.0 : 0.0; return half4(x, 0.0, 0.0, 1.0); }";
         let mut parser = Parser::new(src);
         let program = parser.parse_program();
-        assert!(
-            program.is_ok(),
-            "ternary should parse: {:?}",
-            program.err()
-        );
+        assert!(program.is_ok(), "ternary should parse: {:?}", program.err());
     }
 }

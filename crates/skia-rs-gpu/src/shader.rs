@@ -38,7 +38,7 @@ pub struct ShaderEntryPoint {
 /// Built-in WGSL shaders for common operations.
 pub mod builtin {
     /// Solid color fill vertex shader.
-    pub const SOLID_COLOR_VS: &str = r#"
+    pub const SOLID_COLOR_VS: &str = r"
 struct VertexInput {
     @location(0) position: vec2<f32>,
 };
@@ -60,10 +60,10 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     output.position = uniforms.transform * vec4<f32>(input.position, 0.0, 1.0);
     return output;
 }
-"#;
+";
 
     /// Solid color fill fragment shader.
-    pub const SOLID_COLOR_FS: &str = r#"
+    pub const SOLID_COLOR_FS: &str = r"
 struct Uniforms {
     color: vec4<f32>,
 };
@@ -79,10 +79,10 @@ fn fs_main() -> @location(0) vec4<f32> {
     let c = uniforms.color;
     return vec4<f32>(c.rgb * c.a, c.a);
 }
-"#;
+";
 
     /// Textured quad vertex shader.
-    pub const TEXTURED_VS: &str = r#"
+    pub const TEXTURED_VS: &str = r"
 struct VertexInput {
     @location(0) position: vec2<f32>,
     @location(1) tex_coord: vec2<f32>,
@@ -107,10 +107,10 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     output.tex_coord = input.tex_coord;
     return output;
 }
-"#;
+";
 
     /// Textured quad fragment shader.
-    pub const TEXTURED_FS: &str = r#"
+    pub const TEXTURED_FS: &str = r"
 @group(0) @binding(1)
 var t_texture: texture_2d<f32>;
 @group(0) @binding(2)
@@ -128,10 +128,10 @@ fn fs_main(@location(0) tex_coord: vec2<f32>) -> @location(0) vec4<f32> {
     let color = textureSample(t_texture, s_sampler, tex_coord);
     return color * uniforms.tint;
 }
-"#;
+";
 
     /// Linear gradient vertex shader.
-    pub const GRADIENT_VS: &str = r#"
+    pub const GRADIENT_VS: &str = r"
 struct VertexInput {
     @location(0) position: vec2<f32>,
 };
@@ -155,10 +155,10 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     output.local_position = input.position;
     return output;
 }
-"#;
+";
 
     /// Linear gradient fragment shader.
-    pub const LINEAR_GRADIENT_FS: &str = r#"
+    pub const LINEAR_GRADIENT_FS: &str = r"
 struct GradientUniforms {
     start: vec2<f32>,
     end: vec2<f32>,
@@ -182,10 +182,10 @@ fn fs_main(@location(0) local_position: vec2<f32>) -> @location(0) vec4<f32> {
     // Emit premultiplied color for the premultiplied blend pipeline.
     return vec4<f32>(c.rgb * c.a, c.a);
 }
-"#;
+";
 
     /// Radial gradient fragment shader.
-    pub const RADIAL_GRADIENT_FS: &str = r#"
+    pub const RADIAL_GRADIENT_FS: &str = r"
 struct GradientUniforms {
     center: vec2<f32>,
     radius: f32,
@@ -205,10 +205,10 @@ fn fs_main(@location(0) local_position: vec2<f32>) -> @location(0) vec4<f32> {
     // Emit premultiplied color for the premultiplied blend pipeline.
     return vec4<f32>(c.rgb * c.a, c.a);
 }
-"#;
+";
 
     /// Blur compute shader.
-    pub const BLUR_CS: &str = r#"
+    pub const BLUR_CS: &str = r"
 @group(0) @binding(0)
 var input_texture: texture_2d<f32>;
 @group(0) @binding(1)
@@ -245,10 +245,10 @@ fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     textureStore(output_texture, coord, color / weight_sum);
 }
-"#;
+";
 
     /// Blit vertex shader (full-screen quad).
-    pub const BLIT_VS: &str = r#"
+    pub const BLIT_VS: &str = r"
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) tex_coord: vec2<f32>,
@@ -278,10 +278,10 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     output.tex_coord = tex_coords[vertex_index];
     return output;
 }
-"#;
+";
 
     /// Blit fragment shader.
-    pub const BLIT_FS: &str = r#"
+    pub const BLIT_FS: &str = r"
 @group(0) @binding(0)
 var t_texture: texture_2d<f32>;
 @group(0) @binding(1)
@@ -291,10 +291,10 @@ var s_sampler: sampler;
 fn fs_main(@location(0) tex_coord: vec2<f32>) -> @location(0) vec4<f32> {
     return textureSample(t_texture, s_sampler, tex_coord);
 }
-"#;
+";
 
     /// Path fill vertex shader (for stencil-then-cover).
-    pub const PATH_FILL_VS: &str = r#"
+    pub const PATH_FILL_VS: &str = r"
 struct VertexInput {
     @location(0) position: vec2<f32>,
 };
@@ -316,18 +316,18 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     output.position = uniforms.transform * vec4<f32>(input.position, 0.0, 1.0);
     return output;
 }
-"#;
+";
 
     /// Path fill fragment shader (for stencil).
-    pub const PATH_STENCIL_FS: &str = r#"
+    pub const PATH_STENCIL_FS: &str = r"
 @fragment
 fn fs_main() {
     // No color output, only writing to stencil
 }
-"#;
+";
 
     /// Path cover fragment shader (for final color).
-    pub const PATH_COVER_FS: &str = r#"
+    pub const PATH_COVER_FS: &str = r"
 struct Uniforms {
     color: vec4<f32>,
 };
@@ -341,7 +341,7 @@ fn fs_main() -> @location(0) vec4<f32> {
     let c = uniforms.color;
     return vec4<f32>(c.rgb * c.a, c.a);
 }
-"#;
+";
 }
 
 /// Detailed validation result for WGSL shaders.
@@ -355,11 +355,13 @@ pub struct ValidationReport {
 
 impl ValidationReport {
     /// Convenience: true when the shader parses.
-    pub fn is_valid(&self) -> bool {
+    #[must_use]
+    pub const fn is_valid(&self) -> bool {
         self.valid
     }
 
     /// Get the error message, if any.
+    #[must_use]
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }
@@ -373,6 +375,7 @@ pub struct ShaderCompiler {
 
 impl ShaderCompiler {
     /// Create a new shader compiler.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             validation_cache: parking_lot::RwLock::new(HashMap::new()),
@@ -440,7 +443,7 @@ impl ShaderCompiler {
             },
             Err(err) => ValidationReport {
                 valid: false,
-                error: Some(format!("WGSL validation failed: {}", err)),
+                error: Some(format!("WGSL validation failed: {err}")),
             },
         }
     }
@@ -459,7 +462,7 @@ impl ShaderCompiler {
 
         // Replace defines
         for (key, value) in defines {
-            result = result.replace(&format!("${{{}}}", key), value);
+            result = result.replace(&format!("${{{key}}}"), value);
         }
 
         result
@@ -467,10 +470,7 @@ impl ShaderCompiler {
 
     /// Get a combined shader module source.
     pub fn combine_shaders(&self, vertex: &str, fragment: &str) -> String {
-        format!(
-            "// Vertex Shader\n{}\n\n// Fragment Shader\n{}",
-            vertex, fragment
-        )
+        format!("// Vertex Shader\n{vertex}\n\n// Fragment Shader\n{fragment}")
     }
 }
 
@@ -488,6 +488,7 @@ pub struct ShaderLibrary {
 
 impl ShaderLibrary {
     /// Create a new shader library with built-in shaders.
+    #[must_use]
     pub fn new() -> Self {
         let mut shaders = HashMap::new();
 
@@ -531,8 +532,9 @@ impl ShaderLibrary {
     }
 
     /// Get a shader by name.
+    #[must_use]
     pub fn get(&self, name: &str) -> Option<&str> {
-        self.shaders.get(name).map(|s| s.as_str())
+        self.shaders.get(name).map(std::string::String::as_str)
     }
 
     /// Add a custom shader.
@@ -541,13 +543,14 @@ impl ShaderLibrary {
     }
 
     /// Check if a shader exists.
+    #[must_use]
     pub fn contains(&self, name: &str) -> bool {
         self.shaders.contains_key(name)
     }
 
     /// List all shader names.
     pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.shaders.keys().map(|s| s.as_str())
+        self.shaders.keys().map(std::string::String::as_str)
     }
 }
 
@@ -583,29 +586,29 @@ mod tests {
         let compiler = ShaderCompiler::new();
 
         // Syntax error: missing closing brace.
-        let bad_syntax = r#"
+        let bad_syntax = r"
 @vertex
 fn vs_main() -> @builtin(position) vec4<f32> {
     return vec4<f32>(0.0, 0.0, 0.0, 1.0);
-"#;
+";
         assert!(!compiler.validate(bad_syntax));
 
         // Undeclared identifier.
-        let undeclared = r#"
+        let undeclared = r"
 @vertex
 fn vs_main() -> @builtin(position) vec4<f32> {
     return undeclared_variable;
 }
-"#;
+";
         assert!(!compiler.validate(undeclared));
 
         // Wrong type in return.
-        let type_error = r#"
+        let type_error = r"
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
     return 42;
 }
-"#;
+";
         assert!(!compiler.validate(type_error));
 
         // The detailed report should include an error string for these.
@@ -658,13 +661,11 @@ fn fs_main() -> @location(0) vec4<f32> {
         ] {
             assert!(
                 src.contains(".rgb * ") && src.contains(".a"),
-                "shader {} must premultiply rgb by alpha",
-                name
+                "shader {name} must premultiply rgb by alpha"
             );
             assert!(
                 compiler.validate(src),
-                "shader {} must remain valid WGSL",
-                name
+                "shader {name} must remain valid WGSL"
             );
         }
     }

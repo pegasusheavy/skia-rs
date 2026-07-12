@@ -85,10 +85,10 @@
 #![allow(clippy::module_inception)]
 
 // Re-export core crates
-pub use skia_rs_core as core;
-pub use skia_rs_path as path;
-pub use skia_rs_paint as paint;
 pub use skia_rs_canvas as canvas;
+pub use skia_rs_core as core;
+pub use skia_rs_paint as paint;
+pub use skia_rs_path as path;
 pub use skia_rs_safe as safe;
 
 // Optional crate re-exports
@@ -142,8 +142,8 @@ pub mod prelude {
     // Canvas types
     pub use skia_rs_canvas::{Canvas, ClipOp, SaveLayerRec, Surface};
 
-    // Safe wrapper types (high-level API)
-    pub use skia_rs_safe::prelude::*;
+    // (skia_rs_safe::prelude re-exports the same core/path/paint/canvas types
+    // already re-exported above, so it is intentionally not globbed here.)
 
     // Optional module prelude re-exports
     #[cfg(feature = "text")]
@@ -185,6 +185,7 @@ pub mod version {
 
     /// Returns the version as a tuple.
     #[inline]
+    #[must_use]
     pub const fn as_tuple() -> (u32, u32, u32) {
         (MAJOR, MINOR, PATCH)
     }
@@ -211,6 +212,10 @@ pub mod version {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact re-export sanity checks on integral float literals"
+)]
 mod tests {
     use super::*;
 
@@ -221,10 +226,7 @@ mod tests {
             .split('.')
             .map(|p| p.parse().unwrap())
             .collect();
-        assert_eq!(
-            version::as_tuple(),
-            (parts[0], parts[1], parts[2])
-        );
+        assert_eq!(version::as_tuple(), (parts[0], parts[1], parts[2]));
     }
 
     #[test]

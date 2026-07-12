@@ -5,17 +5,19 @@
 //! - TrueType font embedding with real metrics from the `hhea` / `OS/2` /
 //!   `post` / `hmtx` / `cmap` tables via `ttf-parser`
 //! - Accurate per-glyph widths pulled from the font's `hmtx` table
-//! - Character usage tracking for ToUnicode CMap generation
-//! - Byte-level `glyf`/`loca` subsetting: the emitted FontFile2 stream
+//! - Character usage tracking for `ToUnicode` `CMap` generation
+//! - Byte-level `glyf`/`loca` subsetting: the emitted `FontFile2` stream
 //!   contains only the glyph outlines actually referenced by drawn text
 //!   (plus their composite-glyph dependencies and `.notdef`), while
 //!   `cmap`/`hmtx`/`hhea`/`OS/2`/`post`/`name`/`head`/`maxp` are preserved
-//!   unchanged so character-code-based access via WinAnsiEncoding keeps
-//!   working. A six-letter subset prefix is prepended to the BaseFont name
+//!   unchanged so character-code-based access via `WinAnsiEncoding` keeps
+//!   working. A six-letter subset prefix is prepended to the `BaseFont` name
 //!   per PDF convention.
 
 use skia_rs_core::Scalar;
+use skia_rs_core::cast::{floor_to_i32, saturate_to_i32};
 use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
 
 pub(crate) mod subset;
 
@@ -67,7 +69,8 @@ pub enum StandardFont {
 
 impl StandardFont {
     /// Get the PDF base font name.
-    pub fn pdf_name(&self) -> &'static str {
+    #[must_use]
+    pub const fn pdf_name(&self) -> &'static str {
         match self {
             Self::TimesRoman => "Times-Roman",
             Self::TimesBold => "Times-Bold",
@@ -88,14 +91,15 @@ impl StandardFont {
 
     /// Get the encoding, if the font declares one.
     ///
-    /// Symbol and ZapfDingbats are inherently symbolic fonts whose glyphs
+    /// Symbol and `ZapfDingbats` are inherently symbolic fonts whose glyphs
     /// are only reachable through their *built-in* encoding (PDF 32000-1
     /// §9.6.6.2); declaring `/Encoding /StandardEncoding` for them is
-    /// wrong (StandardEncoding has no entries for their glyph names) and
+    /// wrong (`StandardEncoding` has no entries for their glyph names) and
     /// PDF/A validators flag it. Per spec, symbolic simple fonts should
     /// omit `/Encoding` entirely so the reader uses the font's built-in
     /// one.
-    pub fn encoding(&self) -> Option<&'static str> {
+    #[must_use]
+    pub const fn encoding(&self) -> Option<&'static str> {
         match self {
             Self::Symbol | Self::ZapfDingbats => None,
             _ => Some("WinAnsiEncoding"),
@@ -116,7 +120,7 @@ pub struct PdfFont {
     pub descriptor_id: Option<u32>,
     /// Font encoding. `None` means "use the font's built-in encoding" —
     /// required for symbolic fonts like Symbol/ZapfDingbats, which have no
-    /// entries in StandardEncoding or WinAnsiEncoding.
+    /// entries in `StandardEncoding` or `WinAnsiEncoding`.
     pub encoding: Option<String>,
     /// Embedded font data (for TrueType/OpenType).
     pub font_data: Option<Vec<u8>>,
@@ -137,7 +141,7 @@ pub struct PdfFont {
     /// Character widths — map from character code to advance in PDF glyph
     /// units (1/1000 em). Keyed by the character *code used in the content
     /// stream*, which for TrueType-with-WinAnsi is the Unicode BMP code
-    /// point for characters in WinAnsi and for Type1 is the standard font's
+    /// point for characters in `WinAnsi` and for Type1 is the standard font's
     /// fixed table.
     pub widths: HashMap<u16, u16>,
     /// First character code.
@@ -146,24 +150,25 @@ pub struct PdfFont {
     pub last_char: u16,
     /// Glyph ids used (for future byte-level subsetting).
     pub used_glyphs: Vec<u16>,
-    /// Characters used (for ToUnicode CMap generation).
+    /// Characters used (for `ToUnicode` `CMap` generation).
     pub used_chars: BTreeMap<u32, char>,
-    /// ToUnicode CMap.
+    /// `ToUnicode` `CMap`.
     pub to_unicode: Option<String>,
-    /// Subset tag (six uppercase ASCII letters) prepended to the BaseFont
+    /// Subset tag (six uppercase ASCII letters) prepended to the `BaseFont`
     /// when the font is actually embedded.
     pub subset_tag: Option<String>,
 }
 
 impl PdfFont {
     /// Create a new standard Type 1 font.
+    #[must_use]
     pub fn standard(font: StandardFont) -> Self {
         Self {
             font_type: PdfFontType::Type1,
             base_font: font.pdf_name().to_string(),
             object_id: None,
             descriptor_id: None,
-            encoding: font.encoding().map(|s| s.to_string()),
+            encoding: font.encoding().map(std::string::ToString::to_string),
             font_data: None,
             flags: 0,
             italic_angle: 0.0,
@@ -186,13 +191,14 @@ impl PdfFont {
     ///
     /// Parses the font tables to populate accurate metrics and per-glyph
     /// widths, and assigns a deterministic subset tag based on the font
-    /// data so the BaseFont name matches PDF conventions for embedded
-    /// subsets. The embedded FontFile2 stream is produced at emit time by
+    /// data so the `BaseFont` name matches PDF conventions for embedded
+    /// subsets. The embedded `FontFile2` stream is produced at emit time by
     /// the `subset` module: it prunes the `glyf`/`loca` tables to contain
     /// only the used glyphs (plus composite dependencies and `.notdef`)
     /// while preserving every other table — callers do not need to do
     /// anything special; draws via [`PdfCanvas::draw_text`](crate::PdfCanvas::draw_text)
     /// record usage automatically.
+    #[must_use]
     pub fn truetype(name: &str, data: Vec<u8>) -> Self {
         let metrics = parse_truetype_metrics(&data);
         let subset_tag = subset_tag_for(&data, name);
@@ -228,12 +234,12 @@ impl PdfFont {
     /// `/Encoding /Identity-H` and a `/DescendantFonts` array (instead of
     /// `/Widths` + `/Encoding`), so a compliant reader interprets the
     /// content stream's text strings as 2-byte CIDs rather than 1-byte
-    /// WinAnsi codes.
+    /// `WinAnsi` codes.
     ///
     /// **Limitation:** only the `/DescendantFonts` structure (widths,
     /// `FontFile2`, `CIDSystemInfo`, etc.) is implemented today. Live
     /// per-glyph CID text drawing — shaping a string into glyph ids and
-    /// emitting the matching 2-byte codes plus a CID-keyed ToUnicode CMap —
+    /// emitting the matching 2-byte codes plus a CID-keyed `ToUnicode` `CMap` —
     /// is not yet implemented. Calling
     /// [`PdfCanvas::draw_text`](crate::PdfCanvas::draw_text) or
     /// [`PdfCanvas::draw_text_with_font`](crate::PdfCanvas::draw_text_with_font)
@@ -241,6 +247,7 @@ impl PdfFont {
     /// than silently emit invalid 1-byte codes against the `/Identity-H`
     /// encoding. Use [`truetype`](Self::truetype) if you need to draw
     /// live text today.
+    #[must_use]
     pub fn truetype_cid(name: &str, data: Vec<u8>) -> Self {
         let metrics = parse_truetype_metrics(&data);
         let subset_tag = subset_tag_for(&data, name);
@@ -281,7 +288,7 @@ impl PdfFont {
     /// Called by [`crate::PdfCanvas::draw_text`] for every character that
     /// ends up in the content stream. The recorded set is consumed by
     /// [`generate_to_unicode`](Self::generate_to_unicode) to produce a
-    /// ToUnicode CMap that covers the actual characters used.
+    /// `ToUnicode` `CMap` that covers the actual characters used.
     pub fn record_char(&mut self, c: char) {
         let code = c as u32;
         self.used_chars.entry(code).or_insert(c);
@@ -295,12 +302,13 @@ impl PdfFont {
         }
     }
 
-    /// Return the BaseFont name as it should appear in PDF, including the
+    /// Return the `BaseFont` name as it should appear in PDF, including the
     /// `XXXXXX+` subset prefix when one is assigned.
+    #[must_use]
     pub fn pdf_base_font(&self) -> String {
         let bare = self.base_font.replace(' ', "");
         match self.subset_tag {
-            Some(ref tag) => format!("{}+{}", tag, bare),
+            Some(ref tag) => format!("{tag}+{bare}"),
             None => bare,
         }
     }
@@ -313,18 +321,19 @@ impl PdfFont {
     /// `/FontDescriptor`. `/CIDToGIDMap` is `/Identity` — glyph ids are
     /// used directly as CIDs, matching how [`record_char`](Self::record_char)
     /// resolves glyph ids from the font's `cmap`.
+    #[must_use]
     pub fn to_cid_font_dict(&self, id: u32, font_descriptor_id: u32) -> String {
-        let mut dict = format!("{} 0 obj\n<<\n", id);
+        let mut dict = format!("{id} 0 obj\n<<\n");
         dict.push_str("/Type /Font\n");
         dict.push_str("/Subtype /CIDFontType2\n");
-        dict.push_str(&format!("/BaseFont /{}\n", self.pdf_base_font()));
+        let _ = writeln!(dict, "/BaseFont /{}", self.pdf_base_font());
         dict.push_str(
             "/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>\n",
         );
-        dict.push_str(&format!("/FontDescriptor {} 0 R\n", font_descriptor_id));
+        let _ = writeln!(dict, "/FontDescriptor {font_descriptor_id} 0 R");
         dict.push_str("/CIDToGIDMap /Identity\n");
         dict.push_str("/DW 1000\n");
-        dict.push_str(&format!("/W {}\n", self.cid_width_array()));
+        let _ = writeln!(dict, "/W {}", self.cid_width_array());
         dict.push_str(">>\nendobj\n");
         dict
     }
@@ -347,7 +356,7 @@ impl PdfFont {
         if upem == 0 {
             return "[]".to_string();
         }
-        let scale = 1000.0 / upem as Scalar;
+        let scale = 1000.0 / Scalar::from(upem);
 
         let mut gids: Vec<u16> = self.used_glyphs.clone();
         gids.sort_unstable();
@@ -357,39 +366,45 @@ impl PdfFont {
         for gid in gids {
             let w = face
                 .glyph_hor_advance(ttf_parser::GlyphId(gid))
-                .map(|a| (a as Scalar * scale) as u32)
-                .unwrap_or(0);
-            out.push_str(&format!(" {} [{}]", gid, w));
+                .map_or(0, |a| {
+                    u32::try_from(floor_to_i32(Scalar::from(a) * scale)).unwrap_or(0)
+                });
+            let _ = write!(out, " {gid} [{w}]");
         }
         out.push(']');
         out
     }
 
     /// Generate the font descriptor PDF object.
+    #[must_use]
     pub fn to_font_descriptor(&self, id: u32, font_file_id: Option<u32>) -> String {
-        let mut dict = format!("{} 0 obj\n<<\n", id);
+        let mut dict = format!("{id} 0 obj\n<<\n");
         dict.push_str("/Type /FontDescriptor\n");
-        dict.push_str(&format!("/FontName /{}\n", self.pdf_base_font()));
-        dict.push_str(&format!("/Flags {}\n", self.flags | 32)); // Non-symbolic
-        dict.push_str(&format!(
-            "/FontBBox [{} {} {} {}]\n",
-            self.bbox[0] as i32, self.bbox[1] as i32, self.bbox[2] as i32, self.bbox[3] as i32
-        ));
-        dict.push_str(&format!("/ItalicAngle {}\n", self.italic_angle as i32));
-        dict.push_str(&format!("/Ascent {}\n", self.ascender as i32));
-        dict.push_str(&format!("/Descent {}\n", self.descender as i32));
-        dict.push_str(&format!("/CapHeight {}\n", self.cap_height as i32));
-        dict.push_str(&format!("/StemV {}\n", self.stem_v as i32));
+        let _ = writeln!(dict, "/FontName /{}", self.pdf_base_font());
+        let _ = writeln!(dict, "/Flags {}", self.flags | 32); // Non-symbolic
+        let _ = writeln!(
+            dict,
+            "/FontBBox [{} {} {} {}]",
+            saturate_to_i32(self.bbox[0]),
+            saturate_to_i32(self.bbox[1]),
+            saturate_to_i32(self.bbox[2]),
+            saturate_to_i32(self.bbox[3])
+        );
+        let _ = writeln!(dict, "/ItalicAngle {}", saturate_to_i32(self.italic_angle));
+        let _ = writeln!(dict, "/Ascent {}", saturate_to_i32(self.ascender));
+        let _ = writeln!(dict, "/Descent {}", saturate_to_i32(self.descender));
+        let _ = writeln!(dict, "/CapHeight {}", saturate_to_i32(self.cap_height));
+        let _ = writeln!(dict, "/StemV {}", saturate_to_i32(self.stem_v));
 
         if let Some(file_id) = font_file_id {
             match self.font_type {
                 PdfFontType::TrueType | PdfFontType::Type0 => {
-                    dict.push_str(&format!("/FontFile2 {} 0 R\n", file_id));
+                    let _ = writeln!(dict, "/FontFile2 {file_id} 0 R");
                 }
                 PdfFontType::OpenTypeCff => {
-                    dict.push_str(&format!("/FontFile3 {} 0 R\n", file_id));
+                    let _ = writeln!(dict, "/FontFile3 {file_id} 0 R");
                 }
-                _ => {}
+                PdfFontType::Type1 => {}
             }
         }
 
@@ -397,21 +412,30 @@ impl PdfFont {
         dict
     }
 
-    /// Generate a ToUnicode CMap that covers every character recorded via
+    /// Generate a `ToUnicode` `CMap` that covers every character recorded via
     /// [`record_char`](Self::record_char).
     ///
     /// Simple (Type1/TrueType) fonts are indexed by a *single-byte* code in
-    /// the content stream (WinAnsiEncoding — see
+    /// the content stream (`WinAnsiEncoding` — see
     /// [`crate::PdfCanvas::draw_text_with_font`]), so per PDF 32000-1
-    /// §9.10.3 the CMap's codespace range must be declared as one byte
+    /// §9.10.3 the `CMap`'s codespace range must be declared as one byte
     /// (`<00> <FF>`) with 2-hex-digit `bfchar` source codes; a 2-byte
     /// codespace against a simple font is a spec violation that breaks
     /// Unicode text extraction in readers. Type0/CID fonts keep the
-    /// original 2-byte codespace. If no characters were recorded the CMap
+    /// original 2-byte codespace. If no characters were recorded the `CMap`
     /// falls back to the printable-ASCII range so the font is still
     /// searchable.
+    ///
+    /// # Panics
+    ///
+    /// Does not panic in practice: the printable-ASCII fallback range
+    /// (32..127) is entirely valid Unicode scalar values.
+    #[must_use]
     pub fn generate_to_unicode(&self) -> String {
-        let is_simple = !matches!(self.font_type, PdfFontType::OpenTypeCff | PdfFontType::Type0);
+        let is_simple = !matches!(
+            self.font_type,
+            PdfFontType::OpenTypeCff | PdfFontType::Type0
+        );
 
         let mut cmap = String::new();
         cmap.push_str("/CIDInit /ProcSet findresource begin\n");
@@ -430,7 +454,9 @@ impl PdfFont {
 
         // Walk the used-char set. If empty, fall back to printable ASCII.
         let mut entries: Vec<(u32, char)> = if self.used_chars.is_empty() {
-            (32u32..127).map(|c| (c, char::from_u32(c).unwrap())).collect()
+            (32u32..127)
+                .map(|c| (c, char::from_u32(c).unwrap()))
+                .collect()
         } else {
             self.used_chars
                 .iter()
@@ -457,18 +483,21 @@ impl PdfFont {
         // CMap bfchar entries come in blocks of at most 100.
         if is_simple {
             for chunk in simple_entries.chunks(100) {
-                cmap.push_str(&format!("{} beginbfchar\n", chunk.len()));
+                let _ = writeln!(cmap, "{} beginbfchar", chunk.len());
                 for &(code, ch) in chunk {
                     let mut buf = [0u16; 2];
                     let units = ch.encode_utf16(&mut buf);
-                    let target: String = units.iter().map(|u| format!("{:04X}", u)).collect();
-                    cmap.push_str(&format!("<{:02X}> <{}>\n", code, target));
+                    let target: String = units.iter().fold(String::new(), |mut acc, u| {
+                        let _ = write!(acc, "{u:04X}");
+                        acc
+                    });
+                    let _ = writeln!(cmap, "<{code:02X}> <{target}>");
                 }
                 cmap.push_str("endbfchar\n");
             }
         } else {
             for chunk in entries.chunks(100) {
-                cmap.push_str(&format!("{} beginbfchar\n", chunk.len()));
+                let _ = writeln!(cmap, "{} beginbfchar", chunk.len());
                 for &(code, ch) in chunk {
                     let src_code = if code > 0xFFFF {
                         // Non-BMP — encode as surrogate pair in the source
@@ -477,14 +506,17 @@ impl PdfFont {
                         let slice = ch.encode_utf16(&mut buf);
                         format!("{:04X}{:04X}", slice[0], slice.get(1).copied().unwrap_or(0))
                     } else {
-                        format!("{:04X}", code)
+                        format!("{code:04X}")
                     };
                     // Target: UTF-16BE representation (surrogate pair if needed).
                     let mut buf = [0u16; 2];
                     let units = ch.encode_utf16(&mut buf);
-                    let target: String = units.iter().map(|u| format!("{:04X}", u)).collect();
+                    let target: String = units.iter().fold(String::new(), |mut acc, u| {
+                        let _ = write!(acc, "{u:04X}");
+                        acc
+                    });
 
-                    cmap.push_str(&format!("<{}> <{}>\n", src_code, target));
+                    let _ = writeln!(cmap, "<{src_code}> <{target}>");
                 }
                 cmap.push_str("endbfchar\n");
             }
@@ -521,7 +553,7 @@ struct TrueTypeMetrics {
 /// - `post` italic angle (fallback)
 /// - `hmtx` per-glyph advance, converted to PDF glyph units (1/1000 em)
 /// - `cmap` character → glyph mapping, used to populate the `widths` map
-///   keyed by WinAnsi character code
+///   keyed by `WinAnsi` character code
 fn parse_truetype_metrics(data: &[u8]) -> TrueTypeMetrics {
     let mut metrics = TrueTypeMetrics {
         flags: 0,
@@ -536,9 +568,8 @@ fn parse_truetype_metrics(data: &[u8]) -> TrueTypeMetrics {
         last_char: 126,
     };
 
-    let face = match ttf_parser::Face::parse(data, 0) {
-        Ok(face) => face,
-        Err(_) => return metrics,
+    let Ok(face) = ttf_parser::Face::parse(data, 0) else {
+        return metrics;
     };
 
     let upem = face.units_per_em();
@@ -546,30 +577,28 @@ fn parse_truetype_metrics(data: &[u8]) -> TrueTypeMetrics {
         return metrics;
     }
     // Convert font-units to PDF glyph units (1/1000 em).
-    let scale = 1000.0 / upem as Scalar;
+    let scale = 1000.0 / Scalar::from(upem);
 
-    metrics.ascender = face.ascender() as Scalar * scale;
-    metrics.descender = face.descender() as Scalar * scale;
+    metrics.ascender = Scalar::from(face.ascender()) * scale;
+    metrics.descender = Scalar::from(face.descender()) * scale;
     metrics.italic_angle = face.italic_angle().unwrap_or(0.0) as Scalar;
     metrics.cap_height = face
         .capital_height()
-        .map(|v| v as Scalar * scale)
-        .unwrap_or(metrics.ascender * 0.875);
+        .map_or(metrics.ascender * 0.875, |v| Scalar::from(v) * scale);
 
     let gbox = face.global_bounding_box();
     metrics.bbox = [
-        gbox.x_min as Scalar * scale,
-        gbox.y_min as Scalar * scale,
-        gbox.x_max as Scalar * scale,
-        gbox.y_max as Scalar * scale,
+        Scalar::from(gbox.x_min) * scale,
+        Scalar::from(gbox.y_min) * scale,
+        Scalar::from(gbox.x_max) * scale,
+        Scalar::from(gbox.y_max) * scale,
     ];
 
     // Heuristic StemV: a function of x-height works well for most text
     // fonts. Fall back to 80 when no x-height is declared.
     metrics.stem_v = face
         .x_height()
-        .map(|xh| (xh as Scalar * scale) * 0.12)
-        .unwrap_or(80.0);
+        .map_or(80.0, |xh| (Scalar::from(xh) * scale) * 0.12);
 
     // Flags bits (PDF 9.8.2):
     //   bit 1 (FixedPitch)  = 1
@@ -595,10 +624,13 @@ fn parse_truetype_metrics(data: &[u8]) -> TrueTypeMetrics {
     // for simplicity, which is correct for the overwhelming majority of
     // characters and wrong only for 0x80..0x9F decoratives.
     for code in 32u16..=255u16 {
-        let ch = char::from_u32(code as u32).unwrap_or('\0');
+        let ch = char::from_u32(u32::from(code)).unwrap_or('\0');
         if let Some(gid) = face.glyph_index(ch) {
             if let Some(adv) = face.glyph_hor_advance(gid) {
-                metrics.widths.insert(code, (adv as Scalar * scale) as u16);
+                metrics.widths.insert(
+                    code,
+                    u16::try_from(floor_to_i32(Scalar::from(adv) * scale)).unwrap_or(0),
+                );
             }
         }
     }
@@ -623,22 +655,23 @@ fn parse_truetype_metrics(data: &[u8]) -> TrueTypeMetrics {
 /// arbitrary — we derive it from a 64-bit FNV-1a hash so that two calls for
 /// the same font produce the same tag (stable across runs).
 fn subset_tag_for(data: &[u8], name: &str) -> String {
-    // FNV-1a 64.
-    let mut h: u64 = 0xcbf29ce484222325;
-    for &b in data {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    for b in name.bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
     // Convert 64 bits into six base-26 letters.
     const LETTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+    // FNV-1a 64.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in data {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    for b in name.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
     let mut tag = [0u8; 6];
     let mut v = h;
-    for slot in tag.iter_mut() {
-        *slot = LETTERS[(v % 26) as usize];
+    for slot in &mut tag {
+        *slot = LETTERS[usize::try_from(v % 26).unwrap_or(0)];
         v /= 26;
     }
     String::from_utf8(tag.to_vec()).unwrap()
@@ -655,6 +688,7 @@ pub struct PdfFontManager {
 
 impl PdfFontManager {
     /// Create a new font manager.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -701,6 +735,7 @@ impl PdfFontManager {
     }
 
     /// Get font by index.
+    #[must_use]
     pub fn get(&self, index: usize) -> Option<&PdfFont> {
         self.fonts.get(index)
     }
@@ -711,6 +746,7 @@ impl PdfFontManager {
     }
 
     /// Get font by name.
+    #[must_use]
     pub fn get_by_name(&self, name: &str) -> Option<&PdfFont> {
         self.name_to_index
             .get(name)
@@ -718,6 +754,7 @@ impl PdfFontManager {
     }
 
     /// Get all fonts.
+    #[must_use]
     pub fn fonts(&self) -> &[PdfFont] {
         &self.fonts
     }
@@ -728,11 +765,13 @@ impl PdfFontManager {
     }
 
     /// Get number of fonts.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.fonts.len()
     }
 
     /// Check if empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.fonts.is_empty()
     }
@@ -771,8 +810,7 @@ mod tests {
             cid_dict.contains(
                 "/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>"
             ),
-            "dict: {}",
-            cid_dict
+            "dict: {cid_dict}"
         );
         assert!(cid_dict.contains("/W ["));
     }
@@ -797,11 +835,11 @@ mod tests {
         // be declared as one byte and bfchar source codes are 2 hex
         // digits, matching the actual content-stream (WinAnsi) code —
         // never the raw 4-digit Unicode value.
-        assert!(cmap.contains("<00> <FF>\n"), "cmap: {}", cmap);
+        assert!(cmap.contains("<00> <FF>\n"), "cmap: {cmap}");
         // ASCII 'A' → WinAnsi byte 0x41, target UTF-16BE 0041.
-        assert!(cmap.contains("<41> <0041>"), "cmap: {}", cmap);
+        assert!(cmap.contains("<41> <0041>"), "cmap: {cmap}");
         // 'é' → WinAnsi byte 0xE9 (coincides with its Unicode value here).
-        assert!(cmap.contains("<E9> <00E9>"), "cmap: {}", cmap);
+        assert!(cmap.contains("<E9> <00E9>"), "cmap: {cmap}");
         // We produced exactly 2 entries (beginbfchar count).
         assert!(cmap.contains("2 beginbfchar"));
     }
@@ -820,8 +858,8 @@ mod tests {
     fn test_truetype_invalid_data_defaults() {
         let font = PdfFont::truetype("Bogus", vec![0, 1, 2, 3]);
         // Defaults.
-        assert_eq!(font.ascender as i32, 750);
-        assert_eq!(font.descender as i32, -250);
+        assert_eq!(saturate_to_i32(font.ascender), 750);
+        assert_eq!(saturate_to_i32(font.descender), -250);
         // Subset tag is still assigned so the BaseFont name is consistent.
         assert!(font.subset_tag.is_some());
         assert!(font.pdf_base_font().contains('+'));

@@ -1,19 +1,21 @@
 //! Runtime effects for custom shaders.
 //!
 //! This module provides Skia's runtime effects system, allowing custom
-//! shaders written in SkSL to be compiled and used at runtime.
+//! shaders written in `SkSL` to be compiled and used at runtime.
 
 use crate::shader::{Shader, ShaderKind};
 use crate::sksl::{Expr, FnDecl, Parser, SkslProgram, SkslType, Stmt};
 use crate::sksl_interp::{Interp, Value as SkslValue};
+use skia_rs_core::cast::scalar_from_i32;
 use skia_rs_core::{Color4f, Matrix, Scalar};
+use std::fmt::Write as _;
 use std::sync::{Arc, OnceLock};
 use thiserror::Error;
 
 /// Error type for runtime effect operations.
 #[derive(Debug, Clone, Error)]
 pub enum RuntimeEffectError {
-    /// SkSL parsing error.
+    /// `SkSL` parsing error.
     #[error("Parse error: {0}")]
     ParseError(String),
     /// Compilation error.
@@ -46,7 +48,6 @@ pub enum RuntimeEffectError {
     #[error("Semantic validation failed: {0}")]
     ValidationFailed(String),
 }
-
 
 /// Uniform metadata.
 #[derive(Debug, Clone)]
@@ -90,46 +91,43 @@ pub enum UniformType {
 
 impl UniformType {
     /// Get the size in bytes.
-    pub fn size_bytes(&self) -> usize {
+    #[must_use]
+    pub const fn size_bytes(&self) -> usize {
         match self {
-            UniformType::Float => 4,
-            UniformType::Float2 => 8,
-            UniformType::Float3 => 12,
-            UniformType::Float4 => 16,
-            UniformType::Float2x2 => 16,
-            UniformType::Float3x3 => 36,
-            UniformType::Float4x4 => 64,
-            UniformType::Int => 4,
-            UniformType::Int2 => 8,
-            UniformType::Int3 => 12,
-            UniformType::Int4 => 16,
+            Self::Float | Self::Int => 4,
+            Self::Float2 | Self::Int2 => 8,
+            Self::Float3 | Self::Int3 => 12,
+            Self::Float4 | Self::Int4 | Self::Float2x2 => 16,
+            Self::Float3x3 => 36,
+            Self::Float4x4 => 64,
         }
     }
 
     /// Get the number of floats/ints.
-    pub fn slot_count(&self) -> usize {
+    #[must_use]
+    pub const fn slot_count(&self) -> usize {
         match self {
-            UniformType::Float | UniformType::Int => 1,
-            UniformType::Float2 | UniformType::Int2 => 2,
-            UniformType::Float3 | UniformType::Int3 => 3,
-            UniformType::Float4 | UniformType::Int4 => 4,
-            UniformType::Float2x2 => 4,
-            UniformType::Float3x3 => 9,
-            UniformType::Float4x4 => 16,
+            Self::Float | Self::Int => 1,
+            Self::Float2 | Self::Int2 => 2,
+            Self::Float3 | Self::Int3 => 3,
+            Self::Float4 | Self::Int4 | Self::Float2x2 => 4,
+            Self::Float3x3 => 9,
+            Self::Float4x4 => 16,
         }
     }
 
     /// Check if this is a float type.
-    pub fn is_float(&self) -> bool {
+    #[must_use]
+    pub const fn is_float(&self) -> bool {
         matches!(
             self,
-            UniformType::Float
-                | UniformType::Float2
-                | UniformType::Float3
-                | UniformType::Float4
-                | UniformType::Float2x2
-                | UniformType::Float3x3
-                | UniformType::Float4x4
+            Self::Float
+                | Self::Float2
+                | Self::Float3
+                | Self::Float4
+                | Self::Float2x2
+                | Self::Float3x3
+                | Self::Float4x4
         )
     }
 }
@@ -137,15 +135,16 @@ impl UniformType {
 impl From<&SkslType> for UniformType {
     fn from(ty: &SkslType) -> Self {
         match ty {
-            SkslType::Float | SkslType::Half => UniformType::Float,
-            SkslType::Vec2 | SkslType::Half2 => UniformType::Float2,
-            SkslType::Vec3 | SkslType::Half3 => UniformType::Float3,
-            SkslType::Vec4 | SkslType::Half4 => UniformType::Float4,
-            SkslType::Mat2 => UniformType::Float2x2,
-            SkslType::Mat3 => UniformType::Float3x3,
-            SkslType::Mat4 => UniformType::Float4x4,
-            SkslType::Int => UniformType::Int,
-            _ => UniformType::Float,
+            SkslType::Vec2 | SkslType::Half2 => Self::Float2,
+            SkslType::Vec3 | SkslType::Half3 => Self::Float3,
+            SkslType::Vec4 | SkslType::Half4 => Self::Float4,
+            SkslType::Mat2 => Self::Float2x2,
+            SkslType::Mat3 => Self::Float3x3,
+            SkslType::Mat4 => Self::Float4x4,
+            SkslType::Int => Self::Int,
+            // Float, Half, and any other/future scalar-like type default
+            // to a float uniform slot.
+            _ => Self::Float,
         }
     }
 }
@@ -190,7 +189,7 @@ pub enum ShaderTarget {
 /// A compiled runtime effect.
 #[derive(Debug)]
 pub struct RuntimeEffect {
-    /// Original SkSL source.
+    /// Original `SkSL` source.
     source: String,
     /// Parsed program.
     program: SkslProgram,
@@ -211,17 +210,32 @@ pub struct RuntimeEffect {
 }
 
 impl RuntimeEffect {
-    /// Create a runtime effect from SkSL source for shaders.
+    /// Create a runtime effect from `SkSL` source for shaders.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `source` fails to parse or fails `SkSL`
+    /// validation for the shader effect kind.
     pub fn make_for_shader(source: &str) -> Result<Self, RuntimeEffectError> {
         Self::compile(source, EffectKind::Shader)
     }
 
-    /// Create a runtime effect from SkSL source for color filters.
+    /// Create a runtime effect from `SkSL` source for color filters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `source` fails to parse or fails `SkSL`
+    /// validation for the color-filter effect kind.
     pub fn make_for_color_filter(source: &str) -> Result<Self, RuntimeEffectError> {
         Self::compile(source, EffectKind::ColorFilter)
     }
 
-    /// Create a runtime effect from SkSL source for blenders.
+    /// Create a runtime effect from `SkSL` source for blenders.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `source` fails to parse or fails `SkSL`
+    /// validation for the blender effect kind.
     pub fn make_for_blender(source: &str) -> Result<Self, RuntimeEffectError> {
         Self::compile(source, EffectKind::Blender)
     }
@@ -308,6 +322,12 @@ impl RuntimeEffect {
         })
     }
 
+    /// Get the original `SkSL` source this effect was compiled from.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
     /// Get the uniforms.
     pub fn uniforms(&self) -> &[Uniform] {
         &self.uniforms
@@ -319,7 +339,7 @@ impl RuntimeEffect {
     }
 
     /// Get the uniform data size in bytes.
-    pub fn uniform_size(&self) -> usize {
+    pub const fn uniform_size(&self) -> usize {
         self.uniform_size
     }
 
@@ -334,6 +354,12 @@ impl RuntimeEffect {
     }
 
     /// Compile to target language.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if lowering the effect to `target` fails (e.g. an
+    /// unsupported construct, or a `naga`/SPIR-V backend failure for
+    /// [`ShaderTarget::SpirV`]).
     pub fn compile_to(&self, target: ShaderTarget) -> Result<String, RuntimeEffectError> {
         match target {
             ShaderTarget::GlslEs300 | ShaderTarget::Glsl450 => {
@@ -372,7 +398,7 @@ impl RuntimeEffect {
                     } else if i > 0 {
                         out.push(' ');
                     }
-                    out.push_str(&format!("{:08x}", w));
+                    let _ = write!(out, "{w:08x}");
                 }
                 Ok(out)
             }
@@ -384,6 +410,11 @@ impl RuntimeEffect {
     /// Returns the native SPIR-V word array. The implementation lowers
     /// the effect to WGSL using the existing backend, then runs it
     /// through `naga` (parse -> validate -> SPIR-V emit).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the WGSL lowering, `naga` parse/validation, or
+    /// SPIR-V emission step fails.
     pub fn compile_to_spirv(&self) -> Result<Vec<u32>, RuntimeEffectError> {
         if let Some(cached) = self.spv_cache.get() {
             return Ok(cached.clone());
@@ -408,12 +439,12 @@ impl RuntimeEffect {
             naga::valid::Capabilities::all(),
         );
         let info = validator.validate(&module).map_err(|e| {
-            RuntimeEffectError::CompileError(format!("naga validation failed: {}", e))
+            RuntimeEffectError::CompileError(format!("naga validation failed: {e}"))
         })?;
 
         let options = naga::back::spv::Options::default();
         let words = naga::back::spv::write_vec(&module, &info, &options, None)
-            .map_err(|e| RuntimeEffectError::CompileError(format!("naga SPIR-V emit: {}", e)))?;
+            .map_err(|e| RuntimeEffectError::CompileError(format!("naga SPIR-V emit: {e}")))?;
 
         let _ = self.spv_cache.set(words.clone());
         Ok(words)
@@ -434,11 +465,12 @@ impl RuntimeEffect {
 
         // Uniforms
         for uniform in &self.uniforms {
-            output.push_str(&format!(
-                "uniform {} {};\n",
-                self.type_to_glsl(&uniform.ty),
+            let _ = writeln!(
+                output,
+                "uniform {} {};",
+                Self::type_to_glsl(uniform.ty),
                 uniform.name
-            ));
+            );
         }
         if !self.uniforms.is_empty() {
             output.push('\n');
@@ -446,14 +478,14 @@ impl RuntimeEffect {
 
         // Functions
         for func in &self.program.functions {
-            output.push_str(&self.function_to_glsl(func));
+            output.push_str(&Self::function_to_glsl(func));
             output.push('\n');
         }
 
         output
     }
 
-    fn type_to_glsl(&self, ty: &UniformType) -> &'static str {
+    const fn type_to_glsl(ty: UniformType) -> &'static str {
         match ty {
             UniformType::Float => "float",
             UniformType::Float2 => "vec2",
@@ -469,7 +501,7 @@ impl RuntimeEffect {
         }
     }
 
-    fn function_to_glsl(&self, func: &FnDecl) -> String {
+    fn function_to_glsl(func: &FnDecl) -> String {
         let mut output = String::new();
 
         // Return type and name
@@ -489,34 +521,33 @@ impl RuntimeEffect {
         }
 
         output.push_str(") ");
-        output.push_str(&self.stmt_to_glsl(&func.body, 0));
+        output.push_str(&Self::stmt_to_glsl(&func.body, 0));
 
         output
     }
 
-    fn stmt_to_glsl(&self, stmt: &Stmt, indent: usize) -> String {
+    fn stmt_to_glsl(stmt: &Stmt, indent: usize) -> String {
         let ind = "    ".repeat(indent);
         match stmt {
-            Stmt::Expr(expr) => format!("{}{};\n", ind, self.expr_to_glsl(expr)),
-            Stmt::VarDecl { ty, name, init } => {
-                if let Some(init) = init {
+            Stmt::Expr(expr) => format!("{}{};\n", ind, Self::expr_to_glsl(expr)),
+            Stmt::VarDecl { ty, name, init } => init.as_ref().map_or_else(
+                || format!("{}{} {};\n", ind, ty.glsl_name(), name),
+                |init| {
                     format!(
                         "{}{} {} = {};\n",
                         ind,
                         ty.glsl_name(),
                         name,
-                        self.expr_to_glsl(init)
+                        Self::expr_to_glsl(init)
                     )
-                } else {
-                    format!("{}{} {};\n", ind, ty.glsl_name(), name)
-                }
-            }
+                },
+            ),
             Stmt::Block(stmts) => {
-                let mut output = format!("{}{{\n", ind);
+                let mut output = format!("{ind}{{\n");
                 for s in stmts {
-                    output.push_str(&self.stmt_to_glsl(s, indent + 1));
+                    output.push_str(&Self::stmt_to_glsl(s, indent + 1));
                 }
-                output.push_str(&format!("{}}}\n", ind));
+                let _ = writeln!(output, "{ind}}}");
                 output
             }
             Stmt::If {
@@ -524,11 +555,11 @@ impl RuntimeEffect {
                 then_branch,
                 else_branch,
             } => {
-                let mut output = format!("{}if ({}) ", ind, self.expr_to_glsl(cond));
-                output.push_str(&self.stmt_to_glsl(then_branch, indent));
+                let mut output = format!("{}if ({}) ", ind, Self::expr_to_glsl(cond));
+                output.push_str(&Self::stmt_to_glsl(then_branch, indent));
                 if let Some(else_b) = else_branch {
-                    output.push_str(&format!("{}else ", ind));
-                    output.push_str(&self.stmt_to_glsl(else_b, indent));
+                    let _ = write!(output, "{ind}else ");
+                    output.push_str(&Self::stmt_to_glsl(else_b, indent));
                 }
                 output
             }
@@ -538,57 +569,54 @@ impl RuntimeEffect {
                 update,
                 body,
             } => {
-                let mut output = format!("{}for (", ind);
+                let mut output = format!("{ind}for (");
                 if let Some(init) = init {
-                    let init_str = self.stmt_to_glsl(init, 0);
+                    let init_str = Self::stmt_to_glsl(init, 0);
                     output.push_str(init_str.trim());
                 } else {
                     output.push(';');
                 }
                 output.push(' ');
                 if let Some(cond) = cond {
-                    output.push_str(&self.expr_to_glsl(cond));
+                    output.push_str(&Self::expr_to_glsl(cond));
                 }
                 output.push_str("; ");
                 if let Some(update) = update {
-                    output.push_str(&self.expr_to_glsl(update));
+                    output.push_str(&Self::expr_to_glsl(update));
                 }
                 output.push_str(") ");
-                output.push_str(&self.stmt_to_glsl(body, indent));
+                output.push_str(&Self::stmt_to_glsl(body, indent));
                 output
             }
             Stmt::While { cond, body } => {
-                let mut output = format!("{}while ({}) ", ind, self.expr_to_glsl(cond));
-                output.push_str(&self.stmt_to_glsl(body, indent));
+                let mut output = format!("{}while ({}) ", ind, Self::expr_to_glsl(cond));
+                output.push_str(&Self::stmt_to_glsl(body, indent));
                 output
             }
             Stmt::DoWhile { body, cond } => {
-                let mut output = format!("{}do ", ind);
-                output.push_str(&self.stmt_to_glsl(body, indent));
-                output.push_str(&format!(" while ({});\n", self.expr_to_glsl(cond)));
+                let mut output = format!("{ind}do ");
+                output.push_str(&Self::stmt_to_glsl(body, indent));
+                let _ = writeln!(output, " while ({});", Self::expr_to_glsl(cond));
                 output
             }
-            Stmt::Return(expr) => {
-                if let Some(expr) = expr {
-                    format!("{}return {};\n", ind, self.expr_to_glsl(expr))
-                } else {
-                    format!("{}return;\n", ind)
-                }
-            }
-            Stmt::Break => format!("{}break;\n", ind),
-            Stmt::Continue => format!("{}continue;\n", ind),
-            Stmt::Discard => format!("{}discard;\n", ind),
+            Stmt::Return(expr) => expr.as_ref().map_or_else(
+                || format!("{ind}return;\n"),
+                |expr| format!("{}return {};\n", ind, Self::expr_to_glsl(expr)),
+            ),
+            Stmt::Break => format!("{ind}break;\n"),
+            Stmt::Continue => format!("{ind}continue;\n"),
+            Stmt::Discard => format!("{ind}discard;\n"),
         }
     }
 
-    fn expr_to_glsl(&self, expr: &Expr) -> String {
+    fn expr_to_glsl(expr: &Expr) -> String {
         match expr {
             Expr::IntLit(n) => n.to_string(),
             Expr::FloatLit(n) => {
                 if n.fract() == 0.0 {
-                    format!("{}.0", n)
+                    format!("{n}.0")
                 } else {
-                    format!("{}", n)
+                    format!("{n}")
                 }
             }
             Expr::BoolLit(b) => b.to_string(),
@@ -596,16 +624,16 @@ impl RuntimeEffect {
             Expr::Binary { left, op, right } => {
                 format!(
                     "({} {} {})",
-                    self.expr_to_glsl(left),
+                    Self::expr_to_glsl(left),
                     op.glsl_str(),
-                    self.expr_to_glsl(right)
+                    Self::expr_to_glsl(right)
                 )
             }
             Expr::Unary { op, expr } => {
-                format!("({}{})", op.glsl_str(), self.expr_to_glsl(expr))
+                format!("({}{})", op.glsl_str(), Self::expr_to_glsl(expr))
             }
             Expr::Call { name, args } => {
-                let args_str: Vec<String> = args.iter().map(|a| self.expr_to_glsl(a)).collect();
+                let args_str: Vec<String> = args.iter().map(Self::expr_to_glsl).collect();
                 format!("{}({})", name, args_str.join(", "))
             }
             Expr::MethodCall {
@@ -616,23 +644,27 @@ impl RuntimeEffect {
                 // Child eval: emitted as a helper-call naming convention
                 // (`<child>_eval(...)`); GPU backends bind child shaders as
                 // functions/samplers under this name.
-                let args_str: Vec<String> = args.iter().map(|a| self.expr_to_glsl(a)).collect();
+                let args_str: Vec<String> = args.iter().map(Self::expr_to_glsl).collect();
                 format!(
                     "{}_{}({})",
-                    self.expr_to_glsl(receiver),
+                    Self::expr_to_glsl(receiver),
                     method,
                     args_str.join(", ")
                 )
             }
             Expr::Constructor { ty, args } => {
-                let args_str: Vec<String> = args.iter().map(|a| self.expr_to_glsl(a)).collect();
+                let args_str: Vec<String> = args.iter().map(Self::expr_to_glsl).collect();
                 format!("{}({})", ty.glsl_name(), args_str.join(", "))
             }
             Expr::Field { expr, field } => {
-                format!("{}.{}", self.expr_to_glsl(expr), field)
+                format!("{}.{}", Self::expr_to_glsl(expr), field)
             }
             Expr::Index { expr, index } => {
-                format!("{}[{}]", self.expr_to_glsl(expr), self.expr_to_glsl(index))
+                format!(
+                    "{}[{}]",
+                    Self::expr_to_glsl(expr),
+                    Self::expr_to_glsl(index)
+                )
             }
             Expr::Ternary {
                 cond,
@@ -641,30 +673,30 @@ impl RuntimeEffect {
             } => {
                 format!(
                     "({} ? {} : {})",
-                    self.expr_to_glsl(cond),
-                    self.expr_to_glsl(then_expr),
-                    self.expr_to_glsl(else_expr)
+                    Self::expr_to_glsl(cond),
+                    Self::expr_to_glsl(then_expr),
+                    Self::expr_to_glsl(else_expr)
                 )
             }
             Expr::Assign { target, value } => {
                 format!(
                     "({} = {})",
-                    self.expr_to_glsl(target),
-                    self.expr_to_glsl(value)
+                    Self::expr_to_glsl(target),
+                    Self::expr_to_glsl(value)
                 )
             }
             Expr::CompoundAssign { target, op, value } => {
                 format!(
                     "({} {}= {})",
-                    self.expr_to_glsl(target),
+                    Self::expr_to_glsl(target),
                     op.glsl_str(),
-                    self.expr_to_glsl(value)
+                    Self::expr_to_glsl(value)
                 )
             }
             Expr::PostIncDec { expr, inc } => {
                 format!(
                     "{}{}",
-                    self.expr_to_glsl(expr),
+                    Self::expr_to_glsl(expr),
                     if *inc { "++" } else { "--" }
                 )
             }
@@ -672,7 +704,7 @@ impl RuntimeEffect {
                 format!(
                     "{}{}",
                     if *inc { "++" } else { "--" },
-                    self.expr_to_glsl(expr)
+                    Self::expr_to_glsl(expr)
                 )
             }
         }
@@ -686,11 +718,12 @@ impl RuntimeEffect {
         if !self.uniforms.is_empty() {
             output.push_str("struct Uniforms {\n");
             for uniform in &self.uniforms {
-                output.push_str(&format!(
-                    "    {}: {},\n",
+                let _ = writeln!(
+                    output,
+                    "    {}: {},",
                     uniform.name,
-                    self.type_to_wgsl(&uniform.ty)
-                ));
+                    Self::type_to_wgsl(uniform.ty)
+                );
             }
             output.push_str("};\n\n");
             output.push_str("@group(0) @binding(0) var<uniform> uniforms: Uniforms;\n\n");
@@ -698,14 +731,14 @@ impl RuntimeEffect {
 
         // Functions
         for func in &self.program.functions {
-            output.push_str(&self.function_to_wgsl(func));
+            output.push_str(&Self::function_to_wgsl(func));
             output.push('\n');
         }
 
         output
     }
 
-    fn type_to_wgsl(&self, ty: &UniformType) -> &'static str {
+    const fn type_to_wgsl(ty: UniformType) -> &'static str {
         match ty {
             UniformType::Float => "f32",
             UniformType::Float2 => "vec2<f32>",
@@ -730,7 +763,7 @@ impl RuntimeEffect {
     /// 2. A synthetic `@fragment` entry point is appended so naga's
     ///    validator has something to anchor the module on. The real
     ///    `main` function is preserved and called from the wrapper.
-    /// 3. Child-shader uniforms (texture_2d bindings) are skipped from
+    /// 3. Child-shader uniforms (`texture_2d` bindings) are skipped from
     ///    the uniform struct — they require separate texture/sampler
     ///    bindings that the WGSL backend does not currently emit.
     fn to_wgsl_for_naga(&self) -> String {
@@ -749,11 +782,12 @@ impl RuntimeEffect {
         if !scalar_uniforms.is_empty() {
             output.push_str("struct Uniforms {\n");
             for uniform in &scalar_uniforms {
-                output.push_str(&format!(
-                    "    {}: {},\n",
+                let _ = writeln!(
+                    output,
+                    "    {}: {},",
                     uniform.name,
-                    self.type_to_wgsl(&uniform.ty)
-                ));
+                    Self::type_to_wgsl(uniform.ty)
+                );
             }
             output.push_str("}\n\n");
             output.push_str("@group(0) @binding(0) var<uniform> uniforms: Uniforms;\n\n");
@@ -767,16 +801,13 @@ impl RuntimeEffect {
         // validates the module.
         let mut uniform_binds = String::new();
         for u in &scalar_uniforms {
-            uniform_binds.push_str(&format!(
-                "    let {} = uniforms.{};\n",
-                u.name, u.name
-            ));
+            let _ = writeln!(uniform_binds, "    let {} = uniforms.{};", u.name, u.name);
         }
 
         // Emit user functions with f16 rewritten to f32 and the
         // uniform-binding prelude injected after the opening brace.
         for func in &self.program.functions {
-            let func_wgsl = self.function_to_wgsl(func);
+            let func_wgsl = Self::function_to_wgsl(func);
             let rewritten = rewrite_f16_to_f32(&func_wgsl);
             if uniform_binds.is_empty() {
                 output.push_str(&rewritten);
@@ -813,10 +844,7 @@ impl RuntimeEffect {
                 .iter()
                 .map(|p| match p.ty {
                     SkslType::Vec2 | SkslType::Half2 => "_pos".to_string(),
-                    SkslType::Vec4 | SkslType::Half4 => {
-                        "vec4<f32>(0.0, 0.0, 0.0, 1.0)".to_string()
-                    }
-                    SkslType::Float | SkslType::Half => "0.0".to_string(),
+                    SkslType::Vec4 | SkslType::Half4 => "vec4<f32>(0.0, 0.0, 0.0, 1.0)".to_string(),
                     SkslType::Int => "0".to_string(),
                     SkslType::Bool => "false".to_string(),
                     _ => "0.0".to_string(),
@@ -827,15 +855,13 @@ impl RuntimeEffect {
             // explicit constructor if needed.
             let returns_half = matches!(main.return_type, SkslType::Half4);
             if returns_half {
-                output.push_str(&format!(
-                    "    return vec4<f32>(main({}));\n",
+                let _ = writeln!(
+                    output,
+                    "    return vec4<f32>(main({}));",
                     call_args.join(", ")
-                ));
+                );
             } else {
-                output.push_str(&format!(
-                    "    return main({});\n",
-                    call_args.join(", ")
-                ));
+                let _ = writeln!(output, "    return main({});", call_args.join(", "));
             }
             output.push_str("}\n");
         }
@@ -843,7 +869,7 @@ impl RuntimeEffect {
         output
     }
 
-    fn function_to_wgsl(&self, func: &FnDecl) -> String {
+    fn function_to_wgsl(func: &FnDecl) -> String {
         let mut output = String::new();
 
         output.push_str("fn ");
@@ -866,7 +892,7 @@ impl RuntimeEffect {
         // Body (simplified)
         if let Stmt::Block(stmts) = &func.body {
             for stmt in stmts {
-                output.push_str(&self.stmt_to_wgsl(stmt, 1));
+                output.push_str(&Self::stmt_to_wgsl(stmt, 1));
             }
         }
 
@@ -874,29 +900,32 @@ impl RuntimeEffect {
         output
     }
 
-    fn stmt_to_wgsl(&self, stmt: &Stmt, indent: usize) -> String {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match arm per Stmt variant, mirroring stmt_to_glsl/stmt_to_msl; splitting would obscure that pairing"
+    )]
+    fn stmt_to_wgsl(stmt: &Stmt, indent: usize) -> String {
         let ind = "    ".repeat(indent);
         match stmt {
-            Stmt::Expr(expr) => format!("{}{};\n", ind, self.expr_to_wgsl(expr)),
-            Stmt::VarDecl { ty, name, init } => {
-                if let Some(init) = init {
+            Stmt::Expr(expr) => format!("{}{};\n", ind, Self::expr_to_wgsl(expr)),
+            Stmt::VarDecl { ty, name, init } => init.as_ref().map_or_else(
+                || format!("{}var {}: {};\n", ind, name, ty.wgsl_name()),
+                |init| {
                     format!(
                         "{}var {}: {} = {};\n",
                         ind,
                         name,
                         ty.wgsl_name(),
-                        self.expr_to_wgsl(init)
+                        Self::expr_to_wgsl(init)
                     )
-                } else {
-                    format!("{}var {}: {};\n", ind, name, ty.wgsl_name())
-                }
-            }
+                },
+            ),
             Stmt::Block(stmts) => {
-                let mut output = format!("{}{{\n", ind);
+                let mut output = format!("{ind}{{\n");
                 for s in stmts {
-                    output.push_str(&self.stmt_to_wgsl(s, indent + 1));
+                    output.push_str(&Self::stmt_to_wgsl(s, indent + 1));
                 }
-                output.push_str(&format!("{}}}\n", ind));
+                let _ = writeln!(output, "{ind}}}");
                 output
             }
             Stmt::If {
@@ -904,11 +933,11 @@ impl RuntimeEffect {
                 then_branch,
                 else_branch,
             } => {
-                let mut output = format!("{}if ({}) ", ind, self.expr_to_wgsl(cond));
-                output.push_str(&self.stmt_to_wgsl(then_branch, indent));
+                let mut output = format!("{}if ({}) ", ind, Self::expr_to_wgsl(cond));
+                output.push_str(&Self::stmt_to_wgsl(then_branch, indent));
                 if let Some(else_b) = else_branch {
-                    output.push_str(&format!("{}else ", ind));
-                    output.push_str(&self.stmt_to_wgsl(else_b, indent));
+                    let _ = write!(output, "{ind}else ");
+                    output.push_str(&Self::stmt_to_wgsl(else_b, indent));
                 }
                 output
             }
@@ -918,80 +947,79 @@ impl RuntimeEffect {
                 update,
                 body,
             } => {
-                let mut output = format!("{}for (", ind);
+                let mut output = format!("{ind}for (");
                 if let Some(init) = init {
-                    let init_str = self.stmt_to_wgsl(init, 0);
+                    let init_str = Self::stmt_to_wgsl(init, 0);
                     output.push_str(init_str.trim());
                 } else {
                     output.push(';');
                 }
                 output.push(' ');
                 if let Some(cond) = cond {
-                    output.push_str(&self.expr_to_wgsl(cond));
+                    output.push_str(&Self::expr_to_wgsl(cond));
                 }
                 output.push_str("; ");
                 if let Some(update) = update {
-                    output.push_str(&self.expr_to_wgsl(update));
+                    output.push_str(&Self::expr_to_wgsl(update));
                 }
                 output.push_str(") ");
-                output.push_str(&self.stmt_to_wgsl(body, indent));
+                output.push_str(&Self::stmt_to_wgsl(body, indent));
                 output
             }
             Stmt::While { cond, body } => {
-                let mut output = format!("{}loop {{\n", ind);
-                output.push_str(&format!(
-                    "{}    if (!{}) {{ break; }}\n",
+                let mut output = format!("{ind}loop {{\n");
+                let _ = writeln!(
+                    output,
+                    "{}    if (!{}) {{ break; }}",
                     ind,
-                    self.expr_to_wgsl(cond)
-                ));
+                    Self::expr_to_wgsl(cond)
+                );
                 if let Stmt::Block(stmts) = body.as_ref() {
                     for s in stmts {
-                        output.push_str(&self.stmt_to_wgsl(s, indent + 1));
+                        output.push_str(&Self::stmt_to_wgsl(s, indent + 1));
                     }
                 } else {
-                    output.push_str(&self.stmt_to_wgsl(body, indent + 1));
+                    output.push_str(&Self::stmt_to_wgsl(body, indent + 1));
                 }
-                output.push_str(&format!("{}}}\n", ind));
+                let _ = writeln!(output, "{ind}}}");
                 output
             }
             Stmt::DoWhile { body, cond } => {
-                let mut output = format!("{}loop {{\n", ind);
+                let mut output = format!("{ind}loop {{\n");
                 if let Stmt::Block(stmts) = body.as_ref() {
                     for s in stmts {
-                        output.push_str(&self.stmt_to_wgsl(s, indent + 1));
+                        output.push_str(&Self::stmt_to_wgsl(s, indent + 1));
                     }
                 } else {
-                    output.push_str(&self.stmt_to_wgsl(body, indent + 1));
+                    output.push_str(&Self::stmt_to_wgsl(body, indent + 1));
                 }
-                output.push_str(&format!(
-                    "{}    if (!{}) {{ break; }}\n",
+                let _ = writeln!(
+                    output,
+                    "{}    if (!{}) {{ break; }}",
                     ind,
-                    self.expr_to_wgsl(cond)
-                ));
-                output.push_str(&format!("{}}}\n", ind));
+                    Self::expr_to_wgsl(cond)
+                );
+                let _ = writeln!(output, "{ind}}}");
                 output
             }
-            Stmt::Return(expr) => {
-                if let Some(expr) = expr {
-                    format!("{}return {};\n", ind, self.expr_to_wgsl(expr))
-                } else {
-                    format!("{}return;\n", ind)
-                }
-            }
-            Stmt::Break => format!("{}break;\n", ind),
-            Stmt::Continue => format!("{}continue;\n", ind),
-            Stmt::Discard => format!("{}discard;\n", ind),
+            Stmt::Return(expr) => expr.as_ref().map_or_else(
+                || format!("{ind}return;\n"),
+                |expr| format!("{}return {};\n", ind, Self::expr_to_wgsl(expr)),
+            ),
+            Stmt::Break => format!("{ind}break;\n"),
+            Stmt::Continue => format!("{ind}continue;\n"),
+            Stmt::Discard => format!("{ind}discard;\n"),
         }
     }
 
-    fn expr_to_wgsl(&self, expr: &Expr) -> String {
+    fn expr_to_wgsl(expr: &Expr) -> String {
         match expr {
-            Expr::IntLit(n) => format!("{}i", n),
+            Expr::IntLit(n) => format!("{n}i"),
             Expr::FloatLit(n) => {
                 if n.fract() == 0.0 {
-                    format!("{}.0", n)
+                    format!("{n}.0")
                 } else {
-                    format!("{}", n)
+                    format!("{n}")
                 }
             }
             Expr::BoolLit(b) => b.to_string(),
@@ -999,16 +1027,16 @@ impl RuntimeEffect {
             Expr::Binary { left, op, right } => {
                 format!(
                     "({} {} {})",
-                    self.expr_to_wgsl(left),
+                    Self::expr_to_wgsl(left),
                     op.glsl_str(),
-                    self.expr_to_wgsl(right)
+                    Self::expr_to_wgsl(right)
                 )
             }
             Expr::Unary { op, expr } => {
-                format!("({}{})", op.glsl_str(), self.expr_to_wgsl(expr))
+                format!("({}{})", op.glsl_str(), Self::expr_to_wgsl(expr))
             }
             Expr::Call { name, args } => {
-                let args_str: Vec<String> = args.iter().map(|a| self.expr_to_wgsl(a)).collect();
+                let args_str: Vec<String> = args.iter().map(Self::expr_to_wgsl).collect();
                 format!("{}({})", name, args_str.join(", "))
             }
             Expr::MethodCall {
@@ -1017,26 +1045,26 @@ impl RuntimeEffect {
                 args,
             } => {
                 // Child eval helper-call naming convention (see GLSL emitter).
-                let args_str: Vec<String> = args.iter().map(|a| self.expr_to_wgsl(a)).collect();
+                let args_str: Vec<String> = args.iter().map(Self::expr_to_wgsl).collect();
                 format!(
                     "{}_{}({})",
-                    self.expr_to_wgsl(receiver),
+                    Self::expr_to_wgsl(receiver),
                     method,
                     args_str.join(", ")
                 )
             }
             Expr::Constructor { ty, args } => {
-                let args_str: Vec<String> = args.iter().map(|a| self.expr_to_wgsl(a)).collect();
+                let args_str: Vec<String> = args.iter().map(Self::expr_to_wgsl).collect();
                 format!("{}({})", ty.wgsl_name(), args_str.join(", "))
             }
             Expr::Field { expr, field } => {
-                format!("{}.{}", self.expr_to_wgsl(expr), field)
+                format!("{}.{}", Self::expr_to_wgsl(expr), field)
             }
             Expr::Index { expr, index } => {
                 format!(
                     "{}[{}]",
-                    self.expr_to_wgsl(expr),
-                    self.expr_to_wgsl(index)
+                    Self::expr_to_wgsl(expr),
+                    Self::expr_to_wgsl(index)
                 )
             }
             Expr::Ternary {
@@ -1046,30 +1074,30 @@ impl RuntimeEffect {
             } => {
                 format!(
                     "select({}, {}, {})",
-                    self.expr_to_wgsl(else_expr),
-                    self.expr_to_wgsl(then_expr),
-                    self.expr_to_wgsl(cond)
+                    Self::expr_to_wgsl(else_expr),
+                    Self::expr_to_wgsl(then_expr),
+                    Self::expr_to_wgsl(cond)
                 )
             }
             Expr::Assign { target, value } => {
                 format!(
                     "({} = {})",
-                    self.expr_to_wgsl(target),
-                    self.expr_to_wgsl(value)
+                    Self::expr_to_wgsl(target),
+                    Self::expr_to_wgsl(value)
                 )
             }
             Expr::CompoundAssign { target, op, value } => {
                 format!(
                     "({} {}= {})",
-                    self.expr_to_wgsl(target),
+                    Self::expr_to_wgsl(target),
                     op.glsl_str(),
-                    self.expr_to_wgsl(value)
+                    Self::expr_to_wgsl(value)
                 )
             }
             Expr::PostIncDec { expr, inc } => {
                 format!(
                     "{}{}",
-                    self.expr_to_wgsl(expr),
+                    Self::expr_to_wgsl(expr),
                     if *inc { "++" } else { "--" }
                 )
             }
@@ -1077,7 +1105,7 @@ impl RuntimeEffect {
                 format!(
                     "{}{}",
                     if *inc { "++" } else { "--" },
-                    self.expr_to_wgsl(expr)
+                    Self::expr_to_wgsl(expr)
                 )
             }
         }
@@ -1094,25 +1122,26 @@ impl RuntimeEffect {
         if !self.uniforms.is_empty() {
             output.push_str("struct Uniforms {\n");
             for uniform in &self.uniforms {
-                output.push_str(&format!(
-                    "    {} {};\n",
-                    self.type_to_msl(&uniform.ty),
+                let _ = writeln!(
+                    output,
+                    "    {} {};",
+                    Self::type_to_msl(uniform.ty),
                     uniform.name
-                ));
+                );
             }
             output.push_str("};\n\n");
         }
 
         // Functions
         for func in &self.program.functions {
-            output.push_str(&self.function_to_msl(func));
+            output.push_str(&Self::function_to_msl(func));
             output.push('\n');
         }
 
         output
     }
 
-    fn type_to_msl(&self, ty: &UniformType) -> &'static str {
+    const fn type_to_msl(ty: UniformType) -> &'static str {
         match ty {
             UniformType::Float => "float",
             UniformType::Float2 => "float2",
@@ -1128,11 +1157,11 @@ impl RuntimeEffect {
         }
     }
 
-    fn function_to_msl(&self, func: &FnDecl) -> String {
+    fn function_to_msl(func: &FnDecl) -> String {
         let mut output = String::new();
 
         // Use Metal types
-        let ret_type = self.sksl_type_to_msl(&func.return_type);
+        let ret_type = Self::sksl_type_to_msl(&func.return_type);
 
         output.push_str(ret_type);
         output.push(' ');
@@ -1143,20 +1172,19 @@ impl RuntimeEffect {
             if i > 0 {
                 output.push_str(", ");
             }
-            output.push_str(self.sksl_type_to_msl(&param.ty));
+            output.push_str(Self::sksl_type_to_msl(&param.ty));
             output.push(' ');
             output.push_str(&param.name);
         }
 
         output.push_str(") ");
-        output.push_str(&self.stmt_to_msl(&func.body, 0));
+        output.push_str(&Self::stmt_to_msl(&func.body, 0));
 
         output
     }
 
-    fn sksl_type_to_msl(&self, ty: &SkslType) -> &'static str {
+    const fn sksl_type_to_msl(ty: &SkslType) -> &'static str {
         match ty {
-            SkslType::Vec4 | SkslType::Half4 => "float4",
             SkslType::Vec3 | SkslType::Half3 => "float3",
             SkslType::Vec2 | SkslType::Half2 => "float2",
             SkslType::Float | SkslType::Half => "float",
@@ -1166,33 +1194,33 @@ impl RuntimeEffect {
             SkslType::Mat3 => "float3x3",
             SkslType::Mat4 => "float4x4",
             SkslType::Void => "void",
+            // Vec4/Half4 and any other/future type default to float4.
             _ => "float4",
         }
     }
 
-    fn stmt_to_msl(&self, stmt: &Stmt, indent: usize) -> String {
+    fn stmt_to_msl(stmt: &Stmt, indent: usize) -> String {
         let ind = "    ".repeat(indent);
         match stmt {
-            Stmt::Expr(expr) => format!("{}{};\n", ind, self.expr_to_msl(expr)),
-            Stmt::VarDecl { ty, name, init } => {
-                if let Some(init) = init {
+            Stmt::Expr(expr) => format!("{}{};\n", ind, Self::expr_to_msl(expr)),
+            Stmt::VarDecl { ty, name, init } => init.as_ref().map_or_else(
+                || format!("{}{} {};\n", ind, Self::sksl_type_to_msl(ty), name),
+                |init| {
                     format!(
                         "{}{} {} = {};\n",
                         ind,
-                        self.sksl_type_to_msl(ty),
+                        Self::sksl_type_to_msl(ty),
                         name,
-                        self.expr_to_msl(init)
+                        Self::expr_to_msl(init)
                     )
-                } else {
-                    format!("{}{} {};\n", ind, self.sksl_type_to_msl(ty), name)
-                }
-            }
+                },
+            ),
             Stmt::Block(stmts) => {
-                let mut output = format!("{}{{\n", ind);
+                let mut output = format!("{ind}{{\n");
                 for s in stmts {
-                    output.push_str(&self.stmt_to_msl(s, indent + 1));
+                    output.push_str(&Self::stmt_to_msl(s, indent + 1));
                 }
-                output.push_str(&format!("{}}}\n", ind));
+                let _ = writeln!(output, "{ind}}}");
                 output
             }
             Stmt::If {
@@ -1200,11 +1228,11 @@ impl RuntimeEffect {
                 then_branch,
                 else_branch,
             } => {
-                let mut output = format!("{}if ({}) ", ind, self.expr_to_msl(cond));
-                output.push_str(&self.stmt_to_msl(then_branch, indent));
+                let mut output = format!("{}if ({}) ", ind, Self::expr_to_msl(cond));
+                output.push_str(&Self::stmt_to_msl(then_branch, indent));
                 if let Some(else_b) = else_branch {
-                    output.push_str(&format!("{}else ", ind));
-                    output.push_str(&self.stmt_to_msl(else_b, indent));
+                    let _ = write!(output, "{ind}else ");
+                    output.push_str(&Self::stmt_to_msl(else_b, indent));
                 }
                 output
             }
@@ -1214,57 +1242,54 @@ impl RuntimeEffect {
                 update,
                 body,
             } => {
-                let mut output = format!("{}for (", ind);
+                let mut output = format!("{ind}for (");
                 if let Some(init) = init {
-                    let init_str = self.stmt_to_msl(init, 0);
+                    let init_str = Self::stmt_to_msl(init, 0);
                     output.push_str(init_str.trim());
                 } else {
                     output.push(';');
                 }
                 output.push(' ');
                 if let Some(cond) = cond {
-                    output.push_str(&self.expr_to_msl(cond));
+                    output.push_str(&Self::expr_to_msl(cond));
                 }
                 output.push_str("; ");
                 if let Some(update) = update {
-                    output.push_str(&self.expr_to_msl(update));
+                    output.push_str(&Self::expr_to_msl(update));
                 }
                 output.push_str(") ");
-                output.push_str(&self.stmt_to_msl(body, indent));
+                output.push_str(&Self::stmt_to_msl(body, indent));
                 output
             }
             Stmt::While { cond, body } => {
-                let mut output = format!("{}while ({}) ", ind, self.expr_to_msl(cond));
-                output.push_str(&self.stmt_to_msl(body, indent));
+                let mut output = format!("{}while ({}) ", ind, Self::expr_to_msl(cond));
+                output.push_str(&Self::stmt_to_msl(body, indent));
                 output
             }
             Stmt::DoWhile { body, cond } => {
-                let mut output = format!("{}do ", ind);
-                output.push_str(&self.stmt_to_msl(body, indent));
-                output.push_str(&format!(" while ({});\n", self.expr_to_msl(cond)));
+                let mut output = format!("{ind}do ");
+                output.push_str(&Self::stmt_to_msl(body, indent));
+                let _ = writeln!(output, " while ({});", Self::expr_to_msl(cond));
                 output
             }
-            Stmt::Return(expr) => {
-                if let Some(expr) = expr {
-                    format!("{}return {};\n", ind, self.expr_to_msl(expr))
-                } else {
-                    format!("{}return;\n", ind)
-                }
-            }
-            Stmt::Break => format!("{}break;\n", ind),
-            Stmt::Continue => format!("{}continue;\n", ind),
-            Stmt::Discard => format!("{}discard_fragment();\n", ind),
+            Stmt::Return(expr) => expr.as_ref().map_or_else(
+                || format!("{ind}return;\n"),
+                |expr| format!("{}return {};\n", ind, Self::expr_to_msl(expr)),
+            ),
+            Stmt::Break => format!("{ind}break;\n"),
+            Stmt::Continue => format!("{ind}continue;\n"),
+            Stmt::Discard => format!("{ind}discard_fragment();\n"),
         }
     }
 
-    fn expr_to_msl(&self, expr: &Expr) -> String {
+    fn expr_to_msl(expr: &Expr) -> String {
         match expr {
             Expr::IntLit(n) => n.to_string(),
             Expr::FloatLit(n) => {
                 if n.fract() == 0.0 {
-                    format!("{}.0", n)
+                    format!("{n}.0")
                 } else {
-                    format!("{}", n)
+                    format!("{n}")
                 }
             }
             Expr::BoolLit(b) => b.to_string(),
@@ -1272,16 +1297,16 @@ impl RuntimeEffect {
             Expr::Binary { left, op, right } => {
                 format!(
                     "({} {} {})",
-                    self.expr_to_msl(left),
+                    Self::expr_to_msl(left),
                     op.glsl_str(),
-                    self.expr_to_msl(right)
+                    Self::expr_to_msl(right)
                 )
             }
             Expr::Unary { op, expr } => {
-                format!("({}{})", op.glsl_str(), self.expr_to_msl(expr))
+                format!("({}{})", op.glsl_str(), Self::expr_to_msl(expr))
             }
             Expr::Call { name, args } => {
-                let args_str: Vec<String> = args.iter().map(|a| self.expr_to_msl(a)).collect();
+                let args_str: Vec<String> = args.iter().map(Self::expr_to_msl).collect();
                 format!("{}({})", name, args_str.join(", "))
             }
             Expr::MethodCall {
@@ -1290,23 +1315,23 @@ impl RuntimeEffect {
                 args,
             } => {
                 // Child eval helper-call naming convention (see GLSL emitter).
-                let args_str: Vec<String> = args.iter().map(|a| self.expr_to_msl(a)).collect();
+                let args_str: Vec<String> = args.iter().map(Self::expr_to_msl).collect();
                 format!(
                     "{}_{}({})",
-                    self.expr_to_msl(receiver),
+                    Self::expr_to_msl(receiver),
                     method,
                     args_str.join(", ")
                 )
             }
             Expr::Constructor { ty, args } => {
-                let args_str: Vec<String> = args.iter().map(|a| self.expr_to_msl(a)).collect();
-                format!("{}({})", self.sksl_type_to_msl(ty), args_str.join(", "))
+                let args_str: Vec<String> = args.iter().map(Self::expr_to_msl).collect();
+                format!("{}({})", Self::sksl_type_to_msl(ty), args_str.join(", "))
             }
             Expr::Field { expr, field } => {
-                format!("{}.{}", self.expr_to_msl(expr), field)
+                format!("{}.{}", Self::expr_to_msl(expr), field)
             }
             Expr::Index { expr, index } => {
-                format!("{}[{}]", self.expr_to_msl(expr), self.expr_to_msl(index))
+                format!("{}[{}]", Self::expr_to_msl(expr), Self::expr_to_msl(index))
             }
             Expr::Ternary {
                 cond,
@@ -1315,30 +1340,30 @@ impl RuntimeEffect {
             } => {
                 format!(
                     "({} ? {} : {})",
-                    self.expr_to_msl(cond),
-                    self.expr_to_msl(then_expr),
-                    self.expr_to_msl(else_expr)
+                    Self::expr_to_msl(cond),
+                    Self::expr_to_msl(then_expr),
+                    Self::expr_to_msl(else_expr)
                 )
             }
             Expr::Assign { target, value } => {
                 format!(
                     "({} = {})",
-                    self.expr_to_msl(target),
-                    self.expr_to_msl(value)
+                    Self::expr_to_msl(target),
+                    Self::expr_to_msl(value)
                 )
             }
             Expr::CompoundAssign { target, op, value } => {
                 format!(
                     "({} {}= {})",
-                    self.expr_to_msl(target),
+                    Self::expr_to_msl(target),
                     op.glsl_str(),
-                    self.expr_to_msl(value)
+                    Self::expr_to_msl(value)
                 )
             }
             Expr::PostIncDec { expr, inc } => {
                 format!(
                     "{}{}",
-                    self.expr_to_msl(expr),
+                    Self::expr_to_msl(expr),
                     if *inc { "++" } else { "--" }
                 )
             }
@@ -1346,7 +1371,7 @@ impl RuntimeEffect {
                 format!(
                     "{}{}",
                     if *inc { "++" } else { "--" },
-                    self.expr_to_msl(expr)
+                    Self::expr_to_msl(expr)
                 )
             }
         }
@@ -1356,15 +1381,15 @@ impl RuntimeEffect {
     /// Value. Used by the software fallback when running shaders without a
     /// GPU backend. Panics on malformed buffers are impossible — bounds are
     /// checked via `get` reads.
-    fn decode_uniform(&self, uniform: &Uniform, data: &[u8]) -> SkslValue {
-        let read_f32 = |off: usize| -> f32 {
+    fn decode_uniform(uniform: &Uniform, data: &[u8]) -> SkslValue {
+        let read_scalar = |off: usize| -> f32 {
             if off + 4 <= data.len() {
                 f32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
             } else {
                 0.0
             }
         };
-        let read_i32 = |off: usize| -> i32 {
+        let read_int = |off: usize| -> i32 {
             if off + 4 <= data.len() {
                 i32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
             } else {
@@ -1373,60 +1398,63 @@ impl RuntimeEffect {
         };
         let o = uniform.offset;
         match uniform.ty {
-            UniformType::Float => SkslValue::Float(read_f32(o)),
-            UniformType::Float2 => SkslValue::Vec2([read_f32(o), read_f32(o + 4)]),
+            UniformType::Float => SkslValue::Float(read_scalar(o)),
+            UniformType::Float2 => SkslValue::Vec2([read_scalar(o), read_scalar(o + 4)]),
             UniformType::Float3 => {
-                SkslValue::Vec3([read_f32(o), read_f32(o + 4), read_f32(o + 8)])
+                SkslValue::Vec3([read_scalar(o), read_scalar(o + 4), read_scalar(o + 8)])
             }
             UniformType::Float4 => SkslValue::Vec4([
-                read_f32(o),
-                read_f32(o + 4),
-                read_f32(o + 8),
-                read_f32(o + 12),
+                read_scalar(o),
+                read_scalar(o + 4),
+                read_scalar(o + 8),
+                read_scalar(o + 12),
             ]),
             UniformType::Float2x2 => {
                 let mut m = [0.0f32; 4];
                 for (i, slot) in m.iter_mut().enumerate() {
-                    *slot = read_f32(o + i * 4);
+                    *slot = read_scalar(o + i * 4);
                 }
                 SkslValue::Mat2(m)
             }
             UniformType::Float3x3 => {
                 let mut m = [0.0f32; 9];
                 for (i, slot) in m.iter_mut().enumerate() {
-                    *slot = read_f32(o + i * 4);
+                    *slot = read_scalar(o + i * 4);
                 }
                 SkslValue::Mat3(m)
             }
             UniformType::Float4x4 => {
                 let mut m = [0.0f32; 16];
                 for (i, slot) in m.iter_mut().enumerate() {
-                    *slot = read_f32(o + i * 4);
+                    *slot = read_scalar(o + i * 4);
                 }
                 SkslValue::Mat4(m)
             }
-            UniformType::Int => SkslValue::Int(read_i32(o)),
+            UniformType::Int => SkslValue::Int(read_int(o)),
             UniformType::Int2 => {
                 // No vec2<i32> in the interpreter — fall back to float vec.
-                SkslValue::Vec2([read_i32(o) as f32, read_i32(o + 4) as f32])
+                SkslValue::Vec2([
+                    scalar_from_i32(read_int(o)),
+                    scalar_from_i32(read_int(o + 4)),
+                ])
             }
             UniformType::Int3 => SkslValue::Vec3([
-                read_i32(o) as f32,
-                read_i32(o + 4) as f32,
-                read_i32(o + 8) as f32,
+                scalar_from_i32(read_int(o)),
+                scalar_from_i32(read_int(o + 4)),
+                scalar_from_i32(read_int(o + 8)),
             ]),
             UniformType::Int4 => SkslValue::Vec4([
-                read_i32(o) as f32,
-                read_i32(o + 4) as f32,
-                read_i32(o + 8) as f32,
-                read_i32(o + 12) as f32,
+                scalar_from_i32(read_int(o)),
+                scalar_from_i32(read_int(o + 4)),
+                scalar_from_i32(read_int(o + 8)),
+                scalar_from_i32(read_int(o + 12)),
             ]),
         }
     }
 
     /// Build an interpreter seeded with this effect's functions, uniforms,
-    /// and children. Used by the software fallback paths for RuntimeShader
-    /// and RuntimeColorFilter. The returned interpreter borrows function
+    /// and children. Used by the software fallback paths for `RuntimeShader`
+    /// and `RuntimeColorFilter`. The returned interpreter borrows function
     /// bodies from `self.program`, so it must not outlive this effect.
     fn build_interp<'a>(
         &'a self,
@@ -1445,7 +1473,7 @@ impl RuntimeEffect {
             if self.children.iter().any(|c| c.name == u.name) {
                 continue;
             }
-            let v = self.decode_uniform(u, uniform_data.data());
+            let v = Self::decode_uniform(u, uniform_data.data());
             interp.uniforms.insert(u.name.clone(), v);
         }
         interp.children = children.to_vec();
@@ -1455,7 +1483,12 @@ impl RuntimeEffect {
         interp
     }
 
-    /// Create a RuntimeShader from this effect.
+    /// Create a `RuntimeShader` from this effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `children` does not have exactly as many
+    /// entries as the effect declares child shaders/color-filters.
     pub fn make_shader(
         self: &Arc<Self>,
         uniforms: &UniformData,
@@ -1475,7 +1508,13 @@ impl RuntimeEffect {
         })
     }
 
-    /// Create a RuntimeColorFilter from this effect.
+    /// Create a `RuntimeColorFilter` from this effect.
+    ///
+    /// # Errors
+    ///
+    /// Currently infallible, but returns `Result` for API symmetry with
+    /// [`Self::make_shader`] and to allow future validation without a
+    /// breaking signature change.
     pub fn make_color_filter(
         self: &Arc<Self>,
         uniforms: &UniformData,
@@ -1498,7 +1537,7 @@ enum EffectKind {
 /// Validate the entry point for the given effect kind.
 /// Rewrite `f16` type tokens to `f32` in a WGSL source string.
 ///
-/// The WGSL backend emits `f16` for SkSL `half` types (the WGSL
+/// The WGSL backend emits `f16` for `SkSL` `half` types (the WGSL
 /// extension name is `f16`). naga + SPIR-V targets that don't enable
 /// the `Float16` capability can't lower those, so for the SPIR-V path
 /// we downgrade the precision to f32. This is a lossy transform but
@@ -1526,7 +1565,7 @@ fn rewrite_f16_to_f32(src: &str) -> String {
     out
 }
 
-fn is_ident_byte(b: u8) -> bool {
+const fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
@@ -1618,6 +1657,7 @@ pub struct UniformData {
 
 impl UniformData {
     /// Create new uniform data with specified size.
+    #[must_use]
     pub fn new(size: usize) -> Self {
         Self {
             data: vec![0u8; size],
@@ -1670,21 +1710,24 @@ impl UniformData {
     }
 
     /// Get a float uniform.
+    #[must_use]
     pub fn get_float(&self, offset: usize) -> f32 {
-        if offset + 4 <= self.data.len() {
-            f32::from_le_bytes(self.data[offset..offset + 4].try_into().unwrap())
+        let d = &self.data;
+        if offset + 4 <= d.len() {
+            f32::from_le_bytes([d[offset], d[offset + 1], d[offset + 2], d[offset + 3]])
         } else {
             0.0
         }
     }
 
     /// Get the raw data.
+    #[must_use]
     pub fn data(&self) -> &[u8] {
         &self.data
     }
 }
 
-/// A runtime shader created from a RuntimeEffect.
+/// A runtime shader created from a `RuntimeEffect`.
 #[derive(Debug, Clone)]
 pub struct RuntimeShader {
     effect: Arc<RuntimeEffect>,
@@ -1694,16 +1737,19 @@ pub struct RuntimeShader {
 
 impl RuntimeShader {
     /// Get the effect.
+    #[must_use]
     pub fn effect(&self) -> &RuntimeEffect {
         &self.effect
     }
 
     /// Get the uniforms.
-    pub fn uniforms(&self) -> &UniformData {
+    #[must_use]
+    pub const fn uniforms(&self) -> &UniformData {
         &self.uniforms
     }
 
     /// Get the children.
+    #[must_use]
     pub fn children(&self) -> &[Arc<dyn Shader>] {
         &self.children
     }
@@ -1738,7 +1784,7 @@ impl Shader for RuntimeShader {
     }
 }
 
-/// A runtime color filter created from a RuntimeEffect.
+/// A runtime color filter created from a `RuntimeEffect`.
 #[derive(Debug, Clone)]
 pub struct RuntimeColorFilter {
     effect: Arc<RuntimeEffect>,
@@ -1747,16 +1793,19 @@ pub struct RuntimeColorFilter {
 
 impl RuntimeColorFilter {
     /// Get the effect.
+    #[must_use]
     pub fn effect(&self) -> &RuntimeEffect {
         &self.effect
     }
 
     /// Get the uniforms.
-    pub fn uniforms(&self) -> &UniformData {
+    #[must_use]
+    pub const fn uniforms(&self) -> &UniformData {
         &self.uniforms
     }
 
     /// Filter a color.
+    #[must_use]
     pub fn filter_color(&self, color: Color4f) -> Color4f {
         // Software fallback: run the SkSL interpreter on the parsed program.
         // Runtime color filters follow `half4 main(half4 color)`; we pass the
@@ -1773,7 +1822,7 @@ impl RuntimeColorFilter {
 mod tests {
     use super::*;
 
-    const SIMPLE_SHADER: &str = r#"
+    const SIMPLE_SHADER: &str = r"
         uniform float time;
         uniform vec2 resolution;
 
@@ -1781,7 +1830,7 @@ mod tests {
             vec2 uv = fragCoord / resolution;
             return vec4(uv.x, uv.y, sin(time), 1.0);
         }
-    "#;
+    ";
 
     #[test]
     fn test_make_effect() {
@@ -1798,11 +1847,11 @@ mod tests {
         //   uni.offset = *offset; *offset += uni.sizeInBytes();
         // A float followed by a vec4 sits at offsets 0 and 4 (not 16),
         // total size 20.
-        let src = r#"
+        let src = r"
             uniform float a;
             uniform vec4 b;
             vec4 main(vec2 coord) { return b * a; }
-        "#;
+        ";
         let effect = RuntimeEffect::make_for_shader(src).unwrap();
         let a = effect.find_uniform("a").unwrap();
         let b = effect.find_uniform("b").unwrap();
@@ -1814,12 +1863,12 @@ mod tests {
     #[test]
     fn test_uniform_mat3_packs_tightly() {
         // mat3 is 36 bytes; a following float sits at offset 40 (4 + 36).
-        let src = r#"
+        let src = r"
             uniform float a;
             uniform mat3 m;
             uniform float c;
             vec4 main(vec2 coord) { return vec4(a + c); }
-        "#;
+        ";
         let effect = RuntimeEffect::make_for_shader(src).unwrap();
         assert_eq!(effect.find_uniform("m").unwrap().offset, 4);
         assert_eq!(effect.find_uniform("c").unwrap().offset, 40);
@@ -1830,11 +1879,11 @@ mod tests {
     fn test_child_shaders_are_not_uniforms() {
         // `uniform shader s;` declares a child, not a data uniform: it must
         // not appear in uniforms() nor contribute to uniform_size().
-        let src = r#"
+        let src = r"
             uniform shader child;
             uniform float x;
             vec4 main(vec2 coord) { return vec4(x); }
-        "#;
+        ";
         let effect = RuntimeEffect::make_for_shader(src).unwrap();
         assert_eq!(effect.uniforms().len(), 1, "only x is a data uniform");
         assert!(effect.find_uniform("child").is_none());
@@ -1848,13 +1897,13 @@ mod tests {
     fn test_child_shader_eval_samples_child() {
         // Method-style `child.eval(coord)` must parse and sample the bound
         // child shader in the software interpreter.
-        let src = r#"
+        let src = r"
             uniform shader child;
             half4 main(float2 coord) {
                 half4 c = child.eval(coord);
                 return c * 0.5;
             }
-        "#;
+        ";
         let effect = Arc::new(RuntimeEffect::make_for_shader(src).unwrap());
         let uniforms = UniformData::from_effect(&effect);
         let child: Arc<dyn Shader> = Arc::new(crate::shader::ColorShader::new(Color4f::new(
@@ -1870,12 +1919,12 @@ mod tests {
     #[test]
     fn test_child_shader_eval_uses_coords() {
         // The child must be sampled at the coordinates passed to eval().
-        let src = r#"
+        let src = r"
             uniform shader child;
             half4 main(float2 coord) {
                 return child.eval(coord * 2.0);
             }
-        "#;
+        ";
         let effect = Arc::new(RuntimeEffect::make_for_shader(src).unwrap());
         let uniforms = UniformData::from_effect(&effect);
         // Opaque linear gradient black -> white over x in [0, 10].
@@ -1951,7 +2000,7 @@ mod tests {
 
     #[test]
     fn test_wgsl_if_statement() {
-        let src = r#"
+        let src = r"
             vec4 main(vec2 fragCoord) {
                 float result = 0.0;
                 if (fragCoord.x > 0.5) {
@@ -1961,18 +2010,21 @@ mod tests {
                 }
                 return vec4(result, 0.0, 0.0, 1.0);
             }
-        "#;
+        ";
         let effect = RuntimeEffect::make_for_shader(src).unwrap();
         let wgsl = effect.compile_to(ShaderTarget::Wgsl).unwrap();
 
         assert!(wgsl.contains("if ("), "WGSL should contain if statement");
         assert!(wgsl.contains("else"), "WGSL should contain else branch");
-        assert!(!wgsl.contains("Unsupported"), "WGSL should not contain unsupported stubs: {}", wgsl);
+        assert!(
+            !wgsl.contains("Unsupported"),
+            "WGSL should not contain unsupported stubs: {wgsl}"
+        );
     }
 
     #[test]
     fn test_wgsl_for_loop() {
-        let src = r#"
+        let src = r"
             vec4 main(vec2 fragCoord) {
                 float sum = 0.0;
                 for (int i = 0; i < 4; i = i + 1) {
@@ -1980,17 +2032,20 @@ mod tests {
                 }
                 return vec4(sum, 0.0, 0.0, 1.0);
             }
-        "#;
+        ";
         let effect = RuntimeEffect::make_for_shader(src).unwrap();
         let wgsl = effect.compile_to(ShaderTarget::Wgsl).unwrap();
 
         assert!(wgsl.contains("for ("), "WGSL should contain for loop");
-        assert!(!wgsl.contains("Unsupported"), "WGSL for loop should compile: {}", wgsl);
+        assert!(
+            !wgsl.contains("Unsupported"),
+            "WGSL for loop should compile: {wgsl}"
+        );
     }
 
     #[test]
     fn test_wgsl_while_loop() {
-        let src = r#"
+        let src = r"
             vec4 main(vec2 fragCoord) {
                 int i = 0;
                 while (i < 3) {
@@ -1998,65 +2053,83 @@ mod tests {
                 }
                 return vec4(0.0, 0.0, 0.0, 1.0);
             }
-        "#;
+        ";
         let effect = RuntimeEffect::make_for_shader(src).unwrap();
         let wgsl = effect.compile_to(ShaderTarget::Wgsl).unwrap();
 
-        assert!(wgsl.contains("loop {"), "WGSL should translate while to loop");
+        assert!(
+            wgsl.contains("loop {"),
+            "WGSL should translate while to loop"
+        );
         assert!(wgsl.contains("break;"), "WGSL loop should contain break");
-        assert!(!wgsl.contains("Unsupported"), "WGSL while should compile: {}", wgsl);
+        assert!(
+            !wgsl.contains("Unsupported"),
+            "WGSL while should compile: {wgsl}"
+        );
     }
 
     #[test]
     fn test_wgsl_ternary() {
-        let src = r#"
+        let src = r"
             vec4 main(vec2 fragCoord) {
                 float x = fragCoord.x > 0.5 ? 1.0 : 0.0;
                 return vec4(x, 0.0, 0.0, 1.0);
             }
-        "#;
+        ";
         let effect = RuntimeEffect::make_for_shader(src).unwrap();
         let wgsl = effect.compile_to(ShaderTarget::Wgsl).unwrap();
 
-        assert!(wgsl.contains("select("), "WGSL should translate ternary to select()");
-        assert!(!wgsl.contains("?"), "WGSL should not use ternary operator");
-        assert!(!wgsl.contains("unsupported"), "WGSL ternary should compile: {}", wgsl);
+        assert!(
+            wgsl.contains("select("),
+            "WGSL should translate ternary to select()"
+        );
+        assert!(!wgsl.contains('?'), "WGSL should not use ternary operator");
+        assert!(
+            !wgsl.contains("unsupported"),
+            "WGSL ternary should compile: {wgsl}"
+        );
     }
 
     #[test]
     fn test_msl_uses_float4() {
-        let src = r#"
+        let src = r"
             vec4 main(vec2 fragCoord) {
                 return vec4(1.0, 0.0, 0.0, 1.0);
             }
-        "#;
+        ";
         let effect = RuntimeEffect::make_for_shader(src).unwrap();
         let msl = effect.compile_to(ShaderTarget::Msl).unwrap();
 
-        assert!(msl.contains("float4"), "MSL should use float4 instead of vec4: {}", msl);
-        assert!(!msl.contains("vec4"), "MSL should not contain vec4: {}", msl);
+        assert!(
+            msl.contains("float4"),
+            "MSL should use float4 instead of vec4: {msl}"
+        );
+        assert!(!msl.contains("vec4"), "MSL should not contain vec4: {msl}");
     }
 
     #[test]
     fn test_msl_if_statement() {
-        let src = r#"
+        let src = r"
             vec4 main(vec2 fragCoord) {
                 if (fragCoord.x > 0.5) {
                     return vec4(1.0, 0.0, 0.0, 1.0);
                 }
                 return vec4(0.0, 0.0, 0.0, 1.0);
             }
-        "#;
+        ";
         let effect = RuntimeEffect::make_for_shader(src).unwrap();
         let msl = effect.compile_to(ShaderTarget::Msl).unwrap();
 
         assert!(msl.contains("if ("), "MSL should contain if statement");
-        assert!(msl.contains("return"), "MSL should contain return statements");
+        assert!(
+            msl.contains("return"),
+            "MSL should contain return statements"
+        );
     }
 
     #[test]
     fn test_msl_for_loop() {
-        let src = r#"
+        let src = r"
             vec4 main(vec2 fragCoord) {
                 float sum = 0.0;
                 for (int i = 0; i < 3; i = i + 1) {
@@ -2064,7 +2137,7 @@ mod tests {
                 }
                 return vec4(sum, 0.0, 0.0, 1.0);
             }
-        "#;
+        ";
         let effect = RuntimeEffect::make_for_shader(src).unwrap();
         let msl = effect.compile_to(ShaderTarget::Msl).unwrap();
 
@@ -2077,11 +2150,11 @@ mod tests {
         // Ensures the software interpreter produces the shader's return
         // value instead of the old magenta placeholder.
         use crate::shader::Shader;
-        let src = r#"
+        let src = r"
             vec4 main(vec2 coord) {
                 return vec4(1.0, 0.0, 0.0, 1.0);
             }
-        "#;
+        ";
         let effect = Arc::new(RuntimeEffect::make_for_shader(src).unwrap());
         let data = UniformData::from_effect(&effect);
         let shader = effect.make_shader(&data, &[]).unwrap();
@@ -2096,11 +2169,11 @@ mod tests {
     fn test_runtime_shader_uses_coord() {
         // The returned color should depend on the sampled coordinate.
         use crate::shader::Shader;
-        let src = r#"
+        let src = r"
             vec4 main(vec2 coord) {
                 return vec4(coord.x, coord.y, 0.0, 1.0);
             }
-        "#;
+        ";
         let effect = Arc::new(RuntimeEffect::make_for_shader(src).unwrap());
         let data = UniformData::from_effect(&effect);
         let shader = effect.make_shader(&data, &[]).unwrap();
@@ -2113,28 +2186,32 @@ mod tests {
     fn test_runtime_shader_uses_uniform() {
         // Uniform values should feed into the shader through the interpreter.
         use crate::shader::Shader;
-        let src = r#"
+        let src = r"
             uniform float scale;
             vec4 main(vec2 coord) {
                 return vec4(coord.x * scale, 0.0, 0.0, 1.0);
             }
-        "#;
+        ";
         let effect = Arc::new(RuntimeEffect::make_for_shader(src).unwrap());
         let mut data = UniformData::from_effect(&effect);
         let u = effect.find_uniform("scale").unwrap();
         data.set_float(u.offset, 2.0);
         let shader = effect.make_shader(&data, &[]).unwrap();
         let c = shader.sample(0.5, 0.0);
-        assert!((c.r - 1.0).abs() < 1e-3, "expected scale * x = 1.0, got {}", c.r);
+        assert!(
+            (c.r - 1.0).abs() < 1e-3,
+            "expected scale * x = 1.0, got {}",
+            c.r
+        );
     }
 
     #[test]
     fn test_runtime_color_filter_inverts() {
-        let src = r#"
+        let src = r"
             vec4 main(vec4 color) {
                 return vec4(1.0 - color.x, 1.0 - color.y, 1.0 - color.z, color.w);
             }
-        "#;
+        ";
         let effect = Arc::new(RuntimeEffect::make_for_color_filter(src).unwrap());
         let data = UniformData::from_effect(&effect);
         let filter = effect.make_color_filter(&data).unwrap();
@@ -2147,19 +2224,25 @@ mod tests {
 
     #[test]
     fn test_msl_discard() {
-        let src = r#"
+        let src = r"
             vec4 main(vec2 fragCoord) {
                 if (fragCoord.x < 0.0) {
                     discard;
                 }
                 return vec4(1.0, 0.0, 0.0, 1.0);
             }
-        "#;
+        ";
         let effect = RuntimeEffect::make_for_shader(src).unwrap();
         let msl = effect.compile_to(ShaderTarget::Msl).unwrap();
 
-        assert!(msl.contains("discard_fragment()"), "MSL should translate discard to discard_fragment(): {}", msl);
-        assert!(!msl.contains("discard;"), "MSL should not use GLSL discard syntax");
+        assert!(
+            msl.contains("discard_fragment()"),
+            "MSL should translate discard to discard_fragment(): {msl}"
+        );
+        assert!(
+            !msl.contains("discard;"),
+            "MSL should not use GLSL discard syntax"
+        );
     }
 
     #[test]
@@ -2194,12 +2277,12 @@ mod tests {
         let src = "vec4 main(vec2 p) { return vec4(1.0, 0.0, 0.0, 1.0); }";
         let effect = RuntimeEffect::make_for_shader(src).unwrap();
         let words = effect.compile_to_spirv().unwrap_or_else(|e| {
-            panic!("SPIR-V compile failed: {}", e);
+            panic!("SPIR-V compile failed: {e}");
         });
         assert!(!words.is_empty(), "SPIR-V output should not be empty");
-        // SPIR-V magic number is 0x07230203 at index 0.
+        // SPIR-V magic number is 0x0723_0203 at index 0.
         assert_eq!(
-            words[0], 0x07230203,
+            words[0], 0x0723_0203,
             "SPIR-V magic word missing (got {:#010x})",
             words[0]
         );
@@ -2211,7 +2294,7 @@ mod tests {
         let effect = RuntimeEffect::make_for_shader(src).unwrap();
         let hex = effect
             .compile_to(ShaderTarget::SpirV)
-            .unwrap_or_else(|e| panic!("SpirV target compile failed: {}", e));
+            .unwrap_or_else(|e| panic!("SpirV target compile failed: {e}"));
         // First word should be the SPIR-V magic number encoded as
         // little-endian hex.
         assert!(
@@ -2232,18 +2315,18 @@ mod tests {
 
     #[test]
     fn test_compile_to_spirv_with_uniforms() {
-        let src = r#"
+        let src = r"
             uniform float scale;
             uniform vec2 offset;
             vec4 main(vec2 p) {
                 return vec4((p + offset) * scale, 0.0, 1.0);
             }
-        "#;
+        ";
         let effect = RuntimeEffect::make_for_shader(src).unwrap();
         let words = effect.compile_to_spirv().unwrap_or_else(|e| {
-            panic!("SPIR-V compile with uniforms failed: {}", e);
+            panic!("SPIR-V compile with uniforms failed: {e}");
         });
-        assert_eq!(words[0], 0x07230203);
+        assert_eq!(words[0], 0x0723_0203);
     }
 
     #[test]
@@ -2291,48 +2374,45 @@ mod tests {
 
     #[test]
     fn test_validation_rejects_undeclared_variable() {
-        let src = r#"
+        let src = r"
             vec4 main(vec2 coord) {
                 return vec4(undeclared, 0.0, 0.0, 1.0);
             }
-        "#;
+        ";
         let result = RuntimeEffect::make_for_shader(src);
         assert!(
             matches!(result, Err(RuntimeEffectError::ValidationFailed(_))),
-            "undeclared variable should surface as ValidationFailed, got {:?}",
-            result
+            "undeclared variable should surface as ValidationFailed, got {result:?}"
         );
     }
 
     #[test]
     fn test_validation_rejects_arity_mismatch() {
-        let src = r#"
+        let src = r"
             float square(float x) { return x * x; }
             vec4 main(vec2 coord) {
                 return vec4(square(1.0, 2.0), 0.0, 0.0, 1.0);
             }
-        "#;
+        ";
         let result = RuntimeEffect::make_for_shader(src);
         assert!(
             matches!(result, Err(RuntimeEffectError::ValidationFailed(_))),
-            "arity mismatch should surface as ValidationFailed, got {:?}",
-            result
+            "arity mismatch should surface as ValidationFailed, got {result:?}"
         );
     }
 
     #[test]
     fn test_validation_rejects_type_mismatch_in_initializer() {
-        let src = r#"
+        let src = r"
             vec4 main(vec2 coord) {
                 float x = vec2(1.0, 2.0);
                 return vec4(x, 0.0, 0.0, 1.0);
             }
-        "#;
+        ";
         let result = RuntimeEffect::make_for_shader(src);
         assert!(
             matches!(result, Err(RuntimeEffectError::ValidationFailed(_))),
-            "type mismatch should surface as ValidationFailed, got {:?}",
-            result
+            "type mismatch should surface as ValidationFailed, got {result:?}"
         );
     }
 
@@ -2340,7 +2420,11 @@ mod tests {
     fn test_parse_accepts_layout_qualifier() {
         let src = "layout(color) uniform half4 tint;\nhalf4 main(float2 p) { return tint; }";
         let result = RuntimeEffect::make_for_shader(src);
-        assert!(result.is_ok(), "layout(color) should parse, got {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "layout(color) should parse, got {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -2377,8 +2461,7 @@ mod tests {
         // but log if it fails
         if parsed.is_err() {
             eprintln!(
-                "Note: WGSL output not directly naga-parseable (may need entry attributes). Output:\n{}",
-                wgsl
+                "Note: WGSL output not directly naga-parseable (may need entry attributes). Output:\n{wgsl}"
             );
         }
     }
@@ -2391,8 +2474,7 @@ mod tests {
         // MSL should use float4 (if half4 is in source, at least internal vec types should be float/half4)
         assert!(
             msl.contains("float4") || msl.contains("half4"),
-            "MSL should use float4 or half4 syntax:\n{}",
-            msl
+            "MSL should use float4 or half4 syntax:\n{msl}"
         );
     }
 }

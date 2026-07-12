@@ -3,8 +3,9 @@
 //! This module provides abstractions for recording GPU commands and managing
 //! command buffer submission.
 
+use crate::cast_util::u32_from_scalar_sat;
+use skia_rs_core::cast::f32_to_u8_sat;
 use skia_rs_core::{Color, Rect};
-use std::sync::Arc;
 
 /// Draw command for batching.
 #[derive(Debug, Clone)]
@@ -175,7 +176,7 @@ pub enum DrawCommand {
 pub use crate::pipeline::IndexFormat;
 
 /// Image data layout for copy operations.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct ImageDataLayout {
     /// Offset into the buffer.
     pub offset: u64,
@@ -183,16 +184,6 @@ pub struct ImageDataLayout {
     pub bytes_per_row: Option<u32>,
     /// Rows per image (for 3D textures).
     pub rows_per_image: Option<u32>,
-}
-
-impl Default for ImageDataLayout {
-    fn default() -> Self {
-        Self {
-            offset: 0,
-            bytes_per_row: None,
-            rows_per_image: None,
-        }
-    }
 }
 
 /// Scissor rectangle.
@@ -210,7 +201,8 @@ pub struct ScissorRect {
 
 impl ScissorRect {
     /// Create a new scissor rect.
-    pub fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
+    #[must_use]
+    pub const fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
         Self {
             x,
             y,
@@ -225,21 +217,23 @@ impl ScissorRect {
     /// width/height shrink by the clipped-off amount, so the box's right/
     /// bottom edges stay put (rather than sliding right as they would if the
     /// original width were kept). Fully off-screen boxes collapse to zero.
+    #[must_use]
     pub fn from_rect(rect: &Rect) -> Self {
         let left = rect.left.max(0.0);
         let top = rect.top.max(0.0);
         let right = rect.right.max(left);
         let bottom = rect.bottom.max(top);
         Self {
-            x: left as u32,
-            y: top as u32,
-            width: (right - left) as u32,
-            height: (bottom - top) as u32,
+            x: u32_from_scalar_sat(left),
+            y: u32_from_scalar_sat(top),
+            width: u32_from_scalar_sat(right - left),
+            height: u32_from_scalar_sat(bottom - top),
         }
     }
 
     /// Clamp the scissor box to a framebuffer of `fb_width` x `fb_height`,
     /// shrinking width/height so the box never extends past the edges.
+    #[must_use]
     pub fn clamp_to_framebuffer(&self, fb_width: u32, fb_height: u32) -> Self {
         let x = self.x.min(fb_width);
         let y = self.y.min(fb_height);
@@ -271,7 +265,8 @@ pub struct Viewport {
 
 impl Viewport {
     /// Create a new viewport.
-    pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
+    #[must_use]
+    pub const fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
         Self {
             x,
             y,
@@ -283,7 +278,8 @@ impl Viewport {
     }
 
     /// Set depth range.
-    pub fn with_depth(mut self, min: f32, max: f32) -> Self {
+    #[must_use]
+    pub const fn with_depth(mut self, min: f32, max: f32) -> Self {
         self.min_depth = min;
         self.max_depth = max;
         self
@@ -301,7 +297,8 @@ pub struct CommandBuffer {
 
 impl CommandBuffer {
     /// Create a new empty command buffer.
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             commands: Vec::new(),
             debug_depth: 0,
@@ -309,6 +306,7 @@ impl CommandBuffer {
     }
 
     /// Create with capacity.
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             commands: Vec::with_capacity(capacity),
@@ -491,6 +489,7 @@ impl CommandBuffer {
     }
 
     /// Get the recorded commands.
+    #[must_use]
     pub fn commands(&self) -> &[DrawCommand] {
         &self.commands
     }
@@ -507,11 +506,13 @@ impl CommandBuffer {
     }
 
     /// Check if the buffer is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.commands.is_empty()
     }
 
     /// Get the number of commands.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.commands.len()
     }
@@ -527,7 +528,8 @@ pub struct CommandEncoder {
 
 impl CommandEncoder {
     /// Create a new command encoder.
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             buffer: CommandBuffer::new(),
             label: None,
@@ -542,21 +544,27 @@ impl CommandEncoder {
         }
     }
 
+    /// Get the debug label, if any.
+    #[must_use]
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
+
     /// Begin a render pass.
     pub fn begin_render_pass(&mut self, desc: &RenderPassDescriptor) -> RenderPassEncoder<'_> {
         if let Some(color) = desc.clear_color {
             self.buffer.clear(Color::from_argb(
-                (color[3] * 255.0) as u8,
-                (color[0] * 255.0) as u8,
-                (color[1] * 255.0) as u8,
-                (color[2] * 255.0) as u8,
+                f32_to_u8_sat(color[3] * 255.0),
+                f32_to_u8_sat(color[0] * 255.0),
+                f32_to_u8_sat(color[1] * 255.0),
+                f32_to_u8_sat(color[2] * 255.0),
             ));
         }
         RenderPassEncoder { encoder: self }
     }
 
     /// Begin a compute pass.
-    pub fn begin_compute_pass(&mut self) -> ComputePassEncoder<'_> {
+    pub const fn begin_compute_pass(&mut self) -> ComputePassEncoder<'_> {
         ComputePassEncoder { encoder: self }
     }
 
@@ -643,6 +651,7 @@ impl CommandEncoder {
     }
 
     /// Finish recording and return the command buffer.
+    #[must_use]
     pub fn finish(self) -> CommandBuffer {
         self.buffer
     }
@@ -662,7 +671,7 @@ pub struct RenderPassEncoder<'a> {
     encoder: &'a mut CommandEncoder,
 }
 
-impl<'a> RenderPassEncoder<'a> {
+impl RenderPassEncoder<'_> {
     /// Set the current pipeline.
     pub fn set_pipeline(&mut self, pipeline_id: u64) {
         self.encoder.buffer.set_pipeline(pipeline_id);
@@ -787,7 +796,7 @@ pub struct ComputePassEncoder<'a> {
     encoder: &'a mut CommandEncoder,
 }
 
-impl<'a> ComputePassEncoder<'a> {
+impl ComputePassEncoder<'_> {
     /// Set the current pipeline.
     pub fn set_pipeline(&mut self, pipeline_id: u64) {
         self.encoder.buffer.set_pipeline(pipeline_id);
@@ -905,6 +914,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact literal values, no accumulated error"
+    )]
     fn test_viewport() {
         let viewport = Viewport::new(0.0, 0.0, 800.0, 600.0).with_depth(0.0, 1.0);
 

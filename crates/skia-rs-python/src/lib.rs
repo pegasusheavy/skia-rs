@@ -1,6 +1,6 @@
 //! Python bindings for skia-rs.
 //!
-//! This crate provides Python bindings using PyO3.
+//! This crate provides Python bindings using `PyO3`.
 //!
 //! # Installation
 //!
@@ -31,8 +31,8 @@
 //! surface.save_png("output.png")
 //! ```
 
-use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
 
 use skia_rs_canvas::Surface as RsSurface;
 use skia_rs_core::{Color, Matrix as RsMatrix, Point as RsPoint, Rect as RsRect};
@@ -54,62 +54,97 @@ pub struct Point {
 impl Point {
     /// Create a new point.
     #[new]
-    fn new(x: f32, y: f32) -> Self {
+    const fn new(x: f32, y: f32) -> Self {
         Self {
             inner: RsPoint::new(x, y),
         }
     }
 
     /// X coordinate.
+    // pyo3 requires `&self` (not by-value `self`) for pymethods receivers,
+    // since the underlying Python object is shared and cannot be moved out
+    // of the interpreter; this holds even though `Point` is `Copy`.
     #[getter]
-    fn x(&self) -> f32 {
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "pyo3 pymethods receivers must be `&self`/`&mut self`, not by-value, regardless of Copy"
+    )]
+    const fn x(&self) -> f32 {
         self.inner.x
     }
 
     #[setter]
-    fn set_x(&mut self, x: f32) {
+    const fn set_x(&mut self, x: f32) {
         self.inner.x = x;
     }
 
     /// Y coordinate.
     #[getter]
-    fn y(&self) -> f32 {
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "pyo3 pymethods receivers must be `&self`/`&mut self`, not by-value, regardless of Copy"
+    )]
+    const fn y(&self) -> f32 {
         self.inner.y
     }
 
     #[setter]
-    fn set_y(&mut self, y: f32) {
+    const fn set_y(&mut self, y: f32) {
         self.inner.y = y;
     }
 
     /// Calculate the length of the vector from origin.
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "pyo3 pymethods receivers must be `&self`/`&mut self`, not by-value, regardless of Copy"
+    )]
     fn length(&self) -> f32 {
         self.inner.length()
     }
 
     /// Normalize the point (unit vector).
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "pyo3 pymethods receivers must be `&self`/`&mut self`, not by-value, regardless of Copy"
+    )]
     fn normalize(&self) -> Self {
         Self {
             inner: self.inner.normalize(),
         }
     }
 
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "pyo3 pymethods receivers must be `&self`/`&mut self`, not by-value, regardless of Copy"
+    )]
     fn __repr__(&self) -> String {
         format!("Point({}, {})", self.inner.x, self.inner.y)
     }
 
-    fn __add__(&self, other: &Point) -> Self {
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "pyo3 pymethods receivers must be `&self`/`&mut self`, not by-value, regardless of Copy"
+    )]
+    fn __add__(&self, other: Self) -> Self {
         Self {
             inner: RsPoint::new(self.inner.x + other.inner.x, self.inner.y + other.inner.y),
         }
     }
 
-    fn __sub__(&self, other: &Point) -> Self {
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "pyo3 pymethods receivers must be `&self`/`&mut self`, not by-value, regardless of Copy"
+    )]
+    fn __sub__(&self, other: Self) -> Self {
         Self {
             inner: RsPoint::new(self.inner.x - other.inner.x, self.inner.y - other.inner.y),
         }
     }
 
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "pyo3 pymethods receivers must be `&self`/`&mut self`, not by-value, regardless of Copy"
+    )]
     fn __mul__(&self, scalar: f32) -> Self {
         Self {
             inner: RsPoint::new(self.inner.x * scalar, self.inner.y * scalar),
@@ -132,7 +167,7 @@ pub struct Rect {
 impl Rect {
     /// Create a new rectangle from edges.
     #[new]
-    fn new(left: f32, top: f32, right: f32, bottom: f32) -> Self {
+    const fn new(left: f32, top: f32, right: f32, bottom: f32) -> Self {
         Self {
             inner: RsRect::new(left, top, right, bottom),
         }
@@ -140,7 +175,7 @@ impl Rect {
 
     /// Create a rectangle from position and size.
     #[staticmethod]
-    fn from_xywh(x: f32, y: f32, width: f32, height: f32) -> Self {
+    const fn from_xywh(x: f32, y: f32, width: f32, height: f32) -> Self {
         Self {
             inner: RsRect::from_xywh(x, y, width, height),
         }
@@ -148,29 +183,29 @@ impl Rect {
 
     /// Create a rectangle from size (at origin).
     #[staticmethod]
-    fn from_wh(width: f32, height: f32) -> Self {
+    const fn from_wh(width: f32, height: f32) -> Self {
         Self {
             inner: RsRect::from_xywh(0.0, 0.0, width, height),
         }
     }
 
     #[getter]
-    fn left(&self) -> f32 {
+    const fn left(&self) -> f32 {
         self.inner.left
     }
 
     #[getter]
-    fn top(&self) -> f32 {
+    const fn top(&self) -> f32 {
         self.inner.top
     }
 
     #[getter]
-    fn right(&self) -> f32 {
+    const fn right(&self) -> f32 {
         self.inner.right
     }
 
     #[getter]
-    fn bottom(&self) -> f32 {
+    const fn bottom(&self) -> f32 {
         self.inner.bottom
     }
 
@@ -201,9 +236,14 @@ impl Rect {
     }
 
     /// Expand the rectangle to include a point.
-    fn join(&self, x: f32, y: f32) -> Self {
+    const fn join(&self, x: f32, y: f32) -> Self {
         Self {
-            inner: self.inner.join(RsPoint::new(x, y)),
+            inner: RsRect::new(
+                self.inner.left.min(x),
+                self.inner.top.min(y),
+                self.inner.right.max(x),
+                self.inner.bottom.max(y),
+            ),
         }
     }
 
@@ -230,7 +270,7 @@ pub struct Matrix {
 impl Matrix {
     /// Create an identity matrix.
     #[new]
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             inner: RsMatrix::IDENTITY,
         }
@@ -238,7 +278,7 @@ impl Matrix {
 
     /// Create a translation matrix.
     #[staticmethod]
-    fn translate(dx: f32, dy: f32) -> Self {
+    const fn translate(dx: f32, dy: f32) -> Self {
         Self {
             inner: RsMatrix::translate(dx, dy),
         }
@@ -246,7 +286,7 @@ impl Matrix {
 
     /// Create a scale matrix.
     #[staticmethod]
-    fn scale(sx: f32, sy: f32) -> Self {
+    const fn scale(sx: f32, sy: f32) -> Self {
         Self {
             inner: RsMatrix::scale(sx, sy),
         }
@@ -263,22 +303,22 @@ impl Matrix {
     /// Create a rotation matrix (degrees).
     #[staticmethod]
     fn rotate_deg(degrees: f32) -> Self {
-        let radians = degrees * std::f32::consts::PI / 180.0;
+        let radians = degrees.to_radians();
         Self {
             inner: RsMatrix::rotate(radians),
         }
     }
 
     /// Concatenate with another matrix.
-    fn concat(&self, other: &Matrix) -> Self {
+    fn concat(&self, other: &Self) -> Self {
         Self {
             inner: self.inner.concat(&other.inner),
         }
     }
 
     /// Invert the matrix.
-    fn invert(&self) -> Option<Matrix> {
-        self.inner.invert().map(|m| Matrix { inner: m })
+    fn invert(&self) -> Option<Self> {
+        self.inner.invert().map(|m| Self { inner: m })
     }
 
     /// Transform a point.
@@ -328,9 +368,9 @@ impl Paint {
         self.inner.set_color32(Color::from_argb(a, r, g, b));
     }
 
-    /// Style: "fill", "stroke", or "stroke_and_fill".
+    /// Style: "fill", "stroke", or `"stroke_and_fill"`.
     #[getter]
-    fn style(&self) -> &'static str {
+    const fn style(&self) -> &'static str {
         match self.inner.style() {
             RsStyle::Fill => "fill",
             RsStyle::Stroke => "stroke",
@@ -352,35 +392,35 @@ impl Paint {
 
     /// Stroke width.
     #[getter]
-    fn stroke_width(&self) -> f32 {
+    const fn stroke_width(&self) -> f32 {
         self.inner.stroke_width()
     }
 
     #[setter]
-    fn set_stroke_width(&mut self, width: f32) {
+    const fn set_stroke_width(&mut self, width: f32) {
         self.inner.set_stroke_width(width);
     }
 
     /// Anti-aliasing enabled.
     #[getter]
-    fn anti_alias(&self) -> bool {
+    const fn anti_alias(&self) -> bool {
         self.inner.is_anti_alias()
     }
 
     #[setter]
-    fn set_anti_alias(&mut self, aa: bool) {
+    const fn set_anti_alias(&mut self, aa: bool) {
         self.inner.set_anti_alias(aa);
     }
 
     /// Alpha (0-255).
     #[getter]
     fn alpha(&self) -> u8 {
-        self.inner.alpha()
+        skia_rs_core::cast::f32_to_u8_sat(self.inner.alpha() * 255.0)
     }
 
     #[setter]
     fn set_alpha(&mut self, alpha: u8) {
-        self.inner.set_alpha(alpha);
+        self.inner.set_alpha(f32::from(alpha) / 255.0);
     }
 
     fn __repr__(&self) -> String {
@@ -414,74 +454,98 @@ impl PathBuilder {
     }
 
     /// Move to a point.
-    fn move_to(&mut self, x: f32, y: f32) -> PyRef<'_, Self> {
-        self.inner.move_to(x, y);
-        PyRef::from(self)
+    fn move_to(mut self_: PyRefMut<'_, Self>, x: f32, y: f32) -> PyRefMut<'_, Self> {
+        self_.inner.move_to(x, y);
+        self_
     }
 
     /// Line to a point.
-    fn line_to(&mut self, x: f32, y: f32) -> PyRef<'_, Self> {
-        self.inner.line_to(x, y);
-        PyRef::from(self)
+    fn line_to(mut self_: PyRefMut<'_, Self>, x: f32, y: f32) -> PyRefMut<'_, Self> {
+        self_.inner.line_to(x, y);
+        self_
     }
 
     /// Quadratic bezier curve.
-    fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) -> PyRef<'_, Self> {
-        self.inner.quad_to(cx, cy, x, y);
-        PyRef::from(self)
+    fn quad_to(
+        mut self_: PyRefMut<'_, Self>,
+        cx: f32,
+        cy: f32,
+        x: f32,
+        y: f32,
+    ) -> PyRefMut<'_, Self> {
+        self_.inner.quad_to(cx, cy, x, y);
+        self_
     }
 
     /// Cubic bezier curve.
     fn cubic_to(
-        &mut self,
+        mut self_: PyRefMut<'_, Self>,
         c1x: f32,
         c1y: f32,
         c2x: f32,
         c2y: f32,
         x: f32,
         y: f32,
-    ) -> PyRef<'_, Self> {
-        self.inner.cubic_to(c1x, c1y, c2x, c2y, x, y);
-        PyRef::from(self)
+    ) -> PyRefMut<'_, Self> {
+        self_.inner.cubic_to(c1x, c1y, c2x, c2y, x, y);
+        self_
     }
 
     /// Close the current contour.
-    fn close(&mut self) -> PyRef<'_, Self> {
-        self.inner.close();
-        PyRef::from(self)
+    fn close(mut self_: PyRefMut<'_, Self>) -> PyRefMut<'_, Self> {
+        self_.inner.close();
+        self_
     }
 
     /// Add a rectangle.
-    fn add_rect(&mut self, left: f32, top: f32, right: f32, bottom: f32) -> PyRef<'_, Self> {
-        self.inner.add_rect(&RsRect::new(left, top, right, bottom));
-        PyRef::from(self)
+    fn add_rect(
+        mut self_: PyRefMut<'_, Self>,
+        left: f32,
+        top: f32,
+        right: f32,
+        bottom: f32,
+    ) -> PyRefMut<'_, Self> {
+        self_.inner.add_rect(&RsRect::new(left, top, right, bottom));
+        self_
     }
 
     /// Add an oval inscribed in a rectangle.
-    fn add_oval(&mut self, left: f32, top: f32, right: f32, bottom: f32) -> PyRef<'_, Self> {
-        self.inner.add_oval(&RsRect::new(left, top, right, bottom));
-        PyRef::from(self)
+    fn add_oval(
+        mut self_: PyRefMut<'_, Self>,
+        left: f32,
+        top: f32,
+        right: f32,
+        bottom: f32,
+    ) -> PyRefMut<'_, Self> {
+        self_.inner.add_oval(&RsRect::new(left, top, right, bottom));
+        self_
     }
 
     /// Add a circle.
-    fn add_circle(&mut self, cx: f32, cy: f32, radius: f32) -> PyRef<'_, Self> {
-        self.inner.add_circle(cx, cy, radius);
-        PyRef::from(self)
+    fn add_circle(
+        mut self_: PyRefMut<'_, Self>,
+        cx: f32,
+        cy: f32,
+        radius: f32,
+    ) -> PyRefMut<'_, Self> {
+        self_.inner.add_circle(cx, cy, radius);
+        self_
     }
 
     /// Add a rounded rectangle.
     fn add_round_rect(
-        &mut self,
+        mut self_: PyRefMut<'_, Self>,
         left: f32,
         top: f32,
         right: f32,
         bottom: f32,
         rx: f32,
         ry: f32,
-    ) -> PyRef<'_, Self> {
-        self.inner
+    ) -> PyRefMut<'_, Self> {
+        self_
+            .inner
             .add_round_rect(&RsRect::new(left, top, right, bottom), rx, ry);
-        PyRef::from(self)
+        self_
     }
 
     /// Build the path.
@@ -566,13 +630,13 @@ impl Surface {
 
     /// Width in pixels.
     #[getter]
-    fn width(&self) -> i32 {
+    const fn width(&self) -> i32 {
         self.inner.width()
     }
 
     /// Height in pixels.
     #[getter]
-    fn height(&self) -> i32 {
+    const fn height(&self) -> i32 {
         self.inner.height()
     }
 
@@ -643,13 +707,13 @@ impl Surface {
 
 /// Create an ARGB color value.
 #[pyfunction]
-fn argb(a: u8, r: u8, g: u8, b: u8) -> u32 {
+const fn argb(a: u8, r: u8, g: u8, b: u8) -> u32 {
     Color::from_argb(a, r, g, b).0
 }
 
 /// Create an RGB color value (fully opaque).
 #[pyfunction]
-fn rgb(r: u8, g: u8, b: u8) -> u32 {
+const fn rgb(r: u8, g: u8, b: u8) -> u32 {
     Color::from_rgb(r, g, b).0
 }
 
@@ -660,23 +724,23 @@ struct Colors;
 #[pymethods]
 impl Colors {
     #[classattr]
-    const BLACK: u32 = 0xFF000000;
+    const BLACK: u32 = 0xFF00_0000;
     #[classattr]
-    const WHITE: u32 = 0xFFFFFFFF;
+    const WHITE: u32 = 0xFFFF_FFFF;
     #[classattr]
-    const RED: u32 = 0xFFFF0000;
+    const RED: u32 = 0xFFFF_0000;
     #[classattr]
-    const GREEN: u32 = 0xFF00FF00;
+    const GREEN: u32 = 0xFF00_FF00;
     #[classattr]
-    const BLUE: u32 = 0xFF0000FF;
+    const BLUE: u32 = 0xFF00_00FF;
     #[classattr]
-    const YELLOW: u32 = 0xFFFFFF00;
+    const YELLOW: u32 = 0xFFFF_FF00;
     #[classattr]
-    const CYAN: u32 = 0xFF00FFFF;
+    const CYAN: u32 = 0xFF00_FFFF;
     #[classattr]
-    const MAGENTA: u32 = 0xFFFF00FF;
+    const MAGENTA: u32 = 0xFFFF_00FF;
     #[classattr]
-    const TRANSPARENT: u32 = 0x00000000;
+    const TRANSPARENT: u32 = 0x0000_0000;
 }
 
 // =============================================================================
@@ -697,4 +761,76 @@ fn skia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(argb, m)?)?;
     m.add_function(wrap_pyfunction!(rgb, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Exact float equality is intentional here: `Rect::join`'s min/max of
+    /// literal f32 values is deterministic bit-for-bit, so an epsilon
+    /// comparison would only hide real regressions.
+    fn assert_f32_eq(actual: f32, expected: f32) {
+        assert_eq!(actual.to_bits(), expected.to_bits());
+    }
+
+    #[test]
+    fn rect_join_expands_to_include_point_outside_max_corner() {
+        let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let joined = rect.join(20.0, 20.0);
+        assert_f32_eq(joined.inner.left, 0.0);
+        assert_f32_eq(joined.inner.top, 0.0);
+        assert_f32_eq(joined.inner.right, 20.0);
+        assert_f32_eq(joined.inner.bottom, 20.0);
+    }
+
+    #[test]
+    fn rect_join_expands_to_include_point_outside_min_corner() {
+        let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let joined = rect.join(-5.0, -5.0);
+        assert_f32_eq(joined.inner.left, -5.0);
+        assert_f32_eq(joined.inner.top, -5.0);
+        assert_f32_eq(joined.inner.right, 10.0);
+        assert_f32_eq(joined.inner.bottom, 10.0);
+    }
+
+    #[test]
+    fn rect_join_point_already_inside_is_noop() {
+        let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let joined = rect.join(5.0, 5.0);
+        assert_f32_eq(joined.inner.left, 0.0);
+        assert_f32_eq(joined.inner.top, 0.0);
+        assert_f32_eq(joined.inner.right, 10.0);
+        assert_f32_eq(joined.inner.bottom, 10.0);
+    }
+
+    // Alpha bridge: Paint::alpha()/set_alpha() convert between a 0-255 u8
+    // and the underlying 0.0-1.0 f32. Exercised here as plain arithmetic
+    // (matching the getter/setter bodies) since PyO3 getters/setters
+    // require the GIL and can't be called directly in a host test.
+    fn alpha_to_u8(alpha: f32) -> u8 {
+        skia_rs_core::cast::f32_to_u8_sat(alpha * 255.0)
+    }
+
+    fn u8_to_alpha(alpha: u8) -> f32 {
+        f32::from(alpha) / 255.0
+    }
+
+    #[test]
+    fn alpha_round_trip_mid_value() {
+        let a = u8_to_alpha(128);
+        assert_eq!(alpha_to_u8(a), 128);
+    }
+
+    #[test]
+    fn alpha_round_trip_zero() {
+        let a = u8_to_alpha(0);
+        assert_eq!(alpha_to_u8(a), 0);
+    }
+
+    #[test]
+    fn alpha_round_trip_max() {
+        let a = u8_to_alpha(255);
+        assert_eq!(alpha_to_u8(a), 255);
+    }
 }

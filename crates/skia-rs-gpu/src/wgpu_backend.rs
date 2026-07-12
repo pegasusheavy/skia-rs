@@ -3,8 +3,8 @@
 use crate::command::{CommandBuffer, DrawCommand};
 use crate::pipeline::{
     BlendFactor as CrateBlendFactor, BlendOperation as CrateBlendOperation,
-    BlendState as CrateBlendState, ColorWriteMask, IndexFormat as CrateIndexFormat,
-    PipelineKey, PrimitiveTopology as CratePrimitiveTopology, RenderPipelineDescriptor,
+    BlendState as CrateBlendState, ColorWriteMask, IndexFormat as CrateIndexFormat, PipelineKey,
+    PrimitiveTopology as CratePrimitiveTopology, RenderPipelineDescriptor,
     VertexFormat as CrateVertexFormat,
 };
 use crate::{
@@ -57,10 +57,7 @@ impl WgpuContext {
             })
             .await
             .ok_or_else(|| {
-                GpuError::DeviceCreation(format!(
-                    "No adapter found for backends {:?}",
-                    backends
-                ))
+                GpuError::DeviceCreation(format!("No adapter found for backends {:?}", backends))
             })?;
 
         let adapter_info = adapter.get_info();
@@ -368,8 +365,7 @@ impl GpuSurface for WgpuSurface {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
                 view_formats: &[],
             });
-            let resolve_view =
-                resolve_texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let resolve_view = resolve_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
             // A Load-op render pass with resolve_target copies the MSAA
             // contents down to the single-sample texture.
@@ -598,7 +594,8 @@ fn build_wgpu_pipeline(
 
     // Translate vertex buffer layouts. We need to retain attribute arrays
     // because wgpu::VertexBufferLayout borrows a slice.
-    let mut attr_storage: Vec<Vec<wgpu::VertexAttribute>> = Vec::with_capacity(desc.vertex_buffers.len());
+    let mut attr_storage: Vec<Vec<wgpu::VertexAttribute>> =
+        Vec::with_capacity(desc.vertex_buffers.len());
     for vb in &desc.vertex_buffers {
         let attrs: Vec<wgpu::VertexAttribute> = vb
             .attributes
@@ -647,8 +644,8 @@ fn build_wgpu_pipeline(
 
     // Depth/stencil translation.
     let depth_stencil = desc.depth_stencil.as_ref().map(|ds| {
-        let format = convert_texture_format(ds.format)
-            .unwrap_or(wgpu::TextureFormat::Depth24PlusStencil8);
+        let format =
+            convert_texture_format(ds.format).unwrap_or(wgpu::TextureFormat::Depth24PlusStencil8);
         wgpu::DepthStencilState {
             format,
             depth_write_enabled: ds.depth_write_enabled,
@@ -1048,19 +1045,20 @@ impl WgpuExecutor {
                 let stencil_view = stencil_guard
                     .as_ref()
                     .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()));
-                let depth_stencil_attachment = stencil_view.as_ref().map(|v| {
-                    wgpu::RenderPassDepthStencilAttachment {
-                        view: v,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(1.0),
-                            store: wgpu::StoreOp::Discard,
-                        }),
-                        stencil_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(0),
-                            store: wgpu::StoreOp::Store,
-                        }),
-                    }
-                });
+                let depth_stencil_attachment =
+                    stencil_view
+                        .as_ref()
+                        .map(|v| wgpu::RenderPassDepthStencilAttachment {
+                            view: v,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(1.0),
+                                store: wgpu::StoreOp::Discard,
+                            }),
+                            stencil_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(0),
+                                store: wgpu::StoreOp::Store,
+                            }),
+                        });
                 let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("skia-rs render pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1208,14 +1206,7 @@ impl WgpuExecutor {
                     // with the clear color recorded.
                     if let PassState::Open { clear } = &state {
                         let refs: Vec<&DrawCommand> = pending_ops.iter().copied().collect();
-                        flush_pass(
-                            &mut encoder,
-                            *clear,
-                            &refs,
-                            &mut stats,
-                            self,
-                            &surface.view,
-                        )?;
+                        flush_pass(&mut encoder, *clear, &refs, &mut stats, self, &surface.view)?;
                         pending_ops.clear();
                     }
                     stats.clears += 1;
@@ -1240,14 +1231,7 @@ impl WgpuExecutor {
                     // outside a render pass.
                     if let PassState::Open { clear } = &state {
                         let refs: Vec<&DrawCommand> = pending_ops.iter().copied().collect();
-                        flush_pass(
-                            &mut encoder,
-                            *clear,
-                            &refs,
-                            &mut stats,
-                            self,
-                            &surface.view,
-                        )?;
+                        flush_pass(&mut encoder, *clear, &refs, &mut stats, self, &surface.view)?;
                         pending_ops.clear();
                         state = PassState::None;
                     }
@@ -1285,14 +1269,7 @@ impl WgpuExecutor {
         // Flush any remaining pending pass.
         if let PassState::Open { clear } = &state {
             let refs: Vec<&DrawCommand> = pending_ops.iter().copied().collect();
-            flush_pass(
-                &mut encoder,
-                *clear,
-                &refs,
-                &mut stats,
-                self,
-                &surface.view,
-            )?;
+            flush_pass(&mut encoder, *clear, &refs, &mut stats, self, &surface.view)?;
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -1361,9 +1338,9 @@ impl WgpuStencilSurface {
 // =============================================================================
 
 use skia_rs_codec::{
-    GpuImageBackend, GpuImageError, GpuTextureFormat as CodecGpuTextureFormat,
-    GpuTextureHandle as CodecGpuTextureHandle, ImageInfo as CodecImageInfo,
-    GpuBackend as CodecGpuBackend,
+    GpuBackend as CodecGpuBackend, GpuImageBackend, GpuImageError,
+    GpuTextureFormat as CodecGpuTextureFormat, GpuTextureHandle as CodecGpuTextureHandle,
+    ImageInfo as CodecImageInfo,
 };
 
 /// A [`GpuImageBackend`] implementation backed by a shared wgpu device/queue.
@@ -1385,10 +1362,7 @@ pub struct WgpuGpuImageBackend {
 impl std::fmt::Debug for WgpuGpuImageBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WgpuGpuImageBackend")
-            .field(
-                "live_textures",
-                &self.textures.lock().len(),
-            )
+            .field("live_textures", &self.textures.lock().len())
             .finish()
     }
 }
@@ -1410,7 +1384,9 @@ impl WgpuGpuImageBackend {
     }
 }
 
-fn codec_format_to_wgpu(format: CodecGpuTextureFormat) -> Result<wgpu::TextureFormat, GpuImageError> {
+fn codec_format_to_wgpu(
+    format: CodecGpuTextureFormat,
+) -> Result<wgpu::TextureFormat, GpuImageError> {
     Ok(match format {
         CodecGpuTextureFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,
         CodecGpuTextureFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -1504,9 +1480,9 @@ impl GpuImageBackend for WgpuGpuImageBackend {
         let buffer_size = (padded_bpr * height) as u64;
 
         let textures = self.textures.lock();
-        let texture = textures
-            .get(&handle.id)
-            .ok_or_else(|| GpuImageError::ReadBackFailed(format!("unknown handle {}", handle.id)))?;
+        let texture = textures.get(&handle.id).ok_or_else(|| {
+            GpuImageError::ReadBackFailed(format!("unknown handle {}", handle.id))
+        })?;
 
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("skia-rs gpu image staging"),
@@ -1650,7 +1626,11 @@ mod tests {
             TF::Depth24Stencil8,
             TF::Depth32Float,
         ] {
-            assert!(convert_texture_format(f).is_some(), "format {:?} unmapped", f);
+            assert!(
+                convert_texture_format(f).is_some(),
+                "format {:?} unmapped",
+                f
+            );
         }
     }
 
@@ -1691,7 +1671,10 @@ mod tests {
 
         let key_a = PipelineKey::from_descriptor(&desc_a);
         let key_b = PipelineKey::from_descriptor(&desc_b);
-        assert_eq!(key_a, key_b, "identical descriptors must produce identical keys");
+        assert_eq!(
+            key_a, key_b,
+            "identical descriptors must produce identical keys"
+        );
 
         // Differing sample counts produce distinct keys (cache miss).
         let desc_c = RenderPipelineDescriptor::new(
@@ -1742,15 +1725,31 @@ mod tests {
             stride: 16,
             step_mode: VertexStepMode::Vertex,
             attributes: vec![
-                VertexAttribute { location: 0, offset: 0, format: VertexFormat::Float32x2 },
-                VertexAttribute { location: 1, offset: 8, format: VertexFormat::Float32x2 },
+                VertexAttribute {
+                    location: 0,
+                    offset: 0,
+                    format: VertexFormat::Float32x2,
+                },
+                VertexAttribute {
+                    location: 1,
+                    offset: 8,
+                    format: VertexFormat::Float32x2,
+                },
             ],
         };
 
         let builtins: &[(&str, &str, &str)] = &[
             ("solid", builtin::SOLID_COLOR_VS, builtin::SOLID_COLOR_FS),
-            ("linear_gradient", builtin::GRADIENT_VS, builtin::LINEAR_GRADIENT_FS),
-            ("radial_gradient", builtin::GRADIENT_VS, builtin::RADIAL_GRADIENT_FS),
+            (
+                "linear_gradient",
+                builtin::GRADIENT_VS,
+                builtin::LINEAR_GRADIENT_FS,
+            ),
+            (
+                "radial_gradient",
+                builtin::GRADIENT_VS,
+                builtin::RADIAL_GRADIENT_FS,
+            ),
             ("textured", builtin::TEXTURED_VS, builtin::TEXTURED_FS),
             ("path_cover", builtin::PATH_FILL_VS, builtin::PATH_COVER_FS),
         ];
@@ -1780,7 +1779,10 @@ mod tests {
 
         let cs = clear_color_for_format(0.5, 0.5, 0.5, 1.0, TextureFormat::Rgba8UnormSrgb);
         let expected = crate::gradient::srgb_to_linear(0.5) as f64;
-        assert!((cs.r - expected).abs() < 1e-6, "sRGB target linearizes clear");
+        assert!(
+            (cs.r - expected).abs() < 1e-6,
+            "sRGB target linearizes clear"
+        );
         assert!(cs.r < 0.5, "linearized mid-gray is darker than sRGB 0.5");
         assert_eq!(cs.a, 1.0, "alpha stays linear");
     }

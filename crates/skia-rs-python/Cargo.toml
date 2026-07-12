@@ -16,12 +16,18 @@ readme = "README.md"
 name = "skia_rs"
 crate-type = ["cdylib"]
 
+[features]
+png = []
+
 [dependencies]
 skia-rs-core = { workspace = true }
 skia-rs-path = { workspace = true }
 skia-rs-paint = { workspace = true }
 skia-rs-canvas = { workspace = true }
-pyo3 = { version = "0.22", features = ["extension-module"] }
+pyo3 = { version = "0.24", features = ["extension-module", "abi3-py39"] }
 
 [build-dependencies]
-pyo3-build-config = "0.22"
+pyo3-build-config = "0.24"
+
+[lints]
+workspace = true

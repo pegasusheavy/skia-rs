@@ -78,14 +78,9 @@ fn glyph_path_scales_with_font_size() {
     let hratio = bb.height() / sb.height();
     assert!(
         (wratio - 10.0).abs() < 0.1,
-        "width ratio {wratio} ≠ 10 (small={:?}, big={:?})",
-        sb,
-        bb
+        "width ratio {wratio} ≠ 10 (small={sb:?}, big={bb:?})"
     );
-    assert!(
-        (hratio - 10.0).abs() < 0.1,
-        "height ratio {hratio} ≠ 10"
-    );
+    assert!((hratio - 10.0).abs() < 0.1, "height ratio {hratio} ≠ 10");
 }
 
 #[test]
@@ -233,7 +228,11 @@ fn get_bounds_uses_real_glyph_bbox() {
     assert_eq!(bounds.len(), 1);
     let r = bounds[0];
     // 'A' ascends above the baseline, so top is negative in screen space.
-    assert!(r.top < 0.0, "glyph 'A' top should be above baseline, got {}", r.top);
+    assert!(
+        r.top < 0.0,
+        "glyph 'A' top should be above baseline, got {}",
+        r.top
+    );
     // 'A' rests on or near the baseline.
     assert!(
         r.bottom.abs() < 5.0,
@@ -313,7 +312,10 @@ fn shaper_preserves_cluster_indices() {
     // byte offset >= the previous).
     let clusters: Vec<u32> = run.glyphs.iter().map(|g| g.cluster).collect();
     for w in clusters.windows(2) {
-        assert!(w[0] <= w[1], "clusters must be non-decreasing: {:?}", clusters);
+        assert!(
+            w[0] <= w[1],
+            "clusters must be non-decreasing: {clusters:?}"
+        );
     }
 }
 
@@ -528,12 +530,12 @@ fn paragraph_decoration_retained_on_fragments() {
     paragraph.layout(10_000.0);
     let line = &paragraph.lines()[0];
     assert_eq!(line.fragments.len(), 2);
-    let underlines: Vec<bool> = line
+    let underline_flags: Vec<bool> = line
         .fragments
         .iter()
         .map(|f| f.style.decoration.underline)
         .collect();
-    assert_eq!(underlines, vec![false, true]);
+    assert_eq!(underline_flags, vec![false, true]);
 }
 
 // =============================================================================
@@ -575,9 +577,7 @@ fn glyph_image_returns_none_for_non_color_glyph() {
 #[test]
 fn glyph_color_layers_returns_none_for_outline_only_font() {
     let font = demo_font(100.0);
-    assert!(font
-        .glyph_color_layers(1, 0, 0xFF_00_00_00)
-        .is_none());
+    assert!(font.glyph_color_layers(1, 0, 0xFF_00_00_00).is_none());
 }
 
 #[test]
@@ -674,7 +674,7 @@ fn text_blob_bounds_bracket_real_glyph_positions() {
         Point::new(60.0, 0.0),
         Point::new(120.0, 0.0),
     ];
-    let run = GlyphRun::new(font.clone(), glyphs, positions, Point::zero());
+    let run = GlyphRun::new(font, glyphs, positions, Point::zero());
     let b = run.bounds();
     // Right edge must include the last glyph's outline, not just its
     // origin. The real advance is ~54.7px at size=100, so the right edge
@@ -696,7 +696,11 @@ fn metrics_x_and_cap_height_are_positive() {
     // (`os2->sxHeight/upem*scale`; fallbacks `-ascent*k`). demo.ttf has no
     // OS/2 table, so both come from the (positive) ascent fallback.
     let m = demo_font(100.0).metrics();
-    assert!(m.x_height > 0.0, "x_height must be positive, got {}", m.x_height);
+    assert!(
+        m.x_height > 0.0,
+        "x_height must be positive, got {}",
+        m.x_height
+    );
     assert!(
         m.cap_height > 0.0,
         "cap_height must be positive, got {}",
@@ -724,7 +728,10 @@ fn metrics_top_bottom_come_from_font_bbox() {
     // top/bottom are the ink bbox, independent of the hhea ascent/descent
     // (here the hhea ascender 1024 exceeds the bbox yMax 700). The key
     // point is they are bbox-derived, not `ascent * 1.125`.
-    assert!((m.top - m.ascent * 1.125).abs() > 1.0, "top must not be ascent*1.125");
+    assert!(
+        m.ascent.mul_add(-1.125, m.top).abs() > 1.0,
+        "top must not be ascent*1.125"
+    );
 }
 
 #[test]
@@ -780,7 +787,12 @@ fn glyph_path_applies_scale_x() {
     // Height unchanged.
     assert!((wb.height() - bb.height()).abs() < 0.5);
     // And glyph_advance scales the same way.
-    assert!((wide.glyph_advance(1) - 2.0 * base.glyph_advance(1)).abs() < 0.01);
+    assert!(
+        2.0f32
+            .mul_add(-base.glyph_advance(1), wide.glyph_advance(1))
+            .abs()
+            < 0.01
+    );
 }
 
 #[test]
@@ -820,7 +832,7 @@ fn shaper_x_positions_scale_with_scale_x() {
     let ax = a[0].glyphs[0].x_advance;
     let bx = b[0].glyphs[0].x_advance;
     assert!(
-        (bx - 2.0 * ax).abs() < 0.5,
+        2.0f32.mul_add(-ax, bx).abs() < 0.5,
         "scale_x=2 should double shaped x advance: {bx} vs {ax}"
     );
 }
@@ -841,7 +853,10 @@ fn text_blob_from_text_width_agrees_with_measure_text() {
         "blob width {w} must agree with measure_text {measured}"
     );
     // And it must NOT be the old size*0.5 estimate (3 * 50 = 150).
-    assert!((w - 150.0).abs() > 5.0, "width must not be the size*0.5 guess");
+    assert!(
+        (w - 150.0).abs() > 5.0,
+        "width must not be the size*0.5 guess"
+    );
 }
 
 #[test]
@@ -875,7 +890,11 @@ fn paragraph_push_style_is_a_real_stack() {
     let blob = paragraph.to_text_blob().expect("blob");
     let sizes: Vec<f32> = blob.runs().iter().map(|r| r.font.size()).collect();
     // Three runs at 80, 40, 80 — the third proves pop restored `outer`.
-    assert_eq!(sizes, vec![80.0, 40.0, 80.0], "pop must restore previous style");
+    assert_eq!(
+        sizes,
+        vec![80.0, 40.0, 80.0],
+        "pop must restore previous style"
+    );
 }
 
 #[test]

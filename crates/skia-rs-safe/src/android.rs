@@ -32,6 +32,7 @@
 
 #![cfg(target_os = "android")]
 
+use std::marker::PhantomData;
 use std::ptr::NonNull;
 
 // =============================================================================
@@ -276,9 +277,20 @@ impl HardwareBuffer {
     pub fn lock_for_write(&mut self) -> Option<LockedBufferMut<'_>> {
         #[cfg(not(target_os = "android"))]
         {
+            // Precompute the locked region length and take the raw pointer up
+            // front. `LockedBufferMut` holds only the pointer + length (plus a
+            // PhantomData exclusive borrow), never a live `&mut HardwareBuffer`,
+            // so the buffer's pixel bytes are reachable exclusively through
+            // `ptr`. This both fixes the original E0499 (no second mutable use
+            // of `self` in the struct literal) and makes the raw-pointer
+            // aliasing invariant unbreakable by future edits.
+            let bpp = self.format().bytes_per_pixel().unwrap_or(4);
+            let len = (self.stride() as usize) * (self.height() as usize) * bpp;
+            let ptr = self.pixels.as_mut_ptr();
             Some(LockedBufferMut {
-                buffer: self,
-                ptr: self.pixels.as_mut_ptr(),
+                ptr,
+                len,
+                _borrow: PhantomData,
             })
         }
         #[cfg(target_os = "android")]
@@ -323,17 +335,18 @@ impl<'a> LockedBuffer<'a> {
 
 /// A locked hardware buffer for write access.
 pub struct LockedBufferMut<'a> {
-    #[allow(dead_code)]
-    buffer: &'a mut HardwareBuffer,
     ptr: *mut u8,
+    len: usize,
+    /// Holds the exclusive borrow of the underlying buffer for `'a` without
+    /// exposing a reference through which its pixel bytes could be aliased
+    /// alongside `ptr`.
+    _borrow: PhantomData<&'a mut HardwareBuffer>,
 }
 
-impl<'a> LockedBufferMut<'a> {
+impl LockedBufferMut<'_> {
     /// Get a mutable slice of the pixel data.
     pub fn as_slice_mut(&mut self) -> &mut [u8] {
-        let bpp = self.buffer.format().bytes_per_pixel().unwrap_or(4);
-        let len = (self.buffer.stride() as usize) * (self.buffer.height() as usize) * bpp;
-        unsafe { std::slice::from_raw_parts_mut(self.ptr, len) }
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
     }
 }
 
@@ -938,30 +951,36 @@ mod tests {
         // platform (it's checked before the `#[cfg(target_os = "android")]`
         // split), so pin it with a host-runnable test that isn't gated
         // behind `target_os = "android"`.
-        assert!(HardwareBuffer::new(
-            0,
-            64,
-            HardwareBufferFormat::R8G8B8A8_UNORM,
-            1,
-            HardwareBufferUsage::GPU_SAMPLED_IMAGE,
-        )
-        .is_none());
-        assert!(HardwareBuffer::new(
-            64,
-            0,
-            HardwareBufferFormat::R8G8B8A8_UNORM,
-            1,
-            HardwareBufferUsage::GPU_SAMPLED_IMAGE,
-        )
-        .is_none());
-        assert!(HardwareBuffer::new(
-            64,
-            64,
-            HardwareBufferFormat::R8G8B8A8_UNORM,
-            0,
-            HardwareBufferUsage::GPU_SAMPLED_IMAGE,
-        )
-        .is_none());
+        assert!(
+            HardwareBuffer::new(
+                0,
+                64,
+                HardwareBufferFormat::R8G8B8A8_UNORM,
+                1,
+                HardwareBufferUsage::GPU_SAMPLED_IMAGE,
+            )
+            .is_none()
+        );
+        assert!(
+            HardwareBuffer::new(
+                64,
+                0,
+                HardwareBufferFormat::R8G8B8A8_UNORM,
+                1,
+                HardwareBufferUsage::GPU_SAMPLED_IMAGE,
+            )
+            .is_none()
+        );
+        assert!(
+            HardwareBuffer::new(
+                64,
+                64,
+                HardwareBufferFormat::R8G8B8A8_UNORM,
+                0,
+                HardwareBufferUsage::GPU_SAMPLED_IMAGE,
+            )
+            .is_none()
+        );
     }
 
     #[test]
