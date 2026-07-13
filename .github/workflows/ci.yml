@@ -23,6 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -36,6 +38,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -68,6 +72,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          lfs: true
           submodules: recursive
 
       - uses: actions/setup-node@v4
@@ -103,6 +108,8 @@ jobs:
     continue-on-error: true  # MSRV check is advisory
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -122,6 +129,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -145,6 +154,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build benchmarks
@@ -162,6 +173,8 @@ jobs:
     continue-on-error: true  # Security audit is advisory
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: Run security audit
@@ -175,6 +188,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -252,6 +267,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          lfs: true
           submodules: recursive
 
       - uses: actions/setup-node@v4
@@ -356,6 +372,8 @@ jobs:
     if: always()
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Download all conformance results
         uses: actions/download-artifact@v4
