@@ -412,9 +412,9 @@ impl Paint {
     /// - 1 byte: stroke cap
     /// - 1 byte: stroke join
     /// - 1 byte: flags (bit 0: `anti_alias`, bit 1: dither)
-    /// - [optional trailing sections for shader, `mask_filter`, `color_filter`, `image_filter`]
+    /// - \[optional trailing sections for shader, `mask_filter`, `color_filter`, `image_filter`\]
     ///
-    /// Each optional section is: [1 byte present flag] [4 bytes length] [data].
+    /// Each optional section is: \[1 byte present flag\] \[4 bytes length\] \[data\].
     /// If a shader/filter does not support serialization (e.g., runtime shaders), the
     /// present flag is 0 and that field is omitted from deserialization.
     #[must_use]

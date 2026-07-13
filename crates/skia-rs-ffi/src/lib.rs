@@ -284,7 +284,7 @@ use skia_rs_text::{Font, TextBlob, Typeface, TypefaceRef};
 /// plain `uint32_t` (see [`sk_clip_op_t`]) rather than a Rust-repr enum
 /// parameter, because an out-of-range value received directly into a Rust
 /// `#[repr(u32)] enum` parameter is undefined behavior; functions that take
-/// a clip op decode the raw integer via [`decode_clip_op`] instead.
+/// a clip op decode the raw integer via `decode_clip_op` instead.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkClipOp {
@@ -297,7 +297,7 @@ pub enum SkClipOp {
 /// C ABI type for [`SkClipOp`].
 ///
 /// Functions taking a clip op accept this raw `uint32_t` and decode it via
-/// [`decode_clip_op`], rejecting out-of-range values instead of constructing
+/// `decode_clip_op`, rejecting out-of-range values instead of constructing
 /// an invalid Rust enum from C.
 pub type sk_clip_op_t = u32;
 
@@ -315,7 +315,7 @@ const fn decode_clip_op(v: sk_clip_op_t) -> Option<ClipOp> {
 ///
 /// Numeric values match upstream `SkRegion::Op` (`include/core/SkRegion.h`).
 /// Exposed to C as a raw `uint32_t` (see [`sk_region_op_t`]) and decoded via
-/// [`decode_region_op`], which rejects out-of-range values.
+/// `decode_region_op`, which rejects out-of-range values.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkRegionOp {
@@ -333,7 +333,7 @@ pub enum SkRegionOp {
     Replace = 5,
 }
 
-/// C ABI type for [`SkRegionOp`]; see [`decode_region_op`].
+/// C ABI type for [`SkRegionOp`]; see `decode_region_op`.
 pub type sk_region_op_t = u32;
 
 /// Decode a raw `sk_region_op_t` into [`RegionOp`]. Returns `None` for any
@@ -355,7 +355,7 @@ const fn decode_region_op(v: sk_region_op_t) -> Option<RegionOp> {
 /// Numeric values match upstream `SkTrimPathEffect::Mode`
 /// (`include/effects/SkTrimPathEffect.h`): `kNormal = 0`, `kInverted = 1`.
 /// Exposed to C as a raw `uint32_t` (see [`sk_trim_mode_t`]) and decoded via
-/// [`decode_trim_mode`], which rejects out-of-range values.
+/// `decode_trim_mode`, which rejects out-of-range values.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkTrimMode {
@@ -365,7 +365,7 @@ pub enum SkTrimMode {
     Inverted = 1,
 }
 
-/// C ABI type for [`SkTrimMode`]; see [`decode_trim_mode`].
+/// C ABI type for [`SkTrimMode`]; see `decode_trim_mode`.
 pub type sk_trim_mode_t = u32;
 
 /// Decode a raw `sk_trim_mode_t` into [`TrimMode`]. Returns `None` for any
@@ -1951,11 +1951,11 @@ pub unsafe extern "C" fn sk_canvas_save(canvas: *mut sk_canvas_t) -> i32 {
 ///
 /// Both `bounds` and `paint` are optional (null is acceptable). The layer
 /// is allocated lazily (at the next draw) because draws go through the
-/// transient [`Canvas`] layer machinery already. Returns the new save count,
+/// transient [`Canvas`](skia_rs_canvas::Canvas) layer machinery already. Returns the new save count,
 /// or 0 on failure (null canvas).
 ///
 /// **Pragmatic note:** because the FFI canvas reconstructs its underlying
-/// [`Canvas`] between calls, the `layer_paint` / `layer_bounds` are tracked but
+/// [`Canvas`](skia_rs_canvas::Canvas) between calls, the `layer_paint` / `layer_bounds` are tracked but
 /// composition is delegated to the transient canvas at the next draw — the
 /// effective behavior matches the recording-only semantics in
 /// [`skia_rs_canvas::Canvas::save_layer`].
@@ -2097,7 +2097,7 @@ pub unsafe extern "C" fn sk_canvas_draw_path(
 /// Intersect or subtract a rectangle from the clip.
 ///
 /// `op` follows upstream `SkClipOp`: 0 = Difference, 1 = Intersect (see
-/// [`decode_clip_op`]). Returns false if the canvas handle is null or `op`
+/// `decode_clip_op`). Returns false if the canvas handle is null or `op`
 /// is out of range; otherwise true.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_canvas_clip_rect(
@@ -2127,7 +2127,7 @@ pub unsafe extern "C" fn sk_canvas_clip_rect(
 
 /// Intersect or subtract a path from the clip.
 ///
-/// `op` follows upstream `SkClipOp`; see [`decode_clip_op`]. Returns false
+/// `op` follows upstream `SkClipOp`; see `decode_clip_op`. Returns false
 /// if `op` is out of range.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_canvas_clip_path(
@@ -2954,16 +2954,16 @@ pub unsafe extern "C" fn sk_canvas_draw_text_blob(
 // Picture / PictureRecorder API
 // =============================================================================
 
-/// Reference counted [`Picture`].
+/// Reference counted [`Picture`](skia_rs_canvas::Picture).
 pub type sk_picture_t = RefCounted<PictureRef>;
 
 /// Opaque picture recorder. Not reference counted — single ownership.
 ///
-/// The FFI recorder does not use the workspace [`PictureRecorder`] directly
+/// The FFI recorder does not use the workspace [`PictureRecorder`](skia_rs_canvas::PictureRecorder) directly
 /// because that type's recording API returns an unboxed mutable reference
 /// that cannot cross the FFI boundary cleanly. Instead we track our own
-/// [`DrawCommand`] stream and wrap it into a [`Picture`] at finish time,
-/// calling [`Picture::from_parts`].
+/// [`DrawCommand`](skia_rs_canvas::DrawCommand) stream and wrap it into a [`Picture`](skia_rs_canvas::Picture) at finish time,
+/// calling [`Picture::from_parts`](skia_rs_canvas::Picture::from_parts).
 pub struct sk_picture_recorder_t {
     /// Accumulated draw commands while recording. Swapped out on finish.
     commands: Vec<skia_rs_canvas::DrawCommand>,
@@ -3013,7 +3013,7 @@ pub unsafe extern "C" fn sk_picture_recorder_delete(r: *mut sk_picture_recorder_
 
 /// Recording canvas handle. Returned by
 /// [`sk_picture_recorder_begin_recording`] and accepted by
-/// [`sk_recording_canvas_*`] — it is **not** interchangeable with
+/// `sk_recording_canvas_*` — it is **not** interchangeable with
 /// [`sk_canvas_t`] (which is raster-backed).
 pub struct sk_recording_canvas_t {
     /// Points back to the owning recorder. The recorder outlives the
@@ -3302,7 +3302,7 @@ pub unsafe extern "C" fn sk_region_set_rect(
 
 /// Apply a rect op on the region.
 ///
-/// `op` follows upstream `SkRegion::Op`; see [`decode_region_op`]. Returns
+/// `op` follows upstream `SkRegion::Op`; see `decode_region_op`. Returns
 /// false if `op` is out of range.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_region_op_rect(
@@ -3408,7 +3408,7 @@ pub unsafe extern "C" fn sk_patheffect_new_dash(
 
 /// Create a trim path effect. `start` and `end` are normalized lengths
 /// in [0, 1]. `mode` follows upstream `SkTrimPathEffect::Mode`; see
-/// [`decode_trim_mode`]. Returns null if `mode` is out of range.
+/// `decode_trim_mode`. Returns null if `mode` is out of range.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sk_patheffect_new_trim(
     start: f32,

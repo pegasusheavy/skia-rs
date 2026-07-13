@@ -374,7 +374,10 @@ pub fn vk_format_to_texture(format: vk::Format) -> Option<TextureFormat> {
 }
 
 /// Vulkan-based GPU context.
+// Handle/state fields (e.g. `entry`, queue-family indices) are retained to
+// keep Vulkan objects alive or for future use even when not read directly.
 #[cfg(feature = "vulkan")]
+#[allow(dead_code)]
 pub struct VulkanContext {
     /// Vulkan entry point.
     entry: ash::Entry,
