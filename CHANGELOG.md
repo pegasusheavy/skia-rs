@@ -7,11 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-12
+
 This release lands a large conformance audit against upstream C++ Skia. It
 contains **breaking** behavior and C-ABI changes across most crates (marked
 **Breaking** below); consumers should treat it as a minor-version bump
-(target **0.3.0**) despite the 0.x line, and C consumers must rebuild against
-the regenerated headers.
+despite the 0.x line, and C consumers must rebuild against the regenerated
+headers.
+
+It also folds the node/python bindings into the workspace, hardens CI
+(formatting baseline, Windows N32/BGRA coverage, toolchain setup), and
+enforces `clippy::pedantic` + `clippy::nursery` with `-D warnings`
+workspace-wide (including the `--all-features` examples).
 
 **Known limitations shipped in this release:**
 - **Windows raster surfaces:** `ColorType::n32()` now selects `Bgra8888` on
@@ -1101,5 +1108,6 @@ The first public release of skia-rs, a pure Rust implementation of the Skia 2D g
 
 
 [0.1.0]: https://github.com/pegasusheavy/skia-rs/releases/tag/v0.1.0
-[Unreleased]: https://github.com/pegasusheavy/skia-rs/compare/v0.1.0...HEAD
+[0.3.0]: https://github.com/quinnjr/skia-rs/compare/v0.2.7...v0.3.0
+[Unreleased]: https://github.com/quinnjr/skia-rs/compare/v0.3.0...HEAD
 

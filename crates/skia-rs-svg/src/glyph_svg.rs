@@ -73,7 +73,7 @@ pub fn glyph_svg_to_dom(raw: &[u8]) -> Option<SvgDom> {
 ///
 /// This is the convenience entry point that ties together
 /// [`Font::glyph_svg`] (read the table), [`glyph_svg_to_dom`] (decode +
-/// parse), and [`render_svg`] (rasterise). It is the SVG-glyph
+/// parse), and [`render_svg`](crate::render::render_svg) (rasterise). It is the SVG-glyph
 /// counterpart to `Canvas::draw_color_glyph`'s COLR path, kept in this
 /// crate to avoid a dependency cycle (skia-rs-svg already depends on
 /// skia-rs-canvas).

@@ -73,21 +73,6 @@
 // Perspective 2 index.
 #define Matrix_PERSP_2 8
 
-// Filter mode for image sampling.
-enum FilterMode
-#ifdef __cplusplus
-  : uint8_t
-#endif // __cplusplus
- {
-    // Nearest neighbor sampling.
-    FilterMode_Nearest = 0,
-    // Bilinear interpolation.
-    FilterMode_Linear,
-};
-#ifndef __cplusplus
-typedef uint8_t FilterMode;
-#endif // __cplusplus
-
 // Mipmap mode for image sampling.
 enum MipmapMode
 #ifdef __cplusplus
@@ -103,6 +88,21 @@ enum MipmapMode
 };
 #ifndef __cplusplus
 typedef uint8_t MipmapMode;
+#endif // __cplusplus
+
+// Filter mode for image sampling.
+enum FilterMode
+#ifdef __cplusplus
+  : uint8_t
+#endif // __cplusplus
+ {
+    // Nearest neighbor sampling.
+    FilterMode_Nearest = 0,
+    // Bilinear interpolation.
+    FilterMode_Linear,
+};
+#ifndef __cplusplus
+typedef uint8_t FilterMode;
 #endif // __cplusplus
 
 // Describes the color space for interpreting colors.
@@ -139,16 +139,16 @@ typedef struct sk_path_iter_t sk_path_iter_t;
 
 // Opaque picture recorder. Not reference counted — single ownership.
 //
-// The FFI recorder does not use the workspace [`PictureRecorder`] directly
+// The FFI recorder does not use the workspace [`PictureRecorder`](skia_rs_canvas::PictureRecorder) directly
 // because that type's recording API returns an unboxed mutable reference
 // that cannot cross the FFI boundary cleanly. Instead we track our own
-// [`DrawCommand`] stream and wrap it into a [`Picture`] at finish time,
-// calling [`Picture::from_parts`].
+// [`DrawCommand`](skia_rs_canvas::DrawCommand) stream and wrap it into a [`Picture`](skia_rs_canvas::Picture) at finish time,
+// calling [`Picture::from_parts`](skia_rs_canvas::Picture::from_parts).
 typedef struct sk_picture_recorder_t sk_picture_recorder_t;
 
 // Recording canvas handle. Returned by
 // [`sk_picture_recorder_begin_recording`] and accepted by
-// [`sk_recording_canvas_*`] — it is **not** interchangeable with
+// `sk_recording_canvas_*` — it is **not** interchangeable with
 // [`sk_canvas_t`] (which is raster-backed).
 typedef struct sk_recording_canvas_t sk_recording_canvas_t;
 
@@ -240,7 +240,7 @@ typedef struct sk_matrix_t {
 // C ABI type for [`SkClipOp`].
 //
 // Functions taking a clip op accept this raw `uint32_t` and decode it via
-// [`decode_clip_op`], rejecting out-of-range values instead of constructing
+// `decode_clip_op`, rejecting out-of-range values instead of constructing
 // an invalid Rust enum from C.
 typedef uint32_t sk_clip_op_t;
 
@@ -277,19 +277,19 @@ typedef struct RefCounted_ColorSpace sk_colorspace_t;
 // Reference counted [`TextBlob`].
 typedef struct RefCounted_TextBlob sk_textblob_t;
 
-// Reference counted [`Picture`].
+// Reference counted [`Picture`](skia_rs_canvas::Picture).
 typedef struct RefCounted_PictureRef sk_picture_t;
 
 // Reference counted [`Region`].
 typedef struct RefCounted_Region sk_region_t;
 
-// C ABI type for [`SkRegionOp`]; see [`decode_region_op`].
+// C ABI type for [`SkRegionOp`]; see `decode_region_op`.
 typedef uint32_t sk_region_op_t;
 
 // Reference counted [`PathEffectRef`].
 typedef struct RefCounted_PathEffectRef sk_patheffect_t;
 
-// C ABI type for [`SkTrimMode`]; see [`decode_trim_mode`].
+// C ABI type for [`SkTrimMode`]; see `decode_trim_mode`.
 typedef uint32_t sk_trim_mode_t;
 
 // Binary-compatible 2D point (matches `SkPoint` exactly)
@@ -833,11 +833,11 @@ int32_t sk_canvas_save(struct sk_canvas_t *canvas);
 //
 // Both `bounds` and `paint` are optional (null is acceptable). The layer
 // is allocated lazily (at the next draw) because draws go through the
-// transient [`Canvas`] layer machinery already. Returns the new save count,
+// transient [`Canvas`](skia_rs_canvas::Canvas) layer machinery already. Returns the new save count,
 // or 0 on failure (null canvas).
 //
 // **Pragmatic note:** because the FFI canvas reconstructs its underlying
-// [`Canvas`] between calls, the `layer_paint` / `layer_bounds` are tracked but
+// [`Canvas`](skia_rs_canvas::Canvas) between calls, the `layer_paint` / `layer_bounds` are tracked but
 // composition is delegated to the transient canvas at the next draw — the
 // effective behavior matches the recording-only semantics in
 // [`skia_rs_canvas::Canvas::save_layer`].
@@ -885,7 +885,7 @@ void sk_canvas_draw_path(struct sk_canvas_t *canvas,
 // Intersect or subtract a rectangle from the clip.
 //
 // `op` follows upstream `SkClipOp`: 0 = Difference, 1 = Intersect (see
-// [`decode_clip_op`]). Returns false if the canvas handle is null or `op`
+// `decode_clip_op`). Returns false if the canvas handle is null or `op`
 // is out of range; otherwise true.
 bool sk_canvas_clip_rect(struct sk_canvas_t *canvas,
                          const struct sk_rect_t *rect,
@@ -894,7 +894,7 @@ bool sk_canvas_clip_rect(struct sk_canvas_t *canvas,
 
 // Intersect or subtract a path from the clip.
 //
-// `op` follows upstream `SkClipOp`; see [`decode_clip_op`]. Returns false
+// `op` follows upstream `SkClipOp`; see `decode_clip_op`. Returns false
 // if `op` is out of range.
 bool sk_canvas_clip_path(struct sk_canvas_t *canvas,
                          const sk_path_t *path,
@@ -1225,7 +1225,7 @@ bool sk_region_set_rect(sk_region_t *region,
 
 // Apply a rect op on the region.
 //
-// `op` follows upstream `SkRegion::Op`; see [`decode_region_op`]. Returns
+// `op` follows upstream `SkRegion::Op`; see `decode_region_op`. Returns
 // false if `op` is out of range.
 bool sk_region_op_rect(sk_region_t *region,
                        const struct sk_irect_t *rect,
@@ -1261,7 +1261,7 @@ sk_patheffect_t *sk_patheffect_new_dash(const float *intervals,
 
 // Create a trim path effect. `start` and `end` are normalized lengths
 // in [0, 1]. `mode` follows upstream `SkTrimPathEffect::Mode`; see
-// [`decode_trim_mode`]. Returns null if `mode` is out of range.
+// `decode_trim_mode`. Returns null if `mode` is out of range.
 sk_patheffect_t *sk_patheffect_new_trim(float start,
                                         float end,
                                         sk_trim_mode_t mode);

@@ -44,7 +44,7 @@
 //!   without bounds checking.
 //!
 //! The hook point is [`validate_program`], called from
-//! [`crate::runtime_effect::RuntimeEffect::compile`] after
+//! `crate::runtime_effect::RuntimeEffect::compile` after
 //! `validate_entry_point` so callers see a single coherent validation
 //! pass.
 

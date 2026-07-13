@@ -119,7 +119,7 @@ impl PixelBuffer {
     /// Blend a **premultiplied** pixel at (x, y) using the given blend mode.
     ///
     /// `src` must already be premultiplied; the buffer stores premultiplied
-    /// pixels, and [`blend_colors`] operates on premultiplied inputs.
+    /// pixels, and `blend_colors` operates on premultiplied inputs.
     #[inline]
     pub fn blend_pixel(&mut self, x: i32, y: i32, src: Color, blend_mode: BlendMode) {
         if x < 0 || x >= self.width || y < 0 || y >= self.height {
@@ -898,7 +898,7 @@ impl<'a> Rasterizer<'a> {
     /// so translucent paints are blended exactly once per pixel — the old
     /// midpoint-octant loop emitted overlapping rows.
     ///
-    /// Assumes a translate + uniform-scale CTM; [`draw_circle`] routes any
+    /// Assumes a translate + uniform-scale CTM; [`draw_circle`](Self::draw_circle) routes any
     /// other matrix through the path pipeline.
     pub fn fill_circle(&mut self, center: Point, radius: Scalar, paint: &Paint) {
         use skia_rs_core::cast::{ceil_to_i32, floor_to_i32, round_to_i32, scalar_from_i32};
