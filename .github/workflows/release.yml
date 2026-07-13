@@ -109,8 +109,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
+      # The language bindings (PyO3 / napi cdylibs) are distributed via
+      # pip/npm using their own toolchains, not in these C-library tarballs.
+      # Building them here also fails to link on macOS (extension modules
+      # resolve their host symbols at runtime) and when cross-compiling, so
+      # exclude them from the release artifact build.
       - name: Build
-        run: cargo build --release --workspace --target ${{ matrix.target }}
+        run: cargo build --release --workspace --exclude skia-rs-python --exclude skia-rs-node --target ${{ matrix.target }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
