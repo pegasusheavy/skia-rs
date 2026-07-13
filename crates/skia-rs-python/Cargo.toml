@@ -15,6 +15,11 @@ readme = "README.md"
 [lib]
 name = "skia_rs"
 crate-type = ["cdylib"]
+# This is a PyO3 extension module whose lib name (`skia_rs`, the importable
+# Python module) intentionally matches the umbrella crate. rustdoc emits both
+# to the same `skia_rs` path, which collides under `cargo doc --workspace`.
+# The Rust docs for the extension glue are not useful, so exclude it.
+doc = false
 
 [features]
 png = []

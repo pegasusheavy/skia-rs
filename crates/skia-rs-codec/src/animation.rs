@@ -6,7 +6,7 @@
 //! list themselves and composite according to the disposal and blend
 //! methods — the codec layer does not maintain a playback state machine.
 //!
-//! Only GIF is wired up here today (via [`GifCodec::decode_animated`]).
+//! Only GIF is wired up here today (via `GifDecoder::decode_animated`).
 //! APNG and animated WebP share the same shape and will plug into the
 //! same types once their decoders surface multi-frame data.
 

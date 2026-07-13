@@ -410,16 +410,16 @@ impl<'a> PdfCanvas<'a> {
         self.stroke_or_fill(paint, even_odd);
     }
 
-    /// Draw text using the currently selected font (see [`set_font`]).
+    /// Draw text using the currently selected font (see [`set_font`](Self::set_font)).
     ///
     /// Returns `Err(PdfError::Unsupported)` if no font is selected; use
-    /// [`draw_text_with_font`] to provide one explicitly.
+    /// [`draw_text_with_font`](Self::draw_text_with_font) to provide one explicitly.
     ///
     /// # Errors
     ///
     /// Returns `Err(PdfError::Unsupported)` if no font is currently
     /// selected, or if the selected font is a Type0/CID font (see
-    /// [`draw_text_with_font`]).
+    /// [`draw_text_with_font`](Self::draw_text_with_font)).
     pub fn draw_text(
         &mut self,
         text: &str,
@@ -556,8 +556,8 @@ impl<'a> PdfCanvas<'a> {
     /// Draw a PDF image registered with the document's image manager.
     ///
     /// The image is painted at the given position at its natural size in
-    /// user-space units (1 unit == 1/72 inch). Use [`concat`] or [`save`]/
-    /// [`restore`] to scale as needed.
+    /// user-space units (1 unit == 1/72 inch). Use [`concat`](Self::concat) or
+    /// [`save`](Self::save)/[`restore`](Self::restore) to scale as needed.
     ///
     /// # Panics
     ///

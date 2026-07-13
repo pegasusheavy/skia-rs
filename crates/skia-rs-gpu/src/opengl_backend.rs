@@ -567,7 +567,10 @@ impl GLPolygonMode {
 }
 
 /// OpenGL-based GPU context.
+// Cached binding state (`current_vao`/`current_program`/`current_framebuffer`)
+// is retained for future state-tracking use even when not read directly.
 #[cfg(feature = "opengl")]
+#[allow(dead_code)]
 pub struct OpenGLContext {
     /// Glow context.
     gl: glow::Context,

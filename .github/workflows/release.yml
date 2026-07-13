@@ -40,9 +40,17 @@ jobs:
 
           echo "Tag version: $TAG_VERSION"
 
-          # Check each crate's version matches
+          # Check each crate's version matches. Crates inherit the version
+          # from the workspace via `version.workspace = true`, so treat that
+          # line as "workspace" (already validated above) rather than trying
+          # to parse a literal out of it.
           for cargo in crates/*/Cargo.toml; do
-            CRATE_VERSION=$(grep '^version' "$cargo" | head -1 | sed 's/.*"\(.*\)".*/\1/' || echo "workspace")
+            VERSION_LINE=$(grep '^version' "$cargo" | head -1)
+            if [ -z "$VERSION_LINE" ] || echo "$VERSION_LINE" | grep -q 'workspace'; then
+              CRATE_VERSION="workspace"
+            else
+              CRATE_VERSION=$(echo "$VERSION_LINE" | sed 's/.*"\(.*\)".*/\1/')
+            fi
             if [ "$CRATE_VERSION" != "workspace" ] && [ "$CRATE_VERSION" != "$TAG_VERSION" ]; then
               echo "Version mismatch in $cargo: $CRATE_VERSION != $TAG_VERSION"
               exit 1

@@ -17,6 +17,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// wgpu-based GPU context.
+// Some fields (e.g. `instance`, `adapter`) are retained to keep the
+// underlying wgpu handles alive for the lifetime of the context even though
+// they are not read directly.
+#[allow(dead_code)]
 pub struct WgpuContext {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
@@ -169,6 +173,8 @@ impl GpuContext for WgpuContext {
 }
 
 /// wgpu-based GPU surface.
+// `staging_buffer` is retained for readback reuse and is not always read.
+#[allow(dead_code)]
 pub struct WgpuSurface {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
