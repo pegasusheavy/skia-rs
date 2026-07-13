@@ -17,7 +17,12 @@ jobs:
     name: Validate Release
     runs-on: ubuntu-latest
     steps:
+      # Test fixtures (fonts, images) are stored in Git LFS; without this the
+      # checkout leaves LFS pointer files and `include_bytes!` embeds the
+      # pointer text, so tests like text_glyph_rendering fail to parse them.
       - uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
